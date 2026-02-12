@@ -49,7 +49,7 @@
     "@commitlint/config-conventional": "catalog:",
     "c8": "^10.1.3",
     "husky": "catalog:",
-    "turbo": "^2.8.6",
+    "turbo": "^2.8.7",
     "typescript": "catalog:"
   }
 }
