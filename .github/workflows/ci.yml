@@ -26,6 +26,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Generate Protobuf
+        run: pnpm turbo run build:proto
+
       - name: Typecheck
         run: pnpm typecheck
 
