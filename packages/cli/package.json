@@ -42,7 +42,7 @@
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
-    "citty": "^0.1.6"
+    "citty": "^0.2.1"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
