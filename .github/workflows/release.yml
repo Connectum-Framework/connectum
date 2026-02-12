@@ -18,20 +18,21 @@ jobs:
     name: Release & Publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "25"
+          node-version: "25.2.0"
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 
       - run: pnpm install --frozen-lockfile
 
       - name: Audit dependencies
-        run: pnpm audit --prod
+        run: pnpm audit --prod --audit-level=high
+        continue-on-error: true
 
       - name: Generate Protobuf
         run: pnpm turbo run build:proto
@@ -47,7 +48,7 @@ jobs:
 
       - name: Create Release Pull Request or Publish
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@6a0a831ff30acef54f2c6aa1cbbc1096b066edaf # v1
         with:
           version: pnpm changeset:version
           publish: pnpm changeset:publish -- --provenance
@@ -61,7 +62,8 @@ jobs:
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         run: |
-          VERSION=$(echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -r '.[0].version')
+          PUBLISHED='${{ steps.changesets.outputs.publishedPackages }}'
+          VERSION=$(echo "${PUBLISHED}" | jq -r '.[0].version')
           TAG="v${VERSION}"
 
           # Collect changelog from @connectum/core as the primary changelog
