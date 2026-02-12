@@ -53,3 +53,31 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          VERSION=$(echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -r '.[0].version')
+          TAG="v${VERSION}"
+
+          # Collect changelog from @connectum/core as the primary changelog
+          CHANGELOG=$(awk "/^## ${VERSION}/{found=1; next} /^## [0-9]/{if(found) exit} found" packages/core/CHANGELOG.md)
+
+          # Create git tag
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
+          # Determine pre-release flag
+          PRERELEASE_FLAG=""
+          if echo "${VERSION}" | grep -qE "(alpha|beta|rc)"; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Create GitHub Release
+          gh release create "${TAG}" \
+            --title "Connectum ${TAG}" \
+            --notes "${CHANGELOG}" \
+            ${PRERELEASE_FLAG} \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
