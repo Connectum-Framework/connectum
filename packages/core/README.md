@@ -2,37 +2,37 @@
 
 Main Server factory with protocol plugin system for Connectum.
 
-**@connectum/core** - это главный integration layer пакет, который объединяет все компоненты Connectum для создания production-ready ConnectRPC/gRPC сервисов.
+**@connectum/core** is the main integration layer package that combines all Connectum components for building production-ready ConnectRPC/gRPC services.
 
-## Возможности
+## Features
 
-- **createServer()**: Фабричная функция для создания сервера с explicit lifecycle
-- **Lifecycle Hooks**: События start, ready, stop, error
-- **Protocol Plugin System**: Расширяемая система через `protocols: []` array
-- **TLS Configuration**: Utilities для настройки TLS certificates
-- **Graceful Shutdown**: Встроенная поддержка graceful shutdown с автоматической обработкой сигналов
-- **Explicit Interceptors**: Пользователь передаёт interceptors явно (zero internal deps)
+- **createServer()**: Factory function for creating a server with explicit lifecycle
+- **Lifecycle Hooks**: Events start, ready, stop, error
+- **Protocol Plugin System**: Extensible system via `protocols: []` array
+- **TLS Configuration**: Utilities for configuring TLS certificates
+- **Graceful Shutdown**: Built-in graceful shutdown support with automatic signal handling
+- **Explicit Interceptors**: User passes interceptors explicitly (zero internal deps)
 
-### Protocol Packages (устанавливаются отдельно)
+### Protocol Packages (installed separately)
 
 - **@connectum/healthcheck**: [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) + HTTP endpoints
 - **@connectum/reflection**: [gRPC Server Reflection](https://github.com/grpc/grpc/blob/master/doc/server-reflection.md)
 
-## Установка
+## Installation
 
 ```bash
 pnpm add @connectum/core
 ```
 
-**Peer dependencies** (устанавливаются автоматически):
+**Peer dependencies** (installed automatically):
 
 ```bash
 pnpm add @connectrpc/connect @connectrpc/connect-node @bufbuild/protobuf
 ```
 
-## Быстрый старт
+## Quick Start
 
-### Минимальный пример
+### Minimal Example
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -46,7 +46,7 @@ const server = createServer({
 await server.start();
 ```
 
-### Production пример
+### Production Example
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -77,7 +77,7 @@ server.on('error', (err) => {
 await server.start();
 ```
 
-### С TLS
+### With TLS
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -94,55 +94,55 @@ const server = createServer({
 await server.start();
 ```
 
-## Внутренняя архитектура
+## Internal Architecture
 
-Начиная с v0.2.0-beta, модуль `@connectum/core` разделён на 3 самостоятельных подмодуля, каждый из которых отвечает за свою область ответственности:
+Starting with v0.2.0-beta, the `@connectum/core` module is split into 3 independent submodules, each responsible for its own domain:
 
 ```
 core/src/
-├── Server.ts            # Оркестратор: lifecycle state machine, EventEmitter
-├── TransportManager.ts  # HTTP/2 transport: создание, listen, session tracking
-├── buildRoutes.ts       # Композиция: services + protocols + interceptors -> handler
+├── Server.ts            # Orchestrator: lifecycle state machine, EventEmitter
+├── TransportManager.ts  # HTTP/2 transport: creation, listen, session tracking
+├── buildRoutes.ts       # Composition: services + protocols + interceptors -> handler
 ├── gracefulShutdown.ts  # Graceful shutdown: timeout race, force close, hooks
 ├── ShutdownManager.ts   # Shutdown hooks: dependency ordering, cycle detection
-├── TLSConfig.ts         # TLS: чтение сертификатов, path resolution
-├── types.ts             # Публичные типы и интерфейсы
+├── TLSConfig.ts         # TLS: certificate reading, path resolution
+├── types.ts             # Public types and interfaces
 └── index.ts             # Re-exports
 ```
 
 ### TransportManager
 
-Управляет жизненным циклом HTTP/2 сервера:
-- Создание secure/plaintext HTTP/2 сервера
-- Отслеживание активных `Http2Session` для принудительного завершения при таймауте
-- Listen с корректной обработкой ошибок (error listener cleanup)
-- Graceful close (отправка GOAWAY)
-- Force destroy всех сессий
+Manages the HTTP/2 server lifecycle:
+- Creating secure/plaintext HTTP/2 server
+- Tracking active `Http2Session` instances for forced termination on timeout
+- Listen with proper error handling (error listener cleanup)
+- Graceful close (sending GOAWAY)
+- Force destroy of all sessions
 
 ### buildRoutes
 
-Композиция маршрутов и протоколов:
-- Регистрация пользовательских сервисов на `ConnectRouter`
-- Перехват `router.service()` для сбора `DescFile[]` registry (используется reflection)
-- Регистрация протоколов (healthcheck, reflection) с передачей registry
-- Создание `connectNodeAdapter` с fallback-маршрутизацией на HTTP-обработчики протоколов
+Route and protocol composition:
+- Registering user services on `ConnectRouter`
+- Intercepting `router.service()` to collect `DescFile[]` registry (used by reflection)
+- Registering protocols (healthcheck, reflection) with registry passing
+- Creating `connectNodeAdapter` with fallback routing to HTTP protocol handlers
 
 ### gracefulShutdown
 
-Orchestration graceful shutdown последовательностью фаз:
-1. **Close transport** -- отправка GOAWAY, прекращение приёма новых соединений
-2. **Timeout race** -- ожидание завершения in-flight запросов или таймаут
-3. **Force close** -- при таймауте уничтожение всех HTTP/2 сессий (если `forceCloseOnTimeout: true`)
-4. **Execute hooks** -- выполнение всех shutdown hooks (даже после таймаута)
-5. **Dispose** -- очистка внутреннего состояния
+Orchestration of graceful shutdown through a sequence of phases:
+1. **Close transport** -- send GOAWAY, stop accepting new connections
+2. **Timeout race** -- wait for in-flight requests to complete or timeout
+3. **Force close** -- on timeout, destroy all HTTP/2 sessions (if `forceCloseOnTimeout: true`)
+4. **Execute hooks** -- run all shutdown hooks (even after timeout)
+5. **Dispose** -- clean up internal state
 
-Ошибки в `Promise.race` корректно перехватываются, таймер очищается через `clearTimeout` в `finally`.
+Errors in `Promise.race` are properly caught, timer is cleared via `clearTimeout` in `finally`.
 
 ## Main Exports
 
 ### createServer()
 
-Основная фабричная функция для создания сервера:
+Main factory function for creating a server:
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -150,22 +150,22 @@ import { createServer } from '@connectum/core';
 function createServer(options: CreateServerOptions): Server
 ```
 
-**Параметры (`CreateServerOptions`):**
+**Parameters (`CreateServerOptions`):**
 
-| Параметр | Тип | Default | Описание |
-|----------|-----|---------|----------|
-| `services` | `ServiceRoute[]` | required | Массив service route functions |
-| `port` | `number` | `5000` | Port для сервера |
-| `host` | `string` | `'0.0.0.0'` | Host для bind |
-| `tls` | `TLSOptions` | - | TLS конфигурация |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `services` | `ServiceRoute[]` | required | Array of service route functions |
+| `port` | `number` | `5000` | Server port |
+| `host` | `string` | `'0.0.0.0'` | Host to bind |
+| `tls` | `TLSOptions` | - | TLS configuration |
 | `protocols` | `ProtocolRegistration[]` | `[]` | Protocol plugins (healthcheck, reflection) |
-| `shutdown` | `ShutdownOptions` | - | Graceful shutdown конфигурация |
+| `shutdown` | `ShutdownOptions` | - | Graceful shutdown configuration |
 | `interceptors` | `Interceptor[]` | `[]` | ConnectRPC interceptors (use `createDefaultInterceptors()` from `@connectum/interceptors`) |
 | `allowHTTP1` | `boolean` | `true` | Allow HTTP/1.1 connections |
 | `handshakeTimeout` | `number` | `30000` | Handshake timeout (ms) |
-| `http2Options` | `SecureServerOptions` | - | Дополнительные HTTP/2 options |
+| `http2Options` | `SecureServerOptions` | - | Additional HTTP/2 options |
 
-**Возвращает:** `Server` - сервер instance (не запущен)
+**Returns:** `Server` - server instance (not started)
 
 ### Server Interface
 
@@ -213,45 +213,45 @@ interface Server extends EventEmitter {
 ```typescript
 import { healthcheckManager, ServingStatus } from '@connectum/healthcheck';
 
-// Server начинает запуск
+// Server is starting up
 server.on('start', () => {
   console.log('Server starting...');
 });
 
-// Server готов принимать connections
+// Server is ready to accept connections
 server.on('ready', () => {
   console.log(`Listening on port ${server.address?.port}`);
   healthcheckManager.update(ServingStatus.SERVING);
 });
 
-// Server начинает graceful shutdown (до abort signal)
+// Server begins graceful shutdown (before abort signal)
 server.on('stopping', () => {
   console.log('Server shutting down...');
   healthcheckManager.update(ServingStatus.NOT_SERVING);
 });
 
-// Server остановлен
+// Server has stopped
 server.on('stop', () => {
   console.log('Server stopped');
 });
 
-// Ошибка сервера (вместо process.exit)
+// Server error (instead of process.exit)
 server.on('error', (error: Error) => {
   console.error('Server error:', error);
 });
 ```
 
-**Важно**: Сервер генерирует событие `error` вместо вызова `process.exit(1)`. Это позволяет приложению самостоятельно решить, как обрабатывать фатальные ошибки.
+**Important**: The server emits an `error` event instead of calling `process.exit(1)`. This allows the application to decide how to handle fatal errors on its own.
 
 ### ServerState
 
 ```typescript
 const ServerState = {
-  CREATED: 'created',    // Server создан, не запущен
-  STARTING: 'starting',  // Server запускается
-  RUNNING: 'running',    // Server работает
-  STOPPING: 'stopping',  // Server останавливается
-  STOPPED: 'stopped',    // Server остановлен
+  CREATED: 'created',    // Server created, not started
+  STARTING: 'starting',  // Server is starting
+  RUNNING: 'running',    // Server is running
+  STOPPING: 'stopping',  // Server is stopping
+  STOPPED: 'stopped',    // Server has stopped
 } as const;
 
 type ServerState = typeof ServerState[keyof typeof ServerState];
@@ -323,19 +323,19 @@ interface ShutdownOptions {
 }
 ```
 
-#### Поведение graceful shutdown
+#### Graceful Shutdown Behavior
 
-При вызове `server.stop()` или получении сигнала (при `autoShutdown: true`):
+When `server.stop()` is called or a signal is received (with `autoShutdown: true`):
 
-1. Генерируется событие `stopping` -- можно обновить healthcheck на NOT_SERVING
-2. `AbortController.abort()` -- сигнализирует streaming RPC и long-running операциям о завершении
-3. Транспорт отправляет GOAWAY и прекращает приём новых соединений
-4. **Timeout race**: ожидание завершения in-flight запросов или истечение `timeout`
-5. При таймауте и `forceCloseOnTimeout: true` -- принудительное уничтожение всех HTTP/2 сессий
-6. Выполнение shutdown hooks (с учётом зависимостей)
-7. Очистка внутреннего состояния
+1. The `stopping` event is emitted -- healthcheck can be updated to NOT_SERVING
+2. `AbortController.abort()` -- signals streaming RPCs and long-running operations to terminate
+3. Transport sends GOAWAY and stops accepting new connections
+4. **Timeout race**: waits for in-flight requests to complete or for `timeout` to expire
+5. On timeout with `forceCloseOnTimeout: true` -- forcefully destroys all HTTP/2 sessions
+6. Executes shutdown hooks (respecting dependencies)
+7. Cleans up internal state
 
-Повторные вызовы `stop()` безопасны -- возвращается тот же Promise, что и первый вызов.
+Repeated calls to `stop()` are safe -- they return the same Promise as the first call.
 
 ### TLSOptions
 
@@ -354,7 +354,7 @@ interface TLSOptions {
 
 ### Interceptors
 
-`@connectum/core` не включает встроенных interceptors. Используйте `@connectum/interceptors` для production-ready chain:
+`@connectum/core` does not include built-in interceptors. Use `@connectum/interceptors` for a production-ready chain:
 
 ```typescript
 import { createDefaultInterceptors } from '@connectum/interceptors';
@@ -369,8 +369,8 @@ See `@connectum/interceptors` package for `DefaultInterceptorOptions` and full d
 
 ## Environment Variables
 
-| Переменная | Описание | Default |
-|------------|----------|---------|
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `PORT` | Server port | `5000` |
 | `LISTEN` | Server host | `0.0.0.0` |
 | `TLS_PATH` | Path to TLS certificates directory | - |
@@ -378,7 +378,7 @@ See `@connectum/interceptors` package for `DefaultInterceptorOptions` and full d
 | `TLS_CERT_PATH` | Path to TLS certificate file | - |
 | `NODE_ENV` | Environment (affects logger) | - |
 
-## Примеры
+## Examples
 
 ### Minimal Service
 
@@ -536,21 +536,21 @@ Key differences:
 - Reflection via `@connectum/reflection` package
 - Server state available via `server.state`
 
-## Документация
+## Documentation
 
 ### Getting Started
 
-- [Quick Start](../../docs/getting-started/quick-start.md) - Создание первого сервиса
+- [Quick Start](../../docs/getting-started/quick-start.md) - Create your first service
 
 ### Architecture
 
-- [Architecture Overview](../../docs/architecture/overview.md) - Общая архитектура
-- [Package Decomposition](../../docs/architecture/adr/003-package-decomposition.md) - ADR о структуре пакетов
+- [Architecture Overview](../../docs/architecture/overview.md) - Overall architecture
+- [Package Decomposition](../../docs/architecture/adr/003-package-decomposition.md) - ADR on package structure
 
 ### Guides
 
-- [Interceptors Guide](../../docs/guides/interceptors.md) - Работа с interceptors
-- [Observability Guide](../../docs/guides/observability.md) - Настройка OpenTelemetry
+- [Interceptors Guide](../../docs/guides/interceptors.md) - Working with interceptors
+- [Observability Guide](../../docs/guides/observability.md) - Setting up OpenTelemetry
 - [TLS Configuration](../../docs/guides/tls-configuration.md) - Production TLS setup
 
 ## Dependencies
@@ -566,11 +566,11 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 - `@bufbuild/protobuf` - Protocol Buffers runtime
 - `env-var` - Environment variables management
 
-## Требования
+## Requirements
 
-- **Node.js**: >=25.2.0 (для stable type stripping)
+- **Node.js**: >=25.2.0 (for stable type stripping)
 - **pnpm**: >=10.0.0
-- **TypeScript**: >=5.7.2 (для type checking)
+- **TypeScript**: >=5.7.2 (for type checking)
 
 ## License
 

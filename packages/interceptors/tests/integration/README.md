@@ -1,86 +1,86 @@
-# Integration Tests для @connectum/interceptors
+# Integration Tests for @connectum/interceptors
 
-## Обзор
+## Overview
 
-Этот каталог содержит интеграционные тесты для проверки взаимодействия между interceptors в реальных сценариях.
+This directory contains integration tests for verifying the interaction between interceptors in real-world scenarios.
 
-## Структура тестов
+## Test Structure
 
-### 1. `full-chain.test.ts` - Полная цепочка interceptors
+### 1. `full-chain.test.ts` - Full Interceptor Chain
 
-**Тесты:**
-- ✅ Обработка запроса через все interceptors успешно
-- ✅ Обработка ошибок через цепочку (retry с ResourceExhausted)
-- ✅ Соблюдение timeout в цепочке
-- ✅ Ограничения capacity bulkhead
-- ✅ Пропуск health check сервисов
+**Tests:**
+- Processing a request through all interceptors successfully
+- Error handling through the chain (retry with ResourceExhausted)
+- Timeout enforcement in the chain
+- Bulkhead capacity limits
+- Skipping health check services
 
-**Проверяемые interceptors:**
+**Tested interceptors:**
 - Logger
 - Retry
 - Timeout
 - Circuit Breaker
 - Bulkhead
 
-### 2. `resilience.test.ts` - Паттерны устойчивости
+### 2. `resilience.test.ts` - Resilience Patterns
 
-**Тесты:**
-- ✅ Retry + Circuit Breaker + Timeout (успешный retry)
-- ✅ Открытие circuit после threshold failures
-- ✅ Fallback при открытом circuit
-- ✅ Timeout без retry (DeadlineExceeded не retryable)
-- ✅ Комбинация всех resilience interceptors
-- ✅ Корректная обработка streaming запросов
+**Tests:**
+- Retry + Circuit Breaker + Timeout (successful retry)
+- Circuit opening after threshold failures
+- Fallback on open circuit
+- Timeout without retry (DeadlineExceeded is not retryable)
+- Combination of all resilience interceptors
+- Correct handling of streaming requests
 
-**Проверяемые паттерны:**
-- Retry с exponential backoff
-- Circuit Breaker с threshold
-- Timeout с deadline
-- Fallback для graceful degradation
+**Tested patterns:**
+- Retry with exponential backoff
+- Circuit Breaker with threshold
+- Timeout with deadline
+- Fallback for graceful degradation
 
-**Важные детали:**
-- Retry работает **только для Code.ResourceExhausted** (по дизайну)
-- DeadlineExceeded, Internal и другие errors **не retryable**
-- Circuit breaker открывается после threshold consecutive failures
-- Все resilience interceptors пропускают streaming по умолчанию
+**Important details:**
+- Retry works **only for Code.ResourceExhausted** (by design)
+- DeadlineExceeded, Internal and other errors are **not retryable**
+- Circuit breaker opens after threshold consecutive failures
+- All resilience interceptors skip streaming by default
 
-### 3. `security.test.ts` - Security interceptors
+### 3. `security.test.ts` - Security Interceptors
 
-**Тесты:**
-- ✅ Validation + Logger (без redact)
-- ✅ Reject invalid requests before processing
-- ✅ Redact utility functions (smoke test)
-- ✅ Graceful validation error handling
-- ✅ Skip streaming requests when configured
-- ✅ Logger без exposure sensitive data
-- ✅ Комбинированный порядок validation + logging
+**Tests:**
+- Validation + Logger (without redact)
+- Reject invalid requests before processing
+- Redact utility functions (smoke test)
+- Graceful validation error handling
+- Skip streaming requests when configured
+- Logger without exposing sensitive data
+- Combined order of validation + logging
 
-**Проверяемые interceptors:**
+**Tested interceptors:**
 - Validation (protovalidate)
 - Logger
-- Redact (smoke test только - requires real proto)
+- Redact (smoke test only - requires real proto)
 
-**Ограничения:**
-- Полное тестирование Redact требует реальных proto schemas с extensions
-- Текущие тесты - smoke tests для проверки API
+**Limitations:**
+- Full Redact testing requires real proto schemas with extensions
+- Current tests are smoke tests for API verification
 
-## Запуск тестов
+## Running Tests
 
 ```bash
-# Только integration tests
+# Integration tests only
 pnpm test:integration
 
-# Все тесты (unit + integration)
+# All tests (unit + integration)
 pnpm test
 
-# С coverage
+# With coverage
 pnpm test -- --experimental-test-coverage
 ```
 
-## Результаты
+## Results
 
 **Total tests:** 18 integration tests
-**Status:** ✅ All passing
+**Status:** All passing
 **Execution time:** ~400ms
 
 **Breakdown:**
@@ -88,21 +88,21 @@ pnpm test -- --experimental-test-coverage
 - Resilience Pattern Integration: 6 tests
 - Security Integration: 7 tests
 
-## Отличия от Unit Tests
+## Differences from Unit Tests
 
 **Unit tests:**
-- Тестируют отдельные interceptors в изоляции
-- Используют mocks для dependencies
-- Быстрое выполнение (<1s)
+- Test individual interceptors in isolation
+- Use mocks for dependencies
+- Fast execution (<1s)
 - 77 unit tests
 
 **Integration tests:**
-- Тестируют взаимодействие нескольких interceptors
-- Используют реальные компоненты (no mocks)
-- Проверяют end-to-end сценарии
+- Test interaction between multiple interceptors
+- Use real components (no mocks)
+- Verify end-to-end scenarios
 - 18 integration tests
 
-## Будущие улучшения
+## Future Improvements
 
 1. **Database Integration Tests** (Priority 2):
    - SQLite CRUD operations
@@ -110,7 +110,7 @@ pnpm test -- --experimental-test-coverage
    - Error recovery
 
 2. **OpenTelemetry Integration Tests** (Priority 3):
-   - Trace propagation через interceptor chain
+   - Trace propagation through interceptor chain
    - Metrics collection
    - OTLP export
 
@@ -120,14 +120,14 @@ pnpm test -- --experimental-test-coverage
    - Graceful shutdown
 
 4. **Redact Integration Tests**:
-   - Требуются реальные proto schemas с (integrity.attributes.sensitive) extension
-   - Проверка redaction в response messages
-   - Проверка rpcCheck для методов с use_sensitive
+   - Require real proto schemas with (integrity.attributes.sensitive) extension
+   - Verify redaction in response messages
+   - Verify rpcCheck for methods with use_sensitive
 
-## Примечания
+## Notes
 
-- Все interceptors поддерживают `skipStreaming: true` по умолчанию
-- Retry работает только с ResourceExhausted errors
-- Circuit breaker использует библиотеку Cockatiel
-- Timeout использует AbortController для cancellation
-- Mock requests должны иметь полную структуру (method.input, method.output)
+- All interceptors support `skipStreaming: true` by default
+- Retry works only with ResourceExhausted errors
+- Circuit breaker uses the Cockatiel library
+- Timeout uses AbortController for cancellation
+- Mock requests must have full structure (method.input, method.output)

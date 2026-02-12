@@ -1,12 +1,12 @@
 # Contributing to Connectum
 
-Спасибо за ваш интерес к Connectum! Мы приветствуем вклад от сообщества.
+Thank you for your interest in Connectum! We welcome contributions from the community.
 
-## Содержание
+## Table of Contents
 
 1. [Code of Conduct](#code-of-conduct)
-2. [Как я могу помочь?](#как-я-могу-помочь)
-3. [Процесс разработки](#процесс-разработки)
+2. [How Can I Help?](#how-can-i-help)
+3. [Development Process](#development-process)
 4. [Pull Request Process](#pull-request-process)
 5. [Code Style](#code-style)
 6. [Commit Messages](#commit-messages)
@@ -16,53 +16,53 @@
 
 ## Code of Conduct
 
-Этот проект придерживается [Contributor Covenant Code of Conduct](./CODE_OF_CONDUCT.md). Участвуя, вы обязуетесь соблюдать его условия.
+This project adheres to the [Contributor Covenant Code of Conduct](./CODE_OF_CONDUCT.md). By participating, you agree to uphold its terms.
 
-## Как я могу помочь?
+## How Can I Help?
 
 ### Reporting Bugs
 
-Если вы нашли баг:
+If you found a bug:
 
-1. **Проверьте existing issues** - возможно, проблема уже известна
-2. **Создайте detailed issue** с:
-   - Описанием проблемы
-   - Шагами для воспроизведения
-   - Ожидаемым поведением
-   - Актуальным поведением
-   - Версией Node.js, пакетов, ОС
-   - Минимальным воспроизводимым примером (если возможно)
+1. **Check existing issues** - the problem may already be known
+2. **Create a detailed issue** with:
+   - Problem description
+   - Steps to reproduce
+   - Expected behavior
+   - Actual behavior
+   - Node.js version, package versions, OS
+   - Minimal reproducible example (if possible)
 
 ### Suggesting Enhancements
 
-Идеи для улучшений приветствуются:
+Enhancement ideas are welcome:
 
-1. **Проверьте existing issues и ADRs** - возможно, это уже обсуждалось
-2. **Создайте enhancement issue** с:
-   - Описанием предложения
+1. **Check existing issues and ADRs** - it may have already been discussed
+2. **Create an enhancement issue** with:
+   - Proposal description
    - Use cases
-   - Примерами API/использования
-   - Альтернативами и trade-offs
+   - API/usage examples
+   - Alternatives and trade-offs
 
 ### Contributing Code
 
-1. **Найдите issue для работы** - проверьте issues с метками `good first issue` или `help wanted`
-2. **Обсудите перед началом** - особенно для больших изменений
-3. **Follow development process** - см. ниже
+1. **Find an issue to work on** - check issues labeled `good first issue` or `help wanted`
+2. **Discuss before starting** - especially for large changes
+3. **Follow the development process** - see below
 
-## Процесс разработки
+## Development Process
 
 ### Prerequisites
 
-- **Node.js**: ≥25.2.0 (для stable type stripping)
+- **Node.js**: ≥25.2.0 (for stable type stripping)
 - **pnpm**: ≥10.0.0
 - **Git**: Latest version
-- **protoc**: Latest version (для proto generation)
+- **protoc**: Latest version (for proto generation)
 
 ### Setup Development Environment
 
 ```bash
-# 1. Fork repository на GitHub
+# 1. Fork the repository on GitHub
 
 # 2. Clone your fork
 git clone https://github.com/YOUR_USERNAME/connectum.git
@@ -131,17 +131,17 @@ git push origin feature/my-feature --force-with-lease
 
 ### Before Creating PR
 
-1. **Update from main** - rebase your branch на latest main
+1. **Update from main** - rebase your branch on latest main
 2. **Run all checks** - typecheck, lint, test
 3. **Update documentation** - README, JSDoc, guides
-4. **Add tests** - для new functionality
-5. **Update CHANGELOG** - используя Changesets
+4. **Add tests** - for new functionality
+5. **Update CHANGELOG** - using Changesets
 
 ### Creating PR
 
-1. **Use clear title** - следуйте [Conventional Commits](#commit-messages)
+1. **Use clear title** - follow [Conventional Commits](#commit-messages)
 2. **Fill PR template** - provide context, testing notes
-3. **Link related issues** - использовать `Closes #123` или `Relates to #456`
+3. **Link related issues** - use `Closes #123` or `Relates to #456`
 4. **Request reviewers** - tag relevant maintainers
 
 ### PR Title Format
@@ -198,25 +198,25 @@ How has this been tested?
 
 ### Review Process
 
-1. **Automated checks** - CI должен pass (typecheck, lint, test)
-2. **Code review** - как минимум 1 approval от maintainer
+1. **Automated checks** - CI must pass (typecheck, lint, test)
+2. **Code review** - at least 1 approval from a maintainer
 3. **Address feedback** - respond to review comments, make changes
-4. **Final approval** - maintainer approves и merges
+4. **Final approval** - maintainer approves and merges
 
 ## Code Style
 
 ### TypeScript Conventions
 
-Мы используем **Biome** для linting и formatting. Конфигурация в `biome.json`.
+We use **Biome** for linting and formatting. Configuration is in `biome.json`.
 
 #### Key Rules
 
-1. **Native TypeScript** - используем stable type stripping (Node.js 25.2.0+)
-   - ❌ No `enum` - используйте `const` objects с `as const`
-   - ❌ No `namespace` с runtime code
+1. **Native TypeScript** - using stable type stripping (Node.js 25.2.0+)
+   - ❌ No `enum` - use `const` objects with `as const`
+   - ❌ No `namespace` with runtime code
    - ❌ No parameter properties
    - ✅ Explicit `import type` required
-   - ✅ `.js` extensions в import paths
+   - ✅ `.js` extensions in import paths
 
 2. **Import Order**
    ```typescript
@@ -239,7 +239,7 @@ How has this been tested?
    - **UPPER_SNAKE_CASE**: Constants
    - **kebab-case**: File names (except index.ts, types.ts)
 
-4. **Named Parameters** - prefer для options:
+4. **Named Parameters** - preferred for options:
    ```typescript
    // ✅ Good
    async function sleep(options: {
@@ -251,7 +251,7 @@ How has this been tested?
    async function sleep(interval: number, multiplier?: number): Promise<void>
    ```
 
-5. **JSDoc Comments** - для public API:
+5. **JSDoc Comments** - for public API:
    ```typescript
    /**
     * Retry function with exponential backoff.
@@ -284,11 +284,11 @@ pnpm format
 pnpm --filter @connectum/core lint
 ```
 
-Полный Code Style Guide: [docs/development/code-style.md](./docs/development/code-style.md)
+Full Code Style Guide: [docs/development/code-style.md](./docs/development/code-style.md)
 
 ## Commit Messages
 
-Мы используем **Conventional Commits** specification.
+We use the **Conventional Commits** specification.
 
 ### Format
 
@@ -349,7 +349,7 @@ See migration guide for details.
 
 ### Breaking Changes
 
-Для breaking changes:
+For breaking changes:
 
 ```
 feat(runner)!: change RunnerOptions API
@@ -389,7 +389,7 @@ pnpm test -- --watch
 
 ### Writing Tests
 
-Используем **Node.js native test runner** (no Jest, Mocha, etc.).
+We use the **Node.js native test runner** (no Jest, Mocha, etc.).
 
 #### Test Structure
 
@@ -433,11 +433,11 @@ describe("myFunction", () => {
 
 - **Describe block**: Function/class name
 - **Test case**: `should [expected behavior]`
-- **File name**: `*.test.ts` рядом с source file
+- **File name**: `*.test.ts` next to the source file
 
 #### Assertions
 
-Используем `node:assert`:
+We use `node:assert`:
 
 ```typescript
 import assert from "node:assert";
@@ -461,7 +461,7 @@ assert.strictEqual(typeof value, "string");
 
 ### Test Coverage
 
-Минимальный coverage:
+Minimum coverage:
 
 - **Unit tests**: ≥80% coverage
 - **Integration tests**: Critical paths covered
@@ -482,10 +482,10 @@ assert.strictEqual(typeof value, "string");
 
 #### README Template
 
-См. existing package READMEs для template.
+See existing package READMEs for a template.
 
 Key sections:
-- Title и description
+- Title and description
 - Installation
 - Quick start
 - Main exports/API
@@ -534,28 +534,28 @@ export async function retry<T>(options: RetryOptions): Promise<T>
 
 #### Updating Documentation
 
-При изменении code:
+When changing code:
 
-1. **Update JSDoc** - для changed functions/types
-2. **Update README** - если изменился public API
-3. **Update guides** - если изменился usage pattern
-4. **Add examples** - для new features
-5. **Create ADR** - для significant architectural changes
+1. **Update JSDoc** - for changed functions/types
+2. **Update README** - if the public API changed
+3. **Update guides** - if the usage pattern changed
+4. **Add examples** - for new features
+5. **Create ADR** - for significant architectural changes
 
 ### Documentation Review
 
 Documentation changes:
 
-- Должны быть clear и concise
-- Должны включать working examples
-- Должны быть accurate (tested examples)
-- Должны follow consistent style
+- Must be clear and concise
+- Must include working examples
+- Must be accurate (tested examples)
+- Must follow consistent style
 
 ## Community
 
 ### Getting Help
 
-- **GitHub Discussions** - Вопросы, идеи, обсуждения
+- **GitHub Discussions** - Questions, ideas, discussions
 - **GitHub Issues** - Bugs, feature requests
 - **Pull Requests** - Code contributions
 
@@ -563,7 +563,7 @@ Documentation changes:
 
 - **Be respectful** - Follow Code of Conduct
 - **Be clear** - Provide context, examples
-- **Be patient** - Maintainers volunteer их время
+- **Be patient** - Maintainers volunteer their time
 - **Search first** - Check existing issues/discussions
 
 ## License
@@ -574,4 +574,4 @@ By contributing, you agree that your contributions will be licensed under the pr
 
 **Thank you for contributing to Connectum!**
 
-Если у вас есть вопросы о процессе contribution, создайте discussion в GitHub Discussions.
+If you have questions about the contribution process, create a discussion in GitHub Discussions.

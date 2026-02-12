@@ -3,27 +3,27 @@
 "@connectum/otel": patch
 ---
 
-refactor: удалён пакет @connectum/utilities
+refactor: removed @connectum/utilities package
 
-**BREAKING**: Пакет `@connectum/utilities` полностью удалён из монорепозитория.
+**BREAKING**: The `@connectum/utilities` package has been completely removed from the monorepo.
 
-Причины удаления:
-- 0 реальных потребителей — ни один пакет не импортировал utilities
-- Все функции имели лучшие альтернативы (Node.js built-ins или battle-tested npm пакеты)
-- 2 критических бага: утечка таймера в withTimeout, сломанный LRU cache (FIFO вместо LRU)
-- 6 из 9 модулей без тестов
+Reasons for removal:
+- 0 real consumers — no package imported utilities
+- All functions had better alternatives (Node.js built-ins or battle-tested npm packages)
+- 2 critical bugs: timer leak in withTimeout, broken LRU cache (FIFO instead of LRU)
+- 6 out of 9 modules had no tests
 
-Таблица замен:
-- `retry()` → `cockatiel` (уже в проекте)
+Replacement table:
+- `retry()` → `cockatiel` (already in the project)
 - `sleep()` → `import { setTimeout } from 'node:timers/promises'`
 - `withTimeout()` → `AbortSignal.timeout(ms)` (Node.js built-in)
 - `LRUCache` → `lru-cache` npm
 - `safeStringify()` → `safe-stable-stringify` npm
-- `Observable` → `EventEmitter` из `node:events`
-- `Monitor` → `events.on()` из `node:events`
+- `Observable` → `EventEmitter` from `node:events`
+- `Monitor` → `events.on()` from `node:events`
 
-Перемещения:
+Relocated:
 - `ConnectumEnvSchema`, `parseEnvConfig`, `safeParseEnvConfig` → `@connectum/core/config`
 
-Другие изменения:
-- `@connectum/otel`: удалена phantom dependency на utilities (не использовалась)
+Other changes:
+- `@connectum/otel`: removed phantom dependency on utilities (was not used)

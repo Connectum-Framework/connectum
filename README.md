@@ -1,36 +1,40 @@
 # Connectum
 
-> Универсальный фреймворк для создания production-ready gRPC/ConnectRPC микросервисов на Node.js 25+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Connectum-Framework/docs/main/assets/splash.png" alt="Connectum Framework" />
+</p>
+
+> Universal framework for building production-ready gRPC/ConnectRPC microservices on Node.js 25+
 
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D25.2.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Native-blue)](https://nodejs.org/api/typescript.html)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Alpha Release](https://img.shields.io/badge/release-v0.2.0--alpha.1-orange)](https://github.com/Connectum-Framework/connectum/releases/tag/v0.2.0-alpha.2)
 
-## Особенности
+## Features
 
-- **Native TypeScript** - stable type stripping в Node.js 25.2.0+ без build step
-- **Zero Configuration** - работает из коробки с разумными defaults
-- **Production Ready** - встроенная observability, health checks, graceful shutdown
-- **Type Safe** - полная типизация без `any`
-- **Modular** - выбирайте только нужные компоненты
-- **Extensible** - гибкая система interceptors
-- **Explicit Lifecycle** - полный контроль над жизненным циклом сервера
+- **Native TypeScript** - stable type stripping in Node.js 25.2.0+ with no build step
+- **Zero Configuration** - works out of the box with sensible defaults
+- **Production Ready** - built-in observability, health checks, graceful shutdown
+- **Type Safe** - full type coverage without `any`
+- **Modular** - pick only the components you need
+- **Extensible** - flexible interceptor system
+- **Explicit Lifecycle** - full control over the server lifecycle
 
-## Быстрый старт
+## Quick Start
 
-### Требования
+### Requirements
 
-- **Node.js**: >=25.2.0 (для stable type stripping)
+- **Node.js**: >=25.2.0 (for stable type stripping)
 - **pnpm**: >=10
 
-### Установка
+### Installation
 
 ```bash
 pnpm add @connectum/core
 ```
 
-### Минимальный пример
+### Minimal Example
 
 ```typescript
 // src/index.ts
@@ -45,7 +49,7 @@ const server = createServer({
 await server.start();
 ```
 
-### Production пример
+### Production Example
 
 ```typescript
 import { createServer, ServingStatus } from '@connectum/core';
@@ -87,7 +91,7 @@ server.on('stop', () => {
 await server.start();
 ```
 
-### Запуск
+### Running
 
 ```bash
 # Native TypeScript execution (no build step!)
@@ -97,26 +101,26 @@ node src/index.ts
 node --watch src/index.ts
 ```
 
-## Пакеты
+## Packages
 
-Connectum организован в 4 модульных пакетов:
+Connectum is organized into 4 modular packages:
 
-| Пакет | Описание | Layer |
-|-------|----------|-------|
+| Package | Description | Layer |
+|---------|-------------|-------|
 | [`@connectum/otel`](packages/otel) | OpenTelemetry instrumentation | 0 |
 | [`@connectum/interceptors`](packages/interceptors) | ConnectRPC interceptors | 1 |
 | [`@connectum/core`](packages/core) | Main server factory + protocols | 2 |
 | [`@connectum/testing`](packages/testing) | Testing utilities | 3 |
 
-## Документация
+## Documentation
 
-- **[Полная документация](https://github.com/Connectum-Framework/docs)** - Все разделы документации
-- **[Быстрый старт](https://github.com/Connectum-Framework/docs/blob/main/guide/getting-started/quick-start.md)** - Создание первого сервиса за 5 минут
-- **[Миграция с @labeling/utils](https://github.com/Connectum-Framework/docs/blob/main/guide/migration/from-labeling-utils.md)** - Руководство по миграции
-- **[Architecture Decision Records](https://github.com/Connectum-Framework/docs/blob/main/contributing/adr/)** - Архитектурные решения
-- **[API Reference](https://github.com/Connectum-Framework/docs/blob/main/guide/api/)** - Полная API документация
+- **[Full Documentation](https://github.com/Connectum-Framework/docs)** - All documentation sections
+- **[Quick Start](https://github.com/Connectum-Framework/docs/blob/main/guide/getting-started/quick-start.md)** - Create your first service in 5 minutes
+- **[Migration from @labeling/utils](https://github.com/Connectum-Framework/docs/blob/main/guide/migration/from-labeling-utils.md)** - Migration guide
+- **[Architecture Decision Records](https://github.com/Connectum-Framework/docs/blob/main/contributing/adr/)** - Architectural decisions
+- **[API Reference](https://github.com/Connectum-Framework/docs/blob/main/guide/api/)** - Full API documentation
 
-## Архитектура
+## Architecture
 
 ```
 Layer 0: Independent Core
@@ -133,13 +137,13 @@ Layer 3: Development Tools
   └── testing         # Testing utilities
 ```
 
-Подробнее: [Архитектурный обзор](https://github.com/Connectum-Framework/docs/blob/main/contributing/architecture/overview.md)
+More details: [Architecture Overview](https://github.com/Connectum-Framework/docs/blob/main/contributing/architecture/overview.md)
 
 ## Server API
 
 ### createServer()
 
-Основная фабричная функция для создания сервера:
+Main factory function for creating a server:
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -204,71 +208,71 @@ interface Server extends EventEmitter {
 
 ```typescript
 server.on('start', () => {
-  // Server начинает запуск
+  // Server is starting up
 });
 
 server.on('ready', () => {
-  // Server готов принимать connections
+  // Server is ready to accept connections
   server.health.update(ServingStatus.SERVING);
 });
 
 server.on('stop', () => {
-  // Server остановлен
+  // Server has stopped
 });
 
 server.on('error', (error: Error) => {
-  // Ошибка сервера
+  // Server error
   console.error(error);
 });
 ```
 
-## Примеры
+## Examples
 
-Примеры использования вынесены в отдельный репозиторий: **[Connectum-Framework/examples](https://github.com/Connectum-Framework/examples)**
+Usage examples are maintained in a separate repository: **[Connectum-Framework/examples](https://github.com/Connectum-Framework/examples)**
 
-- **basic-service** - минимальный greeter сервис
-- **performance-test-server** - сервер для k6 бенчмарков
+- **basic-service** - minimal greeter service
+- **performance-test-server** - server for k6 benchmarks
 - **production-ready** - production deployment template (WIP)
-- **with-custom-interceptor** - пример кастомных interceptors (WIP)
+- **with-custom-interceptor** - custom interceptors example (WIP)
 
-## Разработка
+## Development
 
-### Настройка окружения
+### Environment Setup
 
 ```bash
-# Клонировать репозиторий
+# Clone the repository
 git clone https://github.com/Connectum-Framework/connectum.git
 cd connectum
 
-# Установить зависимости
+# Install dependencies
 pnpm install
 
-# Генерация proto файлов
+# Generate proto files
 pnpm run build:proto
 
-# Запуск тестов
+# Run tests
 pnpm test
 ```
 
-Подробнее: [Development Setup](https://github.com/Connectum-Framework/docs/blob/main/contributing/development/development-setup.md)
+More details: [Development Setup](https://github.com/Connectum-Framework/docs/blob/main/contributing/development/development-setup.md)
 
-### Структура репозитория
+### Repository Structure
 
 ```
 connectum/
-├── packages/          # 5 пакетов фреймворка
+├── packages/          # 5 framework packages
 └── .husky/            # Git hooks (commitlint, biome)
 ```
 
-Связанные репозитории:
-- **[docs](https://github.com/Connectum-Framework/docs)** - Документация
-- **[examples](https://github.com/Connectum-Framework/examples)** - Примеры использования
+Related repositories:
+- **[docs](https://github.com/Connectum-Framework/docs)** - Documentation
+- **[examples](https://github.com/Connectum-Framework/examples)** - Usage examples
 
-## Статус проекта
+## Project Status
 
-**Текущий релиз**: v0.2.0-alpha.2 (Alpha)
+**Current release**: v0.2.0-alpha.2 (Alpha)
 
-### Завершено
+### Completed
 
 - Native TypeScript support (Node.js 25.2.0+)
 - 5-package modular architecture
@@ -280,32 +284,32 @@ connectum/
 - Resilience interceptors (circuit breaker, timeout, bulkhead, fallback)
 - Comprehensive documentation
 
-### В разработке
+### In Progress
 
-- Beta testing с реальными сервисами
-- Дополнительные примеры
+- Beta testing with real services
+- Additional examples
 - Plugin system
 
-## Участие в разработке
+## Contributing
 
-Мы приветствуем contributions! См. [CONTRIBUTING.md](CONTRIBUTING.md)
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md)
 
-### Быстрые ссылки
+### Quick Links
 
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Development Setup](https://github.com/Connectum-Framework/docs/blob/main/contributing/development/development-setup.md)
 - [Architecture Decision Records](https://github.com/Connectum-Framework/docs/blob/main/contributing/adr/)
 
-## Лицензия
+## License
 
 Apache License 2.0 - see [LICENSE](LICENSE) file for details.
 
-## Благодарности
+## Acknowledgments
 
-Connectum - это эволюция [@labeling/utils](https://github.com/AnyLabel/Integrity), переработанная в универсальный фреймворк.
+Connectum is an evolution of [@labeling/utils](https://github.com/AnyLabel/Integrity), redesigned as a universal framework.
 
 ---
 
-**Connectum** - универсальный фреймворк для production-ready gRPC/ConnectRPC микросервисов на Node.js 25+.
+**Connectum** - universal framework for production-ready gRPC/ConnectRPC microservices on Node.js 25+.
 
 Built with care by [Highload.Zone](https://highload.zone)
