@@ -1,0 +1,66 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.2.5/schema.json",
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 4,
+    "include": ["**"],
+    "ignore": ["**/node_modules", "**/gen", "**/gen-ts", "**/*.test.*", "**/tsconfig*.json"],
+    "lineWidth": 180
+  },
+  "javascript": {
+    "formatter": {
+      "arrowParentheses": "always",
+      "bracketSameLine": false,
+      "bracketSpacing": true,
+      "quoteProperties": "asNeeded",
+      "semicolons": "always",
+      "lineEnding": "lf",
+      "lineWidth": 180
+    }
+  },
+  "json": {
+    "formatter": {
+      "indentStyle": "space",
+      "lineWidth": 180,
+      "indentWidth": 2,
+      "trailingCommas": "none"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "include": ["**"],
+    "ignore": ["**/node_modules", "**/gen", "**/gen-ts", "**/*.test.*", "**/tsconfig*.json", "packages/utils/**", "packages/code-provider/**"],
+    "rules": {
+      "correctness": {
+        "noUnusedVariables": {
+          "level": "warn"
+        },
+        "noUnusedFunctionParameters": {
+          "level": "warn"
+        },
+        "useImportExtensions": {
+          "level": "warn"
+        }
+      },
+      "recommended": true,
+      "complexity": {},
+      "performance": {},
+      "security": {},
+      "suspicious": {
+        "noConsole": {
+          "options": {
+            "allow": ["debug", "log", "error", "info", "warn", "time", "timeEnd"]
+          },
+          "level": "warn"
+        }
+      }
+    }
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "defaultBranch": "main"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    // Type checking only (no emit)
+    "noEmit": true,
+
+    // Native TypeScript execution (Node.js 25.2.0+)
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true, // Allows .ts extensions in imports (for type checker)
+    "rewriteRelativeImportExtensions": true, // Rewrites imports for runtime compatibility
+    "erasableSyntaxOnly": true, // Prevents non-erasable syntax (enum, namespace, etc.)
+    "verbatimModuleSyntax": true, // Requires explicit 'import type'
+
+    // Strict type checking
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Interop
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    // Project references
+    "composite": false,
+    "incremental": false,
+
+    // Advanced
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Path mapping (for workspace packages)
+    "baseUrl": ".",
+    "paths": {
+      "@connectum/otel": ["./packages/otel/src"],
+      "@connectum/interceptors": ["./packages/interceptors/src"],
+      "@connectum/core": ["./packages/core/src"],
+      "@connectum/healthcheck": ["./packages/healthcheck/src"],
+      "@connectum/reflection": ["./packages/reflection/src"],
+      "@connectum/testing": ["./packages/testing/src"],
+      "@connectum/cli": ["./packages/cli/src"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"],
+  "exclude": ["node_modules", "**/node_modules", "**/gen", "**/dist"]
+}

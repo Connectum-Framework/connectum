@@ -1,0 +1,67 @@
+{
+  "name": "@connectum/otel",
+  "version": "1.0.0-beta.2",
+  "description": "OpenTelemetry instrumentation for Connectum",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./interceptor": "./src/interceptor.ts",
+    "./client-interceptor": "./src/client-interceptor.ts",
+    "./shared": "./src/shared.ts",
+    "./tracer": "./src/tracer.ts",
+    "./meter": "./src/meter.ts",
+    "./logger": "./src/logger.ts",
+    "./traced": "./src/traced.ts",
+    "./traceAll": "./src/traceAll.ts",
+    "./attributes": "./src/attributes.ts",
+    "./metrics": "./src/metrics.ts",
+    "./provider": "./src/provider.ts"
+  },
+  "files": ["src"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/otel"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "clean": "rm -rf coverage"
+  },
+  "keywords": ["opentelemetry", "tracing", "metrics", "logging", "connectum", "observability"],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=25.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/api-logs": "catalog:",
+    "@opentelemetry/exporter-trace-otlp-http": "catalog:",
+    "@opentelemetry/exporter-trace-otlp-grpc": "catalog:",
+    "@opentelemetry/exporter-metrics-otlp-http": "catalog:",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "catalog:",
+    "@opentelemetry/exporter-logs-otlp-http": "catalog:",
+    "@opentelemetry/exporter-logs-otlp-grpc": "catalog:",
+    "@opentelemetry/resources": "catalog:",
+    "@opentelemetry/sdk-logs": "catalog:",
+    "@opentelemetry/sdk-metrics": "catalog:",
+    "@opentelemetry/sdk-trace-node": "catalog:",
+    "@opentelemetry/semantic-conventions": "catalog:",
+    "env-var": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "c8": "catalog:",
+    "typescript": "catalog:"
+  }
+}

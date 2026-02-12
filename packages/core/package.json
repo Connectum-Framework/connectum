@@ -1,0 +1,49 @@
+{
+  "name": "@connectum/core",
+  "version": "1.0.0-beta.2",
+  "description": "Main server factory with protocol plugin system for Connectum",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./config": "./src/config/index.ts"
+  },
+  "files": ["src"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/core"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "clean": "rm -rf coverage"
+  },
+  "keywords": ["connectum", "connectrpc", "grpc", "server", "protocols", "lifecycle"],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=25.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
+    "env-var": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "c8": "catalog:",
+    "typescript": "catalog:"
+  }
+}

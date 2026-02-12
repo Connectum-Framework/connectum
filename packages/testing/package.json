@@ -1,0 +1,44 @@
+{
+  "name": "@connectum/testing",
+  "version": "1.0.0-beta.2",
+  "description": "Testing utilities for Connectum",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/testing"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "clean": "rm -rf coverage"
+  },
+  "keywords": ["testing", "connectum", "test-utilities", "mocks"],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=25.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@connectum/core": "workspace:^",
+    "@connectrpc/connect": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "c8": "catalog:",
+    "typescript": "catalog:"
+  }
+}

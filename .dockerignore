@@ -1,0 +1,17 @@
+.idea/
+.vscode/
+**.log
+.pnpm-debug.log*
+.node_repl_history
+*.tgz
+**/.env*
+.vscode-test
+.git/
+.gitignore
+**.md
+node_modules/
+eventcatalog/
+**/node_modules/
+**/gen/
+storage.db
+.npmrc

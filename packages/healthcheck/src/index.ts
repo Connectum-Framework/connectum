@@ -1,0 +1,46 @@
+/**
+ * @connectum/healthcheck
+ *
+ * Healthcheck protocol for Connectum framework.
+ *
+ * Provides:
+ * - Healthcheck: Factory to create healthcheck protocol registration
+ * - healthcheckManager: Default singleton manager for controlling health status
+ * - createHealthcheckManager: Factory to create isolated manager instances
+ * - HealthcheckManager: Class for health status management
+ * - HTTP health endpoints (/healthz, /readyz)
+ * - ServingStatus: gRPC health check serving status values
+ *
+ * @module @connectum/healthcheck
+ */
+
+// Factory + Singleton manager
+export { Healthcheck, healthcheckManager } from "./Healthcheck.ts";
+
+// Manager class + factory
+export { HealthcheckManager } from "./HealthcheckManager.ts";
+
+/**
+ * Create a new isolated HealthcheckManager instance
+ *
+ * Useful for testing or running multiple servers in one process,
+ * avoiding shared state via the default singleton.
+ *
+ * @example
+ * ```typescript
+ * import { Healthcheck, createHealthcheckManager, ServingStatus } from '@connectum/healthcheck';
+ *
+ * const manager = createHealthcheckManager();
+ * const server = createServer({
+ *   protocols: [Healthcheck({ manager })],
+ * });
+ * manager.update(ServingStatus.SERVING);
+ * ```
+ */
+export { createHealthcheckManager } from "./HealthcheckManager.ts";
+
+// HTTP handler
+export { createHttpHealthHandler, parseServiceFromUrl } from "./httpHandler.ts";
+
+// Types
+export { ServingStatus, type ServiceStatus, type HealthcheckOptions } from "./types.ts";

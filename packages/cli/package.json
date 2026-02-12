@@ -1,0 +1,53 @@
+{
+  "name": "@connectum/cli",
+  "version": "1.0.0-beta.2",
+  "description": "CLI tools for Connectum framework: proto sync, service discovery",
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "connectum": "./src/index.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./commands/proto-sync": "./src/commands/proto-sync.ts",
+    "./utils/reflection": "./src/utils/reflection.ts"
+  },
+  "files": ["src"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/cli"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "test:integration": "node --test tests/integration/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "clean": "rm -rf coverage"
+  },
+  "keywords": ["cli", "connectum", "connectrpc", "grpc", "proto-sync", "reflection"],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=25.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
+    "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
+    "citty": "^0.1.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@bufbuild/buf": "catalog:",
+    "@connectum/core": "workspace:^",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "@connectum/cli": "0.2.0-beta.1",
+    "@connectum/core": "0.2.0-beta.1",
+    "@connectum/healthcheck": "0.2.0-beta.1",
+    "@connectum/interceptors": "0.2.0-beta.1",
+    "@connectum/otel": "0.2.0-beta.1",
+    "@connectum/reflection": "0.2.0-beta.1",
+    "@connectum/testing": "0.2.0-beta.1"
+  },
+  "changesets": ["code-review-fixes", "remove-utilities-package"]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
+  "globalDependencies": ["tsconfig.json", "tsconfig.*.json"],
+  "tasks": {
+    "build:proto": {
+      "inputs": ["proto/**/*.proto", "buf.yaml", "buf.gen.yaml", "tsconfig.build.json"],
+      "outputs": ["gen/**", "gen-ts/**"],
+      "cache": true
+    },
+    "buf:lint": {
+      "inputs": ["proto/**/*.proto", "buf.yaml"],
+      "outputs": [],
+      "cache": true
+    },
+    "buf:breaking": {
+      "outputs": [],
+      "cache": false
+    },
+    "typecheck": {
+      "dependsOn": [],
+      "outputs": [],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["typecheck"],
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "test:unit": {
+      "dependsOn": ["typecheck"],
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "test:integration": {
+      "dependsOn": ["typecheck"],
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "lint": {
+      "outputs": [],
+      "cache": true
+    },
+    "format": {
+      "outputs": [],
+      "cache": false
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "clean": {
+      "cache": false
+    }
+  }
+}
