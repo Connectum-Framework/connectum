@@ -2,34 +2,34 @@
 
 OpenTelemetry instrumentation for Connectum.
 
-**@connectum/otel** - это комплексное решение для observability с использованием OpenTelemetry. Предоставляет distributed tracing, metrics collection, и structured logging из коробки.
+**@connectum/otel** is a comprehensive observability solution using OpenTelemetry. Provides distributed tracing, metrics collection, and structured logging out of the box.
 
-## Возможности
+## Features
 
-- **Server Interceptor**: `createOtelInterceptor()` -- серверный tracing + metrics для ConnectRPC
-- **Client Interceptor**: `createOtelClientInterceptor()` -- клиентский tracing + metrics с context propagation
-- **Deep Tracing**: `traced()` и `traceAll()` -- инструментация бизнес-логики
+- **Server Interceptor**: `createOtelInterceptor()` -- server-side tracing + metrics for ConnectRPC
+- **Client Interceptor**: `createOtelClientInterceptor()` -- client-side tracing + metrics with context propagation
+- **Deep Tracing**: `traced()` and `traceAll()` -- business logic instrumentation
 - **Logging**: `getLogger(name, options?)` -- structured logging with convenience methods and raw OTel access
 - **Standalone API**: `getTracer()`, `getMeter()` -- lazy singletons
-- **OTel Semantic Conventions**: Атрибуты по стандартам OpenTelemetry RPC
-- **OTLP Exporters**: Встроенная поддержка OTLP HTTP/gRPC exporters
-- **Console Exporters**: Debug exporters для development
-- **Environment Configuration**: Конфигурация через environment variables
+- **OTel Semantic Conventions**: Attributes following OpenTelemetry RPC standards
+- **OTLP Exporters**: Built-in OTLP HTTP/gRPC exporter support
+- **Console Exporters**: Debug exporters for development
+- **Environment Configuration**: Configuration via environment variables
 - **Provider Management**: `initProvider()` / `shutdownProvider()`
 
-## Установка
+## Installation
 
 ```bash
 pnpm add @connectum/otel
 ```
 
-**Peer dependencies** (устанавливаются автоматически):
+**Peer dependencies** (installed automatically):
 
 ```bash
 pnpm add @opentelemetry/api @opentelemetry/sdk-node
 ```
 
-## Быстрый старт
+## Quick Start
 
 ### Basic usage
 
@@ -63,7 +63,7 @@ logger.error("Request failed", { error: "timeout" });
 logger.debug("Processing details", { step: 3 });
 ```
 
-### С context propagation
+### With context propagation
 
 ```typescript
 import { getTracer } from "@connectum/otel";
@@ -235,13 +235,13 @@ const interceptor = createOtelInterceptor({
 
 ### createOtelClientInterceptor() (Client)
 
-ConnectRPC interceptor for outgoing calls — tracing + metrics:
+ConnectRPC interceptor for outgoing calls -- tracing + metrics:
 
 ```typescript
 import { createOtelClientInterceptor } from "@connectum/otel";
 
 const interceptor = createOtelClientInterceptor({
-  serverAddress: string;              // REQUIRED — target server address
+  serverAddress: string;              // REQUIRED -- target server address
   serverPort?: number;                // Target server port
   withoutTracing?: boolean;           // Disable tracing (metrics only)
   withoutMetrics?: boolean;           // Disable metrics (tracing only)
@@ -290,7 +290,7 @@ const span = tracer.startSpan("operation-name", {
   },
 });
 
-// Start active span (с context propagation)
+// Start active span (with context propagation)
 await tracer.startActiveSpan("operation", async (span) => {
   // Your code here
   span.end();
@@ -553,9 +553,9 @@ type BatchSpanProcessorOptions = {
 
 - `OTEL_NODE_DISABLED_INSTRUMENTATIONS` - Comma-separated list of disabled instrumentations
 
-## Примеры
+## Examples
 
-### Полный setup с createServer
+### Full setup with createServer
 
 ```typescript
 import { createServer, ServingStatus } from "@connectum/core";
@@ -663,7 +663,7 @@ const transport = createConnectTransport({
 const userClient = createClient(UserService, transport);
 
 // Trace context is automatically propagated:
-// Server span (incoming) → Client span (outgoing) → Service B server span
+// Server span (incoming) -> Client span (outgoing) -> Service B server span
 const user = await userClient.getUser({ id: "123" });
 ```
 
@@ -698,7 +698,7 @@ await repository.findById("123");
 // - function.args: '["123"]'
 ```
 
-## Документация
+## Documentation
 
 ### Getting Started
 
@@ -706,13 +706,13 @@ await repository.findById("123");
 
 ### Architecture
 
-- [Architecture Overview](../../docs/architecture/overview.md) - Общая архитектура
+- [Architecture Overview](../../docs/architecture/overview.md) - Overall architecture
 - [Observability Design](../../docs/architecture/observability-design.md) - Observability patterns
 
 ### Guides
 
 - [Observability Guide](../../docs/guides/observability.md) - Best practices
-- [Custom Metrics](../../docs/guides/custom-metrics.md) - Создание custom metrics
+- [Custom Metrics](../../docs/guides/custom-metrics.md) - Creating custom metrics
 - [Distributed Tracing](../../docs/guides/distributed-tracing.md) - Tracing across services
 
 ## Dependencies
@@ -730,10 +730,10 @@ await repository.findById("123");
 - `@opentelemetry/exporter-metrics-otlp-http` - OTLP metrics exporter
 - `env-var` - Environment variables
 
-## Требования
+## Requirements
 
-- **Node.js**: ≥25.2.0 (для stable type stripping)
-- **TypeScript**: ≥5.7.2 (для type checking)
+- **Node.js**: >=25.2.0 (for stable type stripping)
+- **TypeScript**: >=5.7.2 (for type checking)
 
 ## License
 

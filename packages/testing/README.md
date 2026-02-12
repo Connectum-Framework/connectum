@@ -2,19 +2,19 @@
 
 Testing utilities for Connectum framework.
 
-> **Status:** 🚧 **Planned** - Пакет еще не реализован. Этот README служит спецификацией для будущей реализации.
+> **Status:** Planned - This package is not yet implemented. This README serves as a specification for future implementation.
 
-**@connectum/testing** — это коллекция testing utilities для упрощения написания unit и integration тестов для Connectum микросервисов.
+**@connectum/testing** is a collection of testing utilities for simplifying the writing of unit and integration tests for Connectum microservices.
 
-## Планируемые возможности
+## Planned Features
 
-- **Mock Helpers**: createMockMessage, createMockField, createMockMethod для protobuf types
-- **Test Server**: createTestServer для integration тестов
-- **Mock Interceptors**: mockInterceptor для изоляции тестов
-- **Assertions**: Кастомные assertions для ConnectRPC responses
-- **Fixtures**: Готовые test fixtures для common scenarios
+- **Mock Helpers**: createMockMessage, createMockField, createMockMethod for protobuf types
+- **Test Server**: createTestServer for integration tests
+- **Mock Interceptors**: mockInterceptor for test isolation
+- **Assertions**: Custom assertions for ConnectRPC responses
+- **Fixtures**: Ready-made test fixtures for common scenarios
 
-## Установка
+## Installation
 
 ```bash
 pnpm add -D @connectum/testing
@@ -28,11 +28,11 @@ pnpm add -D @connectrpc/connect @bufbuild/protobuf
 
 ## Planned API
 
-### Mock Helpers для Protobuf Types
+### Mock Helpers for Protobuf Types
 
-**Проблема:** @bufbuild/protobuf требует полную metadata структуру для DescMessage, DescField, DescMethod
+**Problem:** @bufbuild/protobuf requires full metadata structure for DescMessage, DescField, DescMethod
 
-**Решение:** Готовые mock helpers с правильной структурой
+**Solution:** Ready-made mock helpers with correct structure
 
 #### createMockMessage
 
@@ -40,7 +40,7 @@ pnpm add -D @connectrpc/connect @bufbuild/protobuf
 import { createMockMessage } from '@connectum/testing';
 import type { DescMessage } from '@bufbuild/protobuf';
 
-// Create mock DescMessage с full metadata
+// Create mock DescMessage with full metadata
 const mockSchema: DescMessage = createMockMessage('test.UserMessage', {
   fields: [
     { name: 'id', type: 'string' },
@@ -48,7 +48,7 @@ const mockSchema: DescMessage = createMockMessage('test.UserMessage', {
   ]
 });
 
-// Используется в тестах interceptors
+// Used in interceptor tests
 const interceptor = createSerializerInterceptor();
 const mockReq = {
   method: {
@@ -59,7 +59,7 @@ const mockReq = {
 };
 ```
 
-**Реализация reference:** `packages/interceptors/tests/unit/serializer.test.ts:16-39`
+**Implementation reference:** `packages/interceptors/tests/unit/serializer.test.ts:16-39`
 
 **Signature:**
 ```typescript
@@ -78,18 +78,18 @@ function createMockMessage(
 import { createMockField } from '@connectum/testing';
 import type { DescField } from '@bufbuild/protobuf';
 
-// Create mock DescField с proto options
+// Create mock DescField with proto options
 const passwordField: DescField = createMockField('password', {
   isSensitive: true,  // Sets sensitive extension
 });
 
-// Используется в тестах redact interceptor
+// Used in redact interceptor tests
 const mockSchema = createMockMessage('test.LoginRequest', {
   fields: [passwordField, createMockField('username')],
 });
 ```
 
-**Реализация reference:** `packages/interceptors/tests/unit/redact.test.ts:19-39`
+**Implementation reference:** `packages/interceptors/tests/unit/redact.test.ts:19-39`
 
 **Signature:**
 ```typescript
@@ -108,21 +108,21 @@ function createMockField(
 import { createMockMethod } from '@connectum/testing';
 import type { DescMethod } from '@bufbuild/protobuf';
 
-// Create mock DescMethod с options
+// Create mock DescMethod with options
 const mockMethod: DescMethod = createMockMethod('Login', {
   useSensitiveRedaction: true,  // Sets useSensitive extension
   input: mockInputSchema,
   output: mockOutputSchema,
 });
 
-// Используется в тестах
+// Used in tests
 const mockReq = {
   method: mockMethod,
   message: { username: 'john', password: 'secret' },
 };
 ```
 
-**Реализация reference:** `packages/interceptors/tests/unit/redact.test.ts:60-80`
+**Implementation reference:** `packages/interceptors/tests/unit/redact.test.ts:60-80`
 
 **Signature:**
 ```typescript
@@ -136,11 +136,11 @@ function createMockMethod(
 ): DescMethod;
 ```
 
-### Test Server для Integration Tests
+### Test Server for Integration Tests
 
-**Проблема:** Нужен способ поднять реальный ConnectRPC server для integration тестов
+**Problem:** Need a way to spin up a real ConnectRPC server for integration tests
 
-**Решение:** createTestServer utility
+**Solution:** createTestServer utility
 
 ```typescript
 import { createTestServer } from '@connectum/testing';
@@ -187,9 +187,9 @@ function createTestServer(options: {
 
 ### Mock Interceptor
 
-**Проблема:** Изолировать тесты от реальных interceptors
+**Problem:** Isolate tests from real interceptors
 
-**Решение:** mockInterceptor для stubbing
+**Solution:** mockInterceptor for stubbing
 
 ```typescript
 import { mockInterceptor } from '@connectum/testing';
@@ -219,9 +219,9 @@ describe('Service tests', () => {
 
 ## Best Practices
 
-### 1. Используй node:test Runner
+### 1. Use the node:test Runner
 
-Connectum использует встроенный `node:test` (no dependencies):
+Connectum uses the built-in `node:test` (no dependencies):
 
 ```typescript
 import assert from 'node:assert';
@@ -239,7 +239,7 @@ describe('myFunction', () => {
 });
 ```
 
-### 2. Структура тестов
+### 2. Test Structure
 
 ```
 packages/my-package/
@@ -247,29 +247,29 @@ packages/my-package/
 │   ├── index.ts
 │   └── myService.ts
 └── tests/
-    ├── unit/           # Unit tests (изолированные)
+    ├── unit/           # Unit tests (isolated)
     │   └── myService.test.ts
-    └── integration/    # Integration tests (полный stack)
+    └── integration/    # Integration tests (full stack)
         └── full-chain.test.ts
 ```
 
-### 3. Mock только external dependencies
+### 3. Mock Only External Dependencies
 
-**Правило:** Mock external dependencies (database, HTTP), НЕ mock internal code
+**Rule:** Mock external dependencies (database, HTTP), do NOT mock internal code
 
 ```typescript
-// ✅ GOOD - mock external database
+// GOOD - mock external database
 import { mock } from 'node:test';
 
 const dbMock = mock.fn(async (query) => {
   return { rows: [{ id: 1, name: 'Test' }] };
 });
 
-// ❌ BAD - mock internal functions
+// BAD - mock internal functions
 const myFunctionMock = mock.fn(() => 'fake result');
 ```
 
-### 4. Cleanup после тестов
+### 4. Cleanup After Tests
 
 ```typescript
 describe('Server tests', () => {
@@ -289,21 +289,21 @@ describe('Server tests', () => {
 });
 ```
 
-### 5. Используй descriptive test names
+### 5. Use Descriptive Test Names
 
 ```typescript
-// ✅ GOOD - описательное название
+// GOOD - descriptive name
 it('should reject requests when circuit breaker is open', async () => {
   // Test code
 });
 
-// ❌ BAD - неясное название
+// BAD - unclear name
 it('should work', async () => {
   // Test code
 });
 ```
 
-### 6. Test edge cases
+### 6. Test Edge Cases
 
 ```typescript
 describe('retry interceptor', () => {
@@ -315,7 +315,7 @@ describe('retry interceptor', () => {
 });
 ```
 
-### 7. Assertions style
+### 7. Assertion Style
 
 ```typescript
 import assert from 'node:assert';
@@ -324,7 +324,7 @@ import assert from 'node:assert';
 assert.strictEqual(result, expected);
 
 // NOT loose equality
-assert.equal(result, expected);  // ❌ BAD
+assert.equal(result, expected);  // BAD
 
 // Deep object comparison
 assert.deepStrictEqual(obj1, obj2);
@@ -364,11 +364,11 @@ pnpm test -- --experimental-test-coverage
 
 **CI enforcement:** Coverage threshold checked in CI pipeline
 
-## Examples из Phase 4
+## Examples from Phase 4
 
 ### Interceptor Unit Test
 
-См. `packages/interceptors/tests/unit/serializer.test.ts` для полного примера:
+See `packages/interceptors/tests/unit/serializer.test.ts` for a full example:
 
 ```typescript
 import assert from 'node:assert';
@@ -401,7 +401,7 @@ describe('serializer interceptor', () => {
 
 ### Integration Test
 
-См. `packages/interceptors/tests/integration/full-chain.test.ts`:
+See `packages/interceptors/tests/integration/full-chain.test.ts`:
 
 ```typescript
 describe('Full Interceptor Chain', () => {
@@ -426,20 +426,20 @@ describe('Full Interceptor Chain', () => {
 
 ## Implementation Plan
 
-**Priority:** Medium (после core packages реализованы)
+**Priority:** Medium (after core packages are implemented)
 
 **Tasks:**
-1. Реализовать createMockMessage helper
-2. Реализовать createMockField helper
-3. Реализовать createMockMethod helper
-4. Реализовать createTestServer utility
-5. Реализовать mockInterceptor utility
-6. Добавить TypeScript types
-7. Написать unit tests для utilities
-8. Обновить документацию с реальными examples
+1. Implement createMockMessage helper
+2. Implement createMockField helper
+3. Implement createMockMethod helper
+4. Implement createTestServer utility
+5. Implement mockInterceptor utility
+6. Add TypeScript types
+7. Write unit tests for utilities
+8. Update documentation with real examples
 9. Publish v0.1.0
 
-**Target release:** v0.2.0-beta.1 или позже
+**Target release:** v0.2.0-beta.1 or later
 
 ## License
 
@@ -447,5 +447,5 @@ MIT
 
 ## Related Packages
 
-- [@connectum/interceptors](../interceptors/README.md) - Использует mock helpers в тестах
-- [@connectum/core](../runner/README.md) - Использует createTestServer в integration тестах
+- [@connectum/interceptors](../interceptors/README.md) - Uses mock helpers in tests
+- [@connectum/core](../runner/README.md) - Uses createTestServer in integration tests

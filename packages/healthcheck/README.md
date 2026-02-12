@@ -1,19 +1,19 @@
 # @connectum/healthcheck
 
-gRPC Health Check Protocol + HTTP health endpoints для Connectum.
+gRPC Health Check Protocol + HTTP health endpoints for Connectum.
 
-**@connectum/healthcheck** реализует [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) с дополнительными HTTP-эндпоинтами для Kubernetes liveness/readiness probes.
+**@connectum/healthcheck** implements the [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) with additional HTTP endpoints for Kubernetes liveness/readiness probes.
 
-## Возможности
+## Features
 
-- **gRPC Health Check Protocol**: Check, Watch, List методы
-- **HTTP Health Endpoints**: `/healthz`, `/health`, `/readyz` (настраиваемые пути)
-- **Per-service Health Status**: Управление статусом каждого сервиса отдельно
-- **Watch Streaming**: Real-time стриминг изменений статуса
-- **Factory Pattern**: `createHealthcheckManager()` для изолированных инстансов
-- **Singleton по умолчанию**: Глобальный `healthcheckManager` для простых сценариев
+- **gRPC Health Check Protocol**: Check, Watch, List methods
+- **HTTP Health Endpoints**: `/healthz`, `/health`, `/readyz` (configurable paths)
+- **Per-service Health Status**: Manage the status of each service separately
+- **Watch Streaming**: Real-time status change streaming
+- **Factory Pattern**: `createHealthcheckManager()` for isolated instances
+- **Singleton by Default**: Global `healthcheckManager` for simple scenarios
 
-## Установка
+## Installation
 
 ```bash
 pnpm add @connectum/healthcheck
@@ -25,7 +25,7 @@ pnpm add @connectum/healthcheck
 pnpm add @connectum/core
 ```
 
-## Быстрый старт
+## Quick Start
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -49,7 +49,7 @@ await server.start();
 
 ### Healthcheck(options?)
 
-Фабричная функция, создающая `ProtocolRegistration` для передачи в `createServer()`.
+Factory function that creates a `ProtocolRegistration` for use with `createServer()`.
 
 ```typescript
 import { Healthcheck } from '@connectum/healthcheck';
@@ -58,36 +58,36 @@ const protocol = Healthcheck({
   httpEnabled: true,
   httpPaths: ['/healthz', '/health', '/readyz'],
   watchInterval: 500,
-  manager: customManager,  // опционально
+  manager: customManager,  // optional
 });
 ```
 
-**Параметры (`HealthcheckOptions`):**
+**Parameters (`HealthcheckOptions`):**
 
-| Параметр | Тип | Default | Описание |
-|----------|-----|---------|----------|
-| `httpEnabled` | `boolean` | `false` | Включить HTTP health endpoints |
-| `httpPaths` | `string[]` | `["/healthz", "/health", "/readyz"]` | Пути HTTP health endpoints |
-| `watchInterval` | `number` | `500` | Интервал polling для Watch streaming (мс) |
-| `manager` | `HealthcheckManager` | `healthcheckManager` (singleton) | Кастомный менеджер (для тестов или multi-server) |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `httpEnabled` | `boolean` | `false` | Enable HTTP health endpoints |
+| `httpPaths` | `string[]` | `["/healthz", "/health", "/readyz"]` | HTTP health endpoint paths |
+| `watchInterval` | `number` | `500` | Polling interval for Watch streaming (ms) |
+| `manager` | `HealthcheckManager` | `healthcheckManager` (singleton) | Custom manager (for tests or multi-server) |
 
 ### healthcheckManager (singleton)
 
-Глобальный singleton-инстанс `HealthcheckManager`. Импортируется из любого файла приложения:
+Global singleton instance of `HealthcheckManager`. Can be imported from any file in the application:
 
 ```typescript
 import { healthcheckManager, ServingStatus } from '@connectum/healthcheck';
 
-// Обновить статус всех сервисов
+// Update status of all services
 healthcheckManager.update(ServingStatus.SERVING);
 
-// Обновить статус конкретного сервиса
+// Update status of a specific service
 healthcheckManager.update(ServingStatus.NOT_SERVING, 'my.service.v1.MyService');
 ```
 
 ### createHealthcheckManager()
 
-Фабричная функция для создания изолированного `HealthcheckManager`. Полезна для тестирования или запуска нескольких серверов в одном процессе.
+Factory function for creating an isolated `HealthcheckManager`. Useful for testing or running multiple servers in a single process.
 
 ```typescript
 import { Healthcheck, createHealthcheckManager, ServingStatus } from '@connectum/healthcheck';
@@ -109,45 +109,45 @@ await server.start();
 
 ### HealthcheckManager
 
-Класс управления health-статусами сервисов.
+Class for managing service health statuses.
 
-#### Методы
+#### Methods
 
-| Метод | Описание |
-|-------|----------|
-| `update(status, service?)` | Обновить статус. Без `service` -- обновляет все зарегистрированные сервисы. |
-| `getStatus(service)` | Получить статус конкретного сервиса |
-| `getAllStatuses()` | Получить Map всех статусов |
-| `areAllHealthy()` | Проверить, все ли сервисы в статусе SERVING |
-| `initialize(serviceNames)` | Инициализировать трекинг сервисов |
-| `clear()` | Очистить все сервисы |
+| Method | Description |
+|--------|-------------|
+| `update(status, service?)` | Update status. Without `service` -- updates all registered services. |
+| `getStatus(service)` | Get the status of a specific service |
+| `getAllStatuses()` | Get a Map of all statuses |
+| `areAllHealthy()` | Check if all services are in SERVING status |
+| `initialize(serviceNames)` | Initialize service tracking |
+| `clear()` | Clear all services |
 
-#### Поведение initialize()
+#### initialize() Behavior
 
-Метод `initialize()` выполняет **merge** с существующим состоянием:
-- Сервисы, которые уже были зарегистрированы, сохраняют текущий статус
-- Новые сервисы добавляются со статусом `UNKNOWN`
+The `initialize()` method performs a **merge** with existing state:
+- Services that were already registered retain their current status
+- New services are added with `UNKNOWN` status
 
-Это позволяет обновлять список сервисов без потери ранее установленных статусов (например, при hot reload).
+This allows updating the service list without losing previously set statuses (e.g., during hot reload).
 
 ### ServingStatus
 
-Значения статусов (соответствуют gRPC Health Check Protocol):
+Status values (correspond to the gRPC Health Check Protocol):
 
-| Статус | Значение | Описание |
-|--------|----------|----------|
-| `UNKNOWN` | `0` | Статус неизвестен |
-| `SERVING` | `1` | Сервис работает нормально |
-| `NOT_SERVING` | `2` | Сервис недоступен |
-| `SERVICE_UNKNOWN` | `3` | Запрошенный сервис не найден |
+| Status | Value | Description |
+|--------|-------|-------------|
+| `UNKNOWN` | `0` | Status unknown |
+| `SERVING` | `1` | Service is running normally |
+| `NOT_SERVING` | `2` | Service is unavailable |
+| `SERVICE_UNKNOWN` | `3` | Requested service not found |
 
 ## HTTP Health Endpoints
 
-При `httpEnabled: true` доступны HTTP-эндпоинты, которые зеркалят статус gRPC healthcheck.
+When `httpEnabled: true`, HTTP endpoints are available that mirror the gRPC healthcheck status.
 
-**Пути по умолчанию:** `/healthz`, `/health`, `/readyz`
+**Default paths:** `/healthz`, `/health`, `/readyz`
 
-Можно настроить через `httpPaths`:
+Can be configured via `httpPaths`:
 
 ```typescript
 Healthcheck({
@@ -156,7 +156,7 @@ Healthcheck({
 })
 ```
 
-### Формат ответа
+### Response Format
 
 ```json
 {
@@ -175,23 +175,23 @@ Healthcheck({
 | `SERVICE_UNKNOWN` | `404 Not Found` |
 | `UNKNOWN` | `503 Service Unavailable` |
 
-### Проверка конкретного сервиса
+### Checking a Specific Service
 
 ```bash
 curl http://localhost:5000/healthz?service=my.service.v1.MyService
 ```
 
-## gRPC методы
+## gRPC Methods
 
 ### Health.Check
 
-Проверка здоровья конкретного сервиса:
+Check the health of a specific service:
 
 ```bash
 grpcurl -plaintext localhost:5000 grpc.health.v1.Health/Check
 ```
 
-С указанием сервиса:
+With a specific service:
 
 ```bash
 grpcurl -plaintext -d '{"service": "my.service.v1.MyService"}' \
@@ -200,27 +200,27 @@ grpcurl -plaintext -d '{"service": "my.service.v1.MyService"}' \
 
 ### Health.Watch
 
-Стриминг изменений статуса (Server-Sent Events):
+Stream status changes (Server-Sent Events):
 
 ```bash
 grpcurl -plaintext localhost:5000 grpc.health.v1.Health/Watch
 ```
 
-Поведение по спецификации gRPC:
-- Немедленная отправка текущего статуса
-- Отправка обновлений только при изменении статуса
-- Для неизвестных сервисов: отправка `SERVICE_UNKNOWN` (не завершает вызов)
-- Завершение при отключении клиента (AbortSignal)
+Behavior per gRPC specification:
+- Immediately sends current status
+- Sends updates only on status changes
+- For unknown services: sends `SERVICE_UNKNOWN` (does not terminate the call)
+- Terminates on client disconnect (AbortSignal)
 
 ### Health.List
 
-Список всех сервисов с их статусами:
+List all services with their statuses:
 
 ```bash
 grpcurl -plaintext localhost:5000 grpc.health.v1.Health/List
 ```
 
-## Примеры
+## Examples
 
 ### Kubernetes Probes
 
@@ -244,12 +244,12 @@ readinessProbe:
 
 ```typescript
 server.on('stopping', () => {
-  // Kubernetes перестанет направлять трафик
+  // Kubernetes will stop routing traffic
   healthcheckManager.update(ServingStatus.NOT_SERVING);
 });
 ```
 
-### Тестирование с изолированным менеджером
+### Testing with an Isolated Manager
 
 ```typescript
 import { describe, it } from 'node:test';
@@ -274,16 +274,16 @@ describe('health check', () => {
 
 ### Peer Dependencies
 
-- `@connectum/core` -- Server factory и типы ProtocolRegistration
+- `@connectum/core` -- Server factory and ProtocolRegistration types
 
 ### Dependencies
 
 - `@bufbuild/protobuf` -- Protocol Buffers runtime
 - `@connectrpc/connect` -- ConnectRPC core
 
-## Требования
+## Requirements
 
-- **Node.js**: >=25.2.0 (для stable type stripping)
+- **Node.js**: >=25.2.0 (for stable type stripping)
 - **pnpm**: >=10.0.0
 
 ## License
