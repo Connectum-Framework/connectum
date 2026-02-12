@@ -1,15 +1,11 @@
 # Connectum
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Connectum-Framework/docs/main/assets/splash.png" alt="Connectum Framework" />
-</p>
-
 > Universal framework for building production-ready gRPC/ConnectRPC microservices on Node.js 25+
 
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D25.2.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Native-blue)](https://nodejs.org/api/typescript.html)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Alpha Release](https://img.shields.io/badge/release-v0.2.0--alpha.1-orange)](https://github.com/Connectum-Framework/connectum/releases/tag/v0.2.0-alpha.2)
+[![Beta Release](https://img.shields.io/badge/release-v1.0.0--beta.2-orange)](https://github.com/Connectum-Framework/connectum/releases)
 
 ## Features
 
@@ -103,14 +99,16 @@ node --watch src/index.ts
 
 ## Packages
 
-Connectum is organized into 4 modular packages:
+Connectum is organized into 6 modular packages:
 
 | Package | Description | Layer |
 |---------|-------------|-------|
-| [`@connectum/otel`](packages/otel) | OpenTelemetry instrumentation | 0 |
+| [`@connectum/core`](packages/core) | Server foundation (zero internal deps) | 0 |
 | [`@connectum/interceptors`](packages/interceptors) | ConnectRPC interceptors | 1 |
-| [`@connectum/core`](packages/core) | Main server factory + protocols | 2 |
-| [`@connectum/testing`](packages/testing) | Testing utilities | 3 |
+| [`@connectum/healthcheck`](packages/healthcheck) | gRPC Health Check protocol | 1 |
+| [`@connectum/reflection`](packages/reflection) | gRPC Server Reflection protocol | 1 |
+| [`@connectum/otel`](packages/otel) | OpenTelemetry instrumentation | 2 |
+| [`@connectum/testing`](packages/testing) | Testing utilities | 2 |
 
 ## Documentation
 
