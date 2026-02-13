@@ -6,8 +6,8 @@
  * @module bulkhead
  */
 
-import { Code, ConnectError } from "@connectrpc/connect";
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { BulkheadRejectedError, bulkhead } from "cockatiel";
 import type { BulkheadOptions } from "./types.ts";
 

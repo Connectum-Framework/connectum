@@ -6,8 +6,8 @@
  * @module TransportManager
  */
 
-import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions, ServerHttp2Session } from "node:http2";
+import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { AddressInfo } from "node:net";
 import env from "env-var";
 import { readTLSCertificates } from "./TLSConfig.ts";

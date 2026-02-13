@@ -30,23 +30,22 @@ export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
 // TYPES
 // =============================================================================
 
-// Server API types
-export { ServerState, LifecycleEvent } from "./types.ts";
-
 export type {
-    // Server API
-    Server,
     CreateServerOptions,
-    ShutdownOptions,
-    ShutdownHook,
+    HttpHandler,
+    ProtocolContext,
     // Protocol Registration API
     ProtocolRegistration,
-    ProtocolContext,
-    HttpHandler,
+    // Server API
+    Server,
     // Common types
     ServiceRoute,
+    ShutdownHook,
+    ShutdownOptions,
     TLSOptions,
 } from "./types.ts";
+// Server API types
+export { LifecycleEvent, ServerState } from "./types.ts";
 
 // =============================================================================
 // CONFIGURATION
@@ -54,13 +53,13 @@ export type {
 
 // Environment configuration (12-Factor App)
 export {
+    BooleanFromStringSchema,
+    type ConnectumEnv,
     ConnectumEnvSchema,
-    LogLevelSchema,
     LogFormatSchema,
     LoggerBackendSchema,
+    LogLevelSchema,
     NodeEnvSchema,
-    BooleanFromStringSchema,
     parseEnvConfig,
     safeParseEnvConfig,
-    type ConnectumEnv,
 } from "./config/index.ts";

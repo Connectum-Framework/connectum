@@ -28,7 +28,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should open circuit after threshold failures", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 3, halfOpenAfter: 1000 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 3, halfOpenAfter: 10 });
 
         const mockReq = {
             url: "http://localhost/test.Service/Method",
@@ -68,7 +68,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should reject requests when circuit open", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 1000 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 10 });
 
         const mockReq = {
             url: "http://localhost/test.Service/Method",
@@ -228,7 +228,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should handle custom threshold", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 1000 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 10 });
 
         const mockReq = {
             url: "http://localhost/test.Service/Method",

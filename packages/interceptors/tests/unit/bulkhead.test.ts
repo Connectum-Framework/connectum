@@ -75,15 +75,13 @@ describe("bulkhead interceptor", () => {
         // Start 3 requests (1 active, 1 queued, 1 rejected)
         const promises = [handler(mockReq), handler(mockReq), handler(mockReq)];
 
-        // One should be rejected
-        await assert.rejects(
-            () => Promise.all(promises),
-            (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
-                return true;
-            },
-        );
+        // Third promise should be rejected
+        const results = await Promise.allSettled(promises);
+        const rejected = results.filter((r) => r.status === "rejected");
+        assert.strictEqual(rejected.length, 1);
+        const err = (rejected[0] as PromiseRejectedResult).reason;
+        assert(err instanceof ConnectError);
+        assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
     });
 
     it("should convert BulkheadRejectedError to ResourceExhausted", async () => {
@@ -106,15 +104,14 @@ describe("bulkhead interceptor", () => {
         // Start 2 concurrent requests (1 active, 1 rejected)
         const promises = [handler(mockReq), handler(mockReq)];
 
-        await assert.rejects(
-            () => Promise.all(promises),
-            (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
-                assert((err as ConnectError).message.includes("Bulkhead capacity exceeded"));
-                return true;
-            },
-        );
+        // Second should be rejected (capacity=1, queueSize=0)
+        const results = await Promise.allSettled(promises);
+        const rejected = results.filter((r) => r.status === "rejected");
+        assert.strictEqual(rejected.length, 1);
+        const err = (rejected[0] as PromiseRejectedResult).reason;
+        assert(err instanceof ConnectError);
+        assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
+        assert((err as ConnectError).message.includes("Bulkhead capacity exceeded"));
     });
 
     it("should release slot on success", async () => {

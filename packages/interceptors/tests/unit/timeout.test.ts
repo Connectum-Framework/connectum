@@ -53,6 +53,9 @@ describe("timeout interceptor", () => {
                 return true;
             },
         );
+
+        // Wait for mock timer to drain
+        await new Promise((resolve) => setTimeout(resolve, 250));
     });
 
     it("should include timeout duration in error", async () => {
@@ -80,6 +83,9 @@ describe("timeout interceptor", () => {
                 return true;
             },
         );
+
+        // Wait for mock timer to drain
+        await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
     it("should skip streaming when skipStreaming=true", async () => {
@@ -127,6 +133,9 @@ describe("timeout interceptor", () => {
                 return true;
             },
         );
+
+        // Wait for mock timer to drain
+        await new Promise((resolve) => setTimeout(resolve, 350));
     });
 
     it("should cleanup on timeout", async () => {

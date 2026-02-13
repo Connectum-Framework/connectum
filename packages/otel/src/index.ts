@@ -6,31 +6,8 @@
  * @module @connectum/otel
  */
 
-// Server interceptor (RPC-level tracing + metrics)
-export { createOtelInterceptor } from "./interceptor.ts";
-
-// Client interceptor (outgoing RPC tracing + metrics)
-export { createOtelClientInterceptor } from "./client-interceptor.ts";
-
-// Deep tracing helpers (business logic instrumentation)
-export { traced } from "./traced.ts";
-export { traceAll } from "./traceAll.ts";
-
-// Logger (correlated logging with trace_id/span_id)
-export { getLogger } from "./logger.ts";
-export type { Logger, LoggerOptions } from "./logger.ts";
-
-// Standalone instances (lazy)
-export { getTracer } from "./tracer.ts";
-export { getMeter } from "./meter.ts";
-
-// Provider management
-export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
-export type { ProviderOptions } from "./provider.ts";
-
-// Shared utilities (for advanced users)
-export { buildErrorAttributes, estimateMessageSize } from "./shared.ts";
-
+// Re-export OpenTelemetry API types for convenience
+export type { Meter, Tracer } from "@opentelemetry/api";
 // Semantic conventions
 export {
     ATTR_ERROR_TYPE,
@@ -48,11 +25,40 @@ export {
     ConnectErrorCodeName,
     RPC_SYSTEM_CONNECT_RPC,
 } from "./attributes.ts";
-
+// Client interceptor (outgoing RPC tracing + metrics)
+export { createOtelClientInterceptor } from "./client-interceptor.ts";
+export type {
+    BatchSpanProcessorOptions,
+    CollectorOptions,
+    OTLPSettings,
+} from "./config.ts";
+// Config
+export {
+    ExporterType,
+    getBatchSpanProcessorOptions,
+    getCollectorOptions,
+    getOTLPSettings,
+    getServiceMetadata,
+} from "./config.ts";
+// Server interceptor (RPC-level tracing + metrics)
+export { createOtelInterceptor } from "./interceptor.ts";
+export type { Logger, LoggerOptions } from "./logger.ts";
+// Logger (correlated logging with trace_id/span_id)
+export { getLogger } from "./logger.ts";
+export { getMeter } from "./meter.ts";
+export type { RpcClientMetrics, RpcServerMetrics } from "./metrics.ts";
 // Metrics
 export { createRpcClientMetrics, createRpcServerMetrics } from "./metrics.ts";
-export type { RpcClientMetrics, RpcServerMetrics } from "./metrics.ts";
-
+export type { ProviderOptions } from "./provider.ts";
+// Provider management
+export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
+// Shared utilities (for advanced users)
+export { buildErrorAttributes, estimateMessageSize } from "./shared.ts";
+export { traceAll } from "./traceAll.ts";
+// Deep tracing helpers (business logic instrumentation)
+export { traced } from "./traced.ts";
+// Standalone instances (lazy)
+export { getTracer } from "./tracer.ts";
 // Types
 export type {
     ArgsFilter,
@@ -65,20 +71,3 @@ export type {
     TraceAllOptions,
     TracedOptions,
 } from "./types.ts";
-
-// Config
-export {
-    ExporterType,
-    getBatchSpanProcessorOptions,
-    getCollectorOptions,
-    getOTLPSettings,
-    getServiceMetadata,
-} from "./config.ts";
-export type {
-    BatchSpanProcessorOptions,
-    CollectorOptions,
-    OTLPSettings,
-} from "./config.ts";
-
-// Re-export OpenTelemetry API types for convenience
-export type { Meter, Tracer } from "@opentelemetry/api";

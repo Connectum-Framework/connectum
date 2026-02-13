@@ -14,8 +14,8 @@
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { createServer } from "@connectum/core";
 import type { Server } from "@connectum/core";
+import { createServer } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { ServerReflectionClient } from "@lambdalisue/connectrpc-grpcreflect/client";
 import { Reflection } from "../../src/Reflection.ts";

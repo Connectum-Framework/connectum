@@ -12,7 +12,9 @@
     "./commands/proto-sync": "./src/commands/proto-sync.ts",
     "./utils/reflection": "./src/utils/reflection.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -28,7 +30,14 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["cli", "connectum", "connectrpc", "grpc", "proto-sync", "reflection"],
+  "keywords": [
+    "cli",
+    "connectum",
+    "connectrpc",
+    "grpc",
+    "proto-sync",
+    "reflection"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
@@ -42,12 +51,14 @@
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
-    "citty": "^0.1.6"
+    "citty": "^0.2.1"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
     "@connectum/core": "workspace:^",
+    "@connectum/healthcheck": "workspace:^",
+    "@connectum/reflection": "workspace:^",
     "typescript": "catalog:"
   }
 }

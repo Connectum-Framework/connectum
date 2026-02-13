@@ -29,7 +29,15 @@
     "generate:keys": "mkdir -p keys && openssl req -nodes -x509 -newkey rsa:2048 -days 3650 -subj \"/CN=localhost\" -keyout keys/server.key -out keys/server.crt -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"",
     "prepare": "husky"
   },
-  "keywords": ["grpc", "connectrpc", "microservices", "connectum", "node.js", "typescript", "native-typescript"],
+  "keywords": [
+    "grpc",
+    "connectrpc",
+    "microservices",
+    "connectum",
+    "node.js",
+    "typescript",
+    "native-typescript"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.23.0",

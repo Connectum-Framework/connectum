@@ -16,10 +16,7 @@
 
 // Factory + Singleton manager
 export { Healthcheck, healthcheckManager } from "./Healthcheck.ts";
-
 // Manager class + factory
-export { HealthcheckManager } from "./HealthcheckManager.ts";
-
 /**
  * Create a new isolated HealthcheckManager instance
  *
@@ -37,10 +34,10 @@ export { HealthcheckManager } from "./HealthcheckManager.ts";
  * manager.update(ServingStatus.SERVING);
  * ```
  */
-export { createHealthcheckManager } from "./HealthcheckManager.ts";
+export { createHealthcheckManager, HealthcheckManager } from "./HealthcheckManager.ts";
 
 // HTTP handler
 export { createHttpHealthHandler, parseServiceFromUrl } from "./httpHandler.ts";
 
 // Types
-export { ServingStatus, type ServiceStatus, type HealthcheckOptions } from "./types.ts";
+export { type HealthcheckOptions, type ServiceStatus, ServingStatus } from "./types.ts";

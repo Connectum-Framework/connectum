@@ -7,17 +7,17 @@
  * @module provider
  */
 
-import { DiagConsoleLogger, DiagLogLevel, diag, metrics, trace } from "@opentelemetry/api";
 import type { Meter, Tracer } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { DiagConsoleLogger, DiagLogLevel, diag, metrics, trace } from "@opentelemetry/api";
 import type { Logger } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api-logs";
 import { OTLPLogExporter as OTLPLogExporterGRPC } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { OTLPLogExporter as OTLPLogExporterHTTP } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter as OTLPMetricExporterGRPC } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPMetricExporter as OTLPMetricExporterHTTP } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter as OTLPTraceExporterGRPC } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPTraceExporter as OTLPTraceExporterHTTP } from "@opentelemetry/exporter-trace-otlp-http";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ConsoleLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
@@ -94,7 +94,7 @@ class OtelProvider {
         }
 
         // Create resource with service metadata
-        const resource = new Resource({
+        const resource = resourceFromAttributes({
             [ATTR_SERVICE_NAME]: this.serviceName,
             [ATTR_SERVICE_VERSION]: this.serviceVersion,
         });
@@ -165,6 +165,10 @@ class OtelProvider {
 
         // Create meter provider with periodic exporter
         this.meterProvider = new MeterProvider({
+            resource: resourceFromAttributes({
+                [ATTR_SERVICE_NAME]: this.serviceName,
+                [ATTR_SERVICE_VERSION]: this.serviceVersion,
+            }),
             readers: [
                 new PeriodicExportingMetricReader({
                     exporter: metricExporter,
@@ -206,11 +210,14 @@ class OtelProvider {
             logExporter = new ConsoleLogRecordExporter();
         }
 
-        // Create logger provider
-        this.loggerProvider = new LoggerProvider();
-
-        // Add log record processor
-        this.loggerProvider.addLogRecordProcessor(new SimpleLogRecordProcessor(logExporter));
+        // Create logger provider with processors
+        this.loggerProvider = new LoggerProvider({
+            resource: resourceFromAttributes({
+                [ATTR_SERVICE_NAME]: this.serviceName,
+                [ATTR_SERVICE_VERSION]: this.serviceVersion,
+            }),
+            processors: [new SimpleLogRecordProcessor(logExporter)],
+        });
 
         // Set global logger provider
         logs.setGlobalLoggerProvider(this.loggerProvider);

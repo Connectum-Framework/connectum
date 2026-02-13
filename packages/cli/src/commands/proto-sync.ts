@@ -28,7 +28,7 @@ export interface ProtoSyncOptions {
     /** Output directory for generated types */
     out: string;
     /** Path to custom buf.gen.yaml template */
-    template?: string;
+    template?: string | undefined;
     /** Show what would be synced without generating */
     dryRun?: boolean;
 }

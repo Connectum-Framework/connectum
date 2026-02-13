@@ -17,7 +17,9 @@
     "./defaults": "./src/defaults.ts",
     "./method-filter": "./src/method-filter.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -33,7 +35,13 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["interceptors", "connectrpc", "grpc", "connectum", "middleware"],
+  "keywords": [
+    "interceptors",
+    "connectrpc",
+    "grpc",
+    "connectum",
+    "middleware"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

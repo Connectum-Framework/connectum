@@ -6,8 +6,8 @@
  * @module logger
  */
 
-import { toJson } from "@bufbuild/protobuf";
 import type { DescMessage, Message } from "@bufbuild/protobuf";
+import { toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest } from "@connectrpc/connect";
 import type { LoggerOptions } from "./types.ts";
 

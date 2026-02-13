@@ -12,7 +12,7 @@
 import { hostname } from "node:os";
 import type { Interceptor } from "@connectrpc/connect";
 import type { Link, SpanOptions } from "@opentelemetry/api";
-import { SpanKind, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
+import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 import { getMeter } from "./meter.ts";
 import type { RpcServerMetrics } from "./metrics.ts";

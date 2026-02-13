@@ -11,11 +11,10 @@ import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { AddressInfo } from "node:net";
 import type { DescFile } from "@bufbuild/protobuf";
 import type { Interceptor } from "@connectrpc/connect";
-
-import { ShutdownManager } from "./ShutdownManager.ts";
-import { TransportManager } from "./TransportManager.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
+import { ShutdownManager } from "./ShutdownManager.ts";
+import { TransportManager } from "./TransportManager.ts";
 import type { CreateServerOptions, ProtocolRegistration, Server, ServiceRoute, ShutdownHook } from "./types.ts";
 import { ServerState } from "./types.ts";
 

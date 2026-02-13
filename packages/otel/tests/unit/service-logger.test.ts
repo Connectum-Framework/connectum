@@ -4,8 +4,8 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
-import { SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecord } from "@opentelemetry/api-logs";
+import { SeverityNumber } from "@opentelemetry/api-logs";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { getLogger } from "../../src/logger.ts";
 import { getProvider, shutdownProvider } from "../../src/provider.ts";
