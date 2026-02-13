@@ -150,6 +150,12 @@ importers:
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
+      '@connectum/healthcheck':
+        specifier: workspace:^
+        version: link:../healthcheck
+      '@connectum/reflection':
+        specifier: workspace:^
+        version: link:../reflection
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

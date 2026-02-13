@@ -57,6 +57,8 @@
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
     "@connectum/core": "workspace:^",
+    "@connectum/healthcheck": "workspace:^",
+    "@connectum/reflection": "workspace:^",
     "typescript": "catalog:"
   }
 }

@@ -75,7 +75,7 @@ describe('Resilience Pattern Integration', () => {
         // Setup: circuit breaker threshold 2 (will open after 2 failures)
         const circuitBreakerInterceptor = createCircuitBreakerInterceptor({
             threshold: 2,
-            halfOpenAfter: 1000,
+            halfOpenAfter: 10,
         });
 
         const mockReq = {
@@ -128,7 +128,7 @@ describe('Resilience Pattern Integration', () => {
         // Setup: circuit breaker threshold 2, fallback returns cached data
         const circuitBreakerInterceptor = createCircuitBreakerInterceptor({
             threshold: 2,
-            halfOpenAfter: 1000,
+            halfOpenAfter: 10,
         });
 
         const fallbackInterceptor = createFallbackInterceptor({
@@ -211,6 +211,9 @@ describe('Resilience Pattern Integration', () => {
                 return true;
             },
         );
+
+        // Wait for mock timers to drain
+        await new Promise((resolve) => setTimeout(resolve, 100));
     });
 
     it('should combine retry, timeout, circuit breaker, and fallback', async () => {
@@ -226,7 +229,7 @@ describe('Resilience Pattern Integration', () => {
 
         const circuitBreakerInterceptor = createCircuitBreakerInterceptor({
             threshold: 2,
-            halfOpenAfter: 1000,
+            halfOpenAfter: 300,
         });
 
         const fallbackInterceptor = createFallbackInterceptor({
@@ -270,6 +273,9 @@ describe('Resilience Pattern Integration', () => {
 
         // Verify: only first request made attempts (2 retries), second was blocked by circuit
         assert.strictEqual(next.mock.calls.length, 2);
+
+        // Wait for mock timers and halfOpenAfter timer to drain
+        await new Promise((resolve) => setTimeout(resolve, 400));
     });
 
     it('should handle streaming requests correctly', async () => {

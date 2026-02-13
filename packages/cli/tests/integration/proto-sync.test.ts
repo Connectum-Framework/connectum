@@ -15,6 +15,8 @@ import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import type { Server } from "@connectum/core";
 import { createServer } from "@connectum/core";
+import { Healthcheck } from "@connectum/healthcheck";
+import { Reflection } from "@connectum/reflection";
 import { executeProtoSync } from "../../src/commands/proto-sync.ts";
 import { fetchFileDescriptorSetBinary, fetchReflectionData } from "../../src/utils/reflection.ts";
 
@@ -27,6 +29,7 @@ describe("CLI proto sync", () => {
 			services: [],
 			port: 0,
 			interceptors: [],
+			protocols: [Healthcheck(), Reflection()],
 		});
 
 		await server.start();

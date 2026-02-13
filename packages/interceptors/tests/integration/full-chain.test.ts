@@ -187,6 +187,9 @@ describe('Full Interceptor Chain Integration', () => {
                 return true;
             },
         );
+
+        // Wait for mock timers to drain
+        await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
     it('should handle bulkhead capacity limits', async () => {
