@@ -159,6 +159,6 @@ export function parseEnvConfig(env: Record<string, string | undefined> = process
  * }
  * ```
  */
-export function safeParseEnvConfig(env: Record<string, string | undefined> = process.env): z.SafeParseReturnType<unknown, ConnectumEnv> {
+export function safeParseEnvConfig(env: Record<string, string | undefined> = process.env) {
     return ConnectumEnvSchema.safeParse(env);
 }
