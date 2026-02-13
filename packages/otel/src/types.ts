@@ -12,11 +12,7 @@
  * @param context - RPC call context
  * @returns `true` to instrument, `false` to skip
  */
-export type OtelFilter = (context: {
-    service: string;
-    method: string;
-    stream: boolean;
-}) => boolean;
+export type OtelFilter = (context: { service: string; method: string; stream: boolean }) => boolean;
 
 /**
  * Filter callback to exclude specific attributes from spans/metrics

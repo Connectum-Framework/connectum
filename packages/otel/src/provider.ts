@@ -7,10 +7,10 @@
  * @module provider
  */
 
-import { DiagConsoleLogger, DiagLogLevel, diag, metrics, trace } from "@opentelemetry/api";
 import type { Meter, Tracer } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { DiagConsoleLogger, DiagLogLevel, diag, metrics, trace } from "@opentelemetry/api";
 import type { Logger } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api-logs";
 import { OTLPLogExporter as OTLPLogExporterGRPC } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { OTLPLogExporter as OTLPLogExporterHTTP } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter as OTLPMetricExporterGRPC } from "@opentelemetry/exporter-metrics-otlp-grpc";

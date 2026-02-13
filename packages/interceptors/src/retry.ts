@@ -7,8 +7,8 @@
  * @module retry
  */
 
-import { Code, ConnectError } from "@connectrpc/connect";
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { ExponentialBackoff, handleAll, retry } from "cockatiel";
 import type { RetryOptions } from "./types.ts";
 

@@ -6,8 +6,8 @@
  * @module serializer
  */
 
-import { fromJson, toJson } from "@bufbuild/protobuf";
 import type { DescMessage, JsonValue, Message } from "@bufbuild/protobuf";
+import { fromJson, toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import type { SerializerOptions } from "./types.ts";
 

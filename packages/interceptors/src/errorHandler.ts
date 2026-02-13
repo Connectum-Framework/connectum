@@ -6,8 +6,8 @@
  * @module errorHandler
  */
 
-import { Code, ConnectError } from "@connectrpc/connect";
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { ErrorHandlerOptions } from "./types.ts";
 
 /**

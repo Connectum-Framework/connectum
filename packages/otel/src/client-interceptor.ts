@@ -18,7 +18,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import type { SpanOptions } from "@opentelemetry/api";
-import { SpanKind, SpanStatusCode, context, propagation } from "@opentelemetry/api";
+import { context, propagation, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 
 import { getMeter } from "./meter.ts";
 import type { RpcClientMetrics } from "./metrics.ts";

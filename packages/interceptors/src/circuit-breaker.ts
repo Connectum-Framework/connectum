@@ -6,8 +6,8 @@
  * @module circuit-breaker
  */
 
-import { Code, ConnectError } from "@connectrpc/connect";
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { BrokenCircuitError, ConsecutiveBreaker, circuitBreaker, handleAll } from "cockatiel";
 import type { CircuitBreakerOptions } from "./types.ts";
 

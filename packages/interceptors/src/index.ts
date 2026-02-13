@@ -9,22 +9,20 @@
  * @module @connectum/interceptors
  */
 
+export { createBulkheadInterceptor } from "./bulkhead.ts";
+export { createCircuitBreakerInterceptor } from "./circuit-breaker.ts";
+export type { DefaultInterceptorOptions } from "./defaults.ts";
 // Default interceptor chain factory
 export { createDefaultInterceptors } from "./defaults.ts";
-export type { DefaultInterceptorOptions } from "./defaults.ts";
-
 // Interceptor factories
 export { createErrorHandlerInterceptor } from "./errorHandler.ts";
-export { createLoggerInterceptor } from "./logger.ts";
-export { createSerializerInterceptor } from "./serializer.ts";
-export { createRetryInterceptor } from "./retry.ts";
-export { createCircuitBreakerInterceptor } from "./circuit-breaker.ts";
-export { createTimeoutInterceptor } from "./timeout.ts";
-export { createBulkheadInterceptor } from "./bulkhead.ts";
 export { createFallbackInterceptor } from "./fallback.ts";
-
+export { createLoggerInterceptor } from "./logger.ts";
 // Method filter interceptor
 export { createMethodFilterInterceptor } from "./method-filter.ts";
+export { createRetryInterceptor } from "./retry.ts";
+export { createSerializerInterceptor } from "./serializer.ts";
+export { createTimeoutInterceptor } from "./timeout.ts";
 
 // Types
 export type {

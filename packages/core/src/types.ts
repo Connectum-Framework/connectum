@@ -8,8 +8,7 @@ import type { EventEmitter } from "node:events";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
 import type { DescFile } from "@bufbuild/protobuf";
-import type { ConnectRouter } from "@connectrpc/connect";
-import type { Interceptor } from "@connectrpc/connect";
+import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 
 /**
  * Service route function

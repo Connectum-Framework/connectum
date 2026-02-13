@@ -10,8 +10,8 @@
 
 import { setTimeout } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
 import type { ConnectRouter } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { ProtocolContext, ProtocolRegistration } from "@connectum/core";
 import { Health, HealthCheckResponseSchema, HealthListResponseSchema } from "#gen/grpc/health/v1/health_pb.js";
 import { HealthcheckManager } from "./HealthcheckManager.ts";
