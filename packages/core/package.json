@@ -9,7 +9,9 @@
     "./types": "./src/types.ts",
     "./config": "./src/config/index.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -25,7 +27,14 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["connectum", "connectrpc", "grpc", "server", "protocols", "lifecycle"],
+  "keywords": [
+    "connectum",
+    "connectrpc",
+    "grpc",
+    "server",
+    "protocols",
+    "lifecycle"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

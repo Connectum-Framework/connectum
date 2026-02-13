@@ -11,7 +11,11 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": ["src", "gen", "proto"],
+  "files": [
+    "src",
+    "gen",
+    "proto"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -31,7 +35,13 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage gen gen-ts"
   },
-  "keywords": ["healthcheck", "health-check", "grpc", "connectrpc", "connectum"],
+  "keywords": [
+    "healthcheck",
+    "health-check",
+    "grpc",
+    "connectrpc",
+    "connectum"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

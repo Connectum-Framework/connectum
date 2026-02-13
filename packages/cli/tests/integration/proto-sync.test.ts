@@ -13,8 +13,8 @@
 
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
-import { createServer } from "@connectum/core";
 import type { Server } from "@connectum/core";
+import { createServer } from "@connectum/core";
 import { executeProtoSync } from "../../src/commands/proto-sync.ts";
 import { fetchFileDescriptorSetBinary, fetchReflectionData } from "../../src/utils/reflection.ts";
 

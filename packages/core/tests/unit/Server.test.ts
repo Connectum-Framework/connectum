@@ -8,8 +8,8 @@ import assert from "node:assert";
 import { afterEach, describe, it, mock } from "node:test";
 import type { ConnectRouter } from "@connectrpc/connect";
 import { createServer } from "../../src/Server.ts";
-import { ServerState } from "../../src/types.ts";
 import type { Server, ServiceRoute } from "../../src/types.ts";
+import { ServerState } from "../../src/types.ts";
 
 // Mock service for testing
 const createMockService = (): ServiceRoute => {

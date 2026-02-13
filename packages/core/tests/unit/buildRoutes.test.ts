@@ -8,8 +8,8 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
-import { buildRoutes } from "../../src/buildRoutes.ts";
 import type { BuildRoutesOptions } from "../../src/buildRoutes.ts";
+import { buildRoutes } from "../../src/buildRoutes.ts";
 import type { ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
 
 /**

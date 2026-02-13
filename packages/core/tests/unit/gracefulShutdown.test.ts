@@ -10,10 +10,10 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import type { GracefulShutdownOptions } from "../../src/gracefulShutdown.ts";
+import { performGracefulShutdown } from "../../src/gracefulShutdown.ts";
 import type { ShutdownManager } from "../../src/ShutdownManager.ts";
 import type { TransportManager } from "../../src/TransportManager.ts";
-import { performGracefulShutdown } from "../../src/gracefulShutdown.ts";
-import type { GracefulShutdownOptions } from "../../src/gracefulShutdown.ts";
 
 /** Extract mock call count from a mock.fn() disguised as a typed method */
 function mockCallCount(fn: unknown): number {

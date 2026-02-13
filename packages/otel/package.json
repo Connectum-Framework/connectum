@@ -18,7 +18,9 @@
     "./metrics": "./src/metrics.ts",
     "./provider": "./src/provider.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -33,7 +35,14 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["opentelemetry", "tracing", "metrics", "logging", "connectum", "observability"],
+  "keywords": [
+    "opentelemetry",
+    "tracing",
+    "metrics",
+    "logging",
+    "connectum",
+    "observability"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

@@ -12,7 +12,9 @@
     "./commands/proto-sync": "./src/commands/proto-sync.ts",
     "./utils/reflection": "./src/utils/reflection.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -28,7 +30,14 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["cli", "connectum", "connectrpc", "grpc", "proto-sync", "reflection"],
+  "keywords": [
+    "cli",
+    "connectum",
+    "connectrpc",
+    "grpc",
+    "proto-sync",
+    "reflection"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

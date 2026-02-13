@@ -7,7 +7,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Connectum-Framework/connectum.git",
@@ -23,7 +25,13 @@
     "format": "biome check --write src",
     "clean": "rm -rf coverage"
   },
-  "keywords": ["reflection", "grpc", "connectrpc", "connectum", "server-reflection"],
+  "keywords": [
+    "reflection",
+    "grpc",
+    "connectrpc",
+    "connectum",
+    "server-reflection"
+  ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {

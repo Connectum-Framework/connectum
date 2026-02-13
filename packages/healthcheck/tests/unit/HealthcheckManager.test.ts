@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { beforeEach, describe, it } from "node:test";
-import { HealthcheckManager, createHealthcheckManager } from "../../src/HealthcheckManager.ts";
+import { createHealthcheckManager, HealthcheckManager } from "../../src/HealthcheckManager.ts";
 import { ServingStatus } from "../../src/types.ts";
 
 describe("HealthcheckManager", () => {
