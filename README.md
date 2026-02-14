@@ -5,7 +5,6 @@
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D25.2.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Native-blue)](https://nodejs.org/api/typescript.html)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Beta Release](https://img.shields.io/badge/release-v1.0.0--beta.2-orange)](https://github.com/Connectum-Framework/connectum/releases)
 
 ## Features
 
@@ -112,11 +111,10 @@ Connectum is organized into 6 modular packages:
 
 ## Documentation
 
-- **[Full Documentation](https://github.com/Connectum-Framework/docs)** - All documentation sections
-- **[Quick Start](https://github.com/Connectum-Framework/docs/blob/main/guide/getting-started/quick-start.md)** - Create your first service in 5 minutes
-- **[Migration from @labeling/utils](https://github.com/Connectum-Framework/docs/blob/main/guide/migration/from-labeling-utils.md)** - Migration guide
-- **[Architecture Decision Records](https://github.com/Connectum-Framework/docs/blob/main/contributing/adr/)** - Architectural decisions
-- **[API Reference](https://github.com/Connectum-Framework/docs/blob/main/guide/api/)** - Full API documentation
+- **[Full Documentation](https://connectum.dev)** - All documentation sections
+- **[Quick Start](https://connectum.dev/en/guide/quickstart)** - Create your first service in 5 minutes
+- **[Architecture Decision Records](https://connectum.dev/en/contributing/adr/)** - Architectural decisions
+- **[Packages](https://connectum.dev/en/packages/core)** - API reference for all packages
 
 ## Architecture
 
@@ -135,7 +133,7 @@ Layer 3: Development Tools
   └── testing         # Testing utilities
 ```
 
-More details: [Architecture Overview](https://github.com/Connectum-Framework/docs/blob/main/contributing/architecture/overview.md)
+More details: [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture)
 
 ## Server API
 
@@ -252,7 +250,7 @@ pnpm run build:proto
 pnpm test
 ```
 
-More details: [Development Setup](https://github.com/Connectum-Framework/docs/blob/main/contributing/development/development-setup.md)
+More details: [Development Setup](https://connectum.dev/en/contributing/development-setup)
 
 ### Repository Structure
 
@@ -295,16 +293,12 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md)
 ### Quick Links
 
 - [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Development Setup](https://github.com/Connectum-Framework/docs/blob/main/contributing/development/development-setup.md)
-- [Architecture Decision Records](https://github.com/Connectum-Framework/docs/blob/main/contributing/adr/)
+- [Development Setup](https://connectum.dev/en/contributing/development-setup)
+- [Architecture Decision Records](https://connectum.dev/en/contributing/adr/)
 
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-Connectum is an evolution of [@labeling/utils](https://github.com/AnyLabel/Integrity), redesigned as a universal framework.
 
 ---
 
