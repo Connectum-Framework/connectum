@@ -61,11 +61,13 @@ jobs:
               if (error.status === 422) {
                 const safe = labels.filter(l => l.startsWith('type:'));
                 if (safe.length > 0) {
-                  await github.rest.issues.addLabels({
-                    ...context.repo,
-                    issue_number: context.issue.number,
-                    labels: safe,
-                  });
+                  try {
+                    await github.rest.issues.addLabels({
+                      ...context.repo,
+                      issue_number: context.issue.number,
+                      labels: safe,
+                    });
+                  } catch { /* all type: labels exist — ignore */ }
                 }
               } else {
                 throw error;
@@ -107,8 +109,25 @@ jobs:
               }
             }
 
-            await github.rest.issues.addLabels({
-              ...context.repo,
-              issue_number: context.issue.number,
-              labels,
-            });
+            try {
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: context.issue.number,
+                labels,
+              });
+            } catch (error) {
+              if (error.status === 422) {
+                const safe = labels.filter(l => l.startsWith('type:') || l === 'status:triage');
+                if (safe.length > 0) {
+                  try {
+                    await github.rest.issues.addLabels({
+                      ...context.repo,
+                      issue_number: context.issue.number,
+                      labels: safe,
+                    });
+                  } catch { /* labels don't exist — ignore */ }
+                }
+              } else {
+                throw error;
+              }
+            }
