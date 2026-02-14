@@ -1,0 +1,27 @@
+"pkg:core":
+  - changed-files:
+      - any-glob-to-any-file: "packages/core/**"
+
+"pkg:interceptors":
+  - changed-files:
+      - any-glob-to-any-file: "packages/interceptors/**"
+
+"pkg:healthcheck":
+  - changed-files:
+      - any-glob-to-any-file: "packages/healthcheck/**"
+
+"pkg:reflection":
+  - changed-files:
+      - any-glob-to-any-file: "packages/reflection/**"
+
+"pkg:otel":
+  - changed-files:
+      - any-glob-to-any-file: "packages/otel/**"
+
+"pkg:testing":
+  - changed-files:
+      - any-glob-to-any-file: "packages/testing/**"
+
+"pkg:cli":
+  - changed-files:
+      - any-glob-to-any-file: "packages/cli/**"

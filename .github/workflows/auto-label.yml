@@ -1,0 +1,114 @@
+name: Auto Label
+
+on:
+  pull_request:
+    types: [opened]
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  label-pr:
+    name: Label Pull Request
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Detect type and breaking change from title
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body || '';
+            const labels = [];
+
+            const prefixMatch = title.match(/^(\w+)(\(.+\))?!?:/);
+            if (prefixMatch) {
+              const prefix = prefixMatch[1].toLowerCase();
+              const typeMap = {
+                fix: 'type:bug',
+                feat: 'type:feature',
+                docs: 'type:docs',
+                perf: 'type:perf',
+                chore: 'type:chore',
+                ci: 'type:chore',
+                build: 'type:chore',
+                refactor: 'type:chore',
+                style: 'type:chore',
+                test: 'type:chore',
+              };
+              if (typeMap[prefix]) labels.push(typeMap[prefix]);
+            }
+
+            if (/^\w+(\(.+\))?!:/.test(title) || body.includes('BREAKING CHANGE')) {
+              labels.push('breaking change');
+            }
+
+            if (labels.length === 0) return;
+
+            try {
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: context.issue.number,
+                labels,
+              });
+            } catch (error) {
+              if (error.status === 422) {
+                const safe = labels.filter(l => l.startsWith('type:'));
+                if (safe.length > 0) {
+                  await github.rest.issues.addLabels({
+                    ...context.repo,
+                    issue_number: context.issue.number,
+                    labels: safe,
+                  });
+                }
+              } else {
+                throw error;
+              }
+            }
+
+      - name: Detect package labels from changed files
+        if: hashFiles('.github/labeler.yml') != ''
+        uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6.0.1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: false
+
+  label-issue:
+    name: Label Issue
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply triage and detect type
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const title = context.payload.issue.title;
+            const labels = ['status:triage'];
+
+            if (/^\[Bug\]/i.test(title) || /\bbug\b/i.test(title)) {
+              labels.push('type:bug');
+            } else if (/^\[Feature\]/i.test(title) || /\bfeature request\b/i.test(title)) {
+              labels.push('type:feature');
+            } else {
+              const m = title.match(/^(\w+)(\(.+\))?:/);
+              if (m) {
+                const map = {
+                  fix:'type:bug', feat:'type:feature', docs:'type:docs',
+                  perf:'type:perf', chore:'type:chore', ci:'type:chore',
+                  build:'type:chore', refactor:'type:chore', test:'type:chore',
+                };
+                if (map[m[1].toLowerCase()]) labels.push(map[m[1].toLowerCase()]);
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: context.issue.number,
+              labels,
+            });
