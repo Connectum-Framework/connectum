@@ -63,6 +63,7 @@ jobs:
           publish: pnpm changeset:publish
           title: "chore: version packages"
           commit: "chore: version packages"
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NPM_CONFIG_PROVENANCE: "true"
