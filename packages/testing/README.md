@@ -2,17 +2,24 @@
 
 Testing utilities for Connectum framework.
 
-> **Status:** Planned - This package is not yet implemented. This README serves as a specification for future implementation.
+> **Status:** Planned — this package is not yet implemented. This README serves as a specification for future implementation.
 
-**@connectum/testing** is a collection of testing utilities for simplifying the writing of unit and integration tests for Connectum microservices.
+**@connectum/testing** eliminates test boilerplate across Connectum packages by providing mock factories, assertion helpers, and a test server utility.
 
-## Planned Features
+## Motivation
 
-- **Mock Helpers**: createMockMessage, createMockField, createMockMethod for protobuf types
-- **Test Server**: createTestServer for integration tests
-- **Mock Interceptors**: mockInterceptor for test isolation
-- **Assertions**: Custom assertions for ConnectRPC responses
-- **Fixtures**: Ready-made test fixtures for common scenarios
+Analysis of the existing test suite revealed significant duplication:
+
+| Pattern | Duplicates | Priority |
+|---------|-----------|----------|
+| Mock interceptor request | 50+ | P0 |
+| Mock next function | 35+ | P0 |
+| ConnectError assertions | 50+ | P0 |
+| DescMessage/Field/Method mocks | 10+ | P1 |
+| Streaming mock generators | 5+ | P1 |
+| Test server lifecycle | 2+ | P2 |
+
+**Design influenced by:** [connect-es](https://github.com/connectrpc/connect-es) (Jasmine, `useNodeServer`, service descriptor mocks) and [protobuf-es](https://github.com/bufbuild/protobuf-es) (`node:test`, descriptor-driven tests, parameterized test cases).
 
 ## Installation
 
@@ -20,432 +27,567 @@ Testing utilities for Connectum framework.
 pnpm add -D @connectum/testing
 ```
 
-**Peer dependencies**:
+**Peer dependencies:**
 
 ```bash
 pnpm add -D @connectrpc/connect @bufbuild/protobuf
 ```
 
-## Planned API
+## API Reference
 
-### Mock Helpers for Protobuf Types
+### Mock Request — `createMockRequest()`
 
-**Problem:** @bufbuild/protobuf requires full metadata structure for DescMessage, DescField, DescMethod
-
-**Solution:** Ready-made mock helpers with correct structure
-
-#### createMockMessage
+Creates a mock interceptor request object. Eliminates the most common boilerplate (50+ duplicates).
 
 ```typescript
-import { createMockMessage } from '@connectum/testing';
-import type { DescMessage } from '@bufbuild/protobuf';
+import type { Code } from '@connectrpc/connect';
 
-// Create mock DescMessage with full metadata
-const mockSchema: DescMessage = createMockMessage('test.UserMessage', {
-  fields: [
-    { name: 'id', type: 'string' },
-    { name: 'email', type: 'string' },
-  ]
-});
+interface MockRequestOptions {
+  /** Service type name. Default: `'test.TestService'` */
+  service?: string;
+  /** Method name. Default: `'TestMethod'` */
+  method?: string;
+  /** Request message payload. Default: `{}` */
+  message?: unknown;
+  /** Streaming request flag. Default: `false` */
+  stream?: boolean;
+  /** Request URL. Auto-generated from service/method if omitted */
+  url?: string;
+  /** Request headers. Default: `new Headers()` */
+  headers?: Headers;
+}
 
-// Used in interceptor tests
-const interceptor = createSerializerInterceptor();
-const mockReq = {
-  method: {
-    input: mockSchema,
-    output: mockSchema,
-  },
-  message: { id: '123', email: 'test@example.com' },
-};
+function createMockRequest(options?: MockRequestOptions): UnaryRequest;
 ```
 
-**Implementation reference:** `packages/interceptors/tests/unit/serializer.test.ts:16-39`
+**Usage:**
 
-**Signature:**
 ```typescript
-function createMockMessage(
+import { createMockRequest } from '@connectum/testing';
+
+// Minimal — all defaults
+const req = createMockRequest();
+// → { url: 'http://localhost/test.TestService/TestMethod', stream: false, message: {}, ... }
+
+// Custom service and message
+const req = createMockRequest({
+  service: 'myapp.UserService',
+  method: 'GetUser',
+  message: { id: '123' },
+});
+
+// Streaming request
+const req = createMockRequest({ stream: true, message: createMockStream({ id: '1' }, { id: '2' }) });
+```
+
+**Replaces this boilerplate:**
+
+```typescript
+// BEFORE (repeated 50+ times across tests)
+const mockReq = {
+  url: 'http://localhost/test.Service/Method',
+  stream: false,
+  message: { field: 'value' },
+  service: { typeName: 'test.Service' },
+  method: { name: 'Method' },
+  header: new Headers(),
+} as any;
+
+// AFTER
+const mockReq = createMockRequest({ message: { field: 'value' } });
+```
+
+---
+
+### Mock Next Function — `createMockNext()`
+
+Creates mock `next` functions for interceptor testing. Returns `node:test` `mock.fn()` with spy capabilities (call count, arguments tracking).
+
+```typescript
+import type { MockFunction } from 'node:test';
+
+interface MockNextOptions {
+  /** Response message. Default: `{ result: 'success' }` */
+  message?: unknown;
+  /** Streaming response flag. Default: `false` */
+  stream?: boolean;
+}
+
+/** Returns a successful response */
+function createMockNext(options?: MockNextOptions): MockFunction;
+
+/** Throws a ConnectError */
+function createMockNextError(code: Code, message?: string): MockFunction;
+
+/** Responds after a delay (for timeout/retry testing) */
+function createMockNextSlow(delay: number, options?: MockNextOptions): MockFunction;
+```
+
+**Usage:**
+
+```typescript
+import { createMockNext, createMockNextError, createMockNextSlow } from '@connectum/testing';
+import { Code } from '@connectrpc/connect';
+
+// Success
+const next = createMockNext();
+const result = await handler(req, next);
+assert.strictEqual(next.mock.calls.length, 1);
+
+// Error
+const next = createMockNextError(Code.Internal, 'Database error');
+
+// Slow (for timeout testing)
+const next = createMockNextSlow(200, { message: { result: 'late' } });
+```
+
+**Replaces this boilerplate:**
+
+```typescript
+// BEFORE (repeated 35+ times)
+const next = mock.fn(async () => ({
+  stream: false,
+  message: { result: 'success' },
+}));
+
+// AFTER
+const next = createMockNext();
+```
+
+---
+
+### ConnectError Assertions — `assertConnectError()`
+
+Type-safe assertion for ConnectError with code and optional message pattern matching.
+
+```typescript
+/**
+ * Asserts that `error` is a ConnectError with the expected code.
+ * Optionally matches the error message against a string or RegExp.
+ * Narrows the type to ConnectError via `asserts`.
+ */
+function assertConnectError(
+  error: unknown,
+  expectedCode: Code,
+  messagePattern?: string | RegExp,
+): asserts error is ConnectError;
+```
+
+**Usage:**
+
+```typescript
+import { assertConnectError } from '@connectum/testing';
+import { Code } from '@connectrpc/connect';
+
+// In rejects callback
+await assert.rejects(() => handler(req, next), (err: unknown) => {
+  assertConnectError(err, Code.InvalidArgument, /validation failed/i);
+  return true;
+});
+```
+
+**Replaces this boilerplate:**
+
+```typescript
+// BEFORE (repeated 50+ times)
+await assert.rejects(() => handler(mockReq), (err: unknown) => {
+  assert(err instanceof ConnectError);
+  assert.strictEqual((err as ConnectError).code, Code.Internal);
+  assert((err as ConnectError).message.includes('expected text'));
+  return true;
+});
+
+// AFTER
+await assert.rejects(() => handler(req, next), (err: unknown) => {
+  assertConnectError(err, Code.Internal, 'expected text');
+  return true;
+});
+```
+
+---
+
+### Protobuf Descriptor Mocks
+
+Mock factories for `@bufbuild/protobuf` descriptor types. These produce structurally valid objects accepted by `toJson()`, `fromJson()`, and interceptor logic.
+
+#### `createMockDescMessage()`
+
+```typescript
+interface MockDescMessageOptions {
+  /** Field definitions. Default: `[]` */
+  fields?: Array<{
+    name: string;
+    type?: string;
+    fieldNumber?: number;
+  }>;
+  /** Oneof group names. Default: `[]` */
+  oneofs?: string[];
+}
+
+/**
+ * Creates a mock DescMessage with full protobuf metadata.
+ * Includes required properties: kind, typeName, name, fields, field,
+ * oneofs, members, nestedEnums, nestedMessages, nestedExtensions,
+ * parent, proto, file.
+ */
+function createMockDescMessage(
   typeName: string,
-  options?: {
-    fields?: Array<{ name: string; type: string }>;
-    oneofs?: string[];
-  }
+  options?: MockDescMessageOptions,
 ): DescMessage;
 ```
 
-#### createMockField
+**Usage:**
 
 ```typescript
-import { createMockField } from '@connectum/testing';
-import type { DescField } from '@bufbuild/protobuf';
+import { createMockDescMessage } from '@connectum/testing';
 
-// Create mock DescField with proto options
-const passwordField: DescField = createMockField('password', {
-  isSensitive: true,  // Sets sensitive extension
+const schema = createMockDescMessage('test.UserMessage', {
+  fields: [
+    { name: 'id', type: 'string' },
+    { name: 'email', type: 'string' },
+  ],
 });
 
-// Used in redact interceptor tests
-const mockSchema = createMockMessage('test.LoginRequest', {
-  fields: [passwordField, createMockField('username')],
+// Use in interceptor request
+const req = createMockRequest({
+  method: 'GetUser',
+  message: { id: '123', email: 'test@example.com' },
 });
+// Attach schema to method descriptor
+req.method.input = schema;
+req.method.output = schema;
 ```
 
-**Implementation reference:** `packages/interceptors/tests/unit/redact.test.ts:19-39`
+**Replaces this boilerplate:**
 
-**Signature:**
 ```typescript
-function createMockField(
+// BEFORE (20 lines per mock, repeated 10+ times)
+const schema = {
+  kind: 'message',
+  typeName: 'test.UserMessage',
+  name: 'UserMessage',
+  fields: [],
+  field: {},
+  oneofs: [],
+  members: [],
+  nestedEnums: [],
+  nestedMessages: [],
+  nestedExtensions: [],
+  parent: undefined,
+  proto: { options: undefined },
+  file: { name: 'test.proto', proto: { edition: 'EDITION_PROTO3' } },
+} as any as DescMessage;
+
+// AFTER
+const schema = createMockDescMessage('test.UserMessage');
+```
+
+#### `createMockDescField()`
+
+```typescript
+interface MockDescFieldOptions {
+  /** Mark field as sensitive (for redact interceptor). Default: `false` */
+  isSensitive?: boolean;
+  /** Proto field number. Default: auto-incremented */
+  fieldNumber?: number;
+  /** Field scalar type. Default: `'string'` */
+  type?: string;
+}
+
+function createMockDescField(
   localName: string,
-  options?: {
-    isSensitive?: boolean;
-    type?: string;
-  }
+  options?: MockDescFieldOptions,
 ): DescField;
 ```
 
-#### createMockMethod
+**Usage:**
 
 ```typescript
-import { createMockMethod } from '@connectum/testing';
-import type { DescMethod } from '@bufbuild/protobuf';
+import { createMockDescField } from '@connectum/testing';
 
-// Create mock DescMethod with options
-const mockMethod: DescMethod = createMockMethod('Login', {
-  useSensitiveRedaction: true,  // Sets useSensitive extension
-  input: mockInputSchema,
-  output: mockOutputSchema,
-});
-
-// Used in tests
-const mockReq = {
-  method: mockMethod,
-  message: { username: 'john', password: 'secret' },
-};
+const passwordField = createMockDescField('password', { isSensitive: true });
+const usernameField = createMockDescField('username');
 ```
 
-**Implementation reference:** `packages/interceptors/tests/unit/redact.test.ts:60-80`
+#### `createMockDescMethod()`
 
-**Signature:**
 ```typescript
-function createMockMethod(
+interface MockDescMethodOptions {
+  /** Input message descriptor */
+  input?: DescMessage;
+  /** Output message descriptor */
+  output?: DescMessage;
+  /** Method kind. Default: `'unary'` */
+  kind?: 'unary' | 'server_streaming' | 'client_streaming' | 'bidi_streaming';
+  /** Enable sensitive field redaction for this method. Default: `false` */
+  useSensitiveRedaction?: boolean;
+}
+
+function createMockDescMethod(
   name: string,
-  options?: {
-    useSensitiveRedaction?: boolean;
-    input?: DescMessage;
-    output?: DescMessage;
-  }
+  options?: MockDescMethodOptions,
 ): DescMethod;
 ```
 
-### Test Server for Integration Tests
+**Usage:**
 
-**Problem:** Need a way to spin up a real ConnectRPC server for integration tests
+```typescript
+import { createMockDescMethod, createMockDescMessage } from '@connectum/testing';
 
-**Solution:** createTestServer utility
+const inputSchema = createMockDescMessage('test.LoginRequest');
+const outputSchema = createMockDescMessage('test.LoginResponse');
+
+const method = createMockDescMethod('Login', {
+  input: inputSchema,
+  output: outputSchema,
+  useSensitiveRedaction: true,
+});
+```
+
+---
+
+### Streaming Helpers — `createMockStream()`
+
+Creates an `AsyncIterable` from a list of items. Useful for testing streaming interceptors.
+
+```typescript
+/**
+ * Creates an AsyncIterable that yields items sequentially.
+ * Optionally inserts a delay between items.
+ */
+function createMockStream<T>(
+  items: T[],
+  options?: { delayMs?: number },
+): AsyncIterable<T>;
+```
+
+**Usage:**
+
+```typescript
+import { createMockStream } from '@connectum/testing';
+
+// Simple stream
+const stream = createMockStream([{ id: '1' }, { id: '2' }, { id: '3' }]);
+
+// Slow stream (for timeout testing)
+const stream = createMockStream([{ id: '1' }, { id: '2' }], { delayMs: 100 });
+
+// In streaming interceptor test
+const req = createMockRequest({
+  stream: true,
+  message: createMockStream([{ value: 'a' }, { value: 'b' }]),
+});
+```
+
+**Replaces this boilerplate:**
+
+```typescript
+// BEFORE
+async function* mockResStream() {
+  yield { result: 'chunk1' };
+  yield { result: 'chunk2' };
+}
+
+// AFTER
+const stream = createMockStream([{ result: 'chunk1' }, { result: 'chunk2' }]);
+```
+
+---
+
+### Test Server — `createTestServer()`
+
+Starts a real ConnectRPC server on a random port for integration testing. Inspired by `useNodeServer()` from connect-es.
+
+```typescript
+interface TestServer {
+  /** Pre-configured client transport connected to the test server */
+  transport: Transport;
+  /** Server base URL (e.g. `http://localhost:54321`) */
+  baseUrl: string;
+  /** Assigned port number */
+  port: number;
+  /** Stop the server and close all connections */
+  close(): Promise<void>;
+}
+
+interface CreateTestServerOptions {
+  /** ConnectRPC service route handlers */
+  services: ServiceRoute[];
+  /** Interceptors to apply. Default: `[]` */
+  interceptors?: Interceptor[];
+  /** Protocol extensions (Healthcheck, Reflection). Default: `[]` */
+  protocols?: Protocol[];
+  /** Port number. Default: `0` (random available port) */
+  port?: number;
+}
+
+function createTestServer(options: CreateTestServerOptions): Promise<TestServer>;
+```
+
+**Usage:**
 
 ```typescript
 import { createTestServer } from '@connectum/testing';
-import { myServiceRoutes } from './services';
+import { createPromiseClient } from '@connectrpc/connect';
+import { MyService } from './gen/myservice_pb.js';
 
-describe('Integration tests', () => {
-  it('should handle requests end-to-end', async () => {
-    // Start test server
-    const server = await createTestServer({
-      routes: [myServiceRoutes],
-      interceptors: [
-        createValidationInterceptor(),
-        createLoggerInterceptor({ level: 'silent' }),
-      ],
-    });
-
-    // Make request
-    const client = createPromiseClient(MyService, server.transport);
-    const response = await client.getUser({ id: '123' });
-
-    // Assertions
-    assert.strictEqual(response.id, '123');
-
-    // Cleanup
-    await server.close();
-  });
-});
-```
-
-**Signature:**
-```typescript
-interface TestServer {
-  transport: Transport;           // Client transport
-  baseUrl: string;                // Server base URL
-  close: () => Promise<void>;     // Cleanup
-}
-
-function createTestServer(options: {
-  routes: Routes[];
-  interceptors?: Interceptor[];
-  port?: number;  // Random port if not specified
-}): Promise<TestServer>;
-```
-
-### Mock Interceptor
-
-**Problem:** Isolate tests from real interceptors
-
-**Solution:** mockInterceptor for stubbing
-
-```typescript
-import { mockInterceptor } from '@connectum/testing';
-import { mock } from 'node:test';
-
-describe('Service tests', () => {
-  it('should handle validation errors', async () => {
-    const validationMock = mockInterceptor({
-      type: 'validation',
-      behavior: 'reject',
-      error: new ConnectError('Validation failed', Code.InvalidArgument),
-    });
-
-    const server = await createTestServer({
-      routes: [myServiceRoutes],
-      interceptors: [validationMock],
-    });
-
-    // Test that service handles validation errors correctly
-    await assert.rejects(
-      () => client.createUser({ email: 'invalid' }),
-      /Validation failed/
-    );
-  });
-});
-```
-
-## Best Practices
-
-### 1. Use the node:test Runner
-
-Connectum uses the built-in `node:test` (no dependencies):
-
-```typescript
-import assert from 'node:assert';
-import { describe, it, mock, beforeEach, afterEach } from 'node:test';
-
-describe('myFunction', () => {
-  it('should handle valid input', () => {
-    const result = myFunction('valid');
-    assert.strictEqual(result, 'expected');
-  });
-
-  it('should reject invalid input', () => {
-    assert.throws(() => myFunction(null), /Invalid input/);
-  });
-});
-```
-
-### 2. Test Structure
-
-```
-packages/my-package/
-├── src/
-│   ├── index.ts
-│   └── myService.ts
-└── tests/
-    ├── unit/           # Unit tests (isolated)
-    │   └── myService.test.ts
-    └── integration/    # Integration tests (full stack)
-        └── full-chain.test.ts
-```
-
-### 3. Mock Only External Dependencies
-
-**Rule:** Mock external dependencies (database, HTTP), do NOT mock internal code
-
-```typescript
-// GOOD - mock external database
-import { mock } from 'node:test';
-
-const dbMock = mock.fn(async (query) => {
-  return { rows: [{ id: 1, name: 'Test' }] };
-});
-
-// BAD - mock internal functions
-const myFunctionMock = mock.fn(() => 'fake result');
-```
-
-### 4. Cleanup After Tests
-
-```typescript
-describe('Server tests', () => {
+describe('MyService integration', () => {
   let server: TestServer;
 
   beforeEach(async () => {
-    server = await createTestServer({ routes: [myRoutes] });
+    server = await createTestServer({
+      services: [myServiceRoutes],
+      interceptors: [createValidationInterceptor()],
+    });
   });
 
   afterEach(async () => {
-    await server.close();  // CRITICAL: Always cleanup
+    await server.close();
   });
 
-  it('should respond to requests', async () => {
-    // Test code
+  it('should handle GetUser request', async () => {
+    const client = createPromiseClient(MyService, server.transport);
+    const response = await client.getUser({ id: '123' });
+    assert.strictEqual(response.name, 'Test User');
   });
 });
 ```
 
-### 5. Use Descriptive Test Names
+### Convenience Wrapper — `withTestServer()`
+
+Manages server lifecycle automatically — starts before the test function, closes after (even on error).
 
 ```typescript
-// GOOD - descriptive name
-it('should reject requests when circuit breaker is open', async () => {
-  // Test code
-});
+/**
+ * Creates a test server, runs the test function, and ensures cleanup.
+ * Equivalent to try/finally with createTestServer + close.
+ */
+function withTestServer<T>(
+  options: CreateTestServerOptions,
+  testFn: (server: TestServer) => Promise<T>,
+): Promise<T>;
+```
 
-// BAD - unclear name
-it('should work', async () => {
-  // Test code
+**Usage:**
+
+```typescript
+import { withTestServer } from '@connectum/testing';
+
+it('should respond to health check', async () => {
+  await withTestServer(
+    {
+      services: [myServiceRoutes],
+      protocols: [Healthcheck({ httpEnabled: true })],
+    },
+    async (server) => {
+      const res = await fetch(`${server.baseUrl}/healthz`);
+      assert.strictEqual(res.status, 200);
+    },
+  );
 });
 ```
 
-### 6. Test Edge Cases
+---
 
-```typescript
-describe('retry interceptor', () => {
-  it('should succeed on first attempt', async () => { /* ... */ });
-  it('should retry on ResourceExhausted', async () => { /* ... */ });
-  it('should NOT retry on Internal error', async () => { /* ... */ });
-  it('should stop after maxRetries', async () => { /* ... */ });
-  it('should reject negative maxRetries', async () => { /* ... */ });
-});
-```
+## Complete Example
 
-### 7. Assertion Style
+A typical interceptor unit test using @connectum/testing utilities:
 
 ```typescript
 import assert from 'node:assert';
+import { describe, it } from 'node:test';
+import { Code } from '@connectrpc/connect';
+import {
+  createMockRequest,
+  createMockNext,
+  createMockNextError,
+  createMockNextSlow,
+  assertConnectError,
+} from '@connectum/testing';
+import { createTimeoutInterceptor } from '@connectum/interceptors';
 
-// Prefer strict equality
-assert.strictEqual(result, expected);
+describe('timeout interceptor', () => {
+  const interceptor = createTimeoutInterceptor({ duration: 100 });
 
-// NOT loose equality
-assert.equal(result, expected);  // BAD
+  it('should pass through fast responses', async () => {
+    const req = createMockRequest();
+    const next = createMockNext({ message: { value: 42 } });
 
-// Deep object comparison
-assert.deepStrictEqual(obj1, obj2);
+    const handler = interceptor(next);
+    const res = await handler(req);
 
-// Error assertions
-assert.throws(() => myFunction(), /Error message/);
-await assert.rejects(async () => myAsyncFn(), /Error/);
+    assert.strictEqual(next.mock.calls.length, 1);
+    assert.deepStrictEqual(res.message, { value: 42 });
+  });
+
+  it('should abort slow responses with DeadlineExceeded', async () => {
+    const req = createMockRequest();
+    const next = createMockNextSlow(500);
+
+    const handler = interceptor(next);
+
+    await assert.rejects(() => handler(req), (err: unknown) => {
+      assertConnectError(err, Code.DeadlineExceeded);
+      return true;
+    });
+  });
+
+  it('should propagate upstream errors unchanged', async () => {
+    const req = createMockRequest();
+    const next = createMockNextError(Code.NotFound, 'User not found');
+
+    const handler = interceptor(next);
+
+    await assert.rejects(() => handler(req), (err: unknown) => {
+      assertConnectError(err, Code.NotFound, 'User not found');
+      return true;
+    });
+  });
+});
 ```
+
+## Architecture
+
+- **Layer:** 2 (Tools) — depends on Layer 0 (@connectum/core) and external packages
+- **Dependencies:** `@connectum/core`, `@connectrpc/connect`, `@bufbuild/protobuf`
+- **Rationale:** Testing is a devDependency concern — production code must not pull test utilities ([ADR-003](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/003-package-decomposition.md))
+- **Test runner:** `node:test` built-in ([ADR-007](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/007-testing-strategy.md))
+
+### Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Mock objects vs runtime proto compilation | Mock objects | No protoc/buf dependency at test time; matches existing codebase patterns; simpler |
+| `mock.fn()` in createMockNext | Yes (node:test) | Spy capabilities (call count, args) needed; node:test is the project standard |
+| Both createTestServer + withTestServer | Yes | Different use cases: beforeEach/afterEach vs single-test convenience |
+| No re-exports of Code/ConnectError | Correct | Users import directly from @connectrpc/connect; avoids coupling |
+| `createMock*` naming | `create` prefix | Consistent with existing codebase (`createServer`, `createDefaultInterceptors`) |
+
+## Implementation Plan
+
+| Phase | Scope | Depends on |
+|-------|-------|-----------|
+| 1 | `createMockRequest`, `createMockNext*`, `assertConnectError` | — |
+| 2 | `createMockDescMessage`, `createMockDescField`, `createMockDescMethod`, `createMockStream` | — |
+| 3 | `createTestServer`, `withTestServer` | @connectum/core |
+| 4 | Migrate existing tests in interceptors/core/otel to use @connectum/testing | Phases 1-3 |
 
 ## Running Tests
 
 ```bash
-# All tests
-pnpm test
-
-# Unit tests only
-pnpm test:unit
-
-# Integration tests only
-pnpm test:integration
-
-# Specific package
-pnpm --filter @connectum/my-package test
-
-# With coverage
-pnpm test -- --experimental-test-coverage
+pnpm test                                         # All tests
+pnpm test:unit                                    # Unit tests only
+pnpm --filter @connectum/testing test             # This package only
+pnpm test -- --experimental-test-coverage         # With coverage
 ```
-
-## Coverage Requirements
-
-**Target:** 90%+ coverage for all packages
-
-**Command:**
-```bash
-pnpm test -- --experimental-test-coverage
-```
-
-**CI enforcement:** Coverage threshold checked in CI pipeline
-
-## Examples from Phase 4
-
-### Interceptor Unit Test
-
-See `packages/interceptors/tests/unit/serializer.test.ts` for a full example:
-
-```typescript
-import assert from 'node:assert';
-import { describe, it, mock } from 'node:test';
-import { createSerializerInterceptor } from '../../src/serializer.ts';
-
-describe('serializer interceptor', () => {
-  it('should serialize unary request to JSON', async () => {
-    const interceptor = createSerializerInterceptor();
-    const mockSchema = createMockMessage('test.Message');
-
-    const mockReq = {
-      method: { input: mockSchema, output: mockSchema },
-      message: { field: 'value' },
-    };
-
-    const next = mock.fn(async (req) => ({
-      stream: false,
-      message: { result: 'success' },
-    }));
-
-    const handler = interceptor(next);
-    const result = await handler(mockReq);
-
-    assert.strictEqual(next.mock.calls.length, 1);
-    assert.strictEqual(result.message.result, 'success');
-  });
-});
-```
-
-### Integration Test
-
-See `packages/interceptors/tests/integration/full-chain.test.ts`:
-
-```typescript
-describe('Full Interceptor Chain', () => {
-  it('should process request through all interceptors', async () => {
-    const interceptors = [
-      createValidationInterceptor(),
-      createSerializerInterceptor(),
-      createLoggerInterceptor({ level: 'silent' }),
-      createRetryInterceptor({ maxRetries: 3 }),
-    ];
-
-    const handler = interceptors.reduce(
-      (next, interceptor) => interceptor(next),
-      mockNext
-    );
-
-    const result = await handler(mockReq);
-    assert.strictEqual(result.message.result, 'success');
-  });
-});
-```
-
-## Implementation Plan
-
-**Priority:** Medium (after core packages are implemented)
-
-**Tasks:**
-1. Implement createMockMessage helper
-2. Implement createMockField helper
-3. Implement createMockMethod helper
-4. Implement createTestServer utility
-5. Implement mockInterceptor utility
-6. Add TypeScript types
-7. Write unit tests for utilities
-8. Update documentation with real examples
-9. Publish v0.1.0
-
-**Target release:** v0.2.0-beta.1 or later
 
 ## License
 
-MIT
+Apache-2.0
 
-## Related Packages
+## References
 
-- [@connectum/interceptors](../interceptors/README.md) - Uses mock helpers in tests
-- [@connectum/core](../core/README.md) - Uses createTestServer in integration tests
+- [ADR-003: Package Decomposition](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/003-package-decomposition.md)
+- [ADR-007: Testing Strategy](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/007-testing-strategy.md)
+- [connect-es testing patterns](https://github.com/connectrpc/connect-es) — Jasmine, `useNodeServer()`, service descriptor mocks
+- [protobuf-es testing patterns](https://github.com/bufbuild/protobuf-es) — `node:test`, descriptor-driven tests, runtime proto compilation
