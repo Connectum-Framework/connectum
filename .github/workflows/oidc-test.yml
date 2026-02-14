@@ -30,21 +30,11 @@ jobs:
           echo "npm: $(npm -v)"
           echo "pnpm: $(pnpm -v)"
 
-      - name: Test pnpm publish with OIDC (dry-run first)
+      - name: Test pnpm publish with OIDC (expect version conflict = auth works)
         working-directory: packages/core
         run: |
-          echo "=== Test 1: pnpm publish --dry-run (no NPM_TOKEN) ==="
-          pnpm publish --dry-run --provenance --no-git-checks 2>&1 || true
-
-          echo ""
-          echo "=== Test 2: npm publish --dry-run (no NPM_TOKEN) ==="
-          npm publish --dry-run --provenance 2>&1 || true
-
-      - name: Test actual pnpm publish (expect version conflict = auth works)
-        working-directory: packages/core
-        run: |
-          echo "=== Test 3: pnpm publish --provenance (no NPM_TOKEN, expect version conflict) ==="
-          OUTPUT=$(pnpm publish --provenance --no-git-checks 2>&1) || true
+          echo "=== pnpm publish --provenance --tag rc --no-git-checks (no NPM_TOKEN) ==="
+          OUTPUT=$(pnpm publish --provenance --tag rc --no-git-checks 2>&1) || true
           echo "$OUTPUT"
 
           echo ""
