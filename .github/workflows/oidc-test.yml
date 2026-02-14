@@ -1,0 +1,58 @@
+name: OIDC Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-oidc:
+    name: Test OIDC Trusted Publishers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "25.2.0"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check npm/node versions
+        run: |
+          echo "Node: $(node -v)"
+          echo "npm: $(npm -v)"
+          echo "pnpm: $(pnpm -v)"
+
+      - name: Test pnpm publish with OIDC (dry-run first)
+        working-directory: packages/core
+        run: |
+          echo "=== Test 1: pnpm publish --dry-run (no NPM_TOKEN) ==="
+          pnpm publish --dry-run --provenance --no-git-checks 2>&1 || true
+
+          echo ""
+          echo "=== Test 2: npm publish --dry-run (no NPM_TOKEN) ==="
+          npm publish --dry-run --provenance 2>&1 || true
+
+      - name: Test actual pnpm publish (expect version conflict = auth works)
+        working-directory: packages/core
+        run: |
+          echo "=== Test 3: pnpm publish --provenance (no NPM_TOKEN, expect version conflict) ==="
+          OUTPUT=$(pnpm publish --provenance --no-git-checks 2>&1) || true
+          echo "$OUTPUT"
+
+          echo ""
+          echo "=== Analysis ==="
+          if echo "$OUTPUT" | grep -qi "already exists\|EPUBLISHCONFLICT\|previously published\|409"; then
+            echo "RESULT: OIDC AUTH WORKS! (version conflict = authenticated successfully)"
+          elif echo "$OUTPUT" | grep -qi "403\|401\|forbidden\|unauthorized\|ENEEDAUTH"; then
+            echo "RESULT: OIDC AUTH FAILED (auth error)"
+          else
+            echo "RESULT: UNEXPECTED - check output above"
+          fi
