@@ -1,6 +1,6 @@
 {
   "name": "@connectum/cli",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "CLI tools for Connectum framework: proto sync, service discovery",
   "type": "module",
   "main": "./src/index.ts",
