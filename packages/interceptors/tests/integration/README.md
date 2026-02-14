@@ -39,17 +39,16 @@ This directory contains integration tests for verifying the interaction between 
 - Fallback for graceful degradation
 
 **Important details:**
-- Retry works **only for Code.ResourceExhausted** (by design)
-- DeadlineExceeded, Internal and other errors are **not retryable**
+- Retry works for **Code.Unavailable** and **Code.ResourceExhausted** by default
+- DeadlineExceeded, Internal and other errors are **not retryable** by default
 - Circuit breaker opens after threshold consecutive failures
 - All resilience interceptors skip streaming by default
 
 ### 3. `security.test.ts` - Security Interceptors
 
 **Tests:**
-- Validation + Logger (without redact)
+- Validation + Logger
 - Reject invalid requests before processing
-- Redact utility functions (smoke test)
 - Graceful validation error handling
 - Skip streaming requests when configured
 - Logger without exposing sensitive data
@@ -58,11 +57,6 @@ This directory contains integration tests for verifying the interaction between 
 **Tested interceptors:**
 - Validation (protovalidate)
 - Logger
-- Redact (smoke test only - requires real proto)
-
-**Limitations:**
-- Full Redact testing requires real proto schemas with extensions
-- Current tests are smoke tests for API verification
 
 ## Running Tests
 
@@ -79,14 +73,14 @@ pnpm test -- --experimental-test-coverage
 
 ## Results
 
-**Total tests:** 18 integration tests
+**Total tests:** 14 integration tests
 **Status:** All passing
-**Execution time:** ~400ms
+**Execution time:** ~1100ms
 
 **Breakdown:**
 - Full Chain Integration: 5 tests
 - Resilience Pattern Integration: 6 tests
-- Security Integration: 7 tests
+- Security Integration: 3 tests
 
 ## Differences from Unit Tests
 
@@ -94,13 +88,13 @@ pnpm test -- --experimental-test-coverage
 - Test individual interceptors in isolation
 - Use mocks for dependencies
 - Fast execution (<1s)
-- 77 unit tests
+- 109 unit tests
 
 **Integration tests:**
 - Test interaction between multiple interceptors
 - Use real components (no mocks)
 - Verify end-to-end scenarios
-- 18 integration tests
+- 14 integration tests
 
 ## Future Improvements
 
@@ -114,20 +108,15 @@ pnpm test -- --experimental-test-coverage
    - Metrics collection
    - OTLP export
 
-3. **Runner Integration Tests** (Priority 4):
-   - Full server lifecycle
+3. **Server Integration Tests** (Priority 4):
+   - Full createServer() lifecycle
    - Health check + Reflection
    - Graceful shutdown
-
-4. **Redact Integration Tests**:
-   - Require real proto schemas with (integrity.attributes.sensitive) extension
-   - Verify redaction in response messages
-   - Verify rpcCheck for methods with use_sensitive
 
 ## Notes
 
 - All interceptors support `skipStreaming: true` by default
-- Retry works only with ResourceExhausted errors
+- Retry works with Unavailable and ResourceExhausted errors by default
 - Circuit breaker uses the Cockatiel library
 - Timeout uses AbortController for cancellation
 - Mock requests must have full structure (method.input, method.output)

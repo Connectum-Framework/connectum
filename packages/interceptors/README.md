@@ -63,38 +63,41 @@ errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> fallback -> va
 
 ### Integration with `@connectum/core` (recommended)
 
-The `builtinInterceptors` parameter in `createServer()` controls the default chain:
+Use `createDefaultInterceptors()` with `createServer()`:
 
 ```typescript
 import { createServer } from "@connectum/core";
+import { createDefaultInterceptors } from "@connectum/interceptors";
 import routes from "#gen/routes.js";
 
 const server = createServer({
   services: [routes],
   port: 5000,
 
-  // Configure default chain
-  builtinInterceptors: {
+  // Default chain with custom options
+  interceptors: createDefaultInterceptors({
     timeout: { duration: 10000 },    // Custom timeout
     retry: false,                    // Disable retry
     // rest use defaults
-  },
-
-  // User interceptors are appended after builtins
-  interceptors: [myCustomInterceptor],
+  }),
 });
 
 await server.start();
 ```
 
-To completely disable the default chain:
+To use a fully custom chain, pass individual interceptors directly:
 
 ```typescript
+import {
+  createErrorHandlerInterceptor,
+  createTimeoutInterceptor,
+} from "@connectum/interceptors";
+
 const server = createServer({
   services: [routes],
-  builtinInterceptors: false, // All builtins disabled
   interceptors: [
-    // Fully manual chain
+    createErrorHandlerInterceptor({ logErrors: true }),
+    createTimeoutInterceptor({ duration: 5000 }),
   ],
 });
 ```
@@ -166,8 +169,8 @@ Converts arbitrary errors to `ConnectError` with correct gRPC codes.
 import { createErrorHandlerInterceptor } from "@connectum/interceptors";
 
 const interceptor = createErrorHandlerInterceptor({
-  logErrors: true,           // Log errors (default: true in dev, false in prod)
-  includeStackTrace: false,  // Include stack trace (default: true in dev, false in prod)
+  logErrors: true,           // Log errors (default: NODE_ENV !== "production")
+  includeStackTrace: false,  // Include stack trace (default: NODE_ENV !== "production")
 });
 ```
 
@@ -210,7 +213,7 @@ const interceptor = createBulkheadInterceptor({
 ```json
 {
   "code": "resource_exhausted",
-  "message": "Bulkhead capacity exceeded (10/10 active, 10/10 queued)"
+  "message": "Bulkhead capacity exceeded (active: 10/10, queued: 10/10)"
 }
 ```
 
@@ -288,12 +291,9 @@ const interceptor = createFallbackInterceptor({
 Enabling fallback in the default chain:
 
 ```typescript
-const server = createServer({
-  services: [routes],
-  builtinInterceptors: {
-    fallback: {
-      handler: () => ({ data: [] }),
-    },
+const interceptors = createDefaultInterceptors({
+  fallback: {
+    handler: () => ({ data: [] }),
   },
 });
 ```
@@ -302,15 +302,12 @@ const server = createServer({
 
 Input data validation using the official `@connectrpc/validate` package (`createValidateInterceptor()`). Checks proto constraints before passing the request to business logic.
 
-In the default chain, `createValidateInterceptor()` from `@connectrpc/validate` is used directly. The `validation` option accepts only `boolean`:
+In the default chain, `createValidateInterceptor()` from `@connectrpc/validate` is used directly. The `validation` option in `createDefaultInterceptors()` accepts only `boolean`:
 
 ```typescript
-const server = createServer({
-  services: [routes],
-  builtinInterceptors: {
-    validation: true,  // Enabled by default
-    // validation: false, // Disable
-  },
+const interceptors = createDefaultInterceptors({
+  validation: true,  // Enabled by default
+  // validation: false, // Disable
 });
 ```
 
@@ -513,8 +510,8 @@ interface DefaultInterceptorOptions {
 
 ```typescript
 interface ErrorHandlerOptions {
-  logErrors?: boolean;          // default: true in dev, false in prod
-  includeStackTrace?: boolean;  // default: true in dev, false in prod
+  logErrors?: boolean;          // default: NODE_ENV !== "production"
+  includeStackTrace?: boolean;  // default: NODE_ENV !== "production"
 }
 ```
 
@@ -595,16 +592,17 @@ interface SerializerOptions {
 ```typescript
 import { createServer } from "@connectum/core";
 import { Healthcheck, healthcheckManager, ServingStatus } from "@connectum/healthcheck";
-import { withReflection } from "@connectum/reflection";
+import { Reflection } from "@connectum/reflection";
+import { createDefaultInterceptors } from "@connectum/interceptors";
 import routes from "#gen/routes.js";
 
 const server = createServer({
   services: [routes],
   port: 5000,
-  protocols: [Healthcheck({ httpEnabled: true }), withReflection()],
+  protocols: [Healthcheck({ httpEnabled: true }), Reflection()],
   shutdown: { autoShutdown: true },
 
-  builtinInterceptors: {
+  interceptors: createDefaultInterceptors({
     errorHandler: {
       logErrors: true,
       includeStackTrace: process.env.NODE_ENV !== "production",
@@ -619,7 +617,7 @@ const server = createServer({
     // fallback disabled by default
     // validation enabled by default
     // serializer enabled by default
-  },
+  }),
 });
 
 server.on("ready", () => {
@@ -632,14 +630,11 @@ await server.start();
 ### Enabling fallback with handler
 
 ```typescript
-const server = createServer({
-  services: [routes],
-  builtinInterceptors: {
-    fallback: {
-      handler: (error) => {
-        console.error("Service failed:", error);
-        return { items: [], total: 0 };
-      },
+const interceptors = createDefaultInterceptors({
+  fallback: {
+    handler: (error) => {
+      console.error("Service failed:", error);
+      return { items: [], total: 0 };
     },
   },
 });
@@ -683,8 +678,6 @@ import {
 
 const server = createServer({
   services: [routes],
-  builtinInterceptors: false, // Disable default chain
-
   interceptors: [
     createErrorHandlerInterceptor({ logErrors: true }),
     createTimeoutInterceptor({ duration: 5000 }),
@@ -720,7 +713,7 @@ const interceptor = createValidationInterceptor({ skipStreaming: true });
 // After (official @connectrpc/validate)
 import { createValidateInterceptor } from "@connectrpc/validate";
 const interceptor = createValidateInterceptor();
-// Or enabled automatically in default chain via builtinInterceptors.validation
+// Or enabled automatically via createDefaultInterceptors()
 ```
 
 ### Changes in retry interceptor
@@ -758,7 +751,7 @@ Resilience interceptors (timeout, bulkhead, circuitBreaker, retry, fallback) are
 
 ## License
 
-MIT
+Apache-2.0
 
 ---
 
