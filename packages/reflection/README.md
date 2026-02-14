@@ -28,7 +28,7 @@ pnpm add @connectum/core
 ```typescript
 import { createServer } from '@connectum/core';
 import { Reflection } from '@connectum/reflection';
-import routes from '#gen/routes.ts';
+import routes from '#gen/routes.js';
 
 const server = createServer({
   services: [routes],
@@ -118,7 +118,7 @@ Reflection and Healthcheck are typically used together:
 import { createServer } from '@connectum/core';
 import { Healthcheck, healthcheckManager, ServingStatus } from '@connectum/healthcheck';
 import { Reflection } from '@connectum/reflection';
-import routes from '#gen/routes.ts';
+import routes from '#gen/routes.js';
 
 const server = createServer({
   services: [routes],
