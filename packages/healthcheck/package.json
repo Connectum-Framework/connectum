@@ -1,6 +1,6 @@
 {
   "name": "@connectum/healthcheck",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0-rc.3",
   "description": "Healthcheck protocol for Connectum: gRPC Health Check + HTTP endpoints",
   "type": "module",
   "main": "./src/index.ts",

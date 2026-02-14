@@ -10,5 +10,5 @@
     "@connectum/reflection": "1.0.0-beta.2",
     "@connectum/testing": "1.0.0-beta.2"
   },
-  "changesets": ["code-review-fixes", "dependency-migration-2025"]
+  "changesets": ["ci-oidc-provenance", "code-review-fixes", "dependency-migration-2025"]
 }
