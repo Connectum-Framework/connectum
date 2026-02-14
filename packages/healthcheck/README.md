@@ -6,7 +6,7 @@ gRPC Health Check Protocol + HTTP health endpoints for Connectum.
 
 ## Features
 
-- **gRPC Health Check Protocol**: Check, Watch, List methods
+- **gRPC Health Check Protocol**: Check, Watch methods ([standard](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)) + List (extension)
 - **HTTP Health Endpoints**: `/healthz`, `/health`, `/readyz` (configurable paths)
 - **Per-service Health Status**: Manage the status of each service separately
 - **Watch Streaming**: Real-time status change streaming
@@ -288,7 +288,7 @@ describe('health check', () => {
 
 ## License
 
-MIT
+Apache-2.0
 
 ---
 

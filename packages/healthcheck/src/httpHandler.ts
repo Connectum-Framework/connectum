@@ -2,9 +2,7 @@
  * HTTP Health Check Handler
  *
  * Provides HTTP endpoints for health checking that mirror the gRPC healthcheck status.
- * Disabled by default, enabled via options or HTTP_HEALTH_ENABLED=true environment variable.
- *
- * @module @connectum/healthcheck/httpHandler
+ * Disabled by default, enabled via HealthcheckOptions.httpEnabled.
  */
 
 import type { Http2ServerRequest, Http2ServerResponse } from "node:http2";
