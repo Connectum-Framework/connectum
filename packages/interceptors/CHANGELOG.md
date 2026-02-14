@@ -1,5 +1,7 @@
 # @connectum/interceptors
 
+## 1.0.0-rc.3
+
 ## 1.0.0-rc.2
 
 ## 1.0.0-beta.2

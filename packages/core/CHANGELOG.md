@@ -1,5 +1,23 @@
 # @connectum/core
 
+## 1.0.0-rc.3
+
+### Patch Changes
+
+- [#13](https://github.com/Connectum-Framework/connectum/pull/13) [`9313d14`](https://github.com/Connectum-Framework/connectum/commit/9313d1445aa22135ba04c0c1dd089f9123e1ab06) Thanks [@intech](https://github.com/intech)! - CI/CD and documentation improvements
+
+  **CI/CD:**
+
+  - Switch to OIDC trusted publishers (no NPM_TOKEN)
+  - Add PR snapshot publishing via pkg-pr-new
+  - Fix provenance: use NPM_CONFIG_PROVENANCE env var instead of CLI argument
+
+  **Docs:**
+
+  - Fix healthcheck README: clarify Check/Watch (standard) + List (extension), license MIT → Apache-2.0
+  - Fix httpHandler.ts JSDoc: HTTP_HEALTH_ENABLED → HealthcheckOptions.httpEnabled
+  - Add comprehensive reflection README (API, grpcurl, buf curl usage)
+
 ## 1.0.0-rc.2
 
 ### Minor Changes
