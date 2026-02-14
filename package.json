@@ -1,6 +1,6 @@
 {
   "name": "@connectum/monorepo",
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-rc.1",
   "description": "Universal framework for gRPC/ConnectRPC microservices on Node.js 25+",
   "private": true,
   "type": "module",

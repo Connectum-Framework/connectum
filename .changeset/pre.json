@@ -1,14 +1,14 @@
 {
   "mode": "pre",
-  "tag": "beta",
+  "tag": "rc",
   "initialVersions": {
-    "@connectum/cli": "0.2.0-beta.1",
-    "@connectum/core": "0.2.0-beta.1",
-    "@connectum/healthcheck": "0.2.0-beta.1",
-    "@connectum/interceptors": "0.2.0-beta.1",
-    "@connectum/otel": "0.2.0-beta.1",
-    "@connectum/reflection": "0.2.0-beta.1",
-    "@connectum/testing": "0.2.0-beta.1"
+    "@connectum/cli": "1.0.0-beta.2",
+    "@connectum/core": "1.0.0-beta.2",
+    "@connectum/healthcheck": "1.0.0-beta.2",
+    "@connectum/interceptors": "1.0.0-beta.2",
+    "@connectum/otel": "1.0.0-beta.2",
+    "@connectum/reflection": "1.0.0-beta.2",
+    "@connectum/testing": "1.0.0-beta.2"
   },
-  "changesets": ["code-review-fixes", "remove-utilities-package"]
+  "changesets": ["code-review-fixes", "dependency-migration-2025"]
 }
