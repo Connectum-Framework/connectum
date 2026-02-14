@@ -700,20 +700,9 @@ await repository.findById("123");
 
 ## Documentation
 
-### Getting Started
-
-- [Quick Start](../../docs/getting-started/quick-start.md) - Setup observability
-
-### Architecture
-
-- [Architecture Overview](../../docs/architecture/overview.md) - Overall architecture
-- [Observability Design](../../docs/architecture/observability-design.md) - Observability patterns
-
-### Guides
-
-- [Observability Guide](../../docs/guides/observability.md) - Best practices
-- [Custom Metrics](../../docs/guides/custom-metrics.md) - Creating custom metrics
-- [Distributed Tracing](../../docs/guides/distributed-tracing.md) - Tracing across services
+- [Quick Start](https://connectum.dev/en/guide/quickstart) - Setup observability
+- [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture) - Overall architecture
+- [Observability Guide](https://connectum.dev/en/guide/observability) - Best practices
 
 ## Dependencies
 

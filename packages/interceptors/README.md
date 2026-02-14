@@ -385,7 +385,7 @@ Use this approach when interceptors are tied to a specific service or method at 
 
 ### Approach 2: createMethodFilterInterceptor (declarative routing)
 
-`createMethodFilterInterceptor` is a convenience helper for declarative per-method interceptor routing based on wildcard patterns. Implements [ADR-014](../../docs/contributing/adr/014-method-filter-interceptor.md).
+`createMethodFilterInterceptor` is a convenience helper for declarative per-method interceptor routing based on wildcard patterns. Implements [ADR-014](https://connectum.dev/en/contributing/adr/014-method-filter-interceptor).
 
 ```typescript
 import {

@@ -101,6 +101,6 @@ await executeProtoSync({
 
 ## Related
 
-- [ADR-020: Reflection-based Proto Synchronization](../../docs/contributing/adr/020-reflection-proto-sync.md)
+- [ADR-020: Reflection-based Proto Synchronization](https://connectum.dev/en/contributing/adr/020-reflection-proto-sync)
 - [@lambdalisue/connectrpc-grpcreflect](https://www.npmjs.com/package/@lambdalisue/connectrpc-grpcreflect)
 - [Buf Inputs Reference](https://buf.build/docs/reference/inputs/)

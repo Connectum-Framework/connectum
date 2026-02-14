@@ -540,18 +540,18 @@ Key differences:
 
 ### Getting Started
 
-- [Quick Start](../../docs/getting-started/quick-start.md) - Create your first service
+- [Quick Start](https://connectum.dev/en/guide/quickstart) - Create your first service
 
 ### Architecture
 
-- [Architecture Overview](../../docs/architecture/overview.md) - Overall architecture
-- [Package Decomposition](../../docs/architecture/adr/003-package-decomposition.md) - ADR on package structure
+- [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture) - Overall architecture
+- [Package Decomposition](https://connectum.dev/en/contributing/adr/003-package-decomposition) - ADR on package structure
 
 ### Guides
 
-- [Interceptors Guide](../../docs/guides/interceptors.md) - Working with interceptors
-- [Observability Guide](../../docs/guides/observability.md) - Setting up OpenTelemetry
-- [TLS Configuration](../../docs/guides/tls-configuration.md) - Production TLS setup
+- [Interceptors Guide](https://connectum.dev/en/guide/interceptors) - Working with interceptors
+- [Observability Guide](https://connectum.dev/en/guide/observability) - Setting up OpenTelemetry
+- [TLS Configuration](https://connectum.dev/en/guide/tls) - Production TLS setup
 
 ## Dependencies
 

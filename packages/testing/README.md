@@ -448,4 +448,4 @@ MIT
 ## Related Packages
 
 - [@connectum/interceptors](../interceptors/README.md) - Uses mock helpers in tests
-- [@connectum/core](../runner/README.md) - Uses createTestServer in integration tests
+- [@connectum/core](../core/README.md) - Uses createTestServer in integration tests
