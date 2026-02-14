@@ -51,11 +51,12 @@ jobs:
         uses: changesets/action@6a0a831ff30acef54f2c6aa1cbbc1096b066edaf # v1.7.0
         with:
           version: pnpm changeset:version
-          publish: pnpm changeset:publish -- --provenance
+          publish: pnpm changeset:publish
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
