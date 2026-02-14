@@ -10,6 +10,25 @@ updates:
         dependency-type: production
       development:
         dependency-type: development
+    # Ignore all pnpm catalog-managed dependencies.
+    # Dependabot corrupts catalog: specifiers in pnpm-lock.yaml,
+    # replacing them with exact versions, which breaks --frozen-lockfile.
+    # Upstream bugs:
+    #   https://github.com/dependabot/dependabot-core/issues/12445
+    #   https://github.com/dependabot/dependabot-core/issues/12244
+    # These dependencies are managed via pnpm-workspace.yaml catalog.
+    # TODO: remove ignore rules when the upstream bug is fixed.
+    ignore:
+      - dependency-name: "@biomejs/*"
+      - dependency-name: "@bufbuild/*"
+      - dependency-name: "@commitlint/*"
+      - dependency-name: "@connectrpc/*"
+      - dependency-name: "@opentelemetry/*"
+      - dependency-name: "c8"
+      - dependency-name: "env-var"
+      - dependency-name: "husky"
+      - dependency-name: "typescript"
+      - dependency-name: "zod"
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps):"
