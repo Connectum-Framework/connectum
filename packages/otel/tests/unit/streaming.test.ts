@@ -29,13 +29,31 @@ import { estimateMessageSize, wrapAsyncIterable } from "../../src/shared.ts";
  */
 function createMockSpan() {
 	const events: Array<{ name: string; attributes: Record<string, unknown> | undefined }> = [];
+	const recordedExceptions: unknown[] = [];
+	const statuses: Array<{ code: number; message?: string }> = [];
+	let ended = false;
+	let endCount = 0;
 	return {
 		span: {
 			addEvent(name: string, attributes?: Record<string, unknown>) {
 				events.push({ name, attributes });
 			},
+			recordException(error: unknown) {
+				recordedExceptions.push(error);
+			},
+			setStatus(status: { code: number; message?: string }) {
+				statuses.push(status);
+			},
+			end() {
+				ended = true;
+				endCount++;
+			},
 		} as any,
 		events,
+		recordedExceptions,
+		statuses,
+		get ended() { return ended; },
+		get endCount() { return endCount; },
 	};
 }
 
@@ -276,7 +294,7 @@ describe("wrapAsyncIterable", () => {
 	// Error handling mid-stream
 	// -----------------------------------------------------------------------
 
-	it("should handle stream errors mid-flight (add error event on span)", async () => {
+	it("should handle stream errors mid-flight (re-throws error)", async () => {
 		const { span, events } = createMockSpan();
 		const error = new Error("stream interrupted");
 		const items = [
@@ -301,21 +319,13 @@ describe("wrapAsyncIterable", () => {
 		// Should have yielded the items before the error
 		assert.strictEqual(collected.length, 2);
 
-		// Should have 3 events: 2 successful messages + 1 error event
-		assert.strictEqual(events.length, 3);
-
-		// First two events are normal messages
+		// Should have 2 message events only (no error event)
+		assert.strictEqual(events.length, 2);
 		assert.strictEqual(events[0]!.attributes?.["rpc.message.id"], 1);
 		assert.strictEqual(events[1]!.attributes?.["rpc.message.id"], 2);
-
-		// Third event is the error event with sequence 3
-		assert.strictEqual(events[2]!.name, "rpc.message");
-		assert.strictEqual(events[2]!.attributes?.["rpc.message.type"], "RECEIVED");
-		assert.strictEqual(events[2]!.attributes?.["rpc.message.id"], 3);
-		assert.strictEqual(events[2]!.attributes?.["rpc.message.error"], true);
 	});
 
-	it("should record error event even when recordMessages is false", async () => {
+	it("should re-throw error even when recordMessages is false", async () => {
 		const { span, events } = createMockSpan();
 		const error = new Error("unexpected failure");
 
@@ -332,12 +342,8 @@ describe("wrapAsyncIterable", () => {
 			}
 		}, { message: "unexpected failure" });
 
-		// Error event is always added regardless of recordMessages
-		assert.strictEqual(events.length, 1);
-		assert.strictEqual(events[0]!.name, "rpc.message");
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.error"], true);
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.id"], 1);
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.type"], "SENT");
+		// No events when recordMessages is false (error event removed)
+		assert.strictEqual(events.length, 0);
 	});
 
 	it("should re-throw the original error from the source iterable", async () => {
@@ -383,6 +389,79 @@ describe("wrapAsyncIterable", () => {
 		assert.strictEqual(events[1]!.attributes?.["rpc.message.uncompressed_size"], 100);
 		assert.strictEqual(events[2]!.attributes?.["rpc.message.uncompressed_size"], 0);
 		assert.strictEqual(events[3]!.attributes?.["rpc.message.uncompressed_size"], 255);
+	});
+
+	// -----------------------------------------------------------------------
+	// endSpanOnComplete
+	// -----------------------------------------------------------------------
+
+	it("should end span with OK status when stream completes normally with endSpanOnComplete=true", async () => {
+		const mock = createMockSpan();
+		const items = ["msg1", "msg2"];
+
+		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), mock.span, "RECEIVED", false, true);
+		await collectAll(wrapped);
+
+		assert.strictEqual(mock.ended, true);
+		assert.strictEqual(mock.statuses.length, 1);
+		assert.strictEqual(mock.statuses[0]!.code, 1); // SpanStatusCode.OK = 1
+	});
+
+	it("should record exception and set ERROR status when stream errors with endSpanOnComplete=true", async () => {
+		const mock = createMockSpan();
+		const error = new Error("stream failed");
+
+		const wrapped = wrapAsyncIterable(
+			mockAsyncIterableWithError([], error),
+			mock.span,
+			"SENT",
+			false,
+			true,
+		);
+
+		await assert.rejects(async () => {
+			for await (const _msg of wrapped) {
+				// no items
+			}
+		}, { message: "stream failed" });
+
+		assert.strictEqual(mock.ended, true);
+		assert.strictEqual(mock.recordedExceptions.length, 1);
+		assert.strictEqual((mock.recordedExceptions[0] as Error).message, "stream failed");
+		assert.strictEqual(mock.statuses.length, 1);
+		assert.strictEqual(mock.statuses[0]!.code, 2); // SpanStatusCode.ERROR = 2
+	});
+
+	it("should NOT end span when endSpanOnComplete is false (default)", async () => {
+		const mock = createMockSpan();
+		const items = ["msg1"];
+
+		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), mock.span, "RECEIVED", false);
+		await collectAll(wrapped);
+
+		assert.strictEqual(mock.ended, false);
+	});
+
+	it("should end span on early break (generator.return()) with endSpanOnComplete=true", async () => {
+		const mock = createMockSpan();
+
+		async function* infiniteStream() {
+			let i = 0;
+			while (true) {
+				yield `msg-${i++}`;
+			}
+		}
+
+		const wrapped = wrapAsyncIterable(infiniteStream(), mock.span, "RECEIVED", false, true);
+
+		// Consume only one message, then break
+		for await (const _msg of wrapped) {
+			break;
+		}
+
+		assert.strictEqual(mock.ended, true);
+		assert.strictEqual(mock.statuses.length, 1);
+		assert.strictEqual(mock.statuses[0]!.code, 1); // SpanStatusCode.OK = 1
 	});
 });
 

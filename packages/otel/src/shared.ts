@@ -9,6 +9,7 @@
 
 import { ConnectError } from "@connectrpc/connect";
 import type { Attributes, Span } from "@opentelemetry/api";
+import { SpanStatusCode } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
@@ -62,14 +63,26 @@ export function estimateMessageSize(message: unknown): number {
  * Captures the span via closure (not AsyncLocalStorage) to avoid
  * the Node.js ALS context loss in async generators (nodejs/node#42237).
  *
+ * When `endSpanOnComplete` is true, the span lifecycle is managed by the
+ * generator itself: the span is ended in the `finally` block, which runs
+ * on normal completion, error, or early break (generator.return()).
+ *
  * @param iterable - The source async iterable (streaming messages)
  * @param span - The OTel span to record events on
  * @param direction - 'SENT' for outgoing, 'RECEIVED' for incoming messages
  * @param recordMessages - Whether to record individual message events
+ * @param endSpanOnComplete - Whether to end the span when the stream completes
  * @returns A new AsyncGenerator that yields the same messages with span events
  */
-export async function* wrapAsyncIterable<T>(iterable: AsyncIterable<T>, span: Span, direction: "SENT" | "RECEIVED", recordMessages: boolean): AsyncGenerator<T> {
+export async function* wrapAsyncIterable<T>(
+    iterable: AsyncIterable<T>,
+    span: Span,
+    direction: "SENT" | "RECEIVED",
+    recordMessages: boolean,
+    endSpanOnComplete = false,
+): AsyncGenerator<T> {
     let sequence = 1;
+    let streamError: unknown;
     try {
         for await (const message of iterable) {
             if (recordMessages) {
@@ -83,12 +96,18 @@ export async function* wrapAsyncIterable<T>(iterable: AsyncIterable<T>, span: Sp
             yield message;
         }
     } catch (error) {
-        span.addEvent("rpc.message", {
-            "rpc.message.type": direction,
-            "rpc.message.id": sequence,
-            "rpc.message.error": true,
-        });
+        streamError = error;
         throw error;
+    } finally {
+        if (endSpanOnComplete) {
+            if (streamError) {
+                span.recordException(streamError as Error);
+                span.setStatus({ code: SpanStatusCode.ERROR, message: (streamError as Error).message });
+            } else {
+                span.setStatus({ code: SpanStatusCode.OK });
+            }
+            span.end();
+        }
     }
 }
 

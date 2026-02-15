@@ -172,11 +172,9 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                 // Wrap streaming response messages for instrumentation
                 if (response.stream) {
                     const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages),
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true),
                     });
                     recordMetrics(duration, 0);
-                    span.setStatus({ code: SpanStatusCode.OK });
-                    span.end();
                     return wrappedResponse;
                 }
 

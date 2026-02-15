@@ -162,11 +162,9 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                 // Wrap streaming response messages for instrumentation
                 if (response.stream) {
                     const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages),
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, true),
                     });
                     recordMetrics(duration, 0);
-                    span.setStatus({ code: SpanStatusCode.OK });
-                    span.end();
                     return wrappedResponse;
                 }
 
