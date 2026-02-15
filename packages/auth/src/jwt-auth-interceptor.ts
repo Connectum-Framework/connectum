@@ -29,6 +29,17 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
 }
 
 /**
+ * Get minimum HMAC key size in bytes per RFC 7518.
+ * HS256 requires 32 bytes, HS384 requires 48, HS512 requires 64.
+ */
+function getMinHmacKeyBytes(algorithms?: string[]): number {
+    if (!algorithms) return 32;
+    if (algorithms.includes("HS512")) return 64;
+    if (algorithms.includes("HS384")) return 48;
+    return 32;
+}
+
+/**
  * Build a JWT verification function from options.
  *
  * Separates JWKS (dynamic key resolution) from static keys (HMAC / asymmetric)
@@ -43,6 +54,13 @@ function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: jose.J
     }
     if (options.secret) {
         const key = new TextEncoder().encode(options.secret);
+        const minBytes = getMinHmacKeyBytes(options.algorithms);
+        if (key.byteLength < minBytes) {
+            throw new Error(
+                `@connectum/auth: HMAC secret must be at least ${minBytes} bytes (${minBytes * 8} bits) per RFC 7518. ` +
+                    `Got ${key.byteLength} bytes. Generate with: openssl rand -base64 ${minBytes}`,
+            );
+        }
         return (token) => jose.jwtVerify(token, key, verifyOptions);
     }
     if (options.publicKey) {
@@ -140,7 +158,7 @@ function mapClaimsToContext(payload: jose.JWTPayload, mapping: NonNullable<JwtAu
  * ```
  */
 export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): Interceptor {
-    const { claimsMapping = {}, skipMethods, propagateHeaders, otelEnrichment } = options;
+    const { claimsMapping = {}, skipMethods, propagateHeaders } = options;
 
     const verifyOptions: jose.JWTVerifyOptions = {};
     if (options.issuer) {
@@ -158,7 +176,6 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
     return createAuthInterceptor({
         skipMethods,
         propagateHeaders,
-        otelEnrichment,
         verifyCredentials: async (token: string): Promise<AuthContext> => {
             const { payload } = await verify(token);
 

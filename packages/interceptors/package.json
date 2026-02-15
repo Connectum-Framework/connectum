@@ -54,6 +54,7 @@
     "@connectrpc/connect": "catalog:",
     "@connectrpc/validate": "catalog:",
     "@bufbuild/protobuf": "catalog:",
+    "@connectum/core": "workspace:^",
     "cockatiel": "^3.2.1"
   },
   "devDependencies": {

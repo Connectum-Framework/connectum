@@ -8,6 +8,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
@@ -52,10 +53,11 @@ describe("jwt-auth-interceptor", () => {
         });
 
         it("should reject expired JWT", async () => {
-            const token = await createTestJwt({ sub: "user-1" }, { expiresIn: "0s" });
-
-            // Small delay to ensure expiration
-            await new Promise((resolve) => setTimeout(resolve, 1100));
+            const key = new TextEncoder().encode(TEST_JWT_SECRET);
+            const token = await new jose.SignJWT({ sub: "user-1" })
+                .setProtectedHeader({ alg: "HS256" })
+                .setExpirationTime(Math.floor(Date.now() / 1000) - 60)
+                .sign(key);
 
             const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
             const next = async (_req: any) => ({ message: {} });
@@ -129,6 +131,36 @@ describe("jwt-auth-interceptor", () => {
             assert.deepStrictEqual(capturedContext.roles, ["admin", "editor"]);
             assert.deepStrictEqual(capturedContext.scopes, ["read", "write"]);
             assert.strictEqual(capturedContext.name, "johndoe");
+        });
+
+        it("should throw when HMAC secret is too short for HS256", () => {
+            assert.throws(
+                () => createJwtAuthInterceptor({ secret: "short" }),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.ok(err.message.includes("at least 32 bytes"));
+                    assert.ok(err.message.includes("RFC 7518"));
+                    return true;
+                },
+            );
+        });
+
+        it("should accept HMAC secret of exactly 32 bytes", () => {
+            const secret32 = "a".repeat(32);
+            // Should not throw
+            createJwtAuthInterceptor({ secret: secret32 });
+        });
+
+        it("should throw when HMAC secret is too short for HS512", () => {
+            const secret32 = "a".repeat(32);
+            assert.throws(
+                () => createJwtAuthInterceptor({ secret: secret32, algorithms: ["HS512"] }),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.ok(err.message.includes("at least 64 bytes"));
+                    return true;
+                },
+            );
         });
 
         it("should pass skipMethods to underlying auth interceptor", async () => {

@@ -12,7 +12,9 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { authContextStorage } from "./context.ts";
 import { setAuthHeaders } from "./headers.ts";
+import { matchesMethodPattern } from "./method-match.ts";
 import type { AuthContext, AuthInterceptorOptions } from "./types.ts";
+import { AUTH_HEADERS } from "./types.ts";
 
 /**
  * Default credential extractor.
@@ -27,39 +29,6 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
     // Support "Bearer <token>" format
     const match = /^Bearer\s+(.+)$/i.exec(authHeader);
     return match?.[1] ?? null;
-}
-
-/**
- * Check if a method should be skipped based on skip patterns.
- *
- * @param serviceName - Fully-qualified service name (e.g., "user.v1.UserService")
- * @param methodName - Method name (e.g., "GetUser")
- * @param skipMethods - Array of skip patterns
- * @returns true if the method should be skipped
- */
-function shouldSkip(serviceName: string, methodName: string, skipMethods: string[]): boolean {
-    if (skipMethods.length === 0) {
-        return false;
-    }
-
-    const fullMethod = `${serviceName}/${methodName}`;
-
-    for (const pattern of skipMethods) {
-        if (pattern === "*") {
-            return true;
-        }
-        if (pattern === fullMethod) {
-            return true;
-        }
-        if (pattern.endsWith("/*")) {
-            const servicePattern = pattern.slice(0, -2);
-            if (serviceName === servicePattern) {
-                return true;
-            }
-        }
-    }
-
-    return false;
 }
 
 /**
@@ -115,8 +84,13 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
         const serviceName: string = req.service.typeName;
         const methodName: string = req.method.name;
 
+        // Strip auth headers to prevent spoofing from external clients
+        for (const headerName of Object.values(AUTH_HEADERS)) {
+            req.header.delete(headerName);
+        }
+
         // Skip specified methods
-        if (shouldSkip(serviceName, methodName, skipMethods)) {
+        if (matchesMethodPattern(serviceName, methodName, skipMethods)) {
             return await next(req);
         }
 
@@ -134,7 +108,7 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             if (err instanceof ConnectError) {
                 throw err;
             }
-            throw new ConnectError(err instanceof Error ? err.message : "Authentication failed", Code.Unauthenticated);
+            throw new ConnectError("Authentication failed", Code.Unauthenticated);
         }
 
         // Propagate auth context as headers if enabled
@@ -146,5 +120,3 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
         return await authContextStorage.run(authContext, () => next(req));
     };
 }
-
-export { shouldSkip };

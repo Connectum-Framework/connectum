@@ -46,15 +46,8 @@
   },
   "dependencies": {
     "@connectrpc/connect": "catalog:",
+    "@connectum/core": "workspace:^",
     "jose": "^6.0.0"
-  },
-  "peerDependencies": {
-    "@connectrpc/connect": "^2.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@connectum/otel": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

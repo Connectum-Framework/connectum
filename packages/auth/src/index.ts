@@ -18,9 +18,13 @@ export { createAuthInterceptor } from "./auth-interceptor.ts";
 export { createAuthzInterceptor } from "./authz-interceptor.ts";
 // Context management
 export { authContextStorage, getAuthContext, requireAuthContext } from "./context.ts";
+export type { AuthzDeniedDetails } from "./errors.ts";
+export { AuthzDeniedError } from "./errors.ts";
 // Header utilities
 export { parseAuthHeaders, setAuthHeaders } from "./headers.ts";
 export { createJwtAuthInterceptor } from "./jwt-auth-interceptor.ts";
+// Method pattern matching
+export { matchesMethodPattern } from "./method-match.ts";
 export { createTrustedHeadersReader } from "./trusted-headers.ts";
 
 // Types and constants

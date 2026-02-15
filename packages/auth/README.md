@@ -99,7 +99,6 @@ const auth = createAuthInterceptor({
 | `extractCredentials` | `(req) => string \| null \| Promise<string \| null>` | Bearer token from `Authorization` header | Extract credential string from request |
 | `skipMethods` | `string[]` | `[]` | Methods to skip (`"Service/Method"` or `"Service/*"`) |
 | `propagateHeaders` | `boolean` | `false` | Set `x-auth-*` headers for downstream services |
-| `otelEnrichment` | `boolean` | `false` | Enrich OpenTelemetry spans with auth context |
 
 ### createJwtAuthInterceptor(options)
 
@@ -135,7 +134,6 @@ const jwtAuth = createJwtAuthInterceptor({
 | `claimsMapping` | `{ subject?, name?, roles?, scopes? }` | `{}` | Map JWT claims to AuthContext (supports dot-notation) |
 | `skipMethods` | `string[]` | `[]` | Methods to skip |
 | `propagateHeaders` | `boolean` | `false` | Propagate auth context as headers |
-| `otelEnrichment` | `boolean` | `false` | Enrich OpenTelemetry spans |
 
 At least one of `jwksUri`, `secret`, or `publicKey` is required.
 
@@ -359,6 +357,33 @@ await withAuthContext(createMockAuthContext({ subject: 'user-1' }), async () => 
 ### TEST_JWT_SECRET
 
 Deterministic HMAC secret for test JWTs: `"connectum-test-secret-do-not-use-in-production"`.
+
+## Integration with better-auth
+
+[better-auth](https://www.better-auth.com/) is a modern authentication framework for TypeScript. It supports programmatic session verification and works directly with `createAuthInterceptor`.
+
+```typescript
+import { betterAuth } from "better-auth";
+import { createAuthInterceptor } from '@connectum/auth';
+
+const auth = betterAuth({ /* DB adapter config */ });
+
+const betterAuthInterceptor = createAuthInterceptor({
+    verifyCredentials: async (token) => {
+        const session = await auth.api.getSession({
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!session) throw new Error("Invalid session");
+        return {
+            subject: session.user.id,
+            roles: session.user.roles ?? [],
+            scopes: [],
+            claims: session.user,
+            type: "better-auth",
+        };
+    },
+});
+```
 
 ## Dependencies
 

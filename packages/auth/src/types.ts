@@ -122,13 +122,6 @@ export interface AuthInterceptorOptions {
      * @default false
      */
     propagateHeaders?: boolean | undefined;
-
-    /**
-     * Enrich OpenTelemetry spans with auth context.
-     * Requires @connectum/otel as optional peer dependency.
-     * @default false
-     */
-    otelEnrichment?: boolean | undefined;
 }
 
 /**
@@ -169,11 +162,6 @@ export interface JwtAuthInterceptorOptions {
      * @default false
      */
     propagateHeaders?: boolean | undefined;
-    /**
-     * Enrich OpenTelemetry spans with auth context.
-     * @default false
-     */
-    otelEnrichment?: boolean | undefined;
 }
 
 /**

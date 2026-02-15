@@ -95,9 +95,10 @@ describe("authz-interceptor", () => {
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
-                    assert.ok(err.message.includes("deny-all"));
+                    assert.ok(err instanceof Error);
+                    assert.strictEqual((err as ConnectError).code, Code.PermissionDenied);
+                    assert.ok((err as Error).message.includes("deny-all"));
+                    assert.strictEqual((err as Error).name, "AuthzDeniedError");
                     return true;
                 },
             );

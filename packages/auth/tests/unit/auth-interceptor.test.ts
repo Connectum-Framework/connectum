@@ -103,7 +103,7 @@ describe("auth-interceptor", () => {
                 (err: unknown) => {
                     assert.ok(err instanceof ConnectError);
                     assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("Invalid token"));
+                    assert.ok(err.message.includes("Authentication failed"));
                     return true;
                 },
             );

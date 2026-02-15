@@ -20,8 +20,9 @@ export type InterceptorFactory<TOptions = void> = TOptions extends void ? () => 
  */
 export interface ErrorHandlerOptions {
     /**
-     * Log errors to console
+     * Log errors to console.
      * @default process.env.NODE_ENV !== "production"
+     * @deprecated Use onError callback instead
      */
     logErrors?: boolean;
 
@@ -30,6 +31,12 @@ export interface ErrorHandlerOptions {
      * @default process.env.NODE_ENV !== "production"
      */
     includeStackTrace?: boolean;
+
+    /**
+     * Callback for error logging. Replaces console.error when provided.
+     * Receives rich error info including serverDetails from SanitizableError.
+     */
+    onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void;
 }
 
 /**

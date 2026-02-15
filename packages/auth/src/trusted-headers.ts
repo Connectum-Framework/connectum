@@ -16,7 +16,7 @@ import type { AuthContext, TrustedHeadersReaderOptions } from "./types.ts";
  * Supports:
  * - Exact match: "10.0.0.1"
  * - CIDR: "10.0.0.0/8"
- * - IPv6 exact match (basic)
+ * - IPv6 exact match only (CIDR not supported for IPv6)
  */
 function matchesIp(peerAddress: string, pattern: string): boolean {
     // Exact match

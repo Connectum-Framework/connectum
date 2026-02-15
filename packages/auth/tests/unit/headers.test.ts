@@ -102,6 +102,69 @@ describe("headers", () => {
             assert.ok(result);
             assert.strictEqual(result.type, "unknown");
         });
+
+        it("should truncate subject exceeding 512 characters", () => {
+            const headers = new Headers();
+            const longSubject = "a".repeat(600);
+            headers.set(AUTH_HEADERS.SUBJECT, longSubject);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject.length, 512);
+            assert.strictEqual(result.subject, "a".repeat(512));
+        });
+
+        it("should not truncate subject within 512 character limit", () => {
+            const headers = new Headers();
+            const subject = "a".repeat(512);
+            headers.set(AUTH_HEADERS.SUBJECT, subject);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject.length, 512);
+        });
+
+        it("should truncate type exceeding 128 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const longType = "t".repeat(200);
+            headers.set(AUTH_HEADERS.TYPE, longType);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.type.length, 128);
+            assert.strictEqual(result.type, "t".repeat(128));
+        });
+
+        it("should return empty claims when JSON exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            // Create a valid JSON string that exceeds 8192 chars
+            const largeClaims = JSON.stringify({ data: "x".repeat(8200) });
+            assert.ok(largeClaims.length > 8192);
+            headers.set(AUTH_HEADERS.CLAIMS, largeClaims);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.claims, {});
+        });
+
+        it("should parse claims within 8192 character limit", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const normalClaims = JSON.stringify({ data: "x".repeat(100) });
+            assert.ok(normalClaims.length <= 8192);
+            headers.set(AUTH_HEADERS.CLAIMS, normalClaims);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.claims, { data: "x".repeat(100) });
+        });
     });
 
     describe("round-trip", () => {

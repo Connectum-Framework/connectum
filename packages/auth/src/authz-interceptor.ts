@@ -9,33 +9,12 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { shouldSkip } from "./auth-interceptor.ts";
 import { getAuthContext } from "./context.ts";
+import type { AuthzDeniedDetails } from "./errors.ts";
+import { AuthzDeniedError } from "./errors.ts";
+import { matchesMethodPattern } from "./method-match.ts";
 import type { AuthzInterceptorOptions, AuthzRule } from "./types.ts";
 import { AuthzEffect } from "./types.ts";
-
-/**
- * Check if a method matches a rule pattern.
- *
- * Patterns:
- * - "*" — matches all methods
- * - "Service/*" — matches all methods of a service
- * - "Service/Method" — matches exact method
- */
-function matchesPattern(serviceName: string, methodName: string, pattern: string): boolean {
-    if (pattern === "*") {
-        return true;
-    }
-    const fullMethod = `${serviceName}/${methodName}`;
-    if (pattern === fullMethod) {
-        return true;
-    }
-    if (pattern.endsWith("/*")) {
-        const servicePattern = pattern.slice(0, -2);
-        return serviceName === servicePattern;
-    }
-    return false;
-}
 
 /**
  * Check if the auth context satisfies a rule's requirements.
@@ -70,10 +49,10 @@ function evaluateRules(
     context: { roles: ReadonlyArray<string>; scopes: ReadonlyArray<string> },
     serviceName: string,
     methodName: string,
-): { effect: string; ruleName: string } | undefined {
+): { effect: string; ruleName: string; requiredRoles?: readonly string[]; requiredScopes?: readonly string[] } | undefined {
     for (const rule of rules) {
         // Check if any of the rule's method patterns match
-        const matches = rule.methods.some((pattern) => matchesPattern(serviceName, methodName, pattern));
+        const matches = matchesMethodPattern(serviceName, methodName, rule.methods);
         if (!matches) {
             continue;
         }
@@ -81,7 +60,13 @@ function evaluateRules(
         // If rule has requirements, check them
         if (rule.requires) {
             if (satisfiesRequirements(context, rule.requires)) {
-                return { effect: rule.effect, ruleName: rule.name };
+                const result: { effect: string; ruleName: string; requiredRoles?: readonly string[]; requiredScopes?: readonly string[] } = {
+                    effect: rule.effect,
+                    ruleName: rule.name,
+                };
+                if (rule.requires.roles) result.requiredRoles = rule.requires.roles;
+                if (rule.requires.scopes) result.requiredScopes = rule.requires.scopes;
+                return result;
             }
             // Requirements not met — this rule doesn't match, continue to next
             continue;
@@ -127,7 +112,7 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
         const methodName: string = req.method.name;
 
         // Skip specified methods
-        if (shouldSkip(serviceName, methodName, skipMethods)) {
+        if (matchesMethodPattern(serviceName, methodName, skipMethods)) {
             return await next(req);
         }
 
@@ -142,7 +127,10 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
                 if (ruleResult.effect === AuthzEffect.DENY) {
-                    throw new ConnectError(`Access denied by rule: ${ruleResult.ruleName}`, Code.PermissionDenied);
+                    const details: AuthzDeniedDetails = { ruleName: ruleResult.ruleName };
+                    if (ruleResult.requiredRoles) (details as { requiredRoles: readonly string[] }).requiredRoles = [...ruleResult.requiredRoles];
+                    if (ruleResult.requiredScopes) (details as { requiredScopes: readonly string[] }).requiredScopes = [...ruleResult.requiredScopes];
+                    throw new AuthzDeniedError(details);
                 }
                 // ALLOW — continue
                 return await next(req);
