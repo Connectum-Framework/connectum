@@ -8,11 +8,12 @@
  */
 
 import { ConnectError } from "@connectrpc/connect";
-import type { Attributes } from "@opentelemetry/api";
+import type { Attributes, Span } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
     ATTR_NETWORK_PROTOCOL_NAME,
+    ATTR_NETWORK_TRANSPORT,
     ATTR_RPC_CONNECT_RPC_STATUS_CODE,
     ATTR_RPC_METHOD,
     ATTR_RPC_SERVICE,
@@ -25,20 +26,70 @@ import {
 import type { OtelAttributeFilter } from "./types.ts";
 
 /**
+ * WeakMap cache for message size estimation.
+ * Avoids redundant toBinary() calls for the same message object.
+ */
+const sizeCache = new WeakMap<object, number>();
+
+/**
  * Estimates the serialized size of a protobuf message in bytes.
  *
  * If the message exposes a `toBinary()` method (standard for protobuf-es messages),
  * returns the byte length of the serialized form. Otherwise returns 0.
+ * Results are cached per message object using a WeakMap.
  *
  * @param message - The message to estimate size for
  * @returns Size in bytes, or 0 if size cannot be determined
  */
 export function estimateMessageSize(message: unknown): number {
     if (message == null) return 0;
-    if (typeof message === "object" && "toBinary" in message && typeof (message as { toBinary: unknown }).toBinary === "function") {
-        return (message as { toBinary(): Uint8Array }).toBinary().byteLength;
+    if (typeof message !== "object") return 0;
+
+    const cached = sizeCache.get(message as object);
+    if (cached !== undefined) return cached;
+
+    if ("toBinary" in message && typeof (message as { toBinary: unknown }).toBinary === "function") {
+        const size = (message as { toBinary(): Uint8Array }).toBinary().byteLength;
+        sizeCache.set(message as object, size);
+        return size;
     }
     return 0;
+}
+
+/**
+ * Wraps an AsyncIterable to track streaming messages with OTel span events.
+ *
+ * Captures the span via closure (not AsyncLocalStorage) to avoid
+ * the Node.js ALS context loss in async generators (nodejs/node#42237).
+ *
+ * @param iterable - The source async iterable (streaming messages)
+ * @param span - The OTel span to record events on
+ * @param direction - 'SENT' for outgoing, 'RECEIVED' for incoming messages
+ * @param recordMessages - Whether to record individual message events
+ * @returns A new AsyncGenerator that yields the same messages with span events
+ */
+export async function* wrapAsyncIterable<T>(iterable: AsyncIterable<T>, span: Span, direction: "SENT" | "RECEIVED", recordMessages: boolean): AsyncGenerator<T> {
+    let sequence = 1;
+    try {
+        for await (const message of iterable) {
+            if (recordMessages) {
+                span.addEvent("rpc.message", {
+                    "rpc.message.type": direction,
+                    "rpc.message.id": sequence,
+                    "rpc.message.uncompressed_size": estimateMessageSize(message),
+                });
+            }
+            sequence++;
+            yield message;
+        }
+    } catch (error) {
+        span.addEvent("rpc.message", {
+            "rpc.message.type": direction,
+            "rpc.message.id": sequence,
+            "rpc.message.error": true,
+        });
+        throw error;
+    }
 }
 
 /**
@@ -87,6 +138,7 @@ export function buildBaseAttributes(params: BaseAttributeParams): Record<string,
         [ATTR_RPC_METHOD]: params.method,
         [ATTR_SERVER_ADDRESS]: params.serverAddress,
         [ATTR_NETWORK_PROTOCOL_NAME]: "connect_rpc",
+        [ATTR_NETWORK_TRANSPORT]: "tcp",
     };
     if (params.serverPort !== undefined) {
         attrs[ATTR_SERVER_PORT] = params.serverPort;

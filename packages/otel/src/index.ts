@@ -53,7 +53,7 @@ export type { ProviderOptions } from "./provider.ts";
 // Provider management
 export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
 // Shared utilities (for advanced users)
-export { buildErrorAttributes, estimateMessageSize } from "./shared.ts";
+export { buildErrorAttributes, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
 export { traceAll } from "./traceAll.ts";
 // Deep tracing helpers (business logic instrumentation)
 export { traced } from "./traced.ts";
