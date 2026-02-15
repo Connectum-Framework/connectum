@@ -1,0 +1,64 @@
+{
+  "name": "@connectum/auth",
+  "version": "0.1.0",
+  "description": "Authentication and authorization interceptors for Connectum",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/auth"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "test:integration": "node --test tests/integration/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "clean": "rm -rf coverage"
+  },
+  "keywords": [
+    "auth",
+    "authentication",
+    "authorization",
+    "jwt",
+    "connectrpc",
+    "grpc",
+    "connectum",
+    "interceptor"
+  ],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=25.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "catalog:",
+    "jose": "^6.0.0"
+  },
+  "peerDependencies": {
+    "@connectrpc/connect": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@connectum/otel": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "c8": "catalog:",
+    "typescript": "catalog:"
+  }
+}

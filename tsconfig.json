@@ -44,7 +44,8 @@
       "@connectum/healthcheck": ["./packages/healthcheck/src"],
       "@connectum/reflection": ["./packages/reflection/src"],
       "@connectum/testing": ["./packages/testing/src"],
-      "@connectum/cli": ["./packages/cli/src"]
+      "@connectum/cli": ["./packages/cli/src"],
+      "@connectum/auth": ["./packages/auth/src"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"],
