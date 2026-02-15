@@ -1,5 +1,11 @@
 <p align="center">
-  <img src="https://connectum.dev/assets/splash.png" alt="Connectum" width="600">
+<a href="https://connectum.dev">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://connectum.dev/assets/splash-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://connectum.dev/assets/splash.png">
+  <img alt="Connectum — Microservices Framework" src="https://connectum.dev/assets/splash.png" width="600">
+</picture>
+</a>
 </p>
 
 <p align="center">
