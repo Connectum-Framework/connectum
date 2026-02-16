@@ -46,6 +46,9 @@ jobs:
       - name: Generate Protobuf
         run: pnpm turbo run build:proto
 
+      - name: Build packages
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 

@@ -8,6 +8,12 @@
       "outputs": ["gen/**", "gen-ts/**"],
       "cache": true
     },
+    "build": {
+      "dependsOn": ["^build", "build:proto"],
+      "inputs": ["src/**/*.ts", "tsup.config.ts", "package.json"],
+      "outputs": ["dist/**"],
+      "cache": true
+    },
     "buf:lint": {
       "inputs": ["proto/**/*.proto", "buf.yaml"],
       "outputs": [],
@@ -18,22 +24,22 @@
       "cache": false
     },
     "typecheck": {
-      "dependsOn": [],
+      "dependsOn": ["build"],
       "outputs": [],
       "cache": true
     },
     "test": {
-      "dependsOn": ["typecheck"],
+      "dependsOn": ["build"],
       "outputs": ["coverage/**"],
       "cache": true
     },
     "test:unit": {
-      "dependsOn": ["typecheck"],
+      "dependsOn": ["build"],
       "outputs": ["coverage/**"],
       "cache": true
     },
     "test:integration": {
-      "dependsOn": ["typecheck"],
+      "dependsOn": ["build"],
       "outputs": ["coverage/**"],
       "cache": true
     },

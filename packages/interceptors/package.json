@@ -3,21 +3,56 @@
   "version": "1.0.0-rc.3",
   "description": "ConnectRPC interceptors for Connectum",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./errorHandler": "./src/errorHandler.ts",
-    "./serializer": "./src/serializer.ts",
-    "./logger": "./src/logger.ts",
-    "./retry": "./src/retry.ts",
-    "./circuit-breaker": "./src/circuit-breaker.ts",
-    "./timeout": "./src/timeout.ts",
-    "./bulkhead": "./src/bulkhead.ts",
-    "./fallback": "./src/fallback.ts",
-    "./defaults": "./src/defaults.ts",
-    "./method-filter": "./src/method-filter.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./errorHandler": {
+      "types": "./dist/errorHandler.d.ts",
+      "default": "./dist/errorHandler.js"
+    },
+    "./serializer": {
+      "types": "./dist/serializer.d.ts",
+      "default": "./dist/serializer.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "default": "./dist/logger.js"
+    },
+    "./retry": {
+      "types": "./dist/retry.d.ts",
+      "default": "./dist/retry.js"
+    },
+    "./circuit-breaker": {
+      "types": "./dist/circuit-breaker.d.ts",
+      "default": "./dist/circuit-breaker.js"
+    },
+    "./timeout": {
+      "types": "./dist/timeout.d.ts",
+      "default": "./dist/timeout.js"
+    },
+    "./bulkhead": {
+      "types": "./dist/bulkhead.d.ts",
+      "default": "./dist/bulkhead.js"
+    },
+    "./fallback": {
+      "types": "./dist/fallback.d.ts",
+      "default": "./dist/fallback.js"
+    },
+    "./defaults": {
+      "types": "./dist/defaults.d.ts",
+      "default": "./dist/defaults.js"
+    },
+    "./method-filter": {
+      "types": "./dist/method-filter.d.ts",
+      "default": "./dist/method-filter.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -33,7 +68,8 @@
     "test:integration": "node --test tests/integration/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "interceptors",
@@ -45,7 +81,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -60,6 +96,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "c8": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }

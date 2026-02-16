@@ -568,9 +568,17 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=18.0.0
 - **pnpm**: >=10.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
+
+### Alternative Runtimes
+
+`@connectum/core` ships compiled JavaScript and type declarations, so it works on any Node.js 18+ without additional configuration. Your own `.ts` source files can be executed with:
+
+- **Node.js 22.6+** -- native type stripping. Run `node src/index.ts`.
+- **Bun** -- built-in TypeScript support. Run `bun src/index.ts`.
+- **[tsx](https://tsx.is)** -- esbuild-powered TypeScript execution, works on Node.js 18+. Run `npx tsx src/index.ts`.
 
 ## License
 

@@ -3,12 +3,20 @@
   "version": "0.1.0",
   "description": "Authentication and authorization interceptors for Connectum",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./testing": "./src/testing/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -24,7 +32,8 @@
     "test:integration": "node --test tests/integration/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "auth",
@@ -39,7 +48,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -52,6 +61,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "c8": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }

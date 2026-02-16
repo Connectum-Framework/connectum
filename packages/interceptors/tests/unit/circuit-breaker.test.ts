@@ -28,7 +28,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should open circuit after threshold failures", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 3, halfOpenAfter: 10 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 3, halfOpenAfter: 60_000 });
 
         const mockReq = {
             url: "http://localhost/test.Service/Method",

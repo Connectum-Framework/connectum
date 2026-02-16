@@ -3,13 +3,24 @@
   "version": "1.0.0-rc.3",
   "description": "Main server factory with protocol plugin system for Connectum",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./types": "./src/types.ts",
-    "./config": "./src/config/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "default": "./dist/config/index.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -25,7 +36,8 @@
     "test:unit": "node --test tests/unit/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "connectum",
@@ -38,7 +50,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -53,6 +65,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "c8": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }
