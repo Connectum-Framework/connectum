@@ -3,16 +3,27 @@
   "version": "1.0.0-rc.3",
   "description": "CLI tools for Connectum framework: proto sync, service discovery",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "connectum": "./src/index.ts"
+    "connectum": "./dist/index.js"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./commands/proto-sync": "./src/commands/proto-sync.ts",
-    "./utils/reflection": "./src/utils/reflection.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./commands/proto-sync": {
+      "types": "./dist/commands/proto-sync.d.ts",
+      "default": "./dist/commands/proto-sync.js"
+    },
+    "./utils/reflection": {
+      "types": "./dist/utils/reflection.d.ts",
+      "default": "./dist/utils/reflection.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -21,14 +32,17 @@
     "directory": "packages/cli"
   },
   "scripts": {
-    "start": "node --experimental-strip-types src/index.ts",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/**/*.test.ts",
     "test:unit": "node --test tests/unit/**/*.test.ts",
     "test:integration": "node --test tests/integration/**/*.test.ts",
+    "test:bun": "echo 'SKIP: CLI has Node-specific gRPC transport deps'",
+    "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "cli",
@@ -41,7 +55,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -59,6 +73,7 @@
     "@connectum/core": "workspace:^",
     "@connectum/healthcheck": "workspace:^",
     "@connectum/reflection": "workspace:^",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }

@@ -1,0 +1,69 @@
+{
+  "name": "@connectum/auth",
+  "version": "1.0.0-rc.3",
+  "description": "Authentication and authorization interceptors for Connectum",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/auth"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
+    "test:unit": "node --test tests/unit/**/*.test.ts",
+    "test:integration": "node --test tests/integration/**/*.test.ts",
+    "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
+    "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
+  },
+  "keywords": [
+    "auth",
+    "authentication",
+    "authorization",
+    "jwt",
+    "connectrpc",
+    "grpc",
+    "connectum",
+    "interceptor"
+  ],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "catalog:",
+    "@connectum/core": "workspace:^",
+    "jose": "^6.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "c8": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,4 +1,3 @@
-#!/usr/bin/env node --experimental-strip-types
 /**
  * @connectum/cli
  *

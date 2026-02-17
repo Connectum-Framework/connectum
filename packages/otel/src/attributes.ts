@@ -25,6 +25,12 @@ export const ATTR_NETWORK_TRANSPORT = "network.transport";
 export const ATTR_NETWORK_PEER_ADDRESS = "network.peer.address";
 export const ATTR_NETWORK_PEER_PORT = "network.peer.port";
 
+// RPC message event constants (per OTel semconv)
+export const RPC_MESSAGE_EVENT = "rpc.message";
+export const ATTR_RPC_MESSAGE_TYPE = "rpc.message.type";
+export const ATTR_RPC_MESSAGE_ID = "rpc.message.id";
+export const ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE = "rpc.message.uncompressed_size";
+
 /**
  * ConnectRPC error code map (numeric code -> string name)
  * Based on Connect protocol error codes

@@ -4,11 +4,16 @@
   "description": "Testing utilities for Connectum",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -21,9 +26,12 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/**/*.test.ts",
     "test:unit": "node --test tests/unit/**/*.test.ts",
+    "test:bun": "exodus-test --engine bun:pure tests/**/*.test.ts",
+    "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "testing",
@@ -34,7 +42,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -45,7 +53,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@exodus/test": "^1.0.0-rc.116",
     "c8": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }

@@ -1,0 +1,322 @@
+/**
+ * Unit tests for auth header propagation utilities
+ *
+ * Tests setAuthHeaders() and parseAuthHeaders() for correct
+ * serialization/deserialization of AuthContext to/from HTTP headers.
+ */
+
+import assert from "node:assert";
+import { describe, it } from "node:test";
+import { parseAuthHeaders, setAuthHeaders } from "../../src/headers.ts";
+import type { AuthContext } from "../../src/types.ts";
+import { AUTH_HEADERS } from "../../src/types.ts";
+
+describe("headers", () => {
+    describe("setAuthHeaders()", () => {
+        it("should set all headers correctly", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: ["admin", "editor"],
+                scopes: ["read", "write"],
+                claims: { tenant: "acme" },
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+
+            assert.strictEqual(headers.get(AUTH_HEADERS.SUBJECT), "user-1");
+            assert.strictEqual(headers.get(AUTH_HEADERS.TYPE), "jwt");
+            assert.strictEqual(headers.get(AUTH_HEADERS.ROLES), JSON.stringify(["admin", "editor"]));
+            assert.strictEqual(headers.get(AUTH_HEADERS.SCOPES), "read write");
+            assert.strictEqual(headers.get(AUTH_HEADERS.CLAIMS), JSON.stringify({ tenant: "acme" }));
+        });
+
+        it("should skip empty roles and scopes", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-2",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "api-key",
+            };
+
+            setAuthHeaders(headers, context);
+
+            assert.strictEqual(headers.get(AUTH_HEADERS.SUBJECT), "user-2");
+            assert.strictEqual(headers.get(AUTH_HEADERS.TYPE), "api-key");
+            assert.strictEqual(headers.get(AUTH_HEADERS.ROLES), null);
+            assert.strictEqual(headers.get(AUTH_HEADERS.SCOPES), null);
+            assert.strictEqual(headers.get(AUTH_HEADERS.CLAIMS), null);
+        });
+    });
+
+    describe("parseAuthHeaders()", () => {
+        it("should return undefined when subject missing", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.ROLES, '["admin"]');
+
+            const result = parseAuthHeaders(headers);
+            assert.strictEqual(result, undefined);
+        });
+
+        it("should parse all headers correctly", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            headers.set(AUTH_HEADERS.TYPE, "jwt");
+            headers.set(AUTH_HEADERS.ROLES, '["admin","editor"]');
+            headers.set(AUTH_HEADERS.SCOPES, "read write");
+            headers.set(AUTH_HEADERS.CLAIMS, '{"tenant":"acme"}');
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject, "user-1");
+            assert.strictEqual(result.type, "jwt");
+            assert.deepStrictEqual(result.roles, ["admin", "editor"]);
+            assert.deepStrictEqual(result.scopes, ["read", "write"]);
+            assert.deepStrictEqual(result.claims, { tenant: "acme" });
+        });
+
+        it("should handle malformed JSON gracefully", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            headers.set(AUTH_HEADERS.ROLES, "not-valid-json");
+            headers.set(AUTH_HEADERS.CLAIMS, "{broken");
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject, "user-1");
+            assert.deepStrictEqual(result.roles, []);
+            assert.deepStrictEqual(result.claims, {});
+        });
+
+        it("should default type to 'unknown' when missing", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.type, "unknown");
+        });
+
+        it("should truncate subject exceeding 512 characters", () => {
+            const headers = new Headers();
+            const longSubject = "a".repeat(600);
+            headers.set(AUTH_HEADERS.SUBJECT, longSubject);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject.length, 512);
+            assert.strictEqual(result.subject, "a".repeat(512));
+        });
+
+        it("should not truncate subject within 512 character limit", () => {
+            const headers = new Headers();
+            const subject = "a".repeat(512);
+            headers.set(AUTH_HEADERS.SUBJECT, subject);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.subject.length, 512);
+        });
+
+        it("should truncate type exceeding 128 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const longType = "t".repeat(200);
+            headers.set(AUTH_HEADERS.TYPE, longType);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.strictEqual(result.type.length, 128);
+            assert.strictEqual(result.type, "t".repeat(128));
+        });
+
+        it("should return empty claims when JSON exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            // Create a valid JSON string that exceeds 8192 chars
+            const largeClaims = JSON.stringify({ data: "x".repeat(8200) });
+            assert.ok(largeClaims.length > 8192);
+            headers.set(AUTH_HEADERS.CLAIMS, largeClaims);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.claims, {});
+        });
+
+        it("should return empty roles when JSON exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const largeRoles = JSON.stringify(Array.from({ length: 1000 }, (_, i) => `role-${"x".repeat(10)}-${i}`));
+            assert.ok(largeRoles.length > 8192);
+            headers.set(AUTH_HEADERS.ROLES, largeRoles);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.roles, []);
+        });
+
+        it("should return empty scopes when header exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const largeScopes = Array.from({ length: 1000 }, (_, i) => `scope-${"x".repeat(10)}-${i}`).join(" ");
+            assert.ok(largeScopes.length > 8192);
+            headers.set(AUTH_HEADERS.SCOPES, largeScopes);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.scopes, []);
+        });
+
+        it("should parse claims within 8192 character limit", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const normalClaims = JSON.stringify({ data: "x".repeat(100) });
+            assert.ok(normalClaims.length <= 8192);
+            headers.set(AUTH_HEADERS.CLAIMS, normalClaims);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.claims, { data: "x".repeat(100) });
+        });
+    });
+
+    describe("name propagation", () => {
+        it("should set and parse name header", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                name: "John Doe",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME), "John Doe");
+
+            const parsed = parseAuthHeaders(headers);
+            assert.ok(parsed);
+            assert.strictEqual(parsed.name, "John Doe");
+        });
+
+        it("should not set name header when name is undefined", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME), null);
+        });
+
+        it("should truncate name exceeding 256 characters", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                name: "n".repeat(300),
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME)!.length, 256);
+        });
+    });
+
+    describe("sanitized output (SEC-005)", () => {
+        it("should sanitize control characters in subject and type on setAuthHeaders", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user\x00-\x1F-clean",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt\x07-type",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.SUBJECT), "user--clean");
+            assert.strictEqual(headers.get(AUTH_HEADERS.TYPE), "jwt-type");
+        });
+    });
+
+    describe("propagatedClaims filter", () => {
+        it("should only propagate listed claims", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: { tenant: "acme", secret: "password", level: 5 },
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context, ["tenant", "level"]);
+
+            const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
+            assert.ok(claimsRaw);
+            const parsed = JSON.parse(claimsRaw);
+            assert.deepStrictEqual(parsed, { tenant: "acme", level: 5 });
+        });
+
+        it("should propagate all claims when propagatedClaims is undefined", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: { a: 1, b: 2 },
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+
+            const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
+            assert.ok(claimsRaw);
+            assert.deepStrictEqual(JSON.parse(claimsRaw), { a: 1, b: 2 });
+        });
+    });
+
+    describe("round-trip", () => {
+        it("should preserve context through setAuthHeaders -> parseAuthHeaders", () => {
+            const original: AuthContext = {
+                subject: "round-trip-user",
+                roles: ["admin", "user"],
+                scopes: ["read", "write", "delete"],
+                claims: { org: "test-org", level: 5 },
+                type: "jwt",
+            };
+
+            const headers = new Headers();
+            setAuthHeaders(headers, original);
+            const restored = parseAuthHeaders(headers);
+
+            assert.ok(restored);
+            assert.strictEqual(restored.subject, original.subject);
+            assert.strictEqual(restored.type, original.type);
+            assert.deepStrictEqual(restored.roles, original.roles);
+            assert.deepStrictEqual(restored.scopes, original.scopes);
+            assert.deepStrictEqual(restored.claims, original.claims);
+        });
+    });
+});

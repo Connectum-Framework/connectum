@@ -17,7 +17,7 @@ import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentele
 import { getMeter } from "./meter.ts";
 import type { RpcServerMetrics } from "./metrics.ts";
 import { createRpcServerMetrics } from "./metrics.ts";
-import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, estimateMessageSize } from "./shared.ts";
+import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
 import { getTracer } from "./tracer.ts";
 import type { OtelInterceptorOptions } from "./types.ts";
 
@@ -150,30 +150,46 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
 
         return tracer.startActiveSpan(spanName, spanOptions, parentContext, async (span) => {
             try {
-                // Record request message event if enabled
-                if (recordMessages && !req.stream) {
-                    span.addEvent("message", {
-                        "message.type": "RECEIVED",
-                        "message.uncompressed_size": requestSize,
+                // Wrap streaming request messages for instrumentation
+                const instrumentedReq = req.stream
+                    ? Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
+                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages),
+                      })
+                    : req;
+
+                if (!req.stream && recordMessages) {
+                    span.addEvent("rpc.message", {
+                        "rpc.message.type": "RECEIVED",
+                        "rpc.message.id": 1,
+                        "rpc.message.uncompressed_size": requestSize,
                     });
                 }
 
-                const response = await next(req);
+                const response = await next(instrumentedReq);
 
                 const duration = (performance.now() - startTime) / 1000;
-                const responseSize = !response.stream ? estimateMessageSize(response.message) : 0;
 
-                // Record response message event if enabled
-                if (recordMessages && !response.stream) {
-                    span.addEvent("message", {
-                        "message.type": "SENT",
-                        "message.uncompressed_size": responseSize,
+                // Wrap streaming response messages for instrumentation
+                if (response.stream) {
+                    const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true),
+                    });
+                    recordMetrics(duration, 0);
+                    return wrappedResponse;
+                }
+
+                const responseSize = estimateMessageSize(response.message);
+
+                if (recordMessages) {
+                    span.addEvent("rpc.message", {
+                        "rpc.message.type": "SENT",
+                        "rpc.message.id": 1,
+                        "rpc.message.uncompressed_size": responseSize,
                     });
                 }
 
                 span.setStatus({ code: SpanStatusCode.OK });
                 span.end();
-
                 recordMetrics(duration, responseSize);
 
                 return response;

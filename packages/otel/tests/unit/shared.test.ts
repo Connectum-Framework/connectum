@@ -19,6 +19,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import {
 	ATTR_ERROR_TYPE,
 	ATTR_NETWORK_PROTOCOL_NAME,
+	ATTR_NETWORK_TRANSPORT,
 	ATTR_RPC_CONNECT_RPC_STATUS_CODE,
 	ATTR_RPC_METHOD,
 	ATTR_RPC_SERVICE,
@@ -164,6 +165,7 @@ describe("buildBaseAttributes", () => {
 		assert.strictEqual(attrs[ATTR_RPC_METHOD], "TestMethod");
 		assert.strictEqual(attrs[ATTR_SERVER_ADDRESS], "localhost");
 		assert.strictEqual(attrs[ATTR_NETWORK_PROTOCOL_NAME], "connect_rpc");
+		assert.strictEqual(attrs[ATTR_NETWORK_TRANSPORT], "tcp");
 	});
 
 	it("should include server.port when provided", () => {
@@ -191,7 +193,7 @@ describe("buildBaseAttributes", () => {
 		);
 	});
 
-	it("should always include rpc.system, rpc.service, rpc.method, server.address, network.protocol.name", () => {
+	it("should always include rpc.system, rpc.service, rpc.method, server.address, network.protocol.name, network.transport", () => {
 		const attrs = buildBaseAttributes({
 			service: "my.Service",
 			method: "MyMethod",
@@ -204,6 +206,7 @@ describe("buildBaseAttributes", () => {
 			ATTR_RPC_METHOD,
 			ATTR_SERVER_ADDRESS,
 			ATTR_NETWORK_PROTOCOL_NAME,
+			ATTR_NETWORK_TRANSPORT,
 		];
 
 		for (const key of expectedKeys) {

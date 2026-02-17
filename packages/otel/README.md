@@ -17,6 +17,18 @@ OpenTelemetry instrumentation for Connectum.
 - **Environment Configuration**: Configuration via environment variables
 - **Provider Management**: `initProvider()` / `shutdownProvider()`
 
+### Streaming Support
+
+Streaming requests and responses (client streaming, server streaming, bidi streaming) are fully instrumented with per-message span events.
+
+Each streaming message produces an `rpc.message` event on the active span with the following attributes:
+
+- `rpc.message.type` -- `SENT` or `RECEIVED`, indicating the direction of the message
+- `rpc.message.id` -- Sequence number of the message within the stream (1-based)
+- `rpc.message.uncompressed_size` -- Estimated size of the individual message in bytes
+
+The streaming implementation captures the span via closure rather than relying on `AsyncLocalStorage`, which avoids the known Node.js issue where ALS context is lost in async generators. This ensures reliable span correlation for all streaming messages.
+
 ## Installation
 
 ```bash
@@ -189,11 +201,11 @@ OTEL_SERVICE_VERSION=1.0.0
 OTEL_SERVICE_NAMESPACE=production
 
 # Trace exporter
-OTEL_TRACES_EXPORTER=otlp  # "otlp", "console", or "none"
+OTEL_TRACES_EXPORTER=otlp/http  # "otlp/http", "otlp/grpc", "console", or "none"
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
 
 # Metrics exporter
-OTEL_METRICS_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp/http
 OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
 
 # Logs exporter
@@ -429,11 +441,11 @@ const metadata = getServiceMetadata();
 
 // OTLP settings
 const otlpSettings = getOTLPSettings();
-// { protocol: "http/protobuf", headers: { ... } }
+// { traces: "otlp/http", metrics: "otlp/http", logs: "console" }
 
 // Collector options
 const collectorOptions = getCollectorOptions();
-// { traces: { exporter: "otlp", endpoint: "..." }, metrics: { ... } }
+// { concurrencyLimit: 10, url: "http://localhost:4318" }
 
 // Batch span processor options
 const bspOptions = getBatchSpanProcessorOptions();
@@ -469,39 +481,31 @@ await shutdownProvider();
 
 ```typescript
 const ExporterType = {
-  OTLP: "otlp",
   CONSOLE: "console",
+  OTLP_HTTP: "otlp/http",
+  OTLP_GRPC: "otlp/grpc",
   NONE: "none",
 } as const;
 
-type ExporterType = typeof ExporterType[keyof typeof ExporterType];
+type ExporterType = (typeof ExporterType)[keyof typeof ExporterType];
 ```
 
 ### OTLPSettings
 
 ```typescript
-type OTLPSettings = {
-  protocol: "http/protobuf" | "grpc";
-  headers: Record<string, string>;
+interface OTLPSettings {
+  traces: ExporterType;
+  metrics: ExporterType;
+  logs: ExporterType;
 };
 ```
 
 ### CollectorOptions
 
 ```typescript
-type CollectorOptions = {
-  traces: {
-    exporter: ExporterType;
-    endpoint?: string;
-  };
-  metrics: {
-    exporter: ExporterType;
-    endpoint?: string;
-  };
-  logs: {
-    exporter: ExporterType;
-    endpoint?: string;
-  };
+interface CollectorOptions {
+  concurrencyLimit: number;
+  url: string | undefined;
 };
 ```
 
@@ -526,9 +530,9 @@ type BatchSpanProcessorOptions = {
 
 ### Exporters
 
-- `OTEL_TRACES_EXPORTER` - Trace exporter type (`otlp`, `console`, `none`)
-- `OTEL_METRICS_EXPORTER` - Metrics exporter type
-- `OTEL_LOGS_EXPORTER` - Logs exporter type
+- `OTEL_TRACES_EXPORTER` - Trace exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
+- `OTEL_METRICS_EXPORTER` - Metrics exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
+- `OTEL_LOGS_EXPORTER` - Logs exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
 
 ### OTLP Endpoints
 
@@ -698,6 +702,11 @@ await repository.findById("123");
 // - function.args: '["123"]'
 ```
 
+## Known Limitations
+
+- **AsyncLocalStorage context loss in async generators**: Node.js loses `AsyncLocalStorage` context when crossing async generator boundaries. The streaming instrumentation works around this by capturing the span via closure at the point where the stream is created, so all `rpc.message` events are correctly attached to the parent RPC span regardless of ALS state.
+- **Streaming message size is per-message**: The `rpc.message.uncompressed_size` attribute reflects the estimated size of each individual message, not the cumulative size of the entire stream.
+
 ## Documentation
 
 - [Quick Start](https://connectum.dev/en/guide/quickstart) - Setup observability
@@ -721,7 +730,7 @@ await repository.findById("123");
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=18.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

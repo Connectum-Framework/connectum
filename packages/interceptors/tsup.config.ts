@@ -1,0 +1,23 @@
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+    entry: [
+        "src/index.ts",
+        "src/errorHandler.ts",
+        "src/serializer.ts",
+        "src/logger.ts",
+        "src/retry.ts",
+        "src/circuit-breaker.ts",
+        "src/timeout.ts",
+        "src/bulkhead.ts",
+        "src/fallback.ts",
+        "src/defaults.ts",
+        "src/method-filter.ts",
+    ],
+    format: ["esm"],
+    dts: true,
+    sourcemap: true,
+    clean: true,
+    minify: false,
+    splitting: false,
+});

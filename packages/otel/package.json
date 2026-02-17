@@ -3,22 +3,60 @@
   "version": "1.0.0-rc.3",
   "description": "OpenTelemetry instrumentation for Connectum",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./interceptor": "./src/interceptor.ts",
-    "./client-interceptor": "./src/client-interceptor.ts",
-    "./shared": "./src/shared.ts",
-    "./tracer": "./src/tracer.ts",
-    "./meter": "./src/meter.ts",
-    "./logger": "./src/logger.ts",
-    "./traced": "./src/traced.ts",
-    "./traceAll": "./src/traceAll.ts",
-    "./attributes": "./src/attributes.ts",
-    "./metrics": "./src/metrics.ts",
-    "./provider": "./src/provider.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./interceptor": {
+      "types": "./dist/interceptor.d.ts",
+      "default": "./dist/interceptor.js"
+    },
+    "./client-interceptor": {
+      "types": "./dist/client-interceptor.d.ts",
+      "default": "./dist/client-interceptor.js"
+    },
+    "./shared": {
+      "types": "./dist/shared.d.ts",
+      "default": "./dist/shared.js"
+    },
+    "./tracer": {
+      "types": "./dist/tracer.d.ts",
+      "default": "./dist/tracer.js"
+    },
+    "./meter": {
+      "types": "./dist/meter.d.ts",
+      "default": "./dist/meter.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "default": "./dist/logger.js"
+    },
+    "./traced": {
+      "types": "./dist/traced.d.ts",
+      "default": "./dist/traced.js"
+    },
+    "./traceAll": {
+      "types": "./dist/traceAll.d.ts",
+      "default": "./dist/traceAll.js"
+    },
+    "./attributes": {
+      "types": "./dist/attributes.d.ts",
+      "default": "./dist/attributes.js"
+    },
+    "./metrics": {
+      "types": "./dist/metrics.d.ts",
+      "default": "./dist/metrics.js"
+    },
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "default": "./dist/provider.js"
+    }
   },
   "files": [
+    "dist",
     "src"
   ],
   "repository": {
@@ -31,9 +69,12 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/**/*.test.ts",
     "test:unit": "node --test tests/unit/**/*.test.ts",
+    "test:bun": "echo 'SKIP: OpenTelemetry SDK is Node-specific'",
+    "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "clean": "rm -rf coverage"
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
   },
   "keywords": [
     "opentelemetry",
@@ -46,7 +87,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=25.2.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -71,6 +112,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "c8": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:"
   }
 }

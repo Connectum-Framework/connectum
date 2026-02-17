@@ -23,6 +23,9 @@ export { createServer } from "./Server.ts";
 // UTILITIES
 // =============================================================================
 
+// Error protocol
+export type { SanitizableError } from "./errors.ts";
+export { isSanitizableError } from "./errors.ts";
 // TLS utilities
 export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
 
