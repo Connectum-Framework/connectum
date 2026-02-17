@@ -72,7 +72,11 @@ export const AuthzEffect = {
 export type AuthzEffect = (typeof AuthzEffect)[keyof typeof AuthzEffect];
 
 /**
- * Authorization rule definition
+ * Authorization rule definition.
+ *
+ * When a rule has `requires`, the match semantics are:
+ * - **roles**: "any-of" -- the user must have **at least one** of the listed roles.
+ * - **scopes**: "all-of" -- the user must have **every** listed scope.
  */
 export interface AuthzRule {
     /** Rule name for logging/debugging */
@@ -81,7 +85,12 @@ export interface AuthzRule {
     readonly methods: ReadonlyArray<string>;
     /** Effect when rule matches */
     readonly effect: AuthzEffect;
-    /** Required roles/scopes for this rule */
+    /**
+     * Required roles/scopes for this rule.
+     *
+     * - `roles` uses "any-of" semantics: user needs at least one of the listed roles.
+     * - `scopes` uses "all-of" semantics: user needs every listed scope.
+     */
     readonly requires?:
         | {
               readonly roles?: ReadonlyArray<string>;
@@ -308,4 +317,10 @@ export interface SessionAuthInterceptorOptions {
     readonly skipMethods?: string[] | undefined;
     /** Propagate auth context as headers for downstream services */
     readonly propagateHeaders?: boolean | undefined;
+    /**
+     * Filter which claims are propagated in headers.
+     * When set, only listed claim keys are included in x-auth-claims header.
+     * When not set, all claims are propagated.
+     */
+    readonly propagatedClaims?: string[] | undefined;
 }

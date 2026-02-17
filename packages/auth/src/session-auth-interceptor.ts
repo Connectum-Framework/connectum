@@ -58,7 +58,7 @@ function defaultExtractToken(req: { header: Headers }): string | null {
  * ```
  */
 export function createSessionAuthInterceptor(options: SessionAuthInterceptorOptions): Interceptor {
-    const { verifySession, mapSession, extractToken = defaultExtractToken, cache: cacheOptions, skipMethods = [], propagateHeaders = false } = options;
+    const { verifySession, mapSession, extractToken = defaultExtractToken, cache: cacheOptions, skipMethods = [], propagateHeaders = false, propagatedClaims } = options;
 
     const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 
@@ -85,7 +85,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
         const cached = cache?.get(token);
         if (cached && (!cached.expiresAt || cached.expiresAt.getTime() > Date.now())) {
             if (propagateHeaders) {
-                setAuthHeaders(req.header, cached);
+                setAuthHeaders(req.header, cached, propagatedClaims);
             }
             return await authContextStorage.run(cached, () => next(req));
         }
@@ -112,7 +112,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
         cache?.set(token, authContext);
 
         if (propagateHeaders) {
-            setAuthHeaders(req.header, authContext);
+            setAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
         return await authContextStorage.run(authContext, () => next(req));

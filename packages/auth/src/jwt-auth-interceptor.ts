@@ -126,6 +126,13 @@ function mapClaimsToContext(payload: jose.JWTPayload, mapping: NonNullable<JwtAu
 }
 
 /**
+ * Throw an Unauthenticated error for a missing JWT subject claim.
+ */
+function throwMissingSubject(): never {
+    throw new ConnectError("JWT missing subject claim", Code.Unauthenticated);
+}
+
+/**
  * Create a JWT authentication interceptor.
  *
  * Convenience wrapper around createAuthInterceptor() that handles
@@ -188,12 +195,7 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
             const claims = payload as Record<string, unknown>;
 
             return {
-                subject:
-                    mapped.subject ??
-                    payload.sub ??
-                    (() => {
-                        throw new ConnectError("JWT missing subject claim", Code.Unauthenticated);
-                    })(),
+                subject: mapped.subject ?? payload.sub ?? throwMissingSubject(),
                 name: mapped.name ?? (typeof claims.name === "string" ? claims.name : undefined),
                 roles: mapped.roles ?? [],
                 scopes: mapped.scopes ?? (typeof payload.scope === "string" ? payload.scope.split(" ").filter(Boolean) : []),

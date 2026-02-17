@@ -26,7 +26,7 @@ export interface SanitizableError {
  * serverDetails (non-null object) properties, plus a numeric code.
  */
 export function isSanitizableError(err: unknown): err is Error & SanitizableError & { code: number } {
-    if (err == null || typeof err !== "object") return false;
-    const candidate = err as Record<string, unknown>;
+    if (!(err instanceof Error)) return false;
+    const candidate = err as unknown as Record<string, unknown>;
     return typeof candidate.clientMessage === "string" && typeof candidate.serverDetails === "object" && candidate.serverDetails !== null && typeof candidate.code === "number";
 }

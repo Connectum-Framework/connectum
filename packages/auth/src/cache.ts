@@ -16,6 +16,9 @@ export class LruCache<T> {
     readonly #entries = new Map<string, CacheEntry<T>>();
 
     constructor(options: { ttl: number; maxSize?: number | undefined }) {
+        if (typeof options.ttl !== "number" || options.ttl <= 0) {
+            throw new RangeError("ttl must be a positive number");
+        }
         this.#ttl = options.ttl;
         this.#maxSize = options.maxSize ?? 1000;
     }

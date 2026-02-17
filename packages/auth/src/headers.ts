@@ -10,6 +10,8 @@
 import type { AuthContext } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
+const MAX_HEADER_BYTES = 8192;
+
 /**
  * Sanitize a header value by removing control characters and enforcing length limits.
  */
@@ -39,18 +41,27 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     }
 
     if (context.roles.length > 0) {
-        headers.set(AUTH_HEADERS.ROLES, JSON.stringify(context.roles));
+        const rolesValue = JSON.stringify(context.roles);
+        if (rolesValue.length <= MAX_HEADER_BYTES) {
+            headers.set(AUTH_HEADERS.ROLES, rolesValue);
+        }
     }
 
     if (context.scopes.length > 0) {
-        headers.set(AUTH_HEADERS.SCOPES, context.scopes.join(" "));
+        const scopesValue = context.scopes.join(" ");
+        if (scopesValue.length <= MAX_HEADER_BYTES) {
+            headers.set(AUTH_HEADERS.SCOPES, scopesValue);
+        }
     }
 
     const claimKeys = Object.keys(context.claims);
     if (claimKeys.length > 0) {
         const filteredClaims = propagatedClaims ? Object.fromEntries(Object.entries(context.claims).filter(([key]) => propagatedClaims.includes(key))) : context.claims;
         if (Object.keys(filteredClaims).length > 0) {
-            headers.set(AUTH_HEADERS.CLAIMS, JSON.stringify(filteredClaims));
+            const claimsValue = JSON.stringify(filteredClaims);
+            if (claimsValue.length <= MAX_HEADER_BYTES) {
+                headers.set(AUTH_HEADERS.CLAIMS, claimsValue);
+            }
         }
     }
 }
@@ -91,7 +102,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
     const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
 
     let roles: string[] = [];
-    if (rolesRaw && rolesRaw.length <= 8192) {
+    if (rolesRaw && rolesRaw.length <= MAX_HEADER_BYTES) {
         try {
             const parsed: unknown = JSON.parse(rolesRaw);
             if (Array.isArray(parsed)) {
@@ -103,7 +114,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
     }
 
     let scopes: string[] = [];
-    if (scopesRaw && scopesRaw.length <= 8192) {
+    if (scopesRaw && scopesRaw.length <= MAX_HEADER_BYTES) {
         scopes = scopesRaw.split(" ").filter(Boolean);
     }
 
@@ -112,7 +123,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
 
     let claims: Record<string, unknown> = {};
     if (claimsRaw) {
-        if (claimsRaw.length > 8192) {
+        if (claimsRaw.length > MAX_HEADER_BYTES) {
             // Claims too large — ignore to prevent abuse
             claims = {};
         } else {
