@@ -1,5 +1,16 @@
 # @connectum/cli
 
+## 1.0.0-rc.4
+
+### Minor Changes
+
+- [#24](https://github.com/Connectum-Framework/connectum/pull/24) [`bb40d53`](https://github.com/Connectum-Framework/connectum/commit/bb40d5340dcc2a208eb69a34eb5e22f38068a667) Thanks [@intech](https://github.com/intech)! - Migrate to compile-before-publish with tsup (ADR-001 revision).
+
+  All packages now publish compiled .js + .d.ts + source maps instead of raw .ts source.
+  Consumer Node.js requirement lowered from >=25.2.0 to >=18.0.0.
+
+  REMOVED: `@connectum/core/register` — no longer needed, packages ship compiled JS.
+
 ## 1.0.0-rc.3
 
 ## 1.0.0-rc.2
