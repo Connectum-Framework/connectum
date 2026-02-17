@@ -493,7 +493,7 @@ type ExporterType = (typeof ExporterType)[keyof typeof ExporterType];
 ### OTLPSettings
 
 ```typescript
-interface OTLPSettings = {
+interface OTLPSettings {
   traces: ExporterType;
   metrics: ExporterType;
   logs: ExporterType;
@@ -503,7 +503,7 @@ interface OTLPSettings = {
 ### CollectorOptions
 
 ```typescript
-interface CollectorOptions = {
+interface CollectorOptions {
   concurrencyLimit: number;
   url: string | undefined;
 };
@@ -730,7 +730,7 @@ await repository.findById("123");
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=18.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

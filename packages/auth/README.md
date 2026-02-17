@@ -274,7 +274,7 @@ AuthzEffect.DENY   // 'deny'
 
 Auth interceptors should be placed **after** the default interceptor chain (error handler, timeout, bulkhead, etc.) and **before** business logic:
 
-```
+```text
 errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> validation -> auth -> authz -> handler
 ```
 
@@ -392,7 +392,7 @@ const betterAuthInterceptor = createAuthInterceptor({
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=18.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License
