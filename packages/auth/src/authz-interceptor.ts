@@ -127,9 +127,11 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
                 if (ruleResult.effect === AuthzEffect.DENY) {
-                    const details: AuthzDeniedDetails = { ruleName: ruleResult.ruleName };
-                    if (ruleResult.requiredRoles) (details as { requiredRoles: readonly string[] }).requiredRoles = [...ruleResult.requiredRoles];
-                    if (ruleResult.requiredScopes) (details as { requiredScopes: readonly string[] }).requiredScopes = [...ruleResult.requiredScopes];
+                    const details: AuthzDeniedDetails = {
+                        ruleName: ruleResult.ruleName,
+                        ...(ruleResult.requiredRoles && { requiredRoles: [...ruleResult.requiredRoles] }),
+                        ...(ruleResult.requiredScopes && { requiredScopes: [...ruleResult.requiredScopes] }),
+                    };
                     throw new AuthzDeniedError(details);
                 }
                 // ALLOW — continue

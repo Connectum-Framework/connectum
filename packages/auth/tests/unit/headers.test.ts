@@ -153,6 +153,32 @@ describe("headers", () => {
             assert.deepStrictEqual(result.claims, {});
         });
 
+        it("should return empty roles when JSON exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const largeRoles = JSON.stringify(Array.from({ length: 1000 }, (_, i) => `role-${"x".repeat(10)}-${i}`));
+            assert.ok(largeRoles.length > 8192);
+            headers.set(AUTH_HEADERS.ROLES, largeRoles);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.roles, []);
+        });
+
+        it("should return empty scopes when header exceeds 8192 characters", () => {
+            const headers = new Headers();
+            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
+            const largeScopes = Array.from({ length: 1000 }, (_, i) => `scope-${"x".repeat(10)}-${i}`).join(" ");
+            assert.ok(largeScopes.length > 8192);
+            headers.set(AUTH_HEADERS.SCOPES, largeScopes);
+
+            const result = parseAuthHeaders(headers);
+
+            assert.ok(result);
+            assert.deepStrictEqual(result.scopes, []);
+        });
+
         it("should parse claims within 8192 character limit", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "user-1");

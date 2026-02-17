@@ -60,13 +60,20 @@ describe("isSanitizableError", () => {
         assert.strictEqual(isSanitizableError(err), false);
     });
 
-    it("should return true even without code (code check is on type guard return)", () => {
+    it("should return false without numeric code", () => {
         const err = {
             clientMessage: "msg",
             serverDetails: { key: "value" },
         };
-        // isSanitizableError checks clientMessage + serverDetails
-        // code is part of the type guard return type, not the check
-        assert.strictEqual(isSanitizableError(err), true);
+        assert.strictEqual(isSanitizableError(err), false);
+    });
+
+    it("should return false when code is not a number", () => {
+        const err = {
+            clientMessage: "msg",
+            serverDetails: { key: "value" },
+            code: "not-a-number",
+        };
+        assert.strictEqual(isSanitizableError(err), false);
     });
 });

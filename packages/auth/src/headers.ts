@@ -83,7 +83,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
     const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
 
     let roles: string[] = [];
-    if (rolesRaw) {
+    if (rolesRaw && rolesRaw.length <= 8192) {
         try {
             const parsed: unknown = JSON.parse(rolesRaw);
             if (Array.isArray(parsed)) {
@@ -95,7 +95,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
     }
 
     let scopes: string[] = [];
-    if (scopesRaw) {
+    if (scopesRaw && scopesRaw.length <= 8192) {
         scopes = scopesRaw.split(" ").filter(Boolean);
     }
 
