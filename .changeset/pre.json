@@ -8,7 +8,17 @@
     "@connectum/interceptors": "1.0.0-beta.2",
     "@connectum/otel": "1.0.0-beta.2",
     "@connectum/reflection": "1.0.0-beta.2",
-    "@connectum/testing": "1.0.0-beta.2"
+    "@connectum/testing": "1.0.0-beta.2",
+    "@connectum/auth": "1.0.0-rc.3"
   },
-  "changesets": ["ci-oidc-provenance", "code-review-fixes", "dependency-migration-2025"]
+  "changesets": [
+    "auth-v2-features",
+    "ci-oidc-provenance",
+    "code-review-fixes",
+    "compile-before-publish",
+    "cross-runtime-tests",
+    "dependency-migration-2025",
+    "otel-streaming",
+    "security-improvements"
+  ]
 }
