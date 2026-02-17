@@ -103,6 +103,7 @@ core/src/
 ├── Server.ts            # Orchestrator: lifecycle state machine, EventEmitter
 ├── TransportManager.ts  # HTTP/2 transport: creation, listen, session tracking
 ├── buildRoutes.ts       # Composition: services + protocols + interceptors -> handler
+├── errors.ts            # SanitizableError protocol and type guard
 ├── gracefulShutdown.ts  # Graceful shutdown: timeout race, force close, hooks
 ├── ShutdownManager.ts   # Shutdown hooks: dependency ordering, cycle detection
 ├── TLSConfig.ts         # TLS: certificate reading, path resolution
@@ -297,6 +298,87 @@ const { key, cert } = readTLSCertificates({
 // Get configured TLS path
 const configuredPath = tlsPath();
 ```
+
+### SanitizableError Protocol
+
+`SanitizableError` is an interface for errors that carry server-side diagnostic details while exposing only a safe message to clients. The `@connectum/interceptors` error handler recognizes this interface and sanitizes errors automatically.
+
+**Interface:**
+
+```typescript
+interface SanitizableError {
+  readonly clientMessage: string;
+  readonly serverDetails: Readonly<Record<string, unknown>>;
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `clientMessage` | `string` | Safe message sent to the client |
+| `serverDetails` | `Readonly<Record<string, unknown>>` | Rich diagnostic details logged server-side |
+
+**Type guard:**
+
+```typescript
+function isSanitizableError(err: unknown): err is Error & SanitizableError & { code: number }
+```
+
+Returns `true` when `err` is an `instanceof Error` with a `clientMessage` string, a non-null `serverDetails` object, and a numeric `code`. Plain objects that are not `Error` instances will **not** pass the check -- errors must extend `Error`.
+
+**Usage example:**
+
+```typescript
+import type { SanitizableError } from '@connectum/core';
+import { Code } from '@connectrpc/connect';
+
+class PaymentError extends Error implements SanitizableError {
+  readonly code = Code.FailedPrecondition;
+  readonly clientMessage: string;
+  readonly serverDetails: Readonly<Record<string, unknown>>;
+
+  constructor(reason: string, details: Record<string, unknown>) {
+    super(reason);
+    this.clientMessage = 'Payment processing failed';
+    this.serverDetails = details;
+  }
+}
+
+// Throwing this error inside a ConnectRPC handler:
+// - Client receives: ConnectError with message "Payment processing failed"
+// - Server logs: full serverDetails object for debugging
+throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount: 4999 });
+```
+
+## Exports Summary
+
+| Export | Kind | Description |
+|--------|------|-------------|
+| `createServer` | function | Factory function for creating a server |
+| `ServerState` | const | Server lifecycle states |
+| `LifecycleEvent` | const | Lifecycle event names |
+| `SanitizableError` | type | Interface for errors with safe client messages and server details |
+| `isSanitizableError` | function | Type guard for `SanitizableError` |
+| `getTLSPath` | function | Get TLS path from environment |
+| `readTLSCertificates` | function | Read TLS key and certificate files |
+| `tlsPath` | function | Get configured TLS path |
+| `parseEnvConfig` | function | Parse environment configuration (throws on invalid) |
+| `safeParseEnvConfig` | function | Parse environment configuration (returns result) |
+| `ConnectumEnvSchema` | const | Zod schema for environment variables |
+| `LogLevelSchema` | const | Zod schema for log level |
+| `LogFormatSchema` | const | Zod schema for log format |
+| `LoggerBackendSchema` | const | Zod schema for logger backend |
+| `NodeEnvSchema` | const | Zod schema for NODE_ENV |
+| `BooleanFromStringSchema` | const | Zod schema for boolean-from-string coercion |
+| `Server` | type | Server interface |
+| `CreateServerOptions` | type | Options for `createServer()` |
+| `ProtocolRegistration` | type | Protocol plugin interface |
+| `ShutdownOptions` | type | Graceful shutdown options |
+| `TLSOptions` | type | TLS configuration options |
+| `ServiceRoute` | type | Service route function type |
+| `ShutdownHook` | type | Shutdown hook function type |
+| `HttpHandler` | type | HTTP handler type |
+| `ProtocolContext` | type | Protocol context type |
+| `ConnectumEnv` | type | Environment configuration type |
 
 ## Configuration Types
 

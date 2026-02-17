@@ -161,7 +161,7 @@ All factories are also available via the main export `@connectum/interceptors`.
 
 ### Error Handler
 
-Converts arbitrary errors to `ConnectError` with correct gRPC codes.
+Converts arbitrary errors to `ConnectError` with correct gRPC codes. Recognizes the `SanitizableError` protocol from `@connectum/core`: errors that are an `instanceof Error` and carry a `clientMessage` string, a `serverDetails` object, and a numeric `code` are automatically sanitized -- the client receives only `clientMessage`, while `serverDetails` are preserved for server-side logging.
 
 **Important**: must be first in the chain to catch errors from all subsequent interceptors.
 
@@ -171,6 +171,9 @@ import { createErrorHandlerInterceptor } from "@connectum/interceptors";
 const interceptor = createErrorHandlerInterceptor({
   logErrors: true,           // Log errors (default: NODE_ENV !== "production")
   includeStackTrace: false,  // Include stack trace (default: NODE_ENV !== "production")
+  onError: ({ error, code, serverDetails, stack }) => {
+    logger.error('RPC error', { message: error.message, code, serverDetails, stack });
+  },
 });
 ```
 
@@ -510,10 +513,18 @@ interface DefaultInterceptorOptions {
 
 ```typescript
 interface ErrorHandlerOptions {
-  logErrors?: boolean;          // default: NODE_ENV !== "production"
+  logErrors?: boolean;          // default: NODE_ENV !== "production" (deprecated, use onError)
   includeStackTrace?: boolean;  // default: NODE_ENV !== "production"
+  onError?: (info: {
+    error: Error;
+    code: number;
+    serverDetails?: Readonly<Record<string, unknown>>;
+    stack?: string;
+  }) => void;
 }
 ```
+
+When `onError` is provided, it replaces the default `console.error` logging. For `SanitizableError` instances, the callback receives `serverDetails` with the diagnostic data.
 
 ### TimeoutOptions
 
