@@ -24,6 +24,10 @@ import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
  * - Exact match: "10.0.0.1"
  * - CIDR range: "10.0.0.0/8"
  */
+function isValidOctet(value: number): boolean {
+    return Number.isInteger(value) && value >= 0 && value <= 255;
+}
+
 function matchesIp(address: string, pattern: string): boolean {
     if (address === pattern) return true;
 
@@ -31,10 +35,11 @@ function matchesIp(address: string, pattern: string): boolean {
         const [network, prefixStr] = pattern.split("/");
         if (!network || !prefixStr) return false;
         const prefix = Number.parseInt(prefixStr, 10);
-        if (Number.isNaN(prefix)) return false;
+        if (Number.isNaN(prefix) || prefix < 0 || prefix > 32) return false;
         const peerParts = address.split(".").map(Number);
         const networkParts = network.split(".").map(Number);
         if (peerParts.length !== 4 || networkParts.length !== 4) return false;
+        if (!peerParts.every(isValidOctet) || !networkParts.every(isValidOctet)) return false;
         const [p0 = 0, p1 = 0, p2 = 0, p3 = 0] = peerParts;
         const [n0 = 0, n1 = 0, n2 = 0, n3 = 0] = networkParts;
         const peerInt = ((p0 << 24) | (p1 << 16) | (p2 << 8) | p3) >>> 0;
@@ -95,11 +100,31 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         throw new Error("@connectum/auth: Gateway auth requires non-empty trustSource.expectedValues");
     }
 
+    // Pre-compute headers to strip (prevents downstream spoofing on all routes)
+    const headersToStrip = [
+        headerMapping.subject,
+        headerMapping.name,
+        headerMapping.roles,
+        headerMapping.scopes,
+        headerMapping.type,
+        headerMapping.claims,
+        trustSource.header,
+        ...stripHeaders,
+    ];
+
+    function stripGatewayHeaders(headers: Headers): void {
+        for (const header of headersToStrip) {
+            if (header) headers.delete(header);
+        }
+    }
+
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
         const methodName: string = req.method.name;
 
         if (matchesMethodPattern(serviceName, methodName, skipMethods)) {
+            // Strip gateway headers even for skipped methods to prevent spoofing
+            stripGatewayHeaders(req.header);
             return await next(req);
         }
 
@@ -167,19 +192,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         const authContext: AuthContext = { subject, name, roles, scopes, claims, type };
 
         // Strip mapped headers to prevent downstream spoofing
-        const headersToStrip = [
-            headerMapping.subject,
-            headerMapping.name,
-            headerMapping.roles,
-            headerMapping.scopes,
-            headerMapping.type,
-            headerMapping.claims,
-            trustSource.header,
-            ...stripHeaders,
-        ];
-        for (const header of headersToStrip) {
-            if (header) req.header.delete(header);
-        }
+        stripGatewayHeaders(req.header);
 
         if (propagateHeaders) {
             setAuthHeaders(req.header, authContext);
