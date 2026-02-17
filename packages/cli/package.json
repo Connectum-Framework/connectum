@@ -37,6 +37,8 @@
     "test": "node --test tests/**/*.test.ts",
     "test:unit": "node --test tests/unit/**/*.test.ts",
     "test:integration": "node --test tests/integration/**/*.test.ts",
+    "test:bun": "echo 'SKIP: CLI has Node-specific gRPC transport deps'",
+    "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
     "build": "tsup",

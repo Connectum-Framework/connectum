@@ -66,6 +66,8 @@
     "test": "node --test tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
     "test:unit": "node --test tests/unit/**/*.test.ts",
     "test:integration": "node --test tests/integration/**/*.test.ts",
+    "test:bun": "echo 'SKIP: mock.method() not polyfilled in bun:pure'",
+    "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
     "build": "tsup",

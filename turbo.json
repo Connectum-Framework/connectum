@@ -43,6 +43,16 @@
       "outputs": ["coverage/**"],
       "cache": true
     },
+    "test:bun": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "cache": true
+    },
+    "test:esbuild": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "cache": true
+    },
     "lint": {
       "outputs": [],
       "cache": true
