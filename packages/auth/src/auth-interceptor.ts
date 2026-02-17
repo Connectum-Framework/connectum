@@ -10,6 +10,7 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { LruCache } from "./cache.ts";
 import { authContextStorage } from "./context.ts";
 import { setAuthHeaders } from "./headers.ts";
 import { matchesMethodPattern } from "./method-match.ts";
@@ -78,7 +79,9 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
  * ```
  */
 export function createAuthInterceptor(options: AuthInterceptorOptions): Interceptor {
-    const { extractCredentials = defaultExtractCredentials, verifyCredentials, skipMethods = [], propagateHeaders = false } = options;
+    const { extractCredentials = defaultExtractCredentials, verifyCredentials, skipMethods = [], propagateHeaders = false, cache: cacheOptions, propagatedClaims } = options;
+
+    const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
@@ -100,6 +103,15 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             throw new ConnectError("Missing credentials", Code.Unauthenticated);
         }
 
+        // Check cache before verification
+        const cached = cache?.get(credentials);
+        if (cached && (!cached.expiresAt || cached.expiresAt.getTime() > Date.now())) {
+            if (propagateHeaders) {
+                setAuthHeaders(req.header, cached, propagatedClaims);
+            }
+            return await authContextStorage.run(cached, () => next(req));
+        }
+
         // Verify credentials
         let authContext: AuthContext;
         try {
@@ -111,9 +123,12 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             throw new ConnectError("Authentication failed", Code.Unauthenticated);
         }
 
+        // Cache the verification result
+        cache?.set(credentials, authContext);
+
         // Propagate auth context as headers if enabled
         if (propagateHeaders) {
-            setAuthHeaders(req.header, authContext);
+            setAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
         // Run downstream with auth context in AsyncLocalStorage

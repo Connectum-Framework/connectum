@@ -193,6 +193,110 @@ describe("headers", () => {
         });
     });
 
+    describe("name propagation", () => {
+        it("should set and parse name header", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                name: "John Doe",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME), "John Doe");
+
+            const parsed = parseAuthHeaders(headers);
+            assert.ok(parsed);
+            assert.strictEqual(parsed.name, "John Doe");
+        });
+
+        it("should not set name header when name is undefined", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME), null);
+        });
+
+        it("should truncate name exceeding 256 characters", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                name: "n".repeat(300),
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.NAME)!.length, 256);
+        });
+    });
+
+    describe("sanitized output (SEC-005)", () => {
+        it("should sanitize control characters in subject and type on setAuthHeaders", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user\x00-\x1F-clean",
+                roles: [],
+                scopes: [],
+                claims: {},
+                type: "jwt\x07-type",
+            };
+
+            setAuthHeaders(headers, context);
+            assert.strictEqual(headers.get(AUTH_HEADERS.SUBJECT), "user--clean");
+            assert.strictEqual(headers.get(AUTH_HEADERS.TYPE), "jwt-type");
+        });
+    });
+
+    describe("propagatedClaims filter", () => {
+        it("should only propagate listed claims", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: { tenant: "acme", secret: "password", level: 5 },
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context, ["tenant", "level"]);
+
+            const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
+            assert.ok(claimsRaw);
+            const parsed = JSON.parse(claimsRaw);
+            assert.deepStrictEqual(parsed, { tenant: "acme", level: 5 });
+        });
+
+        it("should propagate all claims when propagatedClaims is undefined", () => {
+            const headers = new Headers();
+            const context: AuthContext = {
+                subject: "user-1",
+                roles: [],
+                scopes: [],
+                claims: { a: 1, b: 2 },
+                type: "jwt",
+            };
+
+            setAuthHeaders(headers, context);
+
+            const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
+            assert.ok(claimsRaw);
+            assert.deepStrictEqual(JSON.parse(claimsRaw), { a: 1, b: 2 });
+        });
+    });
+
     describe("round-trip", () => {
         it("should preserve context through setAuthHeaders -> parseAuthHeaders", () => {
             const original: AuthContext = {

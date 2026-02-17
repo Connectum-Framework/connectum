@@ -28,10 +28,15 @@ function sanitizeHeaderValue(value: string, maxLength: number): string {
  *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
+ * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
  */
-export function setAuthHeaders(headers: Headers, context: AuthContext): void {
-    headers.set(AUTH_HEADERS.SUBJECT, context.subject);
-    headers.set(AUTH_HEADERS.TYPE, context.type);
+export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
+    headers.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(context.subject, 512));
+    headers.set(AUTH_HEADERS.TYPE, sanitizeHeaderValue(context.type, 128));
+
+    if (context.name) {
+        headers.set(AUTH_HEADERS.NAME, sanitizeHeaderValue(context.name, 256));
+    }
 
     if (context.roles.length > 0) {
         headers.set(AUTH_HEADERS.ROLES, JSON.stringify(context.roles));
@@ -43,7 +48,10 @@ export function setAuthHeaders(headers: Headers, context: AuthContext): void {
 
     const claimKeys = Object.keys(context.claims);
     if (claimKeys.length > 0) {
-        headers.set(AUTH_HEADERS.CLAIMS, JSON.stringify(context.claims));
+        const filteredClaims = propagatedClaims ? Object.fromEntries(Object.entries(context.claims).filter(([key]) => propagatedClaims.includes(key))) : context.claims;
+        if (Object.keys(filteredClaims).length > 0) {
+            headers.set(AUTH_HEADERS.CLAIMS, JSON.stringify(filteredClaims));
+        }
     }
 }
 
@@ -99,6 +107,9 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
         scopes = scopesRaw.split(" ").filter(Boolean);
     }
 
+    const nameRaw = headers.get(AUTH_HEADERS.NAME);
+    const name = nameRaw ? sanitizeHeaderValue(nameRaw, 256) : undefined;
+
     let claims: Record<string, unknown> = {};
     if (claimsRaw) {
         if (claimsRaw.length > 8192) {
@@ -118,6 +129,7 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
 
     return {
         subject,
+        name,
         type,
         roles,
         scopes,

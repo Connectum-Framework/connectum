@@ -178,5 +178,79 @@ describe("jwt-auth-interceptor", () => {
             await handler(req);
             // Should not throw — method is skipped
         });
+        it("should throw Unauthenticated when JWT has no subject claim (SEC-002)", async () => {
+            // Create a JWT without 'sub' claim
+            const key = new TextEncoder().encode(TEST_JWT_SECRET);
+            const token = await new jose.SignJWT({ name: "No Subject User" })
+                .setProtectedHeader({ alg: "HS256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(key);
+
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            const next = async (_req: any) => ({ message: {} });
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assert.ok(err instanceof ConnectError);
+                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assert.ok(err.message.includes("missing subject"));
+                    return true;
+                },
+            );
+        });
+
+        it("should support maxTokenAge option", async () => {
+            const token = await createTestJwt({ sub: "user-1" });
+
+            // maxTokenAge of "1h" — token was just created, should be valid
+            const interceptor = createJwtAuthInterceptor({
+                secret: TEST_JWT_SECRET,
+                maxTokenAge: "1h",
+            });
+            const next = async (_req: any) => ({ message: {} });
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await handler(req);
+            // No error = maxTokenAge accepted the token
+        });
+
+        it("should reject token exceeding maxTokenAge", async () => {
+            // Create a token with iat in the past
+            const key = new TextEncoder().encode(TEST_JWT_SECRET);
+            const pastIat = Math.floor(Date.now() / 1000) - 7200; // 2 hours ago
+            const token = await new jose.SignJWT({ sub: "user-1" })
+                .setProtectedHeader({ alg: "HS256" })
+                .setIssuedAt(pastIat)
+                .setExpirationTime("24h")
+                .sign(key);
+
+            const interceptor = createJwtAuthInterceptor({
+                secret: TEST_JWT_SECRET,
+                maxTokenAge: "1h", // 1 hour max age, but token is 2 hours old
+            });
+            const next = async (_req: any) => ({ message: {} });
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assert.ok(err instanceof ConnectError);
+                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    return true;
+                },
+            );
+        });
     });
 });

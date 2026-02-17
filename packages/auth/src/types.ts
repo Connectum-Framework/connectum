@@ -55,6 +55,8 @@ export const AUTH_HEADERS = {
     SCOPES: "x-auth-scopes",
     /** JSON-encoded claims object */
     CLAIMS: "x-auth-claims",
+    /** Human-readable display name */
+    NAME: "x-auth-name",
     /** Credential type (jwt, api-key, mtls, etc.) */
     TYPE: "x-auth-type",
 } as const;
@@ -86,6 +88,16 @@ export interface AuthzRule {
               readonly scopes?: ReadonlyArray<string>;
           }
         | undefined;
+}
+
+/**
+ * LRU cache configuration for credentials verification
+ */
+export interface CacheOptions {
+    /** Cache entry time-to-live in milliseconds */
+    readonly ttl: number;
+    /** Maximum number of cached entries */
+    readonly maxSize?: number | undefined;
 }
 
 /**
@@ -122,6 +134,19 @@ export interface AuthInterceptorOptions {
      * @default false
      */
     propagateHeaders?: boolean | undefined;
+
+    /**
+     * LRU cache for credentials verification results.
+     * Caches AuthContext by credential string to reduce verification overhead.
+     */
+    cache?: CacheOptions | undefined;
+
+    /**
+     * Filter which claims are propagated in headers (SEC-001).
+     * When set, only listed claim keys are included in x-auth-claims header.
+     * When not set, all claims are propagated.
+     */
+    propagatedClaims?: string[] | undefined;
 }
 
 /**
@@ -152,6 +177,12 @@ export interface JwtAuthInterceptorOptions {
               scopes?: string | undefined;
           }
         | undefined;
+    /**
+     * Maximum token age.
+     * Passed to jose jwtVerify options.
+     * Number (seconds) or string (e.g., "2h", "7d").
+     */
+    maxTokenAge?: number | string | undefined;
     /**
      * Methods to skip authentication for.
      * @default []
@@ -199,12 +230,82 @@ export interface AuthzInterceptorOptions {
 }
 
 /**
- * Trusted headers reader options
+ * Header name mapping for gateway auth context extraction.
+ *
+ * Maps AuthContext fields to custom header names used by the API gateway.
  */
-export interface TrustedHeadersReaderOptions {
+export interface GatewayHeaderMapping {
+    /** Header containing the authenticated subject */
+    readonly subject: string;
+    /** Header containing the display name */
+    readonly name?: string | undefined;
+    /** Header containing JSON-encoded roles array */
+    readonly roles?: string | undefined;
+    /** Header containing space-separated scopes */
+    readonly scopes?: string | undefined;
+    /** Header containing credential type */
+    readonly type?: string | undefined;
+    /** Header containing JSON-encoded claims */
+    readonly claims?: string | undefined;
+}
+
+/**
+ * Gateway auth interceptor options.
+ *
+ * For services behind an API gateway that has already performed authentication.
+ * Extracts auth context from gateway-injected headers.
+ */
+export interface GatewayAuthInterceptorOptions {
+    /** Mapping from AuthContext fields to gateway header names */
+    readonly headerMapping: GatewayHeaderMapping;
+    /** Trust verification: check that request came from a trusted gateway */
+    readonly trustSource: {
+        /** Header set by the gateway to prove trust */
+        readonly header: string;
+        /** Accepted values for the trust header */
+        readonly expectedValues: string[];
+    };
+    /** Headers to strip from the request after extraction (prevent spoofing) */
+    readonly stripHeaders?: string[] | undefined;
+    /** Methods to skip authentication for */
+    readonly skipMethods?: string[] | undefined;
+    /** Propagate auth context as headers for downstream services */
+    readonly propagateHeaders?: boolean | undefined;
+    /** Default credential type when not provided by gateway */
+    readonly defaultType?: string | undefined;
+}
+
+/**
+ * Session-based auth interceptor options.
+ *
+ * Two-step authentication: verify session token, then map session data to AuthContext.
+ */
+export interface SessionAuthInterceptorOptions {
     /**
-     * Trusted proxy IP addresses or CIDR ranges.
-     * REQUIRED. Fail-closed: if empty, no headers are trusted.
+     * Verify session token and return raw session data.
+     * Must throw on invalid/expired sessions.
+     *
+     * @param token - Session token string
+     * @param headers - Request headers (for additional context)
+     * @returns Raw session data
      */
-    trustedProxies: string[];
+    readonly verifySession: (token: string, headers: Headers) => unknown | Promise<unknown>;
+    /**
+     * Map raw session data to AuthContext.
+     *
+     * @param session - Raw session data from verifySession
+     * @returns Normalized auth context
+     */
+    readonly mapSession: (session: unknown) => AuthContext | Promise<AuthContext>;
+    /**
+     * Custom token extraction.
+     * Default: extracts Bearer token from Authorization header.
+     */
+    readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
+    /** LRU cache for session verification results */
+    readonly cache?: CacheOptions | undefined;
+    /** Methods to skip authentication for */
+    readonly skipMethods?: string[] | undefined;
+    /** Propagate auth context as headers for downstream services */
+    readonly propagateHeaders?: boolean | undefined;
 }

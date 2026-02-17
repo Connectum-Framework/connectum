@@ -8,6 +8,7 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import * as jose from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
@@ -170,6 +171,9 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
     if (options.algorithms) {
         verifyOptions.algorithms = options.algorithms;
     }
+    if (options.maxTokenAge) {
+        verifyOptions.maxTokenAge = options.maxTokenAge;
+    }
 
     const verify = buildVerifier(options, verifyOptions);
 
@@ -184,7 +188,12 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
             const claims = payload as Record<string, unknown>;
 
             return {
-                subject: mapped.subject ?? payload.sub ?? "unknown",
+                subject:
+                    mapped.subject ??
+                    payload.sub ??
+                    (() => {
+                        throw new ConnectError("JWT missing subject claim", Code.Unauthenticated);
+                    })(),
                 name: mapped.name ?? (typeof claims.name === "string" ? claims.name : undefined),
                 roles: mapped.roles ?? [],
                 scopes: mapped.scopes ?? (typeof payload.scope === "string" ? payload.scope.split(" ").filter(Boolean) : []),
