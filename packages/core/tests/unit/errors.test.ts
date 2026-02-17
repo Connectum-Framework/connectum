@@ -7,13 +7,13 @@ import { describe, it } from "node:test";
 import { isSanitizableError } from "../../src/errors.ts";
 
 describe("isSanitizableError", () => {
-    it("should return true for valid SanitizableError object", () => {
-        const err = {
+    it("should return true for a real Error with SanitizableError properties", () => {
+        const err = new Error("internal details");
+        Object.assign(err, {
             clientMessage: "Access denied",
             serverDetails: { ruleName: "admin-only" },
             code: 7,
-            message: "internal details",
-        };
+        });
         assert.strictEqual(isSanitizableError(err), true);
     });
 

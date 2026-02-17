@@ -102,7 +102,8 @@ export async function* wrapAsyncIterable<T>(
         if (endSpanOnComplete) {
             if (streamError) {
                 span.recordException(streamError as Error);
-                span.setStatus({ code: SpanStatusCode.ERROR, message: (streamError as Error).message });
+                const message = streamError instanceof Error ? streamError.message : String(streamError);
+                span.setStatus({ code: SpanStatusCode.ERROR, message });
             } else {
                 span.setStatus({ code: SpanStatusCode.OK });
             }

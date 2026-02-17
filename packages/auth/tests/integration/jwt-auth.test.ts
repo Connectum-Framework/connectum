@@ -194,6 +194,35 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             assert.strictEqual(next.mock.calls.length, 0);
         });
+
+        it("should reject an expired token", async () => {
+            const token = await createTestJwt(
+                { sub: "expired-user" },
+                { expiresIn: "-1h" },
+            );
+
+            const interceptor = createJwtAuthInterceptor({
+                secret: TEST_JWT_SECRET,
+            });
+
+            const headers = new Headers();
+            headers.set("authorization", `Bearer ${token}`);
+            const req = createMockRequest(headers);
+
+            const next = mock.fn(async () => ({ message: {} }));
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assert.ok(err instanceof ConnectError);
+                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    return true;
+                },
+            );
+
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
     });
 
     describe("issuer validation", () => {

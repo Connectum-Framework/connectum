@@ -24,11 +24,15 @@ import {
 	ATTR_NETWORK_PROTOCOL_NAME,
 	ATTR_NETWORK_TRANSPORT,
 	ATTR_RPC_CONNECT_RPC_STATUS_CODE,
+	ATTR_RPC_MESSAGE_ID,
+	ATTR_RPC_MESSAGE_TYPE,
+	ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
 	ATTR_RPC_METHOD,
 	ATTR_RPC_SERVICE,
 	ATTR_RPC_SYSTEM,
 	ATTR_SERVER_ADDRESS,
 	ATTR_SERVER_PORT,
+	RPC_MESSAGE_EVENT,
 } from "../../src/attributes.ts";
 import {
 	createRpcClientMetrics,
@@ -65,20 +69,8 @@ function createMockMeter() {
 // ---------------------------------------------------------------------------
 
 describe("Semantic Conventions: RPC event names", () => {
-	it("event name should be 'rpc.message' per OTel semconv (not 'message')", () => {
-		// The OTel RPC semantic conventions specify event name = "rpc.message"
-		// We verify this is the value used in addEvent() calls across interceptors.
-		// The actual usage is validated by grep of the source files; here we
-		// assert the canonical constant value.
-		const EXPECTED_EVENT_NAME = "rpc.message";
-
-		// This test serves as a documentation guard: if someone changes
-		// event names in the codebase, this test reminds them of the semconv.
-		assert.strictEqual(
-			EXPECTED_EVENT_NAME,
-			"rpc.message",
-			"OTel semconv RPC event name must be 'rpc.message', not 'message'",
-		);
+	it("RPC_MESSAGE_EVENT should equal 'rpc.message' per OTel semconv", () => {
+		assert.strictEqual(RPC_MESSAGE_EVENT, "rpc.message");
 	});
 });
 
@@ -87,44 +79,23 @@ describe("Semantic Conventions: RPC event names", () => {
 // ---------------------------------------------------------------------------
 
 describe("Semantic Conventions: RPC event attributes", () => {
-	it("message type attribute should be 'rpc.message.type'", () => {
-		// Per OTel semconv, the attribute on the rpc.message event that
-		// indicates direction is "rpc.message.type" (values: SENT, RECEIVED).
-		const EXPECTED = "rpc.message.type";
-		assert.strictEqual(
-			EXPECTED,
-			"rpc.message.type",
-			"Event attribute for message direction must be 'rpc.message.type'",
-		);
+	it("ATTR_RPC_MESSAGE_TYPE should equal 'rpc.message.type'", () => {
+		assert.strictEqual(ATTR_RPC_MESSAGE_TYPE, "rpc.message.type");
 	});
 
-	it("message id attribute should be 'rpc.message.id'", () => {
-		// Per OTel semconv, each message event should carry a sequence id
-		// via the "rpc.message.id" attribute (1-based).
-		const EXPECTED = "rpc.message.id";
-		assert.strictEqual(
-			EXPECTED,
-			"rpc.message.id",
-			"Event attribute for message sequence must be 'rpc.message.id'",
-		);
+	it("ATTR_RPC_MESSAGE_ID should equal 'rpc.message.id'", () => {
+		assert.strictEqual(ATTR_RPC_MESSAGE_ID, "rpc.message.id");
 	});
 
-	it("uncompressed size attribute should be 'rpc.message.uncompressed_size'", () => {
-		// Per OTel semconv, the uncompressed byte size of a message
-		// is recorded as "rpc.message.uncompressed_size".
-		const EXPECTED = "rpc.message.uncompressed_size";
-		assert.strictEqual(
-			EXPECTED,
-			"rpc.message.uncompressed_size",
-			"Event attribute for message size must be 'rpc.message.uncompressed_size'",
-		);
+	it("ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE should equal 'rpc.message.uncompressed_size'", () => {
+		assert.strictEqual(ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE, "rpc.message.uncompressed_size");
 	});
 
-	it("all required event attributes must form a valid semconv set", () => {
+	it("all required event attributes must be in the 'rpc.message.*' namespace", () => {
 		const requiredEventAttributes = [
-			"rpc.message.type",
-			"rpc.message.id",
-			"rpc.message.uncompressed_size",
+			ATTR_RPC_MESSAGE_TYPE,
+			ATTR_RPC_MESSAGE_ID,
+			ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
 		];
 
 		for (const attr of requiredEventAttributes) {
@@ -134,11 +105,7 @@ describe("Semantic Conventions: RPC event attributes", () => {
 			);
 		}
 
-		assert.strictEqual(
-			requiredEventAttributes.length,
-			3,
-			"There should be exactly 3 required event attributes",
-		);
+		assert.strictEqual(requiredEventAttributes.length, 3);
 	});
 });
 
