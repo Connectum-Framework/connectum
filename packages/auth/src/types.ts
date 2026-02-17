@@ -44,7 +44,7 @@ export interface AuthContext {
  *
  * WARNING: These headers are trusted ONLY in service-to-service communication
  * where transport security (mTLS) is established. Never trust these headers
- * from external clients without using createTrustedHeadersReader().
+ * from external clients without using createGatewayAuthInterceptor().
  */
 export const AUTH_HEADERS = {
     /** Authenticated subject identifier */

@@ -16,12 +16,16 @@ import {
     ATTR_NETWORK_PROTOCOL_NAME,
     ATTR_NETWORK_TRANSPORT,
     ATTR_RPC_CONNECT_RPC_STATUS_CODE,
+    ATTR_RPC_MESSAGE_ID,
+    ATTR_RPC_MESSAGE_TYPE,
+    ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
     ATTR_RPC_METHOD,
     ATTR_RPC_SERVICE,
     ATTR_RPC_SYSTEM,
     ATTR_SERVER_ADDRESS,
     ATTR_SERVER_PORT,
     ConnectErrorCodeName,
+    RPC_MESSAGE_EVENT,
     RPC_SYSTEM_CONNECT_RPC,
 } from "./attributes.ts";
 import type { OtelAttributeFilter } from "./types.ts";
@@ -86,10 +90,10 @@ export async function* wrapAsyncIterable<T>(
     try {
         for await (const message of iterable) {
             if (recordMessages) {
-                span.addEvent("rpc.message", {
-                    "rpc.message.type": direction,
-                    "rpc.message.id": sequence,
-                    "rpc.message.uncompressed_size": estimateMessageSize(message),
+                span.addEvent(RPC_MESSAGE_EVENT, {
+                    [ATTR_RPC_MESSAGE_TYPE]: direction,
+                    [ATTR_RPC_MESSAGE_ID]: sequence,
+                    [ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE]: estimateMessageSize(message),
                 });
             }
             sequence++;
@@ -158,6 +162,7 @@ export function buildBaseAttributes(params: BaseAttributeParams): Record<string,
         [ATTR_RPC_METHOD]: params.method,
         [ATTR_SERVER_ADDRESS]: params.serverAddress,
         [ATTR_NETWORK_PROTOCOL_NAME]: "connect_rpc",
+        // NOTE: HTTP/3 (QUIC) uses "udp" transport; update when QUIC support is added
         [ATTR_NETWORK_TRANSPORT]: "tcp",
     };
     if (params.serverPort !== undefined) {

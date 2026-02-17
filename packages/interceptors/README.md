@@ -169,7 +169,6 @@ Converts arbitrary errors to `ConnectError` with correct gRPC codes. Recognizes 
 import { createErrorHandlerInterceptor } from "@connectum/interceptors";
 
 const interceptor = createErrorHandlerInterceptor({
-  logErrors: true,           // Log errors (default: NODE_ENV !== "production")
   includeStackTrace: false,  // Include stack trace (default: NODE_ENV !== "production")
   onError: ({ error, code, serverDetails, stack }) => {
     logger.error('RPC error', { message: error.message, code, serverDetails, stack });
@@ -615,8 +614,10 @@ const server = createServer({
 
   interceptors: createDefaultInterceptors({
     errorHandler: {
-      logErrors: true,
       includeStackTrace: process.env.NODE_ENV !== "production",
+      onError: ({ error, code, serverDetails }) => {
+        console.error('RPC error', { message: error.message, code, serverDetails });
+      },
     },
     timeout: { duration: 10000 },
     bulkhead: { capacity: 20, queueSize: 20 },

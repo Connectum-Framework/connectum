@@ -316,6 +316,7 @@ interface SanitizableError {
 |----------|------|-------------|
 | `clientMessage` | `string` | Safe message sent to the client |
 | `serverDetails` | `Readonly<Record<string, unknown>>` | Rich diagnostic details logged server-side |
+| `code` | `number` | Numeric gRPC/Connect status code (e.g., `Code.FailedPrecondition`) |
 
 **Type guard:**
 
@@ -323,7 +324,7 @@ interface SanitizableError {
 function isSanitizableError(err: unknown): err is Error & SanitizableError & { code: number }
 ```
 
-Returns `true` when `err` is an `instanceof Error` with a `clientMessage` string, a non-null `serverDetails` object, and a numeric `code`. Plain objects that are not `Error` instances will **not** pass the check -- errors must extend `Error`.
+Returns `true` when `err` is an `instanceof Error` with a `clientMessage` string, a non-null `serverDetails` object, and a numeric `code`. Plain objects that are not `Error` instances will **not** pass the check -- errors must extend `Error` and carry a numeric `code` property.
 
 **Usage example:**
 
@@ -658,7 +659,8 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 
 `@connectum/core` ships compiled JavaScript and type declarations, so it works on any Node.js 18+ without additional configuration. Your own `.ts` source files can be executed with:
 
-- **Node.js 22.6+** -- native type stripping. Run `node src/index.ts`.
+- **Node.js 22.6--22.17** -- native type stripping (experimental). Run `node --experimental-strip-types src/index.ts`.
+- **Node.js 22.18+** -- native type stripping enabled by default. Run `node src/index.ts`.
 - **Bun** -- built-in TypeScript support. Run `bun src/index.ts`.
 - **[tsx](https://tsx.is)** -- esbuild-powered TypeScript execution, works on Node.js 18+. Run `npx tsx src/index.ts`.
 
