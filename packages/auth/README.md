@@ -108,7 +108,7 @@ const auth = createAuthInterceptor({
 
 Convenience wrapper for JWT-based authentication. Handles token extraction from `Authorization: Bearer <token>`, verification via [jose](https://github.com/panva/jose), and standard claim mapping.
 
-Key resolution priority: `jwksUri` > `secret` > `publicKey`.
+Key resolution priority: `jwksUri` > `publicKey` > `secret`.
 
 A missing `sub` claim (and no `claimsMapping.subject` override) throws `ConnectError(Unauthenticated)` with message `"JWT missing subject claim"` (SEC-002).
 
@@ -133,7 +133,7 @@ const jwtAuth = createJwtAuthInterceptor({
 |--------|------|---------|-------------|
 | `jwksUri` | `string` | - | JWKS endpoint URL for remote key set |
 | `secret` | `string` | - | HMAC symmetric secret (HS256/HS384/HS512) |
-| `publicKey` | `CryptoKey` | - | Asymmetric public key |
+| `publicKey` | `CryptoKey` | - | Asymmetric public key (RSA, RSA-PSS, EC, EdDSA). Import via `crypto.subtle.importKey()`. |
 | `issuer` | `string \| string[]` | - | Expected issuer(s) |
 | `audience` | `string \| string[]` | - | Expected audience(s) |
 | `algorithms` | `string[]` | - | Allowed algorithms |
