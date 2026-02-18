@@ -54,13 +54,15 @@ export const options = {
         test_type: "spike",
         environment: "local",
     },
+
+    insecureSkipTLSVerify: true,
 };
 
 // ============================================================================
 // Test Configuration
 // ============================================================================
 
-const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
+const BASE_URL = __ENV.BASE_URL || "https://localhost:8080";
 const SERVICE_PATH = "/greeter.v1.GreeterService/SayHello";
 
 // ============================================================================
@@ -178,8 +180,13 @@ export function setup() {
     console.log("   - No crashes or hangs");
     console.log("\n");
 
-    // Health check
-    const healthResponse = http.get(`${BASE_URL}/grpc.health.v1.Health/Check`);
+    // Health check (using Connect protocol POST instead of GET)
+    const healthResponse = http.post(`${BASE_URL}/greeter.v1.GreeterService/SayHello`, JSON.stringify({ name: "healthcheck" }), {
+        headers: {
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+        },
+    });
     if (healthResponse.status !== 200) {
         console.error(`❌ Health check failed! Status: ${healthResponse.status}`);
         throw new Error("Server health check failed");

@@ -63,6 +63,8 @@ export const options = {
         test_type: "interceptor-overhead",
         environment: "local",
     },
+
+    insecureSkipTLSVerify: true,
 };
 
 // ============================================================================
@@ -76,6 +78,7 @@ const TRACING_PORT = __ENV.TRACING_PORT || "8084"; // Tracing only
 const FULLCHAIN_PORT = __ENV.FULLCHAIN_PORT || "8080"; // All interceptors
 
 const BASE_HOST = __ENV.BASE_HOST || "localhost";
+const PROTOCOL = __ENV.PROTOCOL || "https";
 const SERVICE_PATH = "/greeter.v1.GreeterService/SayHello";
 
 // ============================================================================
@@ -87,7 +90,7 @@ function callService(port, configName) {
         name: `Benchmark-${configName}-${__ITER}`,
     });
 
-    const response = http.post(`http://${BASE_HOST}:${port}${SERVICE_PATH}`, payload, {
+    const response = http.post(`${PROTOCOL}://${BASE_HOST}:${port}${SERVICE_PATH}`, payload, {
         headers: {
             "Content-Type": "application/json",
             "Connect-Protocol-Version": "1",
@@ -198,7 +201,12 @@ export function setup() {
 
     console.log("🔍 Health checks:\n");
     for (const { port, name } of ports) {
-        const healthResponse = http.get(`http://${BASE_HOST}:${port}/grpc.health.v1.Health/Check`);
+        const healthResponse = http.post(`${PROTOCOL}://${BASE_HOST}:${port}/greeter.v1.GreeterService/SayHello`, JSON.stringify({ name: "healthcheck" }), {
+            headers: {
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+            },
+        });
         if (healthResponse.status === 200) {
             console.log(`   ✅ ${name.padEnd(15)} - :${port}`);
         } else {
