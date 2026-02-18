@@ -271,6 +271,7 @@ describe("TransportManager", () => {
             };
 
             await transport.listen(handler, { port: 0, host: "127.0.0.1" });
+            assert.ok(transport.address, "address should be set");
             const port = transport.address!.port;
 
             const body = await new Promise<string>((resolve, reject) => {

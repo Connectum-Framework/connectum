@@ -82,12 +82,12 @@ export class TransportManager {
             this._isHttp2 = true;
             this._server = createSecureServer(
                 {
-                    key: tlsCerts.key,
-                    cert: tlsCerts.cert,
-                    allowHTTP1,
                     enableTrace: false,
                     handshakeTimeout,
                     ...http2Options,
+                    key: tlsCerts.key,
+                    cert: tlsCerts.cert,
+                    allowHTTP1,
                 },
                 handler,
             );
@@ -100,7 +100,6 @@ export class TransportManager {
             this._isHttp2 = true;
             this._server = createHttp2Server(
                 {
-                    allowHTTP1: false,
                     enableTrace: false,
                     ...http2Options,
                 },
