@@ -307,6 +307,49 @@ describe("proto-authz-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 1);
         });
 
+        it("should allow via unconditional rule without auth context", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "PublicFallback");
+
+            const rules: AuthzRule[] = [
+                { name: "public-access", methods: ["test.v1.TestService/PublicFallback"], effect: "allow" },
+            ];
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createMockRequest(service, method);
+
+            // No auth context — should pass because rule has no requires
+            await handler(req);
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it("should throw Unauthenticated when no auth context and no matching unconditional rule", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "ProtectedFallback");
+
+            const rules: AuthzRule[] = [
+                { name: "admin-only", methods: ["test.v1.TestService/*"], requires: { roles: ["admin"] }, effect: "allow" },
+            ];
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createMockRequest(service, method);
+
+            // No auth context, rule has requires → skipped, falls to defaultPolicy deny → Unauthenticated
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assert.ok(err instanceof ConnectError);
+                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    return true;
+                },
+            );
+        });
+
         it("should deny via fallback rule effect: deny", async () => {
             const service = createFakeService();
             const method = createFakeMethod(service, "BlockedMethod");

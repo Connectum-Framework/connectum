@@ -24,15 +24,20 @@ import { resolveMethodAuth } from "./reader.ts";
  *
  * Returns the effect of the first matching rule, or undefined if no rule matches.
  *
+ * When `context` is null (no auth context available), rules with `requires`
+ * are skipped since they cannot be evaluated. Rules without `requires`
+ * still match unconditionally — this allows "public" programmatic rules
+ * to grant access without authentication.
+ *
  * @param rules - Authorization rules to evaluate
- * @param context - Auth context with user's roles and scopes
+ * @param context - Auth context with user's roles and scopes, or undefined if unauthenticated
  * @param serviceName - Fully-qualified service type name
  * @param methodName - RPC method name
  * @returns Matched rule result or undefined
  */
 function evaluateRules(
     rules: AuthzRule[],
-    context: { roles: ReadonlyArray<string>; scopes: ReadonlyArray<string> },
+    context: { roles: ReadonlyArray<string>; scopes: ReadonlyArray<string> } | undefined,
     serviceName: string,
     methodName: string,
 ): { effect: string; ruleName: string; requiredRoles?: readonly string[]; requiredScopes?: readonly string[] } | undefined {
@@ -44,6 +49,10 @@ function evaluateRules(
 
         // If rule has requirements, check them
         if (rule.requires) {
+            // Skip rules with requirements when no auth context is available
+            if (!context) {
+                continue;
+            }
             if (satisfiesRequirements(context, rule.requires)) {
                 const result: { effect: string; ruleName: string; requiredRoles?: readonly string[]; requiredScopes?: readonly string[] } = {
                     effect: rule.effect,
@@ -73,19 +82,21 @@ function evaluateRules(
  *
  * Authorization decision flow:
  * ```
- * 1. resolveMethodAuth(req.method) -- read proto options
- * 2. public = true     --> skip (allow without authn)
- * 3. No auth context   --> throw Unauthenticated
- * 4. requires defined  --> satisfiesRequirements? allow : deny
- * 5. policy = "allow"  --> allow
- * 6. policy = "deny"   --> deny
- * 7. Fallback: evaluate programmatic rules
- * 8. Fallback: authorize callback
- * 9. Apply defaultPolicy
+ * 1. resolveMethodAuth(req.method)  -- read proto options
+ * 2. public = true                  --> skip (allow without authn)
+ * 3. Get auth context               -- lazy: don't throw yet
+ * 4. requires defined, no context   --> throw Unauthenticated
+ * 4b. requires defined, has context --> satisfiesRequirements? allow : deny
+ * 5. policy = "allow"              --> allow
+ * 6. policy = "deny"               --> deny
+ * 7. Evaluate programmatic rules   -- unconditional rules work without context
+ * 8. Fallback: authorize callback  --> requires auth context
+ * 9. Apply defaultPolicy           --> deny without context = Unauthenticated
  * ```
  *
  * IMPORTANT: This interceptor MUST run AFTER an authentication interceptor
- * in the chain (except for methods marked as `public` in proto options).
+ * in the chain (except for methods marked as `public` in proto options
+ * or matched by unconditional programmatic rules).
  *
  * @param options - Proto authorization interceptor options
  * @returns ConnectRPC interceptor
@@ -126,14 +137,14 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
             return await next(req);
         }
 
-        // Step 3: Require auth context (set by auth interceptor)
+        // Step 3: Get auth context (lazy -- don't throw yet, only when actually needed)
         const authContext = getAuthContext();
-        if (!authContext) {
-            throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
-        }
 
         // Step 4: Check proto requirements (roles/scopes)
         if (resolved.requires !== undefined) {
+            if (!authContext) {
+                throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
+            }
             if (satisfiesRequirements(authContext, resolved.requires)) {
                 // Requirements satisfied -- allow
                 return await next(req);
@@ -156,6 +167,8 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         }
 
         // Step 7: Fallback to programmatic rules
+        // Rules without `requires` match unconditionally (even without auth context).
+        // Rules with `requires` are skipped when no auth context is available.
         if (rules.length > 0) {
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
@@ -174,6 +187,9 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
 
         // Step 8: Fallback to authorize callback
         if (authorize) {
+            if (!authContext) {
+                throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
+            }
             const allowed = await authorize(authContext, { service: serviceName, method: methodName });
             if (!allowed) {
                 throw new ConnectError("Access denied", Code.PermissionDenied);
@@ -183,6 +199,9 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
 
         // Step 9: No proto config, no rules matched, no callback -- apply default policy
         if (defaultPolicy === AuthzEffect.DENY) {
+            if (!authContext) {
+                throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
+            }
             throw new ConnectError("Access denied by default policy", Code.PermissionDenied);
         }
 
