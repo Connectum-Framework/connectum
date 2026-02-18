@@ -51,6 +51,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "pnpm": {
+    "overrides": {
+      "ajv@<8.18.0": "8.18.0"
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
