@@ -7,11 +7,10 @@
  * @module buildRoutes
  */
 
-import type { Http2ServerRequest, Http2ServerResponse } from "node:http2";
 import type { DescFile } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import type { ProtocolContext, ProtocolRegistration, ServiceRoute } from "./types.ts";
+import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration, ServiceRoute } from "./types.ts";
 
 /**
  * Options for building routes
@@ -27,7 +26,7 @@ export interface BuildRoutesOptions {
  * Result of building routes
  */
 export interface BuildRoutesResult {
-    handler: (req: Http2ServerRequest, res: Http2ServerResponse) => void;
+    handler: (req: NodeRequest, res: NodeResponse) => void;
     registry: DescFile[];
 }
 
@@ -79,7 +78,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         fallback(req, res) {
             // Delegate to protocol HTTP handlers
             for (const httpHandler of httpHandlers) {
-                if (httpHandler(req as Http2ServerRequest, res as Http2ServerResponse)) {
+                if (httpHandler(req as NodeRequest, res as NodeResponse)) {
                     return;
                 }
             }
@@ -90,5 +89,5 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         },
     });
 
-    return { handler: handler as (req: Http2ServerRequest, res: Http2ServerResponse) => void, registry };
+    return { handler: handler as (req: NodeRequest, res: NodeResponse) => void, registry };
 }

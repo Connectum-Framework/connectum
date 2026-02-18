@@ -5,8 +5,7 @@
  * Disabled by default, enabled via HealthcheckOptions.httpEnabled.
  */
 
-import type { Http2ServerRequest, Http2ServerResponse } from "node:http2";
-import type { HttpHandler } from "@connectum/core";
+import type { HttpHandler, NodeRequest, NodeResponse } from "@connectum/core";
 import type { HealthcheckManager } from "./HealthcheckManager.ts";
 import { ServingStatus } from "./types.ts";
 
@@ -58,7 +57,7 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
 export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths: string[] = DEFAULT_HTTP_PATHS): HttpHandler {
     const pathSet = new Set(healthPaths);
 
-    return function httpHealthHandler(req: Http2ServerRequest, res: Http2ServerResponse): boolean {
+    return function httpHealthHandler(req: NodeRequest, res: NodeResponse): boolean {
         const url = req.url ?? "";
         const pathname = url.split("?")[0] ?? "";
 

@@ -5,10 +5,24 @@
  */
 
 import type { EventEmitter } from "node:events";
+import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node:http";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
 import type { DescFile } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
+
+// =============================================================================
+// TRANSPORT UNION TYPES
+// =============================================================================
+
+/** Incoming request — HTTP/1.1 or HTTP/2 */
+export type NodeRequest = IncomingMessage | Http2ServerRequest;
+
+/** Server response — HTTP/1.1 or HTTP/2 */
+export type NodeResponse = ServerResponse | Http2ServerResponse;
+
+/** Underlying transport server — HTTP/1.1, HTTP/2 plaintext, or HTTP/2 TLS */
+export type TransportServer = HttpServer | Http2Server | Http2SecureServer;
 
 /**
  * Service route function
@@ -44,7 +58,7 @@ export interface ProtocolContext {
  *
  * @returns true if the request was handled, false otherwise
  */
-export type HttpHandler = (req: Http2ServerRequest, res: Http2ServerResponse) => boolean;
+export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
 
 /**
  * Protocol registration interface
@@ -227,7 +241,12 @@ export interface CreateServerOptions {
     interceptors?: Interceptor[];
 
     /**
-     * Allow HTTP/1.1 connections
+     * Allow HTTP/1.1 connections.
+     *
+     * With TLS: enables ALPN negotiation (both HTTP/1.1 and HTTP/2).
+     * Without TLS: creates HTTP/1.1 server (http.createServer).
+     * Set to false without TLS for h2c-only (http2.createServer).
+     *
      * @default true
      */
     allowHTTP1?: boolean;
@@ -407,11 +426,11 @@ export interface Server extends EventEmitter {
     // ==========================================================================
 
     /**
-     * Underlying HTTP/2 transport
+     * Underlying transport server
      *
      * Returns null until server is started
      */
-    readonly transport: Http2SecureServer | Http2Server | null;
+    readonly transport: TransportServer | null;
 
     /**
      * Registered service routes

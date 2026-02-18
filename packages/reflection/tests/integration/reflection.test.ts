@@ -30,6 +30,7 @@ describe("Reflection Integration", () => {
 			port: 0,
 			protocols: [Healthcheck(), Reflection()],
 			interceptors: [],
+			allowHTTP1: false,
 		});
 
 		await server.start();

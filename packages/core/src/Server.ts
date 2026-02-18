@@ -7,7 +7,6 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { AddressInfo } from "node:net";
 import type { DescFile } from "@bufbuild/protobuf";
 import type { Interceptor } from "@connectrpc/connect";
@@ -15,7 +14,7 @@ import { buildRoutes } from "./buildRoutes.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
-import type { CreateServerOptions, ProtocolRegistration, Server, ServiceRoute, ShutdownHook } from "./types.ts";
+import type { CreateServerOptions, ProtocolRegistration, Server, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -69,7 +68,7 @@ class ServerImpl extends EventEmitter implements Server {
         return this._state;
     }
 
-    get transport(): Http2SecureServer | Http2Server | null {
+    get transport(): TransportServer | null {
         return this._transport.server;
     }
 
