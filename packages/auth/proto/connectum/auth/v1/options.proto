@@ -1,0 +1,82 @@
+// Copyright 2024-2026 Connectum Framework Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Proto extensions for declarative authorization configuration.
+//
+// Allows defining authorization rules directly in .proto files
+// using custom method and service options. Runtime reflection via
+// getOption()/hasOption() from @bufbuild/protobuf reads these
+// options in the interceptor.
+//
+// proto2 syntax is required for extension definitions (standard
+// practice used by buf.validate, Google API, ZITADEL).
+
+syntax = "proto2";
+
+package connectum.auth.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Authorization requirements for a method or service.
+message AuthRequirements {
+  // Roles required to access the method (any-of semantics:
+  // the user must have at least one of the listed roles).
+  repeated string roles = 1;
+
+  // Scopes required to access the method (all-of semantics:
+  // the user must have every listed scope).
+  repeated string scopes = 2;
+}
+
+// Authorization configuration for an RPC method.
+message MethodAuth {
+  // Skip both authentication and authorization for this method.
+  optional bool public = 1;
+
+  // Access requirements (roles/scopes) for this method.
+  optional AuthRequirements requires = 2;
+
+  // Override the service-level default_policy for this method.
+  // Valid values: "allow", "deny".
+  optional string policy = 3;
+}
+
+// Default authorization configuration for all methods in a service.
+message ServiceAuth {
+  // Default policy when no rule matches.
+  // Valid values: "allow", "deny".
+  optional string default_policy = 1;
+
+  // Default access requirements applied to all methods
+  // unless overridden at the method level.
+  optional AuthRequirements default_requires = 2;
+
+  // Mark all methods in the service as public
+  // (skip authentication and authorization).
+  optional bool public = 3;
+}
+
+// Custom option for RPC methods.
+// Field number 50100 is in the 50000-99999 range reserved
+// for organizational use.
+extend google.protobuf.MethodOptions {
+  optional MethodAuth method_auth = 50100;
+}
+
+// Custom option for services.
+// Field number 50101 is in the 50000-99999 range reserved
+// for organizational use.
+extend google.protobuf.ServiceOptions {
+  optional ServiceAuth service_auth = 50101;
+}

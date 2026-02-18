@@ -358,3 +358,31 @@ export interface SessionAuthInterceptorOptions {
      */
     readonly propagatedClaims?: string[] | undefined;
 }
+
+/**
+ * Proto-based authorization interceptor options.
+ *
+ * Uses proto custom options (connectum.auth.v1) for declarative authorization
+ * rules defined in .proto files. Falls back to programmatic rules and callbacks.
+ */
+export interface ProtoAuthzInterceptorOptions {
+    /**
+     * Default policy when no proto option and no rule match.
+     * @default "deny"
+     */
+    defaultPolicy?: AuthzEffect | undefined;
+    /**
+     * Additional programmatic rules, evaluated after proto options.
+     * Rules are evaluated in order; first matching rule wins.
+     */
+    rules?: AuthzRule[] | undefined;
+    /**
+     * Programmatic authorization callback.
+     * Called when neither proto options nor programmatic rules match.
+     *
+     * @param context - Authenticated user context
+     * @param req - Request info (service and method names)
+     * @returns true if authorized, false otherwise
+     */
+    authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
+}

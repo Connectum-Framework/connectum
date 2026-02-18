@@ -9,35 +9,13 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { satisfiesRequirements } from "./authz-utils.ts";
 import { getAuthContext } from "./context.ts";
 import type { AuthzDeniedDetails } from "./errors.ts";
 import { AuthzDeniedError } from "./errors.ts";
 import { matchesMethodPattern } from "./method-match.ts";
 import type { AuthzInterceptorOptions, AuthzRule } from "./types.ts";
 import { AuthzEffect } from "./types.ts";
-
-/**
- * Check if the auth context satisfies a rule's requirements.
- */
-function satisfiesRequirements(context: { roles: ReadonlyArray<string>; scopes: ReadonlyArray<string> }, requires: NonNullable<AuthzRule["requires"]>): boolean {
-    // Check roles: user must have at least one of the required roles
-    if (requires.roles && requires.roles.length > 0) {
-        const hasRole = requires.roles.some((role) => context.roles.includes(role));
-        if (!hasRole) {
-            return false;
-        }
-    }
-
-    // Check scopes: user must have ALL required scopes
-    if (requires.scopes && requires.scopes.length > 0) {
-        const hasAllScopes = requires.scopes.every((scope) => context.scopes.includes(scope));
-        if (!hasAllScopes) {
-            return false;
-        }
-    }
-
-    return true;
-}
 
 /**
  * Evaluate authorization rules against auth context for a specific method.

@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore:
+    - proto/connectum
+breaking:
+  use:
+    - FILE
+  ignore:
+    - proto/connectum

@@ -30,6 +30,10 @@ export { parseAuthHeaders, setAuthHeaders } from "./headers.ts";
 export { createJwtAuthInterceptor } from "./jwt-auth-interceptor.ts";
 // Method pattern matching
 export { matchesMethodPattern } from "./method-match.ts";
+// Proto-based authorization
+export { createProtoAuthzInterceptor } from "./proto/proto-authz-interceptor.ts";
+export type { ResolvedMethodAuth } from "./proto/reader.ts";
+export { getPublicMethods, resolveMethodAuth } from "./proto/reader.ts";
 export { createSessionAuthInterceptor } from "./session-auth-interceptor.ts";
 
 // Types and constants
@@ -43,6 +47,7 @@ export type {
     GatewayHeaderMapping,
     InterceptorFactory,
     JwtAuthInterceptorOptions,
+    ProtoAuthzInterceptorOptions,
     SessionAuthInterceptorOptions,
 } from "./types.ts";
 
