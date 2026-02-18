@@ -46,12 +46,16 @@ function getMinHmacKeyBytes(algorithms?: string[]): number {
  * Separates JWKS (dynamic key resolution) from static keys (HMAC / asymmetric)
  * to satisfy jose's overloaded jwtVerify signatures.
  *
- * Priority: jwksUri > secret > publicKey
+ * Priority: jwksUri > publicKey > secret
  */
 function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: jose.JWTVerifyOptions): (token: string) => Promise<jose.JWTVerifyResult> {
     if (options.jwksUri) {
         const jwks = jose.createRemoteJWKSet(new URL(options.jwksUri));
         return (token) => jose.jwtVerify(token, jwks, verifyOptions);
+    }
+    if (options.publicKey) {
+        const key = options.publicKey;
+        return (token) => jose.jwtVerify(token, key, verifyOptions);
     }
     if (options.secret) {
         const key = new TextEncoder().encode(options.secret);
@@ -62,10 +66,6 @@ function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: jose.J
                     `Got ${key.byteLength} bytes. Generate with: openssl rand -base64 ${minBytes}`,
             );
         }
-        return (token) => jose.jwtVerify(token, key, verifyOptions);
-    }
-    if (options.publicKey) {
-        const key = options.publicKey;
         return (token) => jose.jwtVerify(token, key, verifyOptions);
     }
     throw new Error("@connectum/auth: JWT interceptor requires one of: jwksUri, secret, or publicKey");

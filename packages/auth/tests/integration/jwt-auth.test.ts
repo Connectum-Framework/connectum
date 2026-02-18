@@ -8,6 +8,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
@@ -583,6 +584,54 @@ describe("JWT Auth Interceptor — Integration", () => {
             assert.strictEqual(req.header.get("x-auth-type"), "jwt");
             assert.strictEqual(req.header.get("x-auth-roles"), JSON.stringify(["admin"]));
             assert.strictEqual(req.header.get("x-auth-scopes"), "read write");
+        });
+    });
+
+    describe("asymmetric key verification", () => {
+        it("should verify JWT with EC key and map claims", async () => {
+            const { publicKey, privateKey } = await jose.generateKeyPair("ES256");
+
+            const token = await new jose.SignJWT({
+                sub: "ec-integration-user",
+                name: "EC User",
+                realm_access: { roles: ["viewer", "editor"] },
+                scope: "documents:read documents:write",
+            })
+                .setProtectedHeader({ alg: "ES256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .setIssuer("ec-issuer")
+                .sign(privateKey);
+
+            const interceptor = createJwtAuthInterceptor({
+                publicKey,
+                issuer: "ec-issuer",
+                claimsMapping: {
+                    roles: "realm_access.roles",
+                    scopes: "scope",
+                },
+            });
+
+            const headers = new Headers();
+            headers.set("authorization", `Bearer ${token}`);
+            const req = createMockRequest(headers);
+
+            let capturedContext: ReturnType<typeof getAuthContext>;
+            const next = mock.fn(async () => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            });
+
+            const handler = interceptor(next as any);
+            await handler(req);
+
+            assert.strictEqual(next.mock.calls.length, 1);
+            assert.ok(capturedContext!);
+            assert.strictEqual(capturedContext!.subject, "ec-integration-user");
+            assert.strictEqual(capturedContext!.name, "EC User");
+            assert.deepStrictEqual([...capturedContext!.roles], ["viewer", "editor"]);
+            assert.deepStrictEqual([...capturedContext!.scopes], ["documents:read", "documents:write"]);
+            assert.strictEqual(capturedContext!.type, "jwt");
         });
     });
 });

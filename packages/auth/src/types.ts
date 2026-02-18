@@ -166,7 +166,41 @@ export interface JwtAuthInterceptorOptions {
     jwksUri?: string | undefined;
     /** HMAC symmetric secret (for HS256/HS384/HS512) */
     secret?: string | undefined;
-    /** Asymmetric public key */
+    /**
+     * Asymmetric public key for JWT signature verification.
+     *
+     * Supported algorithms:
+     * - **RSA**: RS256, RS384, RS512
+     * - **RSA-PSS**: PS256, PS384, PS512
+     * - **EC (ECDSA)**: ES256, ES384, ES512
+     * - **EdDSA**: Ed25519, Ed448
+     *
+     * Import a PEM-encoded key via Web Crypto API:
+     *
+     * @example RSA public key
+     * ```typescript
+     * const rsaKey = await crypto.subtle.importKey(
+     *   "spki",
+     *   pemToArrayBuffer(rsaPem),
+     *   { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+     *   true,
+     *   ["verify"],
+     * );
+     * ```
+     *
+     * @example EC public key
+     * ```typescript
+     * const ecKey = await crypto.subtle.importKey(
+     *   "spki",
+     *   pemToArrayBuffer(ecPem),
+     *   { name: "ECDSA", namedCurve: "P-256" },
+     *   true,
+     *   ["verify"],
+     * );
+     * ```
+     *
+     * @see {@link https://github.com/panva/jose/blob/main/docs/types/types.CryptoKey.md | jose CryptoKey documentation}
+     */
     publicKey?: CryptoKey | undefined;
     /** Expected issuer(s) */
     issuer?: string | string[] | undefined;
