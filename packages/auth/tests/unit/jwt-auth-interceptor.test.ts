@@ -252,5 +252,121 @@ describe("jwt-auth-interceptor", () => {
                 },
             );
         });
+
+        it("should verify JWT with EC publicKey (ES256)", async () => {
+            const { publicKey, privateKey } = await jose.generateKeyPair("ES256");
+
+            const token = await new jose.SignJWT({ sub: "ec-user" })
+                .setProtectedHeader({ alg: "ES256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(privateKey);
+
+            const interceptor = createJwtAuthInterceptor({ publicKey });
+
+            let capturedContext: any;
+            const next = async (_req: any) => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            };
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await handler(req);
+
+            assert.ok(capturedContext);
+            assert.strictEqual(capturedContext.subject, "ec-user");
+            assert.strictEqual(capturedContext.type, "jwt");
+        });
+
+        it("should verify JWT with RSA publicKey (RS256)", async () => {
+            const { publicKey, privateKey } = await jose.generateKeyPair("RS256");
+
+            const token = await new jose.SignJWT({ sub: "rsa-user" })
+                .setProtectedHeader({ alg: "RS256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(privateKey);
+
+            const interceptor = createJwtAuthInterceptor({ publicKey });
+
+            let capturedContext: any;
+            const next = async (_req: any) => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            };
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await handler(req);
+
+            assert.ok(capturedContext);
+            assert.strictEqual(capturedContext.subject, "rsa-user");
+        });
+
+        it("should use publicKey over secret when both provided (priority check)", async () => {
+            const { publicKey, privateKey } = await jose.generateKeyPair("ES256");
+
+            // Sign with the EC private key
+            const token = await new jose.SignJWT({ sub: "priority-user" })
+                .setProtectedHeader({ alg: "ES256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(privateKey);
+
+            // Provide both publicKey and secret — publicKey should win
+            const interceptor = createJwtAuthInterceptor({
+                publicKey,
+                secret: TEST_JWT_SECRET,
+            });
+
+            let capturedContext: any;
+            const next = async (_req: any) => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            };
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            // If secret were used instead of publicKey, this would throw
+            // because the token is signed with EC, not HMAC
+            await handler(req);
+
+            assert.ok(capturedContext);
+            assert.strictEqual(capturedContext.subject, "priority-user");
+        });
+
+        it("should reject JWT signed with wrong asymmetric key", async () => {
+            const { publicKey } = await jose.generateKeyPair("ES256");
+            const { privateKey: wrongPrivateKey } = await jose.generateKeyPair("ES256");
+
+            const token = await new jose.SignJWT({ sub: "user-1" })
+                .setProtectedHeader({ alg: "ES256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(wrongPrivateKey);
+
+            const interceptor = createJwtAuthInterceptor({ publicKey });
+            const next = async (_req: any) => ({ message: {} });
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest();
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assert.ok(err instanceof ConnectError);
+                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    return true;
+                },
+            );
+        });
     });
 });
