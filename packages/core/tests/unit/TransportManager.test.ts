@@ -1,8 +1,9 @@
 /**
  * TransportManager unit tests
  *
- * Tests for HTTP/2 transport lifecycle: creation, listening,
+ * Tests for transport lifecycle: creation, listening,
  * session tracking, graceful close, and dispose.
+ * Covers 3 transport modes: TLS+ALPN, plaintext HTTP/1.1, plaintext h2c.
  */
 
 import assert from "node:assert";
@@ -52,7 +53,7 @@ describe("TransportManager", () => {
     // -----------------------------------------------------------------
 
     describe("listen()", () => {
-        it("should create HTTP/2 server and bind to port", async () => {
+        it("should create HTTP/1.1 server when no TLS and allowHTTP1=true (default)", async () => {
             transport = new TransportManager();
 
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
@@ -60,6 +61,22 @@ describe("TransportManager", () => {
             assert.ok(transport.server, "server should be created");
             assert.ok(transport.address, "address should be set");
             assert.ok(transport.address.port > 0, "port should be assigned");
+            // HTTP/1.1 server should NOT have a "session" event listener
+            const listeners = transport.server.listeners("session");
+            assert.strictEqual(listeners.length, 0, "HTTP/1.1 server should not track sessions");
+        });
+
+        it("should create h2c server when no TLS and allowHTTP1=false", async () => {
+            transport = new TransportManager();
+
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
+
+            assert.ok(transport.server, "server should be created");
+            assert.ok(transport.address, "address should be set");
+            assert.ok(transport.address.port > 0, "port should be assigned");
+            // h2c server SHOULD have a "session" event listener
+            const listeners = transport.server.listeners("session");
+            assert.ok(listeners.length > 0, "h2c server should track sessions");
         });
 
         it("should resolve address with correct host", async () => {
@@ -186,7 +203,7 @@ describe("TransportManager", () => {
             assert.strictEqual(transport.server, null);
         });
 
-        it("should return Http2Server after listen", async () => {
+        it("should return server after listen", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
 
@@ -219,15 +236,55 @@ describe("TransportManager", () => {
     // -----------------------------------------------------------------
 
     describe("session tracking", () => {
-        it("should track sessions via 'session' event on the server", async () => {
+        it("should track sessions on h2c server (allowHTTP1=false)", async () => {
+            transport = new TransportManager();
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
+
+            const listeners = transport.server?.listeners("session");
+            assert.ok(listeners);
+            assert.ok(listeners.length > 0, "h2c server should have session listener");
+        });
+
+        it("should not track sessions on HTTP/1.1 server (default)", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
 
-            // The session event listener is attached in listen().
-            // We verify the server has a "session" listener.
             const listeners = transport.server?.listeners("session");
             assert.ok(listeners);
-            assert.ok(listeners.length > 0, "should have at least one session listener");
+            assert.strictEqual(listeners.length, 0, "HTTP/1.1 server should not have session listener");
+        });
+    });
+
+    // -----------------------------------------------------------------
+    // HTTP/1.1 response
+    // -----------------------------------------------------------------
+
+    describe("HTTP/1.1 transport", () => {
+        it("should respond to HTTP/1.1 requests on default plaintext", async () => {
+            const http = await import("node:http");
+            transport = new TransportManager();
+
+            const handler: Parameters<TransportManager["listen"]>[0] = (_req, res) => {
+                res.statusCode = 200;
+                res.setHeader("content-type", "text/plain");
+                res.end("ok");
+            };
+
+            await transport.listen(handler, { port: 0, host: "127.0.0.1" });
+            assert.ok(transport.address, "address should be set");
+            const port = transport.address!.port;
+
+            const body = await new Promise<string>((resolve, reject) => {
+                const req = http.request(`http://127.0.0.1:${port}`, (res) => {
+                    let data = "";
+                    res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+                    res.on("end", () => resolve(data));
+                });
+                req.on("error", reject);
+                req.end();
+            });
+
+            assert.strictEqual(body, "ok");
         });
     });
 

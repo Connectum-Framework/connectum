@@ -36,6 +36,9 @@ export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
 export type {
     CreateServerOptions,
     HttpHandler,
+    // Transport union types
+    NodeRequest,
+    NodeResponse,
     ProtocolContext,
     // Protocol Registration API
     ProtocolRegistration,
@@ -46,6 +49,7 @@ export type {
     ShutdownHook,
     ShutdownOptions,
     TLSOptions,
+    TransportServer,
 } from "./types.ts";
 // Server API types
 export { LifecycleEvent, ServerState } from "./types.ts";

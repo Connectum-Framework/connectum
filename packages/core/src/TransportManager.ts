@@ -1,17 +1,23 @@
 /**
- * HTTP/2 Transport Manager
+ * Transport Manager
  *
- * Manages the lifecycle of the HTTP/2 server: create, listen, close, destroy sessions.
+ * Manages the lifecycle of the HTTP server: create, listen, close, destroy sessions.
+ * Supports 3 transport modes:
+ * - TLS + ALPN: HTTP/1.1 and HTTP/2 via createSecureServer
+ * - Plaintext HTTP/1.1: via http.createServer (default)
+ * - Plaintext h2c: via http2.createServer
  *
  * @module TransportManager
  */
 
-import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions, ServerHttp2Session } from "node:http2";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createServer as createHttpServer } from "node:http";
+import type { Http2SecureServer, Http2Server, SecureServerOptions, ServerHttp2Session } from "node:http2";
 import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { AddressInfo } from "node:net";
 import env from "env-var";
 import { readTLSCertificates } from "./TLSConfig.ts";
-import type { TLSOptions } from "./types.ts";
+import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
 
 /**
  * Transport configuration for HTTP/2 server creation
@@ -26,20 +32,21 @@ export interface TransportConfig {
 }
 
 /**
- * Manages the HTTP/2 server lifecycle: creation, listening, session tracking, and shutdown.
+ * Manages the server lifecycle: creation, listening, session tracking, and shutdown.
  *
  * Extracted from ServerImpl to encapsulate all transport-level concerns
- * (HTTP/2 server creation, TLS, session tracking, close/destroy).
+ * (server creation, TLS, session tracking, close/destroy).
  */
 export class TransportManager {
-    private _server: Http2SecureServer | Http2Server | null = null;
+    private _server: TransportServer | null = null;
     private _address: AddressInfo | null = null;
+    private _isHttp2 = false;
     private readonly _sessions: Set<ServerHttp2Session> = new Set();
 
     /**
-     * The underlying HTTP/2 server instance
+     * The underlying server instance
      */
-    get server(): Http2SecureServer | Http2Server | null {
+    get server(): TransportServer | null {
         return this._server;
     }
 
@@ -51,12 +58,17 @@ export class TransportManager {
     }
 
     /**
-     * Create an HTTP/2 server (secure or plaintext), attach session tracking, and start listening.
+     * Create a server, attach session tracking (HTTP/2 only), and start listening.
+     *
+     * Transport modes:
+     * - TLS + ALPN: HTTP/1.1 and HTTP/2 via createSecureServer
+     * - Plaintext HTTP/1.1: via http.createServer (default without TLS)
+     * - Plaintext h2c: via http2.createServer (when allowHTTP1=false without TLS)
      *
      * @param handler - Request handler (from connectNodeAdapter)
      * @param config - Transport configuration
      */
-    async listen(handler: (req: Http2ServerRequest, res: Http2ServerResponse) => void, config: TransportConfig): Promise<void> {
+    async listen(handler: (req: NodeRequest, res: NodeResponse) => void, config: TransportConfig): Promise<void> {
         const { tls, allowHTTP1 = true, handshakeTimeout = 30_000, http2Options } = config;
 
         const port = config.port ?? env.get("PORT").default(5000).asPortNumber();
@@ -65,35 +77,45 @@ export class TransportManager {
         // Read TLS certificates if configured
         const tlsCerts = tls ? readTLSCertificates(tls) : undefined;
 
-        // Create HTTP/2 server (secure or plaintext)
-        this._server = tlsCerts
-            ? createSecureServer(
-                  {
-                      key: tlsCerts.key,
-                      cert: tlsCerts.cert,
-                      allowHTTP1,
-                      enableTrace: false,
-                      handshakeTimeout,
-                      ...http2Options,
-                  },
-                  handler,
-              )
-            : createHttp2Server(
-                  {
-                      allowHTTP1,
-                      enableTrace: false,
-                      ...http2Options,
-                  },
-                  handler,
-              );
+        if (tlsCerts) {
+            // Mode 1: TLS + ALPN — both HTTP/1.1 and HTTP/2
+            this._isHttp2 = true;
+            this._server = createSecureServer(
+                {
+                    enableTrace: false,
+                    handshakeTimeout,
+                    ...http2Options,
+                    key: tlsCerts.key,
+                    cert: tlsCerts.cert,
+                    allowHTTP1,
+                },
+                handler,
+            );
+        } else if (allowHTTP1) {
+            // Mode 2: Plaintext HTTP/1.1 (default without TLS)
+            this._isHttp2 = false;
+            this._server = createHttpServer(handler as (req: IncomingMessage, res: ServerResponse) => void);
+        } else {
+            // Mode 3: Plaintext h2c only
+            this._isHttp2 = true;
+            this._server = createHttp2Server(
+                {
+                    enableTrace: false,
+                    ...http2Options,
+                },
+                handler,
+            );
+        }
 
-        // Track HTTP/2 sessions for force close on timeout
-        this._server.on("session", (session: ServerHttp2Session) => {
-            this._sessions.add(session);
-            session.on("close", () => {
-                this._sessions.delete(session);
+        // Track HTTP/2 sessions for force close on timeout (HTTP/2 servers only)
+        if (this._isHttp2) {
+            (this._server as Http2Server | Http2SecureServer).on("session", (session: ServerHttp2Session) => {
+                this._sessions.add(session);
+                session.on("close", () => {
+                    this._sessions.delete(session);
+                });
             });
-        });
+        }
 
         // Start listening
         await new Promise<void>((resolve, reject) => {

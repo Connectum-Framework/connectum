@@ -30,6 +30,7 @@ describe("CLI proto sync", () => {
 			port: 0,
 			interceptors: [],
 			protocols: [Healthcheck(), Reflection()],
+			allowHTTP1: false,
 		});
 
 		await server.start();
