@@ -1,5 +1,15 @@
 # @connectum/core
 
+## 1.0.0-rc.5
+
+### Minor Changes
+
+- [#31](https://github.com/Connectum-Framework/connectum/pull/31) [`e3459f8`](https://github.com/Connectum-Framework/connectum/commit/e3459f8d1ed9324a84387c6d298d810803975f95) Thanks [@intech](https://github.com/intech)! - Three transport modes: TLS (createSecureServer), h2c (http2.createServer), HTTP/1.1 (http.createServer).
+
+  New exported types: `TransportServer`, `NodeRequest`, `NodeResponse`.
+
+  `allowHTTP1` option now selects transport mode without TLS: `true` (default) uses HTTP/1.1, `false` uses h2c.
+
 ## 1.0.0-rc.4
 
 ### Minor Changes

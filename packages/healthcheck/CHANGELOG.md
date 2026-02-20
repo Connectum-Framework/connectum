@@ -1,5 +1,12 @@
 # @connectum/healthcheck
 
+## 1.0.0-rc.5
+
+### Patch Changes
+
+- Updated dependencies [[`e3459f8`](https://github.com/Connectum-Framework/connectum/commit/e3459f8d1ed9324a84387c6d298d810803975f95)]:
+  - @connectum/core@1.0.0-rc.5
+
 ## 1.0.0-rc.4
 
 ### Minor Changes
