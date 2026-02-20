@@ -8,79 +8,11 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import type { DescMethod, DescService } from "@bufbuild/protobuf";
-import { create, setExtension } from "@bufbuild/protobuf";
-import { MethodOptionsSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { AuthRequirementsSchema, MethodAuthSchema, method_auth } from "#gen/connectum/auth/v1/options_pb.js";
 import { authContextStorage } from "../../src/context.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import type { AuthContext, AuthzRule } from "../../src/types.ts";
-
-/**
- * Create a fake DescService.
- */
-function createFakeService(options?: { typeName?: string; serviceOptions?: unknown }): DescService {
-    return {
-        kind: "service",
-        typeName: options?.typeName ?? "test.v1.TestService",
-        name: "TestService",
-        methods: [],
-        method: {},
-        deprecated: false,
-        proto: { options: options?.serviceOptions },
-    } as unknown as DescService;
-}
-
-/**
- * Create a fake DescMethod.
- */
-function createFakeMethod(service: DescService, name: string, methodOptions?: unknown): DescMethod {
-    return {
-        kind: "rpc",
-        name,
-        localName: name.charAt(0).toLowerCase() + name.slice(1),
-        parent: service,
-        methodKind: "unary",
-        deprecated: false,
-        proto: { options: methodOptions },
-    } as unknown as DescMethod;
-}
-
-/** Create MethodOptions with method_auth extension set. */
-function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
-    const opts = create(MethodOptionsSchema);
-    const init: Record<string, unknown> = {
-        public: authConfig.public ?? false,
-        policy: authConfig.policy ?? "",
-    };
-    if (authConfig.requires) {
-        init.requires = create(AuthRequirementsSchema, {
-            roles: authConfig.requires.roles ?? [],
-            scopes: authConfig.requires.scopes ?? [],
-        });
-    }
-    const authMsg = create(MethodAuthSchema, init as any);
-    setExtension(opts, method_auth, authMsg);
-    return opts;
-}
-
-/** Create a mock ConnectRPC request with proto service/method descriptors. */
-function createMockRequest(service: DescService, method: DescMethod) {
-    return {
-        service,
-        method,
-        header: new Headers(),
-        url: `http://localhost/${service.typeName}/${method.name}`,
-        stream: false,
-        message: {},
-    } as any;
-}
-
-/** Create a mock next handler that returns an empty response. */
-function createMockNext() {
-    return mock.fn(async (_req: any) => ({ message: {} })) as any;
-}
+import { createFakeMethod, createFakeService, createMethodOptions, createMockNext, createProtoMockRequest } from "../helpers/proto-test-helpers.ts";
 
 const defaultContext: AuthContext = {
     subject: "user-1",
@@ -99,7 +31,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             // No auth context — should still pass because method is public
             await handler(req);
@@ -114,7 +46,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor();
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -128,7 +60,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor();
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             const viewerContext: AuthContext = { ...defaultContext, roles: ["viewer"] };
 
@@ -152,7 +84,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor();
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -166,7 +98,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor();
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             // User has "read", "write" but not "delete"
             await assert.rejects(
@@ -187,7 +119,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -201,7 +133,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow" });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
@@ -230,7 +162,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -249,7 +181,7 @@ describe("proto-authz-interceptor", () => {
             });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -264,7 +196,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
@@ -284,7 +216,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor();
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await assert.rejects(
                 () => handler(req),
@@ -303,7 +235,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow" });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -321,7 +253,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             // No auth context — should pass because rule has no requires
             await handler(req);
@@ -340,7 +272,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             // No auth context, rule has requires → skipped, falls to defaultPolicy deny → Unauthenticated
             await assert.rejects(
@@ -362,7 +294,7 @@ describe("proto-authz-interceptor", () => {
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow", rules });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest(service, method);
+            const req = createProtoMockRequest(service, method);
 
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),

@@ -7,90 +7,13 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import type { DescMethod, DescService } from "@bufbuild/protobuf";
-import { create, setExtension } from "@bufbuild/protobuf";
-import { MethodOptionsSchema, ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { AuthRequirementsSchema, MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
-
-/** Create a fake DescService with optional proto service options. */
-function createFakeService(options?: { typeName?: string; serviceOptions?: unknown }): DescService {
-    return {
-        kind: "service",
-        typeName: options?.typeName ?? "test.v1.TestService",
-        name: "TestService",
-        methods: [],
-        method: {},
-        deprecated: false,
-        proto: { options: options?.serviceOptions },
-    } as unknown as DescService;
-}
-
-/** Create a fake DescMethod attached to a service. */
-function createFakeMethod(service: DescService, name: string, methodOptions?: unknown): DescMethod {
-    return {
-        kind: "rpc",
-        name,
-        localName: name.charAt(0).toLowerCase() + name.slice(1),
-        parent: service,
-        methodKind: "unary",
-        deprecated: false,
-        proto: { options: methodOptions },
-    } as unknown as DescMethod;
-}
-
-/** Create MethodOptions with method_auth extension set. */
-function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
-    const opts = create(MethodOptionsSchema);
-    const init: Record<string, unknown> = {
-        public: authConfig.public ?? false,
-        policy: authConfig.policy ?? "",
-    };
-    if (authConfig.requires) {
-        init.requires = create(AuthRequirementsSchema, {
-            roles: authConfig.requires.roles ?? [],
-            scopes: authConfig.requires.scopes ?? [],
-        });
-    }
-    const authMsg = create(MethodAuthSchema, init as any);
-    setExtension(opts, method_auth, authMsg);
-    return opts;
-}
-
-/** Create ServiceOptions with service_auth extension set. */
-function createServiceOptions(authConfig: { defaultPolicy?: string }) {
-    const opts = create(ServiceOptionsSchema);
-    const authMsg = create(ServiceAuthSchema, {
-        defaultPolicy: authConfig.defaultPolicy ?? "",
-    });
-    setExtension(opts, service_auth, authMsg);
-    return opts;
-}
-
-/** Create a mock ConnectRPC request with proto service/method descriptors. */
-function createMockRequest(service: DescService, method: DescMethod, headers?: Headers) {
-    return {
-        service,
-        method,
-        header: headers ?? new Headers(),
-        url: `http://localhost/${service.typeName}/${method.name}`,
-        stream: false,
-        message: {},
-    } as any;
-}
-
-/** Build a chained JWT auth → proto authz interceptor handler. */
-function buildChainedHandler(
-    authInterceptor: ReturnType<typeof createJwtAuthInterceptor>,
-    authzInterceptor: ReturnType<typeof createProtoAuthzInterceptor>,
-    next: any,
-) {
-    return authInterceptor(authzInterceptor(next as any) as any);
-}
+import { buildChainedHandler } from "../helpers/mock-request.ts";
+import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest, createServiceOptions } from "../helpers/proto-test-helpers.ts";
 
 describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
     const svcOpts = createServiceOptions({ defaultPolicy: "deny" });
@@ -114,7 +37,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
     describe("public methods", () => {
         it("should skip both authn and authz for public proto methods", async () => {
             const { authInterceptor, authzInterceptor } = createChain();
-            const req = createMockRequest(service, publicMethod);
+            const req = createProtoMockRequest(service, publicMethod);
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
 
@@ -132,7 +55,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, adminMethod, headers);
+            const req = createProtoMockRequest(service, adminMethod, headers);
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -155,7 +78,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, scopedMethod, headers);
+            const req = createProtoMockRequest(service, scopedMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -173,7 +96,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, adminMethod, headers);
+            const req = createProtoMockRequest(service, adminMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -197,7 +120,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, scopedMethod, headers);
+            const req = createProtoMockRequest(service, scopedMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -221,7 +144,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, noOptionsMethod, headers);
+            const req = createProtoMockRequest(service, noOptionsMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -240,7 +163,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
     describe("unauthenticated access", () => {
         it("should reject non-public method without auth token", async () => {
             const { authInterceptor, authzInterceptor } = createChain();
-            const req = createMockRequest(service, adminMethod);
+            const req = createProtoMockRequest(service, adminMethod);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);

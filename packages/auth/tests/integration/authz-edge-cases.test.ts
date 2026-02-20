@@ -15,35 +15,7 @@ import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createMockAuthContext } from "../../src/testing/mock-context.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 import { withAuthContext } from "../../src/testing/with-context.ts";
-
-/** Create a mock ConnectRPC request for testing interceptors. */
-function createMockRequest(options?: {
-    serviceName?: string;
-    methodName?: string;
-    headers?: Headers;
-}) {
-    const serviceName = options?.serviceName ?? "test.v1.TestService";
-    const methodName = options?.methodName ?? "TestMethod";
-    const headers = options?.headers ?? new Headers();
-
-    return {
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        header: headers,
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: {},
-    } as any;
-}
-
-/** Build a chained auth → authz interceptor handler for integration tests. */
-function buildChainedHandler(
-    authInterceptor: ReturnType<typeof createJwtAuthInterceptor>,
-    authzInterceptor: ReturnType<typeof createAuthzInterceptor>,
-    next: any,
-) {
-    return authInterceptor(authzInterceptor(next as any) as any);
-}
+import { buildChainedHandler, createMockRequest } from "../helpers/mock-request.ts";
 
 describe("Authz Edge Cases — Integration", () => {
     describe("rule requires not met → continue to next rule", () => {

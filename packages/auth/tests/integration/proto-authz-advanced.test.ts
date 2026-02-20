@@ -9,104 +9,13 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import type { DescMethod, DescService } from "@bufbuild/protobuf";
-import { create, setExtension } from "@bufbuild/protobuf";
-import { MethodOptionsSchema, ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { AuthRequirementsSchema, MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import { getPublicMethods, resolveMethodAuth } from "../../src/proto/reader.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
-
-/** Create a fake DescService with optional proto service options. */
-function createFakeService(options?: { typeName?: string; serviceOptions?: unknown }): DescService {
-    return {
-        kind: "service",
-        typeName: options?.typeName ?? "test.v1.TestService",
-        name: "TestService",
-        methods: [],
-        method: {},
-        deprecated: false,
-        proto: { options: options?.serviceOptions },
-    } as unknown as DescService;
-}
-
-/** Create a fake DescMethod attached to a service. */
-function createFakeMethod(service: DescService, name: string, methodOptions?: unknown): DescMethod {
-    return {
-        kind: "rpc",
-        name,
-        localName: name.charAt(0).toLowerCase() + name.slice(1),
-        parent: service,
-        methodKind: "unary",
-        deprecated: false,
-        proto: { options: methodOptions },
-    } as unknown as DescMethod;
-}
-
-/** Create MethodOptions with method_auth extension set. */
-function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
-    const opts = create(MethodOptionsSchema);
-    const init: Record<string, unknown> = {
-        public: authConfig.public ?? false,
-        policy: authConfig.policy ?? "",
-    };
-    if (authConfig.requires) {
-        init.requires = create(AuthRequirementsSchema, {
-            roles: authConfig.requires.roles ?? [],
-            scopes: authConfig.requires.scopes ?? [],
-        });
-    }
-    const authMsg = create(MethodAuthSchema, init as any);
-    setExtension(opts, method_auth, authMsg);
-    return opts;
-}
-
-/** Create ServiceOptions with service_auth extension set. */
-function createServiceOptions(authConfig: {
-    defaultPolicy?: string;
-    public?: boolean;
-    defaultRequires?: { roles?: string[]; scopes?: string[] };
-}) {
-    const opts = create(ServiceOptionsSchema);
-    const init: Record<string, unknown> = {
-        defaultPolicy: authConfig.defaultPolicy ?? "",
-    };
-    if (authConfig.public !== undefined) {
-        init.public = authConfig.public;
-    }
-    if (authConfig.defaultRequires) {
-        init.defaultRequires = create(AuthRequirementsSchema, {
-            roles: authConfig.defaultRequires.roles ?? [],
-            scopes: authConfig.defaultRequires.scopes ?? [],
-        });
-    }
-    const authMsg = create(ServiceAuthSchema, init as any);
-    setExtension(opts, service_auth, authMsg);
-    return opts;
-}
-
-/** Create a mock ConnectRPC request with proto service/method descriptors. */
-function createMockRequest(service: DescService, method: DescMethod, headers?: Headers) {
-    return {
-        service,
-        method,
-        header: headers ?? new Headers(),
-        url: `http://localhost/${service.typeName}/${method.name}`,
-        stream: false,
-        message: {},
-    } as any;
-}
-
-/** Build a chained JWT auth → proto authz interceptor handler. */
-function buildChainedHandler(
-    authInterceptor: ReturnType<typeof createJwtAuthInterceptor>,
-    authzInterceptor: ReturnType<typeof createProtoAuthzInterceptor>,
-    next: any,
-) {
-    return authInterceptor(authzInterceptor(next as any) as any);
-}
+import { buildChainedHandler } from "../helpers/mock-request.ts";
+import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest, createServiceOptions } from "../helpers/proto-test-helpers.ts";
 
 describe("Proto Authz Advanced — Integration", () => {
     describe("proto policy allow/deny", () => {
@@ -124,7 +33,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, allowMethod, headers);
+            const req = createProtoMockRequest(service, allowMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -147,7 +56,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, denyMethod, headers);
+            const req = createProtoMockRequest(service, denyMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -188,7 +97,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -219,7 +128,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -264,7 +173,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -291,7 +200,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -316,7 +225,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -348,7 +257,7 @@ describe("Proto Authz Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(service, plainMethod, headers);
+            const req = createProtoMockRequest(service, plainMethod, headers);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);

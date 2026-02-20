@@ -13,26 +13,7 @@ import { getAuthContext } from "../../src/context.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
-
-/** Create a mock ConnectRPC request for testing interceptors. */
-function createMockRequest(options?: {
-    serviceName?: string;
-    methodName?: string;
-    headers?: Headers;
-}) {
-    const serviceName = options?.serviceName ?? "test.v1.TestService";
-    const methodName = options?.methodName ?? "TestMethod";
-    const headers = options?.headers ?? new Headers();
-
-    return {
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        header: headers,
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: {},
-    } as any;
-}
+import { createMockRequest } from "../helpers/mock-request.ts";
 
 const validMapSession = (session: unknown): AuthContext => {
     const s = session as { userId: string };

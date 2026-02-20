@@ -15,18 +15,7 @@ import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
-
-/** Create a mock ConnectRPC request for testing interceptors. */
-function createMockRequest(headers?: Headers) {
-    return {
-        service: { typeName: "test.v1.TestService" },
-        method: { name: "TestMethod" },
-        header: headers ?? new Headers(),
-        url: "http://localhost/test.v1.TestService/TestMethod",
-        stream: false,
-        message: {},
-    } as any;
-}
+import { createMockRequest } from "../helpers/mock-request.ts";
 
 describe("JWT Auth Advanced — Integration", () => {
     describe("audience validation", () => {
@@ -43,7 +32,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -71,7 +60,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -129,7 +118,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -157,7 +146,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             let captured: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -191,7 +180,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             let captured: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -218,7 +207,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             let captured: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -250,7 +239,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -285,7 +274,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -358,7 +347,7 @@ describe("JWT Auth Advanced — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ headers });
 
             let captured: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
