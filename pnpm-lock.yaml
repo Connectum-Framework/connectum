@@ -140,6 +140,9 @@ importers:
 
   packages/auth:
     dependencies:
+      '@bufbuild/protobuf':
+        specifier: 'catalog:'
+        version: 2.11.0
       '@connectrpc/connect':
         specifier: 'catalog:'
         version: 2.1.1(@bufbuild/protobuf@2.11.0)
@@ -153,6 +156,12 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.3.15
+      '@bufbuild/buf':
+        specifier: 'catalog:'
+        version: 1.65.0
+      '@bufbuild/protoc-gen-es':
+        specifier: 'catalog:'
+        version: 2.11.0(@bufbuild/protobuf@2.11.0)
       c8:
         specifier: 'catalog:'
         version: 10.1.3

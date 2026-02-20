@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./proto": {
+      "types": "./dist/proto/index.d.ts",
+      "default": "./dist/proto/index.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
@@ -17,7 +21,9 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "gen",
+    "proto"
   ],
   "repository": {
     "type": "git",
@@ -34,8 +40,12 @@
     "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
+    "buf:generate": "buf generate",
+    "buf:lint": "buf lint",
+    "build:proto": "pnpm run buf:generate && pnpm run build:proto:compile",
+    "build:proto:compile": "tsc --project tsconfig.build.json",
     "build": "tsup",
-    "clean": "rm -rf coverage dist"
+    "clean": "rm -rf coverage dist gen gen-ts"
   },
   "keywords": [
     "auth",
@@ -52,16 +62,23 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "imports": {
+    "#gen/*": "./gen/*",
+    "#*": "./src/*"
+  },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
     "@connectrpc/connect": "catalog:",
     "@connectum/core": "workspace:^",
     "jose": "^6.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/buf": "catalog:",
+    "@bufbuild/protoc-gen-es": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"
