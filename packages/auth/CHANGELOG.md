@@ -1,5 +1,25 @@
 # @connectum/auth
 
+## 1.0.0-rc.5
+
+### Minor Changes
+
+- [#30](https://github.com/Connectum-Framework/connectum/pull/30) [`745619d`](https://github.com/Connectum-Framework/connectum/commit/745619d718e915e381293ba71c231e691eae0208) Thanks [@intech](https://github.com/intech)! - Proto-based authorization via custom options in `.proto` files.
+
+  New `createProtoAuthzInterceptor()` — authorization based on proto options.
+  Proto reader for extracting auth options from DescFile.
+  Fix: lazy auth context in proto-authz interceptor.
+  tsup splitting enabled.
+
+- [#26](https://github.com/Connectum-Framework/connectum/pull/26) [`e209b5c`](https://github.com/Connectum-Framework/connectum/commit/e209b5cac4f0f8eabb6e88d9d80389917ac5d47e) Thanks [@intech](https://github.com/intech)! - Change JWT key resolution priority from `jwksUri > secret > publicKey` to `jwksUri > publicKey > secret`.
+
+  Asymmetric keys are cryptographically stronger than symmetric secrets, so `publicKey` now takes precedence over `secret` when both are provided. Also improved `publicKey` JSDoc with supported algorithms (RSA, RSA-PSS, EC, EdDSA) and `crypto.subtle.importKey()` examples.
+
+### Patch Changes
+
+- Updated dependencies [[`e3459f8`](https://github.com/Connectum-Framework/connectum/commit/e3459f8d1ed9324a84387c6d298d810803975f95)]:
+  - @connectum/core@1.0.0-rc.5
+
 ## 1.0.0-rc.4
 
 ### Minor Changes

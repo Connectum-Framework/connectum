@@ -12,6 +12,7 @@
     "@connectum/auth": "1.0.0-rc.3"
   },
   "changesets": [
+    "auth-proto-authorization",
     "auth-v2-features",
     "ci-oidc-provenance",
     "code-review-fixes",
@@ -19,6 +20,8 @@
     "cross-runtime-tests",
     "dependency-migration-2025",
     "otel-streaming",
-    "security-improvements"
+    "publickey-priority",
+    "security-improvements",
+    "transport-http1-mode"
   ]
 }
