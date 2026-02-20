@@ -17,6 +17,7 @@ import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 
+/** Create a fake DescService with optional proto service options. */
 function createFakeService(options?: { typeName?: string; serviceOptions?: unknown }): DescService {
     return {
         kind: "service",
@@ -29,6 +30,7 @@ function createFakeService(options?: { typeName?: string; serviceOptions?: unkno
     } as unknown as DescService;
 }
 
+/** Create a fake DescMethod attached to a service. */
 function createFakeMethod(service: DescService, name: string, methodOptions?: unknown): DescMethod {
     return {
         kind: "rpc",
@@ -41,6 +43,7 @@ function createFakeMethod(service: DescService, name: string, methodOptions?: un
     } as unknown as DescMethod;
 }
 
+/** Create MethodOptions with method_auth extension set. */
 function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
     const opts = create(MethodOptionsSchema);
     const init: Record<string, unknown> = {
@@ -58,6 +61,7 @@ function createMethodOptions(authConfig: { public?: boolean; policy?: string; re
     return opts;
 }
 
+/** Create ServiceOptions with service_auth extension set. */
 function createServiceOptions(authConfig: { defaultPolicy?: string }) {
     const opts = create(ServiceOptionsSchema);
     const authMsg = create(ServiceAuthSchema, {
@@ -67,6 +71,7 @@ function createServiceOptions(authConfig: { defaultPolicy?: string }) {
     return opts;
 }
 
+/** Create a mock ConnectRPC request with proto service/method descriptors. */
 function createMockRequest(service: DescService, method: DescMethod, headers?: Headers) {
     return {
         service,
@@ -78,6 +83,7 @@ function createMockRequest(service: DescService, method: DescMethod, headers?: H
     } as any;
 }
 
+/** Build a chained JWT auth → proto authz interceptor handler. */
 function buildChainedHandler(
     authInterceptor: ReturnType<typeof createJwtAuthInterceptor>,
     authzInterceptor: ReturnType<typeof createProtoAuthzInterceptor>,

@@ -47,6 +47,7 @@ function createFakeMethod(service: DescService, name: string, methodOptions?: un
     } as unknown as DescMethod;
 }
 
+/** Create MethodOptions with method_auth extension set. */
 function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
     const opts = create(MethodOptionsSchema);
     const init: Record<string, unknown> = {
@@ -64,6 +65,7 @@ function createMethodOptions(authConfig: { public?: boolean; policy?: string; re
     return opts;
 }
 
+/** Create a mock ConnectRPC request with proto service/method descriptors. */
 function createMockRequest(service: DescService, method: DescMethod) {
     return {
         service,
@@ -75,6 +77,7 @@ function createMockRequest(service: DescService, method: DescMethod) {
     } as any;
 }
 
+/** Create a mock next handler that returns an empty response. */
 function createMockNext() {
     return mock.fn(async (_req: any) => ({ message: {} })) as any;
 }

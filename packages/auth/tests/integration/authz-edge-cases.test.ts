@@ -16,6 +16,7 @@ import { createMockAuthContext } from "../../src/testing/mock-context.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 import { withAuthContext } from "../../src/testing/with-context.ts";
 
+/** Create a mock ConnectRPC request for testing interceptors. */
 function createMockRequest(options?: {
     serviceName?: string;
     methodName?: string;
@@ -35,6 +36,7 @@ function createMockRequest(options?: {
     } as any;
 }
 
+/** Build a chained auth → authz interceptor handler for integration tests. */
 function buildChainedHandler(
     authInterceptor: ReturnType<typeof createJwtAuthInterceptor>,
     authzInterceptor: ReturnType<typeof createAuthzInterceptor>,

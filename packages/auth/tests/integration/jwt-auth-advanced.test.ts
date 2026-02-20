@@ -16,6 +16,7 @@ import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 
+/** Create a mock ConnectRPC request for testing interceptors. */
 function createMockRequest(headers?: Headers) {
     return {
         service: { typeName: "test.v1.TestService" },

@@ -14,6 +14,7 @@ import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
 
+/** Create a mock ConnectRPC request for testing interceptors. */
 function createMockRequest(options?: {
     serviceName?: string;
     methodName?: string;
@@ -33,6 +34,7 @@ function createMockRequest(options?: {
     } as any;
 }
 
+/** Create a gateway auth interceptor with default header mapping. */
 function createGateway(overrides?: Record<string, unknown>) {
     return createGatewayAuthInterceptor({
         headerMapping: {

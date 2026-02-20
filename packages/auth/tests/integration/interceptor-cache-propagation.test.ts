@@ -16,6 +16,7 @@ import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
+/** Create a mock ConnectRPC request for testing interceptors. */
 function createMockRequest(options?: {
     serviceName?: string;
     methodName?: string;
