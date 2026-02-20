@@ -72,6 +72,8 @@ jobs:
         if: steps.changesets.outputs.published == 'true'
         run: |
           PUBLISHED='${{ steps.changesets.outputs.publishedPackages }}'
+          # TODO(ADR-025): After 1.0.0 stable, switch to hybrid versioning:
+          # VERSION=$(echo "${PUBLISHED}" | jq -r '.[] | select(.name == "@connectum/core") | .version')
           VERSION=$(echo "${PUBLISHED}" | jq -r '.[0].version')
           TAG="v${VERSION}"
 
