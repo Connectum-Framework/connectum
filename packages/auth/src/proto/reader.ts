@@ -9,8 +9,8 @@
  */
 
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
-import { getOption, hasOption } from "@bufbuild/protobuf";
-import { method_auth, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
+import { getOption, hasOption, isFieldSet } from "@bufbuild/protobuf";
+import { MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
 
 /**
  * Resolved authorization configuration for a single RPC method.
@@ -92,11 +92,12 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
         return DEFAULT_RESOLVED;
     }
 
-    // Resolve `public` field.
-    // Method-level `public = true` takes priority.
-    // For proto2 optional bool: default is false, so we check if method_auth
-    // option is set AND public is true. Same for service_auth.
-    const isPublic = (mtdAuth !== undefined && mtdAuth.public === true) || (svcAuth !== undefined && svcAuth.public === true);
+    // Resolve `public` field with presence-aware override logic.
+    // Method-level explicit setting takes priority over service-level.
+    // Uses isFieldSet() to distinguish "not set" from "set to false" in proto2 optional bool.
+    const methodPublicSet = mtdAuth !== undefined && isFieldSet(mtdAuth, MethodAuthSchema.field.public);
+    const servicePublicSet = svcAuth !== undefined && isFieldSet(svcAuth, ServiceAuthSchema.field.public);
+    const isPublic = methodPublicSet ? mtdAuth!.public === true : servicePublicSet ? svcAuth!.public === true : false;
 
     // Resolve `requires` field.
     // Method-level requires overrides service-level default_requires.

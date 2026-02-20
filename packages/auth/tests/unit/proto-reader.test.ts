@@ -51,9 +51,12 @@ function createFakeMethod(service: DescService, name: string, methodOptions?: un
 function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
     const opts = create(MethodOptionsSchema);
     const init: Record<string, unknown> = {
-        public: authConfig.public ?? false,
         policy: authConfig.policy ?? "",
     };
+    // Only set public when explicitly provided to preserve proto2 field presence semantics
+    if (authConfig.public !== undefined) {
+        init.public = authConfig.public;
+    }
     if (authConfig.requires) {
         init.requires = create(AuthRequirementsSchema, {
             roles: authConfig.requires.roles ?? [],
@@ -72,8 +75,11 @@ function createServiceOptions(authConfig: { defaultPolicy?: string; public?: boo
     const opts = create(ServiceOptionsSchema);
     const init: Record<string, unknown> = {
         defaultPolicy: authConfig.defaultPolicy ?? "",
-        public: authConfig.public ?? false,
     };
+    // Only set public when explicitly provided to preserve proto2 field presence semantics
+    if (authConfig.public !== undefined) {
+        init.public = authConfig.public;
+    }
     if (authConfig.defaultRequires) {
         init.defaultRequires = create(AuthRequirementsSchema, {
             roles: authConfig.defaultRequires.roles ?? [],
@@ -209,6 +215,16 @@ describe("proto-reader", () => {
 
             assert.ok(resolved.requires);
             assert.deepStrictEqual([...resolved.requires.roles], ["admin"]);
+        });
+
+        it("should respect method public: false override on service public: true", () => {
+            const svcOpts = createServiceOptions({ public: true });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "SecureMethod", createMethodOptions({ public: false }));
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.public, false, "method-level public=false should override service-level public=true");
         });
 
         it("should cache resolved auth (same reference on second call)", () => {
