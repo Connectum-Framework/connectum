@@ -17,7 +17,7 @@
  * console.log(`HTTP health enabled: ${config.HTTP_HEALTH_ENABLED}`);
  * ```
  *
- * @module @connectum/core/config
+ * @module config
  */
 
 export {
