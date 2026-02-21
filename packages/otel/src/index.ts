@@ -4,6 +4,7 @@
  * OpenTelemetry instrumentation for Connectum.
  *
  * @module @connectum/otel
+ * @mergeModuleWith <project>
  */
 
 // Re-export OpenTelemetry API types for convenience

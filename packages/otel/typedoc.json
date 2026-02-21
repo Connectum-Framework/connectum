@@ -13,5 +13,6 @@
     "src/metrics.ts",
     "src/provider.ts"
   ],
+
   "tsconfig": "../../tsconfig.json"
 }

@@ -7,6 +7,7 @@
  * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer
  *
  * @module @connectum/interceptors
+ * @mergeModuleWith <project>
  */
 
 export { createBulkheadInterceptor } from "./bulkhead.ts";

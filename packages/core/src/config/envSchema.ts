@@ -4,7 +4,7 @@
  * Provides type-safe configuration from environment variables
  * following 12-Factor App principles.
  *
- * @module @connectum/core/config
+ * @module config
  */
 
 import { z } from "zod";
