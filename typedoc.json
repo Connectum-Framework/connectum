@@ -21,6 +21,7 @@
   "cleanOutputDir": true,
   "packageOptions": {
     "entryPoints": ["src/index.ts"],
-    "tsconfig": "../../tsconfig.json"
+    "tsconfig": "../../tsconfig.json",
+    "readme": "none"
   }
 }
