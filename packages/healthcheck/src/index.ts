@@ -1,16 +1,4 @@
 /**
- * @connectum/healthcheck
- *
- * Healthcheck protocol for Connectum framework.
- *
- * Provides:
- * - Healthcheck: Factory to create healthcheck protocol registration
- * - healthcheckManager: Default singleton manager for controlling health status
- * - createHealthcheckManager: Factory to create isolated manager instances
- * - HealthcheckManager: Class for health status management
- * - HTTP health endpoints (/healthz, /readyz)
- * - ServingStatus: gRPC health check serving status values
- *
  * @module @connectum/healthcheck
  */
 
