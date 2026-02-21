@@ -1,0 +1,4 @@
+{
+  "entryPoints": ["src/index.ts", "src/proto/index.ts", "src/testing/index.ts"],
+  "tsconfig": "../../tsconfig.json"
+}

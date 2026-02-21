@@ -1,0 +1,4 @@
+{
+  "entryPoints": ["src/index.ts", "src/commands/proto-sync.ts", "src/utils/reflection.ts"],
+  "tsconfig": "../../tsconfig.json"
+}

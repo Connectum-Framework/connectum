@@ -1,0 +1,26 @@
+{
+  "$schema": "https://typedoc-plugin-markdown.org/schema.json",
+  "entryPoints": ["packages/core", "packages/auth", "packages/interceptors", "packages/healthcheck", "packages/reflection", "packages/otel", "packages/cli"],
+  "entryPointStrategy": "packages",
+  "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
+  "docsRoot": "../docs",
+  "out": "../docs/en/api",
+  "name": "Connectum API Reference",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "exclude": ["**/gen/**", "**/gen-ts/**", "**/dist/**", "**/tests/**"],
+  "externalSymbolLinkMappings": {
+    "@opentelemetry/api": {
+      "Span": "https://open-telemetry.github.io/opentelemetry-js/interfaces/_opentelemetry_api.Span.html",
+      "Metric": "https://open-telemetry.github.io/opentelemetry-js/interfaces/_opentelemetry_api.Metric.html"
+    }
+  },
+  "cleanOutputDir": true,
+  "packageOptions": {
+    "entryPoints": ["src/index.ts"],
+    "tsconfig": "../../tsconfig.json"
+  }
+}
