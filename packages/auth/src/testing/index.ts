@@ -3,7 +3,7 @@
  *
  * Test utilities for authentication and authorization.
  *
- * @module @connectum/auth/testing
+ * @module testing
  */
 
 export { createMockAuthContext } from "./mock-context.ts";

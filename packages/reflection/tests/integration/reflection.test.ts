@@ -7,7 +7,7 @@
  * 3. Verify listServices, getFileContainingSymbol, buildFileRegistry
  * 4. Stop the server
  *
- * Uses @lambdalisue/connectrpc-grpcreflect client (same library as server-side).
+ * Uses @lambdalisue/connectrpc-grpcreflect client to query the custom @connectum/reflection server implementation.
  * Transport: createGrpcTransport (HTTP/2, required for bidirectional streaming).
  */
 
@@ -118,6 +118,8 @@ describe("Reflection Integration", () => {
 			// Check, List and Watch methods expected
 			const methodNames = serviceDesc.methods.map((m) => m.name);
 			assert.ok(methodNames.includes("Check"), `Expected Check method, got: ${JSON.stringify(methodNames)}`);
+			assert.ok(methodNames.includes("List"), `Expected List method, got: ${JSON.stringify(methodNames)}`);
+			assert.ok(methodNames.includes("Watch"), `Expected Watch method, got: ${JSON.stringify(methodNames)}`);
 		} finally {
 			await client.close();
 		}

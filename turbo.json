@@ -67,6 +67,11 @@
     },
     "clean": {
       "cache": false
+    },
+    "docs:api": {
+      "dependsOn": ["build:proto"],
+      "outputs": ["../docs/en/api/**"],
+      "cache": false
     }
   }
 }
