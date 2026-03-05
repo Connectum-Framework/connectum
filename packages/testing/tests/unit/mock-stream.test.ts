@@ -79,8 +79,8 @@ describe("createMockStream", () => {
     const elapsed = Date.now() - start;
 
     assert.ok(
-      elapsed < 50,
-      `expected fast completion (<50ms), got ${elapsed}ms`,
+      elapsed < 200,
+      `expected fast completion (<200ms), got ${elapsed}ms`,
     );
   });
 

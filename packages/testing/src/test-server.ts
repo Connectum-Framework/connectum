@@ -44,10 +44,16 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
 
     await server.start();
 
-    const port = server.address?.port;
-    if (!port) {
+    let port: number;
+    try {
+        const assignedPort = server.address?.port;
+        if (!assignedPort) {
+            throw new Error("Server started but no port was assigned");
+        }
+        port = assignedPort;
+    } catch (err) {
         await server.stop();
-        throw new Error("Server started but no port was assigned");
+        throw err;
     }
 
     const baseUrl = `http://localhost:${port}`;

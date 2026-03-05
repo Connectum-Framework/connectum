@@ -206,7 +206,7 @@ describe('retry interceptor', () => {
         await assert.rejects(() => handler(mockReq));
 
         // Verify retries happened (initial + maxRetries = 3 attempts)
-        assert(next.mock.calls.length >= 2, `Expected at least 2 attempts, got ${next.mock.calls.length}`);
+        assert(next.mock.calls.length >= 3, `Expected at least 3 attempts, got ${next.mock.calls.length}`);
     });
 
     it('should use default values (maxRetries=3, initialDelay=200)', () => {

@@ -34,12 +34,13 @@ import type { MockNextOptions } from "./types.ts";
  */
 // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNext(options?: MockNextOptions): any {
-    const response = {
-        stream: options?.stream ?? false,
-        message: options?.message ?? { result: "success" },
-    };
+    const stream = options?.stream ?? false;
+    const baseMessage = options?.message ?? { result: "success" };
 
-    return mock.fn(async (_req: unknown) => response);
+    return mock.fn(async (_req: unknown) => ({
+        stream,
+        message: { ...baseMessage },
+    }));
 }
 
 /**
