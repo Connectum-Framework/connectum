@@ -6,7 +6,6 @@
  * with auth extensions set.
  */
 
-import { mock } from "node:test";
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { create, setExtension } from "@bufbuild/protobuf";
 import { MethodOptionsSchema, ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
@@ -135,13 +134,4 @@ export function createProtoMockRequest(service: DescService, method: DescMethod,
         stream: false,
         message: {},
     } as any;
-}
-
-/**
- * Create a mock next handler that returns an empty response.
- *
- * @returns A mock function usable as a ConnectRPC next handler.
- */
-export function createMockNext() {
-    return mock.fn(async (_req: any) => ({ message: {} })) as any;
 }

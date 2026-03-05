@@ -79,6 +79,7 @@
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectum/testing": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

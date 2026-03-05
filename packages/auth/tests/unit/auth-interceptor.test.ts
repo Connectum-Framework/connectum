@@ -8,26 +8,13 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { getAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
-function createMockRequest(overrides: Record<string, unknown> = {}) {
-    return {
-        service: { typeName: "test.Service" },
-        method: { name: "Method" },
-        header: new Headers(),
-        url: "http://localhost/test.Service/Method",
-        stream: false,
-        message: {},
-        ...overrides,
-    } as any;
-}
-
-function createMockNext() {
-    return mock.fn(async (_req: any) => ({ message: {} })) as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
 describe("auth-interceptor", () => {
     describe("createAuthInterceptor()", () => {
@@ -49,7 +36,7 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", "Bearer my-token-123");
 
             await handler(req);
@@ -71,13 +58,12 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -95,15 +81,13 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", "Bearer bad-token");
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("Authentication failed"));
+                    assertConnectError(err, Code.Unauthenticated, "Authentication failed");
                     return true;
                 },
             );
@@ -118,15 +102,13 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", "Bearer expired-token");
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
-                    assert.ok(err.message.includes("Token expired"));
+                    assertConnectError(err, Code.PermissionDenied, "Token expired");
                     return true;
                 },
             );
@@ -148,7 +130,7 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await handler(req);
 
@@ -172,7 +154,7 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await handler(req);
 
@@ -200,7 +182,7 @@ describe("auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", "Bearer test-token");
 
             await handler(req);
@@ -229,7 +211,7 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", "Bearer test-token");
 
             await handler(req);

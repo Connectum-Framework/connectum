@@ -7,7 +7,8 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { createAuthzInterceptor } from "../../src/authz-interceptor.ts";
 import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
@@ -15,24 +16,7 @@ import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
-function createMockRequest(options?: {
-    serviceName?: string;
-    methodName?: string;
-    headers?: Headers;
-}) {
-    const serviceName = options?.serviceName ?? "test.v1.TestService";
-    const methodName = options?.methodName ?? "TestMethod";
-    const headers = options?.headers ?? new Headers();
-
-    return {
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        header: headers,
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: {},
-    } as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 describe("Gateway + Session Auth Integration", () => {
     describe("Gateway auth → Authz chain", () => {
@@ -64,7 +48,7 @@ describe("Gateway + Session Auth Integration", () => {
             headers.set("x-gateway-secret", "test-secret");
             headers.set("x-user-id", "admin-1");
             headers.set("x-user-roles", '["admin"]');
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: AuthContext | undefined;
             const next = mock.fn(async () => {
@@ -109,7 +93,7 @@ describe("Gateway + Session Auth Integration", () => {
             headers.set("x-gateway-secret", "test-secret");
             headers.set("x-user-id", "viewer-1");
             headers.set("x-user-roles", '["viewer"]');
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = gatewayAuth(authz(next as any) as any);
@@ -117,8 +101,7 @@ describe("Gateway + Session Auth Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -162,7 +145,7 @@ describe("Gateway + Session Auth Integration", () => {
             // First request
             const headers1 = new Headers();
             headers1.set("authorization", "Bearer session-token-1");
-            const req1 = createMockRequest({ headers: headers1 });
+            const req1 = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: headers1 });
 
             let capturedContext: AuthContext | undefined;
             const next = mock.fn(async () => {
@@ -180,7 +163,7 @@ describe("Gateway + Session Auth Integration", () => {
             // Second request with same token — should use cache
             const headers2 = new Headers();
             headers2.set("authorization", "Bearer session-token-1");
-            const req2 = createMockRequest({ headers: headers2 });
+            const req2 = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: headers2 });
             await handler(req2);
 
             assert.strictEqual(verifySession.mock.calls.length, 1); // Still 1 — cached
@@ -208,7 +191,7 @@ describe("Gateway + Session Auth Integration", () => {
             headers.set("x-user-id", "prop-user");
             headers.set("x-user-name", "Prop User");
             headers.set("x-user-roles", '["admin"]');
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = gatewayAuth(next as any);
@@ -242,7 +225,7 @@ describe("Gateway + Session Auth Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = sessionAuth(next as any);

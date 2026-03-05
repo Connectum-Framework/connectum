@@ -5,26 +5,13 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
-function createMockRequest(overrides: Record<string, unknown> = {}) {
-	return {
-		service: { typeName: "test.Service" },
-		method: { name: "Method" },
-		header: new Headers(),
-		url: "http://localhost/test.Service/Method",
-		stream: false,
-		message: {},
-		...overrides,
-	} as any;
-}
-
-function createMockNext() {
-	return mock.fn(async (_req: any) => ({ message: {} })) as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
 const MOCK_SESSION = {
 	user: { id: "user-42", name: "John Doe", email: "john@example.com" },
@@ -59,7 +46,7 @@ describe("session-auth-interceptor", () => {
 			}) as any;
 
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("authorization", "Bearer session-token-123");
 
 			await handler(req);
@@ -85,7 +72,7 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("authorization", "Bearer session-token");
 			req.header.set("cookie", "session_id=abc123");
 
@@ -104,13 +91,12 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
 			await assert.rejects(
 				() => handler(req),
 				(err: unknown) => {
-					assert.ok(err instanceof ConnectError);
-					assert.strictEqual(err.code, Code.Unauthenticated);
+					assertConnectError(err, Code.Unauthenticated);
 					return true;
 				},
 			);
@@ -129,15 +115,13 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("authorization", "Bearer bad-token");
 
 			await assert.rejects(
 				() => handler(req),
 				(err: unknown) => {
-					assert.ok(err instanceof ConnectError);
-					assert.strictEqual(err.code, Code.Unauthenticated);
-					assert.ok(err.message.includes("Session verification failed"));
+					assertConnectError(err, Code.Unauthenticated, "Session verification failed");
 					return true;
 				},
 			);
@@ -155,14 +139,13 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("authorization", "Bearer token");
 
 			await assert.rejects(
 				() => handler(req),
 				(err: unknown) => {
-					assert.ok(err instanceof ConnectError);
-					assert.strictEqual(err.code, Code.PermissionDenied);
+					assertConnectError(err, Code.PermissionDenied);
 					return true;
 				},
 			);
@@ -178,7 +161,7 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
 			await handler(req);
 
@@ -225,7 +208,7 @@ describe("session-auth-interceptor", () => {
 			}) as any;
 
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("x-session-token", "custom-token-456");
 
 			await handler(req);
@@ -244,7 +227,7 @@ describe("session-auth-interceptor", () => {
 
 			const next = createMockNext();
 			const handler = interceptor(next);
-			const req = createMockRequest();
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 			req.header.set("authorization", "Bearer token");
 
 			await handler(req);

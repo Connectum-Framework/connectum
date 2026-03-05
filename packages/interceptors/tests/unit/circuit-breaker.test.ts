@@ -5,20 +5,16 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
 import { createCircuitBreakerInterceptor } from "../../src/circuit-breaker.ts";
 
 describe("circuit breaker interceptor", () => {
     it("should pass request when circuit closed", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 3 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -30,16 +26,9 @@ describe("circuit breaker interceptor", () => {
     it("should open circuit after threshold failures", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 3, halfOpenAfter: 60_000 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
@@ -48,8 +37,7 @@ describe("circuit breaker interceptor", () => {
             await assert.rejects(
                 () => handler(mockReq),
                 (err: unknown) => {
-                    assert(err instanceof ConnectError);
-                    assert.strictEqual((err as ConnectError).code, Code.Internal);
+                    assertConnectError(err, Code.Internal);
                     return true;
                 },
             );
@@ -59,9 +47,7 @@ describe("circuit breaker interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Unavailable);
-                assert((err as ConnectError).message.includes("Circuit breaker is open"));
+                assertConnectError(err, Code.Unavailable, "Circuit breaker is open");
                 return true;
             },
         );
@@ -70,16 +56,9 @@ describe("circuit breaker interceptor", () => {
     it("should reject requests when circuit open", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 10 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
@@ -92,8 +71,7 @@ describe("circuit breaker interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Unavailable);
+                assertConnectError(err, Code.Unavailable);
                 return true;
             },
         );
@@ -111,12 +89,7 @@ describe("circuit breaker interceptor", () => {
             return { message: { result: "recovered" } };
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -145,12 +118,7 @@ describe("circuit breaker interceptor", () => {
             return { message: { result: "recovered" } };
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -173,16 +141,9 @@ describe("circuit breaker interceptor", () => {
     it("should re-open circuit on failure in half-open", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 100 });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -201,8 +162,7 @@ describe("circuit breaker interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Unavailable);
+                assertConnectError(err, Code.Unavailable);
                 return true;
             },
         );
@@ -211,14 +171,9 @@ describe("circuit breaker interceptor", () => {
     it("should skip streaming when skipStreaming=true", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 1, skipStreaming: true });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: true, // Streaming request
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = mock.fn(async () => ({ message: { result: "streaming" } }));
+        const next = createMockNext({ message: { result: "streaming" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -230,16 +185,9 @@ describe("circuit breaker interceptor", () => {
     it("should handle custom threshold", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 10 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
@@ -248,7 +196,7 @@ describe("circuit breaker interceptor", () => {
             await assert.rejects(
                 () => handler(mockReq),
                 (err: unknown) => {
-                    assert.strictEqual((err as ConnectError).code, Code.Internal);
+                    assertConnectError(err, Code.Internal);
                     return true;
                 },
             );
@@ -258,7 +206,7 @@ describe("circuit breaker interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert.strictEqual((err as ConnectError).code, Code.Unavailable);
+                assertConnectError(err, Code.Unavailable);
                 return true;
             },
         );
@@ -276,12 +224,7 @@ describe("circuit breaker interceptor", () => {
             return { message: { result: "recovered" } };
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 

@@ -8,11 +8,12 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext } from "@connectum/testing";
 import { authContextStorage } from "../../src/context.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import type { AuthContext, AuthzRule } from "../../src/types.ts";
-import { createFakeMethod, createFakeService, createMethodOptions, createMockNext, createProtoMockRequest } from "../helpers/proto-test-helpers.ts";
+import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest } from "../helpers/proto-test-helpers.ts";
 
 const defaultContext: AuthContext = {
     subject: "user-1",
@@ -201,9 +202,7 @@ describe("proto-authz-interceptor", () => {
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
-                    assert.ok((err as ConnectError).message.includes("default policy"));
+                    assertConnectError(err, Code.PermissionDenied, "default policy");
                     return true;
                 },
             );
@@ -221,8 +220,7 @@ describe("proto-authz-interceptor", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -278,8 +276,7 @@ describe("proto-authz-interceptor", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );

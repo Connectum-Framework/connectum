@@ -10,12 +10,12 @@ import assert from "node:assert";
 import type { Server } from "node:http";
 import { createServer } from "node:http";
 import { after, before, describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
-import { createMockRequest } from "../helpers/mock-request.ts";
 
 describe("JWT Auth Advanced — Integration", () => {
     describe("audience validation", () => {
@@ -40,8 +40,7 @@ describe("JWT Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -247,9 +246,7 @@ describe("JWT Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /missing subject/i);
+                    assertConnectError(err, Code.Unauthenticated, /missing subject/i);
                     return true;
                 },
             );
@@ -282,8 +279,7 @@ describe("JWT Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );

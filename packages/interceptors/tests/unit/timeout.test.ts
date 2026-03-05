@@ -4,21 +4,17 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockNextSlow, createMockRequest } from "@connectum/testing";
 import { createTimeoutInterceptor } from "../../src/timeout.ts";
 
 describe("timeout interceptor", () => {
     it("should pass request within timeout", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 1000 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -30,26 +26,16 @@ describe("timeout interceptor", () => {
     it("should reject request after timeout", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 100 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            // Simulate slow service
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(200);
 
         const handler = interceptor(next as any);
 
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.DeadlineExceeded);
+                assertConnectError(err, Code.DeadlineExceeded);
                 return true;
             },
         );
@@ -61,25 +47,16 @@ describe("timeout interceptor", () => {
     it("should include timeout duration in error", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 50 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            return { message: "success" };
-        });
+        const next = createMockNextSlow(100);
 
         const handler = interceptor(next as any);
 
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert((err as ConnectError).message.includes("50ms"));
+                assertConnectError(err, Code.DeadlineExceeded, "50ms");
                 return true;
             },
         );
@@ -91,14 +68,9 @@ describe("timeout interceptor", () => {
     it("should skip streaming when skipStreaming=true", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 100, skipStreaming: true });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: true, // Streaming request
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = mock.fn(async () => ({ message: { result: "streaming" } }));
+        const next = createMockNext({ message: { result: "streaming" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -110,26 +82,16 @@ describe("timeout interceptor", () => {
     it("should handle custom duration", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 200 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(300);
 
         const handler = interceptor(next as any);
 
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.DeadlineExceeded);
-                assert((err as ConnectError).message.includes("200ms"));
+                assertConnectError(err, Code.DeadlineExceeded, "200ms");
                 return true;
             },
         );
@@ -142,12 +104,7 @@ describe("timeout interceptor", () => {
         let cleanedUp = false;
         const interceptor = createTimeoutInterceptor({ duration: 50 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const next = mock.fn(async () => {
             try {
@@ -170,18 +127,9 @@ describe("timeout interceptor", () => {
     it("should not timeout fast requests", async () => {
         const interceptor = createTimeoutInterceptor({ duration: 1000 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            // Fast request
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            return { message: { result: "fast" } };
-        });
+        const next = createMockNextSlow(10, { message: { result: "fast" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -198,14 +146,9 @@ describe("timeout interceptor", () => {
     it("should use default duration", async () => {
         const interceptor = createTimeoutInterceptor(); // Uses default 30000ms
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);

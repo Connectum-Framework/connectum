@@ -7,33 +7,14 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { createAuthzInterceptor } from "../../src/authz-interceptor.ts";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 
-/**
- * Create a mock ConnectRPC unary request.
- */
-function createMockRequest(options?: {
-    serviceName?: string;
-    methodName?: string;
-    headers?: Headers;
-}) {
-    const serviceName = options?.serviceName ?? "test.v1.TestService";
-    const methodName = options?.methodName ?? "TestMethod";
-    const headers = options?.headers ?? new Headers();
-
-    return {
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        header: headers,
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: {},
-    } as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 /**
  * Create the standard auth + authz interceptor chain.
@@ -94,7 +75,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -122,7 +103,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
             const req = createMockRequest({
-                methodName: "GetItem",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "GetItem",
                 headers,
             });
 
@@ -144,7 +126,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -166,7 +148,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -174,8 +156,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -195,7 +176,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             headers.set("authorization", `Bearer ${token}`);
             // DeleteItem is not in any "allow" rule for "user" role
             const req = createMockRequest({
-                methodName: "DeleteItem",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "DeleteItem",
                 headers,
             });
 
@@ -205,8 +187,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -224,7 +205,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -232,8 +213,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -244,7 +224,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
         it("should reject request without Authorization header", async () => {
             const { authInterceptor, authzInterceptor } = createAuthChain();
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -252,8 +232,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -266,7 +245,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer invalid-garbage-token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -274,8 +253,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -306,7 +284,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             });
 
             const req = createMockRequest({
-                methodName: "HealthCheck",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "HealthCheck",
             });
 
             const next = mock.fn(async () => ({ message: {} }));
@@ -340,7 +319,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             // Non-skipped method without auth
             const req = createMockRequest({
-                methodName: "SecureMethod",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "SecureMethod",
             });
 
             const next = mock.fn(async () => ({ message: {} }));
@@ -349,8 +329,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -384,7 +363,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
             const req = createMockRequest({
-                methodName: "PublicInfo",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "PublicInfo",
                 headers,
             });
 
@@ -435,7 +415,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -477,7 +457,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -485,8 +465,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -528,7 +507,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
             const req = createMockRequest({
-                methodName: "GetItem",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "GetItem",
                 headers,
             });
 
@@ -570,7 +550,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
             const req = createMockRequest({
-                methodName: "UpdateItem",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "UpdateItem",
                 headers,
             });
 
@@ -580,8 +561,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -615,7 +595,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -623,8 +603,7 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -655,7 +634,8 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
             const req = createMockRequest({
-                methodName: "GetItem",
+                ...MOCK_REQUEST_DEFAULTS,
+                method: "GetItem",
                 headers,
             });
 

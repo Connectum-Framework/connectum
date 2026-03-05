@@ -7,7 +7,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError } from "@connectum/testing";
 import { authContextStorage, getAuthContext, requireAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
 
@@ -43,9 +44,7 @@ describe("context", () => {
             assert.throws(
                 () => requireAuthContext(),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.strictEqual(err.message, "[unauthenticated] Authentication required");
+                    assertConnectError(err, Code.Unauthenticated, /Authentication required/);
                     return true;
                 },
             );

@@ -4,27 +4,14 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
-function createMockRequest(overrides: Record<string, unknown> = {}) {
-    return {
-        service: { typeName: "test.Service" },
-        method: { name: "Method" },
-        header: new Headers(),
-        url: "http://localhost/test.Service/Method",
-        stream: false,
-        message: {},
-        ...overrides,
-    } as any;
-}
-
-function createMockNext() {
-    return mock.fn(async (_req: any) => ({ message: {} })) as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
 const DEFAULT_OPTIONS: GatewayAuthInterceptorOptions = {
     headerMapping: {
@@ -76,15 +63,13 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-user-id", "user-1");
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("Untrusted"));
+                    assertConnectError(err, Code.Unauthenticated, "Untrusted");
                     return true;
                 },
             );
@@ -96,15 +81,14 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "wrong-secret");
             req.header.set("x-user-id", "user-1");
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -115,16 +99,14 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             // No subject header
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("subject"));
+                    assertConnectError(err, Code.Unauthenticated, "subject");
                     return true;
                 },
             );
@@ -140,7 +122,7 @@ describe("gateway-auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-42");
             req.header.set("x-user-name", "John Doe");
@@ -170,7 +152,7 @@ describe("gateway-auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-1");
             req.header.set("x-user-roles", "admin, editor, viewer");
@@ -194,7 +176,7 @@ describe("gateway-auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-1");
 
@@ -209,7 +191,7 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-1");
             req.header.set("x-user-name", "Test");
@@ -230,7 +212,7 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-1");
             req.header.set("x-custom-internal", "should-be-stripped");
@@ -248,7 +230,7 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             // No trust header, no subject — should still pass
 
             await handler(req);
@@ -272,7 +254,7 @@ describe("gateway-auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-real-ip", "10.255.128.42");
             req.header.set("x-user-id", "cidr-user");
 
@@ -293,15 +275,14 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-real-ip", "192.168.1.1");
             req.header.set("x-user-id", "user-1");
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -317,7 +298,7 @@ describe("gateway-auth-interceptor", () => {
             }) as any;
 
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "als-user");
 
@@ -335,7 +316,7 @@ describe("gateway-auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "prop-user");
             req.header.set("x-user-roles", '["admin"]');

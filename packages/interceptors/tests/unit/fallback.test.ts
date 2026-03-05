@@ -5,6 +5,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
 import { createFallbackInterceptor } from "../../src/fallback.ts";
 
 describe("fallback interceptor", () => {
@@ -13,14 +14,9 @@ describe("fallback interceptor", () => {
             handler: () => ({ fallback: "value" }),
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -37,16 +33,9 @@ describe("fallback interceptor", () => {
             },
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
         await handler(mockReq);
@@ -59,16 +48,9 @@ describe("fallback interceptor", () => {
             handler: () => ({ fallback: "cached_data" }),
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -83,16 +65,9 @@ describe("fallback interceptor", () => {
             },
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
@@ -112,14 +87,9 @@ describe("fallback interceptor", () => {
             skipStreaming: true,
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: true, // Streaming request
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = mock.fn(async () => ({ message: { result: "streaming" } }));
+        const next = createMockNext({ message: { result: "streaming" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -135,16 +105,9 @@ describe("fallback interceptor", () => {
             },
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -157,16 +120,9 @@ describe("fallback interceptor", () => {
             handler: () => ({ fallback: "value" }),
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -185,12 +141,7 @@ describe("fallback interceptor", () => {
 
         const originalError = new ConnectError("Original service error", Code.Internal);
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const next = mock.fn(async () => {
             throw originalError;
@@ -220,16 +171,9 @@ describe("fallback interceptor", () => {
             handler: () => null,
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);

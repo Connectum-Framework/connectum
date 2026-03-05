@@ -9,11 +9,13 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
-import { createMockRequest } from "../helpers/mock-request.ts";
+
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 const validMapSession = (session: unknown): AuthContext => {
     const s = session as { userId: string };
@@ -34,16 +36,14 @@ describe("Session Auth Edge Cases — Integration", () => {
                 mapSession: validMapSession,
             });
 
-            const req = createMockRequest(); // no authorization header
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS); // no authorization header
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Missing credentials/);
+                    assertConnectError(err, Code.Unauthenticated, /Missing credentials/);
                     return true;
                 },
             );
@@ -59,7 +59,7 @@ describe("Session Auth Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer valid-token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -67,9 +67,7 @@ describe("Session Auth Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Session verification failed/);
+                    assertConnectError(err, Code.Unauthenticated, /Session verification failed/);
                     return true;
                 },
             );
@@ -85,7 +83,7 @@ describe("Session Auth Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer valid-token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -93,9 +91,7 @@ describe("Session Auth Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.ResourceExhausted);
-                    assert.match(err.message, /Custom verify error/);
+                    assertConnectError(err, Code.ResourceExhausted, /Custom verify error/);
                     return true;
                 },
             );
@@ -111,7 +107,7 @@ describe("Session Auth Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer valid-token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -119,9 +115,7 @@ describe("Session Auth Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Session mapping failed/);
+                    assertConnectError(err, Code.Unauthenticated, /Session mapping failed/);
                     return true;
                 },
             );
@@ -137,7 +131,7 @@ describe("Session Auth Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer valid-token");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -145,9 +139,7 @@ describe("Session Auth Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.InvalidArgument);
-                    assert.match(err.message, /Custom map error/);
+                    assertConnectError(err, Code.InvalidArgument, /Custom map error/);
                     return true;
                 },
             );
@@ -167,7 +159,7 @@ describe("Session Auth Edge Cases — Integration", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "spoofed-user");
             headers.set(AUTH_HEADERS.TYPE, "spoofed-type");
-            const req = createMockRequest({ methodName: "Health", headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "Health", headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -191,7 +183,7 @@ describe("Session Auth Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("x-api-token", "custom-token-123");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {

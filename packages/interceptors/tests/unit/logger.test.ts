@@ -6,7 +6,8 @@
 
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import { Code, ConnectError } from '@connectrpc/connect';
+import { Code } from '@connectrpc/connect';
+import { assertConnectError, createMockNextError, createMockRequest } from '@connectum/testing';
 import { createLoggerInterceptor } from '../../src/logger.ts';
 
 describe('logger interceptor', () => {
@@ -14,12 +15,7 @@ describe('logger interceptor', () => {
         const loggerFn = mock.fn();
         const interceptor = createLoggerInterceptor({ logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
         const mockRes = {
             stream: false,
@@ -42,25 +38,16 @@ describe('logger interceptor', () => {
 
         const interceptor = createLoggerInterceptor({ logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
-        const error = new ConnectError('Test error', Code.Internal);
-        const next = mock.fn(async () => {
-            throw error;
-        });
+        const next = createMockNextError(Code.Internal, 'Test error');
 
         const handler = interceptor(next as any);
 
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Internal);
+                assertConnectError(err, Code.Internal);
                 return true;
             }
         );
@@ -78,12 +65,7 @@ describe('logger interceptor', () => {
 
         const interceptor = createLoggerInterceptor({ logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
         const next = mock.fn(async () => {
             throw new Error('Unexpected exception');
@@ -107,12 +89,7 @@ describe('logger interceptor', () => {
         const loggerFn = mock.fn();
         const interceptor = createLoggerInterceptor({ skipHealthCheck: true, logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/grpc.health.v1.Health/Check',
-            stream: false,
-            message: {},
-            service: { typeName: 'grpc.health.v1.Health' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'grpc.health.v1.Health', method: 'Check' });
 
         const mockRes = {
             stream: false,
@@ -133,12 +110,7 @@ describe('logger interceptor', () => {
         const loggerFn = mock.fn();
         const interceptor = createLoggerInterceptor({ skipHealthCheck: false, logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/grpc.health.v1.Health/Check',
-            stream: false,
-            message: {},
-            service: { typeName: 'grpc.health.v1.Health' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'grpc.health.v1.Health', method: 'Check' });
 
         const mockRes = {
             stream: false,
@@ -164,12 +136,7 @@ describe('logger interceptor', () => {
             yield { field: 'value2' };
         }
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/StreamMethod',
-            stream: true,
-            message: mockStream(),
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'StreamMethod', stream: true, message: mockStream() });
 
         // CRITICAL: mockRes must have method.output for logResStream to work
         const mockRes = {
@@ -197,12 +164,7 @@ describe('logger interceptor', () => {
         const loggerFn = mock.fn();
         const interceptor = createLoggerInterceptor({ logger: loggerFn });
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
         async function* mockResStream() {
             yield { result: 'value1' };
@@ -258,12 +220,7 @@ describe('logger interceptor', () => {
         const customLogger = mock.fn();
         const interceptor = createLoggerInterceptor({ logger: customLogger });
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-        } as any;
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
         const mockRes = {
             stream: false,

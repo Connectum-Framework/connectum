@@ -7,23 +7,14 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 
-function createMockRequest(overrides: Record<string, unknown> = {}) {
-    return {
-        service: { typeName: "test.Service" },
-        method: { name: "Method" },
-        header: new Headers(),
-        url: "http://localhost/test.Service/Method",
-        stream: false,
-        message: {},
-        ...overrides,
-    } as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
 describe("jwt-auth-interceptor", () => {
     describe("createJwtAuthInterceptor()", () => {
@@ -45,7 +36,7 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -63,14 +54,13 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -88,7 +78,7 @@ describe("jwt-auth-interceptor", () => {
             };
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -122,7 +112,7 @@ describe("jwt-auth-interceptor", () => {
             };
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -172,7 +162,7 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             // No authorization header, but method is skipped
 
             await handler(req);
@@ -191,15 +181,13 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("missing subject"));
+                    assertConnectError(err, Code.Unauthenticated, "missing subject");
                     return true;
                 },
             );
@@ -216,7 +204,7 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -240,14 +228,13 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -271,7 +258,7 @@ describe("jwt-auth-interceptor", () => {
             };
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -299,7 +286,7 @@ describe("jwt-auth-interceptor", () => {
             };
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
@@ -331,7 +318,7 @@ describe("jwt-auth-interceptor", () => {
             };
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             // If secret were used instead of publicKey, this would throw
@@ -356,14 +343,13 @@ describe("jwt-auth-interceptor", () => {
             const next = async (_req: any) => ({ message: {} });
             const handler = interceptor(next as any);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
