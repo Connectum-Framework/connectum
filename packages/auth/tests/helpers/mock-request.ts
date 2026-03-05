@@ -17,6 +17,8 @@
  * @param next - The final handler to call after both interceptors pass.
  * @returns A composed handler function.
  */
+// biome-ignore lint/suspicious/noExplicitAny: interceptor signatures use generic function types
 export function buildChainedHandler(authInterceptor: (next: any) => any, authzInterceptor: (next: any) => any, next: any) {
+    // biome-ignore lint/suspicious/noExplicitAny: bridging interceptor chain types
     return authInterceptor(authzInterceptor(next as any) as any);
 }

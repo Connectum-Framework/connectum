@@ -1,21 +1,4 @@
-import type { Options } from "tsup";
 import { defineConfig } from "tsup";
-
-/**
- * Post-build plugin that restores `node:` protocol prefix stripped by esbuild.
- *
- * esbuild strips `node:` from built-in imports (e.g., `node:test` becomes `test`).
- * This is fine for legacy built-ins like `fs`, `path`, etc., but `node:test` is only
- * available with the `node:` prefix in Node.js >=18. This plugin patches the output.
- */
-function restoreNodeProtocol(): NonNullable<Options["plugins"]>[number] {
-    return {
-        name: "restore-node-protocol",
-        buildEnd() {
-            // Intentionally empty -- handled via esbuildOptions
-        },
-    };
-}
 
 export default defineConfig({
     entry: ["src/index.ts"],

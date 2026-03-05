@@ -83,6 +83,7 @@ export function createMethodOptions(authConfig: { public?: boolean; policy?: str
             scopes: authConfig.requires.scopes ?? [],
         });
     }
+    // biome-ignore lint/suspicious/noExplicitAny: proto create() requires loose init type
     const authMsg = create(MethodAuthSchema, init as any);
     setExtension(opts, method_auth, authMsg);
     return opts;
@@ -112,6 +113,7 @@ export function createServiceOptions(authConfig: { defaultPolicy?: string; publi
             scopes: authConfig.defaultRequires.scopes ?? [],
         });
     }
+    // biome-ignore lint/suspicious/noExplicitAny: proto create() requires loose init type
     const authMsg = create(ServiceAuthSchema, init as any);
     setExtension(opts, service_auth, authMsg);
     return opts;
@@ -133,5 +135,6 @@ export function createProtoMockRequest(service: DescService, method: DescMethod,
         url: `http://localhost/${service.typeName}/${method.name}`,
         stream: false,
         message: {},
+        // biome-ignore lint/suspicious/noExplicitAny: mock object matches ConnectRPC UnaryRequest shape
     } as any;
 }
