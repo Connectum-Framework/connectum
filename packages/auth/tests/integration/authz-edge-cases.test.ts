@@ -8,14 +8,17 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { createAuthzInterceptor } from "../../src/authz-interceptor.ts";
 import { requireAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createMockAuthContext } from "../../src/testing/mock-context.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 import { withAuthContext } from "../../src/testing/with-context.ts";
-import { buildChainedHandler, createMockRequest } from "../helpers/mock-request.ts";
+import { buildChainedHandler } from "../helpers/mock-request.ts";
+
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 describe("Authz Edge Cases — Integration", () => {
     describe("rule requires not met → continue to next rule", () => {
@@ -50,7 +53,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -91,7 +94,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -99,8 +102,7 @@ describe("Authz Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -121,9 +123,7 @@ describe("Authz Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Authentication required/);
+                    assertConnectError(err, Code.Unauthenticated, /Authentication required/);
                     return true;
                 },
             );
@@ -156,7 +156,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -166,8 +166,7 @@ describe("Authz Edge Cases — Integration", () => {
                 (err: unknown) => {
                     // Rule requires admin, viewer doesn't have it, so rule doesn't match.
                     // Falls through to default policy "deny".
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -198,7 +197,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ methodName: "DeleteItem", headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "DeleteItem", headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -247,7 +246,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -294,7 +293,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -321,7 +320,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -329,9 +328,7 @@ describe("Authz Edge Cases — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
-                    assert.match(err.message, /Access denied/);
+                    assertConnectError(err, Code.PermissionDenied, /Access denied/);
                     return true;
                 },
             );
@@ -378,7 +375,7 @@ describe("Authz Edge Cases — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
@@ -393,9 +390,7 @@ describe("Authz Edge Cases — Integration", () => {
             assert.throws(
                 () => requireAuthContext(),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Authentication required/);
+                    assertConnectError(err, Code.Unauthenticated, /Authentication required/);
                     return true;
                 },
             );

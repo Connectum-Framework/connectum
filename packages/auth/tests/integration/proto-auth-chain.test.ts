@@ -7,7 +7,8 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
@@ -171,8 +172,7 @@ describe("Proto Auth Chain (JWT AUTH -> PROTO AUTHZ) — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );

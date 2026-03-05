@@ -12,6 +12,7 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { Code, ConnectError } from '@connectrpc/connect';
+import { assertConnectError, createMockNextError } from '@connectum/testing';
 import { createCircuitBreakerInterceptor } from '../../src/circuit-breaker.ts';
 import { createFallbackInterceptor } from '../../src/fallback.ts';
 import { createRetryInterceptor } from '../../src/retry.ts';
@@ -89,9 +90,7 @@ describe('Resilience Pattern Integration', () => {
             },
         } as any;
 
-        const next = mock.fn(async () => {
-            throw new ConnectError('Service error', Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, 'Service error');
 
         // Chain: circuit-breaker -> next (no retry to avoid complexity)
         const handler = circuitBreakerInterceptor(next as any);
@@ -101,8 +100,7 @@ describe('Resilience Pattern Integration', () => {
             await assert.rejects(
                 () => handler(mockReq),
                 (err: unknown) => {
-                    assert(err instanceof ConnectError);
-                    assert.strictEqual((err as ConnectError).code, Code.Internal);
+                    assertConnectError(err, Code.Internal);
                     return true;
                 },
             );
@@ -113,9 +111,7 @@ describe('Resilience Pattern Integration', () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Unavailable);
-                assert((err as ConnectError).message.includes('Circuit breaker is open'));
+                assertConnectError(err, Code.Unavailable, 'Circuit breaker is open');
                 return true;
             },
         );
@@ -150,9 +146,7 @@ describe('Resilience Pattern Integration', () => {
             },
         } as any;
 
-        const next = mock.fn(async () => {
-            throw new ConnectError('Service error', Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, 'Service error');
 
         // Chain: fallback -> circuit-breaker -> next
         const handler = fallbackInterceptor(circuitBreakerInterceptor(next as any));
@@ -206,8 +200,7 @@ describe('Resilience Pattern Integration', () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.DeadlineExceeded);
+                assertConnectError(err, Code.DeadlineExceeded);
                 return true;
             },
         );

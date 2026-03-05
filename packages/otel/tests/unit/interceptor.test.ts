@@ -21,65 +21,16 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Otel-specific default message (for size estimation tests)
 // ---------------------------------------------------------------------------
 
-/**
- * Creates a mock ConnectRPC request object.
- *
- * Mirrors the shape of UnaryRequest / StreamRequest used by ConnectRPC
- * interceptors: service.typeName, method.name, stream flag, message, header.
- */
-function createMockRequest(overrides?: Partial<{
-	serviceName: string;
-	methodName: string;
-	stream: boolean;
-	message: unknown;
-	headers: Record<string, string>;
-}>): any {
-	const {
-		serviceName = "test.TestService",
-		methodName = "TestMethod",
-		stream = false,
-		message = { toBinary: () => new Uint8Array(42) },
-		headers = {},
-	} = overrides ?? {};
-
-	const headerObj = new Headers();
-	for (const [key, value] of Object.entries(headers)) {
-		headerObj.set(key, value);
-	}
-
-	return {
-		service: { typeName: serviceName },
-		method: { name: methodName },
-		stream,
-		message,
-		header: headerObj,
-	};
-}
-
-/**
- * Creates a mock next() function that returns a successful response.
- */
-function createMockNext(response?: unknown): any {
-	const defaultResponse = {
-		stream: false,
-		message: { toBinary: () => new Uint8Array(24) },
-	};
-	return async (_req: unknown) => response ?? defaultResponse;
-}
-
-/**
- * Creates a mock next() function that throws the given error.
- */
-function createMockNextError(error: Error): any {
-	return async (_req: unknown) => { throw error; };
-}
+const OTEL_REQUEST_MESSAGE = { toBinary: () => new Uint8Array(42) };
+const OTEL_RESPONSE_MESSAGE = { toBinary: () => new Uint8Array(24) };
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -103,15 +54,15 @@ describe("createOtelInterceptor", () => {
 
 		it("should return a handler function when called with next", () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			assert.strictEqual(typeof handler, "function");
 		});
 
 		it("should pass through requests transparently", async () => {
 			const interceptor = createOtelInterceptor();
-			const next = createMockNext();
-			const req = createMockRequest();
+			const next = createMockNext({ message: OTEL_RESPONSE_MESSAGE });
+			const req = createMockRequest({ message: OTEL_REQUEST_MESSAGE });
 
 			const handler = interceptor(next);
 			const response = await handler(req);
@@ -122,29 +73,32 @@ describe("createOtelInterceptor", () => {
 		it("should return response from next()", async () => {
 			const expectedResponse = { stream: false, message: { value: 42 } };
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNext(expectedResponse));
+			const next: any = async (_req: unknown) => expectedResponse;
 
-			const response = await handler(createMockRequest());
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.strictEqual(response, expectedResponse);
 		});
 
 		it("should propagate errors from next()", async () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNextError(new Error("test error")));
+			const next: any = async (_req: unknown) => { throw new Error("test error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "test error" },
 			);
 		});
 
 		it("should call next() with the original request", async () => {
 			const interceptor = createOtelInterceptor();
-			const req = createMockRequest();
+			const req = createMockRequest({ message: OTEL_REQUEST_MESSAGE });
 
 			let receivedReq: unknown;
-			const next = createMockNext();
+			const next = createMockNext({ message: OTEL_RESPONSE_MESSAGE });
 			// Wrap next to capture the request argument
 			const wrappedNext: any = async (r: unknown) => {
 				receivedReq = r;
@@ -167,10 +121,10 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				filter: () => false,
 			});
-			const next = createMockNext();
+			const next = createMockNext({ message: OTEL_RESPONSE_MESSAGE });
 			const handler = interceptor(next);
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -179,9 +133,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				filter: () => true,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -194,12 +148,13 @@ describe("createOtelInterceptor", () => {
 					return true;
 				},
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			await handler(createMockRequest({
-				serviceName: "my.Service",
-				methodName: "MyMethod",
+				service: "my.Service",
+				method: "MyMethod",
 				stream: true,
+				message: OTEL_REQUEST_MESSAGE,
 			}));
 
 			assert.deepStrictEqual(filterArgs, {
@@ -214,9 +169,10 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				filter: () => false,
 			});
-			const handler = interceptor(createMockNext(expectedResponse));
+			const next: any = async (_req: unknown) => expectedResponse;
 
-			const response = await handler(createMockRequest());
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.strictEqual(response, expectedResponse);
 		});
@@ -225,10 +181,12 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				filter: () => false,
 			});
-			const handler = interceptor(createMockNextError(new Error("filtered error")));
+			const next: any = async (_req: unknown) => { throw new Error("filtered error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "filtered error" },
 			);
 		});
@@ -241,18 +199,18 @@ describe("createOtelInterceptor", () => {
 	describe("feature toggles", () => {
 		it("should work with withoutTracing=true (metrics only)", async () => {
 			const interceptor = createOtelInterceptor({ withoutTracing: true });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
 
 		it("should work with withoutMetrics=true (tracing only)", async () => {
 			const interceptor = createOtelInterceptor({ withoutMetrics: true });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -263,29 +221,34 @@ describe("createOtelInterceptor", () => {
 				withoutTracing: true,
 				withoutMetrics: true,
 			});
-			const handler = interceptor(createMockNext(expectedResponse));
+			const next: any = async (_req: unknown) => expectedResponse;
 
-			const response = await handler(createMockRequest());
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.strictEqual(response, expectedResponse);
 		});
 
 		it("should propagate errors with withoutTracing=true", async () => {
 			const interceptor = createOtelInterceptor({ withoutTracing: true });
-			const handler = interceptor(createMockNextError(new Error("metrics-only error")));
+			const next: any = async (_req: unknown) => { throw new Error("metrics-only error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "metrics-only error" },
 			);
 		});
 
 		it("should propagate errors with withoutMetrics=true", async () => {
 			const interceptor = createOtelInterceptor({ withoutMetrics: true });
-			const handler = interceptor(createMockNextError(new Error("tracing-only error")));
+			const next: any = async (_req: unknown) => { throw new Error("tracing-only error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "tracing-only error" },
 			);
 		});
@@ -295,10 +258,12 @@ describe("createOtelInterceptor", () => {
 				withoutTracing: true,
 				withoutMetrics: true,
 			});
-			const handler = interceptor(createMockNextError(new Error("no-op error")));
+			const next: any = async (_req: unknown) => { throw new Error("no-op error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "no-op error" },
 			);
 		});
@@ -312,17 +277,16 @@ describe("createOtelInterceptor", () => {
 		it("should handle ConnectError and preserve code", async () => {
 			const error = new ConnectError("not found", Code.NotFound);
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNextError(error));
+			const next: any = async (_req: unknown) => { throw error; };
 
-			await assert.rejects(
-				() => handler(createMockRequest()),
-				(err: unknown) => {
-					assert.ok(err instanceof ConnectError);
-					assert.strictEqual(err.code, Code.NotFound);
-					assert.strictEqual(err.message, "[not_found] not found");
-					return true;
-				},
-			);
+			const handler = interceptor(next);
+
+			try {
+				await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+				assert.fail("Expected ConnectError");
+			} catch (err) {
+				assertConnectError(err, Code.NotFound, "not found");
+			}
 		});
 
 		it("should handle ConnectError with different codes", async () => {
@@ -337,16 +301,16 @@ describe("createOtelInterceptor", () => {
 			for (const code of codes) {
 				const error = new ConnectError("error", code);
 				const interceptor = createOtelInterceptor();
-				const handler = interceptor(createMockNextError(error));
+				const next: any = async (_req: unknown) => { throw error; };
 
-				await assert.rejects(
-					() => handler(createMockRequest()),
-					(err: unknown) => {
-						assert.ok(err instanceof ConnectError);
-						assert.strictEqual(err.code, code);
-						return true;
-					},
-				);
+				const handler = interceptor(next);
+
+				try {
+					await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+					assert.fail("Expected ConnectError");
+				} catch (err) {
+					assertConnectError(err, code);
+				}
 
 				await shutdownProvider();
 			}
@@ -354,20 +318,24 @@ describe("createOtelInterceptor", () => {
 
 		it("should handle generic Error", async () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNextError(new TypeError("type error")));
+			const next: any = async (_req: unknown) => { throw new TypeError("type error"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "type error" },
 			);
 		});
 
 		it("should handle RangeError", async () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNextError(new RangeError("out of range")));
+			const next: any = async (_req: unknown) => { throw new RangeError("out of range"); };
+
+			const handler = interceptor(next);
 
 			await assert.rejects(
-				() => handler(createMockRequest()),
+				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
 				{ message: "out of range" },
 			);
 		});
@@ -375,16 +343,16 @@ describe("createOtelInterceptor", () => {
 		it("should handle ConnectError in metrics-only mode", async () => {
 			const error = new ConnectError("unavailable", Code.Unavailable);
 			const interceptor = createOtelInterceptor({ withoutTracing: true });
-			const handler = interceptor(createMockNextError(error));
+			const next: any = async (_req: unknown) => { throw error; };
 
-			await assert.rejects(
-				() => handler(createMockRequest()),
-				(err: unknown) => {
-					assert.ok(err instanceof ConnectError);
-					assert.strictEqual(err.code, Code.Unavailable);
-					return true;
-				},
-			);
+			const handler = interceptor(next);
+
+			try {
+				await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+				assert.fail("Expected ConnectError");
+			} catch (err) {
+				assertConnectError(err, Code.Unavailable, "unavailable");
+			}
 		});
 	});
 
@@ -395,30 +363,31 @@ describe("createOtelInterceptor", () => {
 	describe("context propagation", () => {
 		it("should work with trustRemote=true", async () => {
 			const interceptor = createOtelInterceptor({ trustRemote: true });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
 
 		it("should work with trustRemote=false (default)", async () => {
 			const interceptor = createOtelInterceptor({ trustRemote: false });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
 
 		it("should extract headers for context propagation", async () => {
 			const interceptor = createOtelInterceptor({ trustRemote: true });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			const response = await handler(createMockRequest({
-				headers: {
+				message: OTEL_REQUEST_MESSAGE,
+				headers: new Headers({
 					"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-				},
+				}),
 			}));
 
 			assert.ok(response);
@@ -433,9 +402,10 @@ describe("createOtelInterceptor", () => {
 		it("should handle streaming requests", async () => {
 			const interceptor = createOtelInterceptor();
 			const streamResponse = { stream: true, message: null };
-			const handler = interceptor(createMockNext(streamResponse));
+			const next: any = async (_req: unknown) => streamResponse;
 
-			const response = await handler(createMockRequest({ stream: true }));
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ stream: true, message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -448,18 +418,19 @@ describe("createOtelInterceptor", () => {
 					return true;
 				},
 			});
-			const handler = interceptor(createMockNext({ stream: true, message: null }));
+			const next: any = async (_req: unknown) => ({ stream: true, message: null });
 
-			await handler(createMockRequest({ stream: true }));
+			const handler = interceptor(next);
+			await handler(createMockRequest({ stream: true, message: OTEL_REQUEST_MESSAGE }));
 
 			assert.strictEqual(receivedStream, true);
 		});
 
 		it("should handle unary requests (stream=false)", async () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest({ stream: false }));
+			const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -474,9 +445,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				attributeFilter: () => true,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -485,9 +456,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				attributeFilter: () => false,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -500,9 +471,9 @@ describe("createOtelInterceptor", () => {
 					return true;
 				},
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest());
+			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			// Should have received attribute keys from base attributes
 			assert.ok(filteredKeys.length > 0);
@@ -517,9 +488,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				attributeFilter: (key) => key.startsWith("rpc."),
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -534,9 +505,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				serverAddress: "my-host.example.com",
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -545,9 +516,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				serverPort: 5000,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -561,9 +532,9 @@ describe("createOtelInterceptor", () => {
 					return true;
 				},
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest());
+			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(filteredKeys.includes("server.port"));
 		});
@@ -576,9 +547,9 @@ describe("createOtelInterceptor", () => {
 					return true;
 				},
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest());
+			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(!filteredKeys.includes("server.port"));
 		});
@@ -593,9 +564,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				recordMessages: true,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest({ stream: false }));
+			const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -604,9 +575,10 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				recordMessages: true,
 			});
-			const handler = interceptor(createMockNext({ stream: true, message: null }));
+			const next: any = async (_req: unknown) => ({ stream: true, message: null });
 
-			const response = await handler(createMockRequest({ stream: true }));
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ stream: true, message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -615,9 +587,9 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({
 				recordMessages: false,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -633,7 +605,7 @@ describe("createOtelInterceptor", () => {
 			const req = createMockRequest({
 				message: { toBinary: () => new Uint8Array(100) },
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			const response = await handler(req);
 
@@ -645,7 +617,7 @@ describe("createOtelInterceptor", () => {
 			const req = createMockRequest({
 				message: { someField: "value" },
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			const response = await handler(req);
 
@@ -655,7 +627,7 @@ describe("createOtelInterceptor", () => {
 		it("should handle null message", async () => {
 			const interceptor = createOtelInterceptor();
 			const req = createMockRequest({ message: null });
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			const response = await handler(req);
 
@@ -667,7 +639,7 @@ describe("createOtelInterceptor", () => {
 			const req = createMockRequest({
 				message: { toBinary: () => new Uint8Array(0) },
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
 			const response = await handler(req);
 
@@ -682,18 +654,18 @@ describe("createOtelInterceptor", () => {
 	describe("default options", () => {
 		it("should work with no options", async () => {
 			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
 
 		it("should work with empty options object", async () => {
 			const interceptor = createOtelInterceptor({});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -715,9 +687,9 @@ describe("createOtelInterceptor", () => {
 				serverPort: 3000,
 				recordMessages: true,
 			});
-			const handler = interceptor(createMockNext());
+			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest());
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(response);
 		});
@@ -732,9 +704,10 @@ describe("createOtelInterceptor", () => {
 				serverPort: 3000,
 				recordMessages: true,
 			});
-			const handler = interceptor(createMockNext(expectedResponse));
+			const next: any = async (_req: unknown) => expectedResponse;
 
-			const response = await handler(createMockRequest());
+			const handler = interceptor(next);
+			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			// When filter returns false, should still return the response
 			assert.strictEqual(response, expectedResponse);
@@ -754,7 +727,7 @@ describe("createOtelInterceptor", () => {
 			};
 			const handler = interceptor(next);
 
-			await handler(createMockRequest());
+			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
 			assert.ok(nextCalled, "next() should still be called when filter skips");
 		});

@@ -1,30 +1,10 @@
 /**
- * Shared test helpers for creating mock ConnectRPC requests.
+ * Shared test helpers for building chained ConnectRPC interceptor handlers.
  *
- * Provides factory functions for creating simple mock requests (without
- * proto descriptors) and building chained interceptor handlers.
+ * Generic mock factories (createMockRequest, createMockNext) have been
+ * migrated to `@connectum/testing`. This file retains only auth-specific
+ * composition utilities.
  */
-
-/**
- * Create a mock ConnectRPC request for testing interceptors.
- *
- * @param options - Optional overrides for service name, method name, and headers.
- * @returns A mock request object compatible with ConnectRPC interceptors.
- */
-export function createMockRequest(options?: { serviceName?: string; methodName?: string; headers?: Headers }) {
-    const serviceName = options?.serviceName ?? "test.v1.TestService";
-    const methodName = options?.methodName ?? "TestMethod";
-    const headers = options?.headers ?? new Headers();
-
-    return {
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        header: headers,
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: {},
-    } as any;
-}
 
 /**
  * Build a chained auth -> authz interceptor handler for integration tests.
@@ -37,6 +17,8 @@ export function createMockRequest(options?: { serviceName?: string; methodName?:
  * @param next - The final handler to call after both interceptors pass.
  * @returns A composed handler function.
  */
+// biome-ignore lint/suspicious/noExplicitAny: interceptor signatures use generic function types
 export function buildChainedHandler(authInterceptor: (next: any) => any, authzInterceptor: (next: any) => any, next: any) {
+    // biome-ignore lint/suspicious/noExplicitAny: bridging interceptor chain types
     return authInterceptor(authzInterceptor(next as any) as any);
 }

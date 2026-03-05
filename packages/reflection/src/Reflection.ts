@@ -13,6 +13,7 @@
 import { create } from "@bufbuild/protobuf";
 import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import type { ConnectRouter } from "@connectrpc/connect";
+// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { ProtocolContext, ProtocolRegistration } from "@connectum/core";
 import { registerServerReflectionFromFileDescriptorSet } from "@lambdalisue/connectrpc-grpcreflect/server";
 import { collectFileProtos } from "./utils.ts";

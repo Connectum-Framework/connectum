@@ -4,21 +4,17 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
 import { createErrorHandlerInterceptor } from "../../src/errorHandler.ts";
 
 describe("errorHandler interceptor", () => {
-    const mockReq = {
-        url: "http://localhost/test.Service/Method",
-        stream: false,
-        message: { field: "value" },
-        service: { typeName: "test.Service" },
-    } as any;
+    const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
     it("should pass through successful requests", async () => {
         const interceptor = createErrorHandlerInterceptor({ logErrors: false });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -39,8 +35,7 @@ describe("errorHandler interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Internal);
+                assertConnectError(err, Code.Internal);
                 return true;
             },
         );
@@ -49,17 +44,14 @@ describe("errorHandler interceptor", () => {
     it("should preserve ConnectError code from original error", async () => {
         const interceptor = createErrorHandlerInterceptor({ logErrors: false });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("not found", Code.NotFound);
-        });
+        const next = createMockNextError(Code.NotFound, "not found");
 
         const handler = interceptor(next as any);
 
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.NotFound);
+                assertConnectError(err, Code.NotFound);
                 return true;
             },
         );
@@ -79,8 +71,7 @@ describe("errorHandler interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.PermissionDenied);
+                assertConnectError(err, Code.PermissionDenied);
                 return true;
             },
         );
@@ -185,7 +176,7 @@ describe("errorHandler interceptor", () => {
         // Default: logErrors and includeStackTrace depend on NODE_ENV
         const interceptor = createErrorHandlerInterceptor();
 
-        const next = mock.fn(async () => ({ message: { result: "ok" } }));
+        const next = createMockNext({ message: { result: "ok" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -208,8 +199,7 @@ describe("errorHandler interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.Internal);
+                assertConnectError(err, Code.Internal);
                 return true;
             },
         );

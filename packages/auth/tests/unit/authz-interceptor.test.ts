@@ -8,26 +8,13 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { createAuthzInterceptor } from "../../src/authz-interceptor.ts";
 import { authContextStorage } from "../../src/context.ts";
 import type { AuthContext, AuthzRule } from "../../src/types.ts";
 import { AuthzEffect } from "../../src/types.ts";
 
-function createMockRequest(overrides: Record<string, unknown> = {}) {
-    return {
-        service: { typeName: "test.Service" },
-        method: { name: "Method" },
-        header: new Headers(),
-        url: "http://localhost/test.Service/Method",
-        stream: false,
-        message: {},
-        ...overrides,
-    } as any;
-}
-
-function createMockNext() {
-    return mock.fn(async (_req: any) => ({ message: {} })) as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
 const defaultContext: AuthContext = {
     subject: "user-1",
@@ -47,14 +34,12 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
-                    assert.ok(err.message.includes("default policy"));
+                    assertConnectError(err, Code.PermissionDenied, "default policy");
                     return true;
                 },
             );
@@ -70,7 +55,7 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -90,7 +75,7 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => authContextStorage.run(defaultContext, () => handler(req)),
@@ -120,7 +105,7 @@ describe("authz-interceptor", () => {
             });
             const next = createMockNext();
             const handler = interceptor(next);
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             // User has "admin" role -> should match (any-of)
             const adminContext: AuthContext = { ...defaultContext, roles: ["admin"] };
@@ -131,13 +116,12 @@ describe("authz-interceptor", () => {
             const viewerContext: AuthContext = { ...defaultContext, roles: ["viewer"] };
             const next2 = createMockNext();
             const handler2 = interceptor(next2);
-            const req2 = createMockRequest();
+            const req2 = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => authContextStorage.run(viewerContext, () => handler2(req2)),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -162,7 +146,7 @@ describe("authz-interceptor", () => {
             const fullContext: AuthContext = { ...defaultContext, scopes: ["read", "write", "delete"] };
             const next1 = createMockNext();
             const handler1 = interceptor(next1);
-            const req1 = createMockRequest();
+            const req1 = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await authContextStorage.run(fullContext, () => handler1(req1));
             assert.strictEqual(next1.mock.calls.length, 1);
@@ -171,13 +155,12 @@ describe("authz-interceptor", () => {
             const readOnlyContext: AuthContext = { ...defaultContext, scopes: ["read"] };
             const next2 = createMockNext();
             const handler2 = interceptor(next2);
-            const req2 = createMockRequest();
+            const req2 = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => authContextStorage.run(readOnlyContext, () => handler2(req2)),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );
@@ -192,7 +175,7 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             // No AuthContext set, but method is skipped so no error
             await handler(req);
@@ -215,7 +198,7 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await authContextStorage.run(defaultContext, () => handler(req));
 
@@ -237,14 +220,12 @@ describe("authz-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.ok(err.message.includes("Authentication required"));
+                    assertConnectError(err, Code.Unauthenticated, "Authentication required");
                     return true;
                 },
             );

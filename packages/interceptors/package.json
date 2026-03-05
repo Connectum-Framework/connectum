@@ -97,6 +97,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@connectum/testing": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

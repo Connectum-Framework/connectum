@@ -7,25 +7,14 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 
-/**
- * Create a mock ConnectRPC unary request.
- */
-function createMockRequest(headers?: Headers) {
-    return {
-        service: { typeName: "test.v1.TestService" },
-        method: { name: "TestMethod" },
-        header: headers ?? new Headers(),
-        url: "http://localhost/test.v1.TestService/TestMethod",
-        stream: false,
-        message: {},
-    } as any;
-}
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 describe("JWT Auth Interceptor — Integration", () => {
     describe("valid JWT verification", () => {
@@ -47,7 +36,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -77,7 +66,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -100,7 +89,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -124,7 +113,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", "Bearer invalid-token");
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -132,8 +121,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -146,7 +134,7 @@ describe("JWT Auth Interceptor — Integration", () => {
                 secret: TEST_JWT_SECRET,
             });
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -154,8 +142,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -179,7 +166,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -187,8 +174,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -208,7 +194,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -216,8 +202,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -240,7 +225,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -248,8 +233,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -270,7 +254,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -295,7 +279,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -303,8 +287,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -329,7 +312,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -358,7 +341,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -387,7 +370,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -416,7 +399,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -445,7 +428,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -479,7 +462,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {
@@ -505,7 +488,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             });
 
             // Request without any Authorization header
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -522,7 +505,7 @@ describe("JWT Auth Interceptor — Integration", () => {
                 skipMethods: ["test.v1.TestService/*"],
             });
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -538,7 +521,7 @@ describe("JWT Auth Interceptor — Integration", () => {
                 skipMethods: ["other.v1.OtherService/*"],
             });
 
-            const req = createMockRequest();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -546,8 +529,7 @@ describe("JWT Auth Interceptor — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -573,7 +555,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -614,7 +596,7 @@ describe("JWT Auth Interceptor — Integration", () => {
 
             const headers = new Headers();
             headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest(headers);
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             let capturedContext: ReturnType<typeof getAuthContext>;
             const next = mock.fn(async () => {

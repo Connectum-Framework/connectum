@@ -9,7 +9,8 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError } from "@connectum/testing";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import { getPublicMethods, resolveMethodAuth } from "../../src/proto/reader.ts";
@@ -233,8 +234,7 @@ describe("Proto Authz Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.PermissionDenied);
+                    assertConnectError(err, Code.PermissionDenied);
                     return true;
                 },
             );

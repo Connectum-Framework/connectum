@@ -15,10 +15,17 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { createMockRequest } from "@connectum/testing";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 import { estimateMessageSize, wrapAsyncIterable } from "../../src/shared.ts";
+
+// ---------------------------------------------------------------------------
+// Otel-specific default message (for size estimation tests)
+// ---------------------------------------------------------------------------
+
+const OTEL_REQUEST_MESSAGE = { toBinary: () => new Uint8Array(42) };
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -85,38 +92,6 @@ async function collectAll<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 		result.push(item);
 	}
 	return result;
-}
-
-/**
- * Creates a mock ConnectRPC request object.
- */
-function createMockRequest(overrides?: Partial<{
-	serviceName: string;
-	methodName: string;
-	stream: boolean;
-	message: unknown;
-	headers: Record<string, string>;
-}>): any {
-	const {
-		serviceName = "test.TestService",
-		methodName = "TestMethod",
-		stream = false,
-		message = { toBinary: () => new Uint8Array(42) },
-		headers = {},
-	} = overrides ?? {};
-
-	const headerObj = new Headers();
-	for (const [key, value] of Object.entries(headers)) {
-		headerObj.set(key, value);
-	}
-
-	return {
-		service: { typeName: serviceName },
-		method: { name: methodName },
-		stream,
-		message,
-		header: headerObj,
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +562,7 @@ describe("createOtelInterceptor streaming", () => {
 			message: mockAsyncIterable([resp1, resp2]),
 		});
 
-		const req = createMockRequest({ stream: false });
+		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
 		const handler = interceptor(next);
 		const response = await handler(req);
 
@@ -643,7 +618,7 @@ describe("createOtelInterceptor streaming", () => {
 			message: mockAsyncIterable([resp1, resp2, resp3]),
 		});
 
-		const req = createMockRequest({ stream: false });
+		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
 		const handler = interceptor(next);
 		const response = await handler(req);
 
@@ -827,7 +802,7 @@ describe("createOtelClientInterceptor streaming", () => {
 			message: mockAsyncIterable([resp1, resp2]),
 		});
 
-		const req = createMockRequest({ stream: false });
+		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
 		const handler = interceptor(next);
 		const response = await handler(req);
 
@@ -884,7 +859,7 @@ describe("createOtelClientInterceptor streaming", () => {
 			message: mockAsyncIterable([resp1, resp2]),
 		});
 
-		const req = createMockRequest({ stream: false });
+		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
 		const handler = interceptor(next);
 		const response = await handler(req);
 

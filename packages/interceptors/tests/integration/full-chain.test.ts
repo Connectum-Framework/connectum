@@ -9,7 +9,8 @@
 
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import { Code, ConnectError } from '@connectrpc/connect';
+import { Code } from '@connectrpc/connect';
+import { assertConnectError, createMockNextError } from '@connectum/testing';
 import { createBulkheadInterceptor } from '../../src/bulkhead.ts';
 import { createCircuitBreakerInterceptor } from '../../src/circuit-breaker.ts';
 import { createLoggerInterceptor } from '../../src/logger.ts';
@@ -123,9 +124,7 @@ describe('Full Interceptor Chain Integration', () => {
         } as any;
 
         // Service always fails with ResourceExhausted (retryable error)
-        const next = mock.fn(async () => {
-            throw new ConnectError('Service error', Code.ResourceExhausted);
-        });
+        const next = createMockNextError(Code.ResourceExhausted, 'Service error');
 
         // Chain: logger -> retry -> circuit-breaker -> next
         const handler = loggerInterceptor(
@@ -138,8 +137,7 @@ describe('Full Interceptor Chain Integration', () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
+                assertConnectError(err, Code.ResourceExhausted);
                 return true;
             },
         );
@@ -181,9 +179,7 @@ describe('Full Interceptor Chain Integration', () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert(err instanceof ConnectError);
-                // Timeout should result in DeadlineExceeded
-                assert.strictEqual((err as ConnectError).code, Code.DeadlineExceeded);
+                assertConnectError(err, Code.DeadlineExceeded);
                 return true;
             },
         );
@@ -240,8 +236,7 @@ describe('Full Interceptor Chain Integration', () => {
 
         // Check that rejected request has correct error
         const rejectedError = (rejected[0] as PromiseRejectedResult).reason;
-        assert(rejectedError instanceof ConnectError);
-        assert.strictEqual(rejectedError.code, Code.ResourceExhausted);
+        assertConnectError(rejectedError, Code.ResourceExhausted);
 
         // Max concurrent calls should not exceed capacity
         assert(maxConcurrentCalls <= 2, `Max concurrent calls ${maxConcurrentCalls} exceeded capacity 2`);

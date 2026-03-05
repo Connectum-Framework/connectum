@@ -5,21 +5,8 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import type { Interceptor } from "@connectrpc/connect";
+import { createMockNext, createMockRequest } from "@connectum/testing";
 import { createMethodFilterInterceptor } from "../../src/method-filter.ts";
-
-/**
- * Helper: create a mock request with the given service and method names.
- */
-function createMockReq(serviceName: string, methodName: string, extra: Record<string, unknown> = {}) {
-    return {
-        url: `http://localhost/${serviceName}/${methodName}`,
-        stream: false,
-        message: { field: "value" },
-        service: { typeName: serviceName },
-        method: { name: methodName },
-        ...extra,
-    } as any;
-}
 
 /**
  * Helper: create a tracking interceptor that records calls.
@@ -39,8 +26,8 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [createTrackingInterceptor("global", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -55,8 +42,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/*": [createTrackingInterceptor("service", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -71,8 +58,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/GetUser": [createTrackingInterceptor("exact", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -87,8 +74,8 @@ describe("createMethodFilterInterceptor", () => {
                 "admin.v1.AdminService/*": [createTrackingInterceptor("admin", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -103,8 +90,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/DeleteUser": [createTrackingInterceptor("delete", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -123,8 +110,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/GetUser": [createTrackingInterceptor("exact", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -142,8 +129,8 @@ describe("createMethodFilterInterceptor", () => {
                 ],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -158,8 +145,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/GetUser": [createTrackingInterceptor("exact", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             await handler(mockReq);
@@ -175,8 +162,8 @@ describe("createMethodFilterInterceptor", () => {
                 "admin.v1.AdminService/*": [createTrackingInterceptor("admin", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             const result = await handler(mockReq);
@@ -189,8 +176,8 @@ describe("createMethodFilterInterceptor", () => {
         it("should pass through with empty MethodFilterMap", async () => {
             const interceptor = createMethodFilterInterceptor({});
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             const result = await handler(mockReq);
@@ -204,8 +191,8 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             const result = await handler(mockReq);
@@ -225,8 +212,8 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [errorInterceptor],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
 
@@ -243,7 +230,7 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [createTrackingInterceptor("global", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
             const next = mock.fn(async () => {
                 throw new Error("handler error");
             });
@@ -297,7 +284,7 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [addHeader],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
             const next = mock.fn(async (req: any) => ({
                 message: { header: req.header },
             }));
@@ -318,8 +305,8 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [addResponseHeader],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "GetUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
 
             const handler = interceptor(next as any);
             const result = (await handler(mockReq)) as any;
@@ -338,16 +325,16 @@ describe("createMethodFilterInterceptor", () => {
             });
 
             // User service request
-            const userReq = createMockReq("user.v1.UserService", "GetUser");
-            const next1 = mock.fn(async () => ({ message: { result: "ok" } }));
+            const userReq = createMockRequest({ service: "user.v1.UserService", method: "GetUser", message: { field: "value" } });
+            const next1 = createMockNext({ message: { result: "ok" } });
             await interceptor(next1 as any)(userReq);
 
             assert.deepStrictEqual(calls, ["user"]);
 
             // Admin service request
             calls.length = 0;
-            const adminReq = createMockReq("admin.v1.AdminService", "DeleteUser");
-            const next2 = mock.fn(async () => ({ message: { result: "ok" } }));
+            const adminReq = createMockRequest({ service: "admin.v1.AdminService", method: "DeleteUser", message: { field: "value" } });
+            const next2 = createMockNext({ message: { result: "ok" } });
             await interceptor(next2 as any)(adminReq);
 
             assert.deepStrictEqual(calls, ["admin"]);
@@ -360,8 +347,8 @@ describe("createMethodFilterInterceptor", () => {
                 "user.v1.UserService/DeleteUser": [createTrackingInterceptor("delete", calls)],
             });
 
-            const mockReq = createMockReq("user.v1.UserService", "DeleteUser");
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const mockReq = createMockRequest({ service: "user.v1.UserService", method: "DeleteUser", message: { field: "value" } });
+            const next = createMockNext({ message: { result: "ok" } });
             await interceptor(next as any)(mockReq);
 
             assert.deepStrictEqual(calls, ["delete"]);
@@ -380,12 +367,12 @@ describe("createMethodFilterInterceptor", () => {
                 "*": [counting],
             });
 
-            const next = mock.fn(async () => ({ message: { result: "ok" } }));
+            const next = createMockNext({ message: { result: "ok" } });
             const handler = interceptor(next as any);
 
-            const req1 = createMockReq("svc.A", "M1");
-            const req2 = createMockReq("svc.B", "M2");
-            const req3 = createMockReq("svc.A", "M1");
+            const req1 = createMockRequest({ service: "svc.A", method: "M1", message: { field: "value" } });
+            const req2 = createMockRequest({ service: "svc.B", method: "M2", message: { field: "value" } });
+            const req3 = createMockRequest({ service: "svc.A", method: "M1", message: { field: "value" } });
 
             await handler(req1);
             await handler(req2);

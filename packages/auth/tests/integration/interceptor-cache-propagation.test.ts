@@ -9,13 +9,13 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import { createMockRequest } from "@connectum/testing";
 import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { LruCache } from "../../src/cache.ts";
 import { parseAuthHeaders, setAuthHeaders } from "../../src/headers.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
-import { createMockRequest } from "../helpers/mock-request.ts";
 
 describe("Interceptor Cache & Propagation — Integration", () => {
     describe("cache via createAuthInterceptor", () => {

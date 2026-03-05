@@ -9,11 +9,13 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { createMockRequest } from "../helpers/mock-request.ts";
+
+const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
 /** Create a gateway auth interceptor with default header mapping. */
 function createGateway(overrides?: Record<string, unknown>) {
@@ -48,7 +50,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "10.0.0.5");
             headers.set("x-user-id", "cidr-user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -69,7 +71,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "192.168.1.1");
             headers.set("x-user-id", "outside-user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -77,8 +79,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -96,7 +97,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "192.168.55.123");
             headers.set("x-user-id", "any-ip-user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -117,7 +118,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "10.0.0.1");
             headers.set("x-user-id", "user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -125,8 +126,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -144,7 +144,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "10.0.0.1");
             headers.set("x-user-id", "user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -152,8 +152,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -171,7 +170,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "10.0.0"); // only 3 octets
             headers.set("x-user-id", "user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -179,8 +178,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -198,7 +196,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-forwarded-for", "10.0.0.256");
             headers.set("x-user-id", "user");
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -206,8 +204,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated);
                     return true;
                 },
             );
@@ -223,7 +220,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-roles", "admin, editor, viewer");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -245,7 +242,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-scopes", "read write admin");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -268,7 +265,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-claims", JSON.stringify(claims));
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -290,7 +287,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-claims", JSON.stringify({ data: "x".repeat(9000) }));
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -312,7 +309,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-claims", "not-json{");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -334,7 +331,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-claims", "[1,2,3]");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -356,7 +353,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             const headers = new Headers();
             headers.set("x-gateway-secret", "valid-secret");
             // No x-user-id
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -364,9 +361,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assert.ok(err instanceof ConnectError);
-                    assert.strictEqual(err.code, Code.Unauthenticated);
-                    assert.match(err.message, /Missing subject/);
+                    assertConnectError(err, Code.Unauthenticated, /Missing subject/);
                     return true;
                 },
             );
@@ -380,7 +375,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-name", "John Doe");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -402,7 +397,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             // No x-user-type header
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -424,7 +419,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-type", "oauth");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -452,7 +447,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-gateway-secret", "valid-secret");
             headers.set("x-user-id", "user-1");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();
@@ -485,7 +480,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-gateway-secret", "valid-secret");
             headers.set("x-user-id", "spoofed-user");
             headers.set("x-user-roles", '["admin"]');
-            const req = createMockRequest({ methodName: "Health", headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "Health", headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -514,7 +509,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-internal-trace", "trace-123");
             headers.set("x-custom-header", "custom-value");
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
@@ -573,7 +568,7 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-id", "user-1");
             headers.set("x-user-roles", '["admin","user"]');
 
-            const req = createMockRequest({ headers });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
             let captured: AuthContext | undefined;
             const next = mock.fn(async () => {
                 captured = getAuthContext();

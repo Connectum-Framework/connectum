@@ -4,21 +4,17 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockNextError, createMockNextSlow, createMockRequest } from "@connectum/testing";
 import { createBulkheadInterceptor } from "../../src/bulkhead.ts";
 
 describe("bulkhead interceptor", () => {
     it("should pass request when under capacity", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 10 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -38,12 +34,7 @@ describe("bulkhead interceptor", () => {
             return { message: { result: "success" } };
         });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -58,17 +49,9 @@ describe("bulkhead interceptor", () => {
     it("should reject request when queue full", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 1 });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(200);
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -80,24 +63,15 @@ describe("bulkhead interceptor", () => {
         const rejected = results.filter((r) => r.status === "rejected");
         assert.strictEqual(rejected.length, 1);
         const err = (rejected[0] as PromiseRejectedResult).reason;
-        assert(err instanceof ConnectError);
-        assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
+        assertConnectError(err, Code.ResourceExhausted);
     });
 
     it("should convert BulkheadRejectedError to ResourceExhausted", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(100);
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -109,22 +83,15 @@ describe("bulkhead interceptor", () => {
         const rejected = results.filter((r) => r.status === "rejected");
         assert.strictEqual(rejected.length, 1);
         const err = (rejected[0] as PromiseRejectedResult).reason;
-        assert(err instanceof ConnectError);
-        assert.strictEqual((err as ConnectError).code, Code.ResourceExhausted);
-        assert((err as ConnectError).message.includes("Bulkhead capacity exceeded"));
+        assertConnectError(err, Code.ResourceExhausted, "Bulkhead capacity exceeded");
     });
 
     it("should release slot on success", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => ({ message: { result: "success" } }));
+        const next = createMockNext();
 
         const handler = interceptor(next as any);
 
@@ -140,16 +107,9 @@ describe("bulkhead interceptor", () => {
     it("should release slot on failure", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = mock.fn(async () => {
-            throw new ConnectError("Service error", Code.Internal);
-        });
+        const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
@@ -160,7 +120,7 @@ describe("bulkhead interceptor", () => {
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assert.strictEqual((err as ConnectError).code, Code.Internal); // Service error, not ResourceExhausted
+                assertConnectError(err, Code.Internal); // Service error, not ResourceExhausted
                 return true;
             },
         );
@@ -169,14 +129,9 @@ describe("bulkhead interceptor", () => {
     it("should skip streaming when skipStreaming=true", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, skipStreaming: true });
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: true, // Streaming request
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = mock.fn(async () => ({ message: { result: "streaming" } }));
+        const next = createMockNext({ message: { result: "streaming" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
@@ -188,17 +143,9 @@ describe("bulkhead interceptor", () => {
     it("should handle custom capacity", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 5, queueSize: 0 });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(50);
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -211,17 +158,9 @@ describe("bulkhead interceptor", () => {
     it("should handle custom queueSize", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 3 });
 
-        const next = mock.fn(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            return { message: { result: "success" } };
-        });
+        const next = createMockNextSlow(100);
 
-        const mockReq = {
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any;
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
@@ -242,12 +181,9 @@ describe("bulkhead interceptor", () => {
         });
 
         const mockReq1 = {
+            ...createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }),
             id: 1,
-            url: "http://localhost/test.Service/Method",
-            stream: false,
-            message: { field: "value" },
-            service: { typeName: "test.Service" },
-        } as any & { id: number };
+        } as any;
 
         const mockReq2 = { ...mockReq1, id: 2 };
         const mockReq3 = { ...mockReq1, id: 3 };

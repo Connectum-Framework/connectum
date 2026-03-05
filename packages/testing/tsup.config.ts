@@ -8,4 +8,12 @@ export default defineConfig({
     clean: true,
     minify: false,
     splitting: false,
+    async onSuccess() {
+        // Restore `node:` prefix for `node:test` (esbuild strips it)
+        const fs = await import("node:fs");
+        const distUrl = new URL("./dist/index.js", import.meta.url);
+        let code = fs.readFileSync(distUrl, "utf-8");
+        code = code.replace(/from "test"/g, 'from "node:test"');
+        fs.writeFileSync(distUrl, code);
+    },
 });

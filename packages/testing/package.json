@@ -2,7 +2,7 @@
   "name": "@connectum/testing",
   "version": "1.0.0-rc.5",
   "description": "Testing utilities for Connectum",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -48,8 +48,10 @@
     "access": "public"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
     "@connectum/core": "workspace:^",
-    "@connectrpc/connect": "catalog:"
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
