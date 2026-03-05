@@ -13,6 +13,7 @@
  * Plus context propagation via AsyncLocalStorage and request headers.
  *
  * @module @connectum/auth
+ * @mergeModuleWith <project>
  */
 
 // Interceptor factories

@@ -10,6 +10,7 @@
  * - TLS: Configuration utilities
  *
  * @module @connectum/core
+ * @mergeModuleWith <project>
  */
 
 // =============================================================================

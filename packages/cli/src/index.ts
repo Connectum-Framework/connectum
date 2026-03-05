@@ -7,6 +7,7 @@
  * - connectum proto sync  -- Sync proto types from a running server via reflection
  *
  * @module @connectum/cli
+ * @mergeModuleWith <project>
  */
 
 import { defineCommand, runMain } from "citty";

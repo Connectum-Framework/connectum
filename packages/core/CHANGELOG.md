@@ -63,28 +63,28 @@
 
 ### Minor Changes
 
-- [#8](https://github.com/Connectum-Framework/connectum/pull/8) [`76eb476`](https://github.com/Connectum-Framework/connectum/commit/76eb476298b2bcbbf5cfbd8de682f9dfec9a248e) Thanks [@intech](https://github.com/intech)! - Обновлены production-зависимости:
+- [#8](https://github.com/Connectum-Framework/connectum/pull/8) [`76eb476`](https://github.com/Connectum-Framework/connectum/commit/76eb476298b2bcbbf5cfbd8de682f9dfec9a248e) Thanks [@intech](https://github.com/intech)! - Updated production dependencies:
 
   **@connectum/otel** (minor):
 
-  - OpenTelemetry SDK обновлён до v2 (@opentelemetry/resources ^2.5.1, @opentelemetry/sdk-trace-node ^2.5.1, @opentelemetry/sdk-metrics ^2.5.1, experimental packages ^0.212.0)
-  - Resource class заменён на resourceFromAttributes()
-  - LoggerProvider: processors передаются через constructor
-  - MeterProvider: добавлен resource parameter
+  - OpenTelemetry SDK updated to v2 (@opentelemetry/resources ^2.5.1, @opentelemetry/sdk-trace-node ^2.5.1, @opentelemetry/sdk-metrics ^2.5.1, experimental packages ^0.212.0)
+  - Resource class replaced with resourceFromAttributes()
+  - LoggerProvider: processors are now passed via the constructor
+  - MeterProvider: added resource parameter
 
   **@connectum/core** (minor):
 
-  - Zod обновлён с v3 до v4 (^4.3.6)
-  - Изменён тип возврата safeParseEnvConfig (убрана явная аннотация z.SafeParseReturnType)
+  - Zod updated from v3 to v4 (^4.3.6)
+  - Changed safeParseEnvConfig return type (removed explicit z.SafeParseReturnType annotation)
 
   **@connectum/cli** (patch):
 
-  - citty обновлён до ^0.2.1
-  - Исправлена типизация ProtoSyncOptions.template для exactOptionalPropertyTypes
+  - citty updated to ^0.2.1
+  - Fixed ProtoSyncOptions.template typing for exactOptionalPropertyTypes
 
-  Также обновлены:
+  Also updated:
 
-  - @biomejs/biome: ^1.9.4 → ^2.3.15 (конфиг автомигрирован)
+  - @biomejs/biome: ^1.9.4 → ^2.3.15 (config auto-migrated)
 
 ## 1.0.0-beta.2
 
