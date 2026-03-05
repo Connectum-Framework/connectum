@@ -1,5 +1,22 @@
 # @connectum/testing
 
+## 1.0.0-rc.6
+
+### Minor Changes
+
+- [#41](https://github.com/Connectum-Framework/connectum/pull/41) [`fccee26`](https://github.com/Connectum-Framework/connectum/commit/fccee264ec7ed685348a7590057ec8316f21ef1a) Thanks [@intech](https://github.com/intech)! - Implement @connectum/testing utilities package with 13 factory functions for ConnectRPC testing.
+
+  **Phase 1 (P0)**: `createMockRequest`, `createMockNext`, `createMockNextError`, `createMockNextSlow`, `assertConnectError`
+  **Phase 2 (P1)**: `createMockDescMessage`, `createMockDescField`, `createMockDescMethod`, `createMockStream`, `createFakeService`, `createFakeMethod`
+  **Phase 3 (P2)**: `createTestServer`, `withTestServer`
+
+  Eliminates 135+ test boilerplate duplicates across interceptors, auth, otel, and core packages. All migrated packages now use shared testing utilities instead of inline mock objects.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.6
+
 ## 1.0.0-rc.5
 
 ### Patch Changes

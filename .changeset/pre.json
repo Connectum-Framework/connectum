@@ -22,6 +22,9 @@
     "otel-streaming",
     "publickey-priority",
     "security-improvements",
-    "transport-http1-mode"
+    "security-overrides",
+    "testing-utilities-package",
+    "transport-http1-mode",
+    "typedoc-api-reference"
   ]
 }
