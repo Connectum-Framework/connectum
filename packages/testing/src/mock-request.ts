@@ -30,6 +30,7 @@ const DEFAULT_METHOD = "TestMethod";
  * // req.url             === "http://localhost/acme.UserService/GetUser"
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: mock object matches ConnectRPC UnaryRequest shape
 export function createMockRequest(options?: MockRequestOptions): any {
     const serviceName = options?.service ?? DEFAULT_SERVICE;
     const methodName = options?.method ?? DEFAULT_METHOD;

@@ -85,6 +85,7 @@ async function* logResStream<T>(schema: DescMessage, stream: AsyncIterable<T>, m
  */
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
     const { level = "debug", skipHealthCheck = true } = options;
+    // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
     const logger = options.logger ?? console[level];
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {

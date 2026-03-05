@@ -97,7 +97,7 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     // Uses isFieldSet() to distinguish "not set" from "set to false" in proto2 optional bool.
     const methodPublicSet = mtdAuth !== undefined && isFieldSet(mtdAuth, MethodAuthSchema.field.public);
     const servicePublicSet = svcAuth !== undefined && isFieldSet(svcAuth, ServiceAuthSchema.field.public);
-    const isPublic = methodPublicSet ? mtdAuth!.public === true : servicePublicSet ? svcAuth!.public === true : false;
+    const isPublic = methodPublicSet ? mtdAuth?.public === true : servicePublicSet ? svcAuth?.public === true : false;
 
     // Resolve `requires` field.
     // Method-level requires overrides service-level default_requires.

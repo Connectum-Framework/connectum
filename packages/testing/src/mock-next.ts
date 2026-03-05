@@ -32,13 +32,14 @@ import type { MockNextOptions } from "./types.ts";
  * // next.mock.callCount() => 1
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNext(options?: MockNextOptions): any {
     const response = {
         stream: options?.stream ?? false,
         message: options?.message ?? { result: "success" },
     };
 
-    return mock.fn(async (_req: any) => response);
+    return mock.fn(async (_req: unknown) => response);
 }
 
 /**
@@ -62,8 +63,9 @@ export function createMockNext(options?: MockNextOptions): any {
  * });
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextError(code: Code, message?: string): any {
-    return mock.fn(async (_req: any) => {
+    return mock.fn(async (_req: unknown) => {
         throw new ConnectError(message ?? "Mock error", code);
     });
 }
@@ -86,8 +88,9 @@ export function createMockNextError(code: Code, message?: string): any {
  * // res.message => { result: "success" }
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextSlow(delay: number, options?: MockNextOptions): any {
-    return mock.fn(async (_req: any) => {
+    return mock.fn(async (_req: unknown) => {
         await setTimeout(delay);
         return {
             stream: options?.stream ?? false,

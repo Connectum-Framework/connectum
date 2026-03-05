@@ -8,6 +8,7 @@
  */
 
 import { createGrpcTransport } from "@connectrpc/connect-node";
+// biome-ignore lint/correctness/useImportExtensions: bare package specifier, not a relative import
 import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
 
@@ -31,9 +32,12 @@ import type { CreateTestServerOptions, TestServer } from "./types.ts";
  */
 export async function createTestServer(options: CreateTestServerOptions): Promise<TestServer> {
     const server = createServer({
+        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
         services: options.services as any[],
         port: options.port ?? 0,
+        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
         protocols: (options.protocols ?? []) as any[],
+        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
         interceptors: (options.interceptors ?? []) as any[],
         allowHTTP1: false,
     });
