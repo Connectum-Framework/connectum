@@ -44,14 +44,25 @@ function toDeliverPolicy(policy: "new" | "all" | "last" | undefined): DeliverPol
 }
 
 /**
+ * Sanitize a string for use as a NATS JetStream durable consumer name.
+ *
+ * Durable names only allow `[a-zA-Z0-9_-]`. Any other characters
+ * (dots, wildcards, special chars from user input) are replaced with `_`.
+ */
+function sanitizeDurableName(name: string): string {
+    return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/**
  * Derive a deterministic consumer name from the group and pattern.
  *
  * NATS durable consumer names must be alphanumeric plus `-` and `_`.
- * Dots, `*`, and `>` in the pattern are replaced with safe characters.
+ * Both group and pattern are sanitized to ensure valid durable names.
  */
 function consumerName(group: string, pattern: string): string {
-    const safe = pattern.replace(/\./g, "-").replace(/\*/g, "_star_").replace(/>/g, "_gt_");
-    return `${group}--${safe}`;
+    const safeGroup = sanitizeDurableName(group);
+    const safePattern = sanitizeDurableName(pattern);
+    return `${safeGroup}--${safePattern}`;
 }
 
 /**
@@ -94,11 +105,18 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             // Ensure the JetStream stream exists.
             try {
                 await jsm.streams.info(streamName);
-            } catch {
-                await jsm.streams.add({
-                    name: streamName,
-                    subjects: [`${streamName}.>`],
-                });
+            } catch (err: unknown) {
+                // Only create the stream when it does not exist (JetStream API error 10059 / HTTP 404).
+                // Any other error (permissions, connectivity) must propagate.
+                const apiErrCode = err && typeof err === "object" && "api_error" in err ? (err as { api_error: { err_code?: number } }).api_error?.err_code : undefined;
+                if (apiErrCode === 10059) {
+                    await jsm.streams.add({
+                        name: streamName,
+                        subjects: [`${streamName}.>`],
+                    });
+                } else {
+                    throw err;
+                }
             }
         },
 
@@ -173,7 +191,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
                 // Start the consumption loop in the background.
                 // The loop exits when messages.close() is called.
-                consumeLoop(messages, handler, pattern).catch((err) => {
+                consumeLoop(messages, handler, pattern, streamName).catch((err) => {
                     console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
                 });
             }
@@ -242,11 +260,18 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
  * The EventBus layer handles auto-ack fallback if the handler
  * does not explicitly call ack() or nack().
  */
-async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, _pattern: string): Promise<void> {
+async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, _pattern: string, streamName: string): Promise<void> {
+    // The stream subject prefix to strip from delivered subjects.
+    // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
+    const subjectPrefix = `${streamName}.`;
+
     for await (const msg of messages) {
+        // Strip the stream prefix so eventType matches what was originally published.
+        const eventType = msg.subject.startsWith(subjectPrefix) ? msg.subject.slice(subjectPrefix.length) : msg.subject;
+
         const event: RawEvent = {
             eventId: msg.headers?.get("event-id") ?? randomUUID(),
-            eventType: msg.subject,
+            eventType,
             payload: msg.data,
             publishedAt: new Date(msg.info.timestampNanos / MS_TO_NS),
             attempt: msg.info.deliveryCount,

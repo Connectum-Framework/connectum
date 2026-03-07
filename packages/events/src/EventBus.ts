@@ -45,7 +45,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     const { adapter, routes = [], group, middleware: mwConfig } = options;
     const subscriptions: EventSubscription[] = [];
     let started = false;
-    let shutdownSignal: AbortSignal | undefined = options.signal;
+    const defaultSignal = options.signal;
+    let shutdownSignal: AbortSignal | undefined;
 
     // Build routes
     const router = new EventRouterImpl();
@@ -78,68 +79,76 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             }
 
             // Accept shutdown signal from server integration (C-2)
-            if (startOptions?.signal) {
-                shutdownSignal = startOptions.signal;
-            }
+            shutdownSignal = startOptions?.signal ?? defaultSignal;
 
             await adapter.connect();
-            started = true;
 
-            // Build topic → handler map and compose middleware per topic
-            const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
+            try {
+                // Build topic → handler map and compose middleware per topic
+                const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
 
-            for (const entry of router.entries) {
-                const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
-                    const message = fromBinary(entry.method.input, rawEvent.payload);
-                    await entry.handler(message, ctx);
-                });
-                topicHandlerMap.set(entry.topic, composedHandler);
-            }
+                for (const entry of router.entries) {
+                    const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
+                        const message = fromBinary(entry.method.input, rawEvent.payload);
+                        await entry.handler(message, ctx);
+                    });
+                    topicHandlerMap.set(entry.topic, composedHandler);
+                }
 
-            // Single subscribe call with all topics — prevents Kafka consumer group conflicts
-            if (topicHandlerMap.size > 0) {
-                const allTopics = [...topicHandlerMap.keys()];
+                // Single subscribe call with all topics — prevents Kafka consumer group conflicts
+                if (topicHandlerMap.size > 0) {
+                    const allTopics = [...topicHandlerMap.keys()];
 
-                const sub = await adapter.subscribe(
-                    allTopics,
-                    async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
-                        const handler = topicHandlerMap.get(rawEvent.eventType);
-                        if (!handler) {
-                            await ack();
-                            return;
-                        }
-
-                        // Compose per-event signal: timeout + optional server shutdown (C-2)
-                        const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
-
-                        // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
-                        let settled = false;
-                        const ctx = createEventContext({
-                            raw: rawEvent,
-                            signal: eventSignal,
-                            onAck: async () => {
-                                settled = true;
+                    const sub = await adapter.subscribe(
+                        allTopics,
+                        async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
+                            const handler = topicHandlerMap.get(rawEvent.eventType);
+                            if (!handler) {
                                 await ack();
-                            },
-                            onNack: async (requeue) => {
-                                settled = true;
-                                await nack(requeue);
-                            },
-                        });
-
-                        try {
-                            await handler(rawEvent, ctx);
-                        } finally {
-                            // Auto-ack fallback for backward compatibility (C-1)
-                            if (!settled) {
-                                await ack();
+                                return;
                             }
-                        }
-                    },
-                    group !== undefined ? { group } : {},
-                );
 
-                subscriptions.push(sub);
+                            // Compose per-event signal: timeout + optional server shutdown (C-2)
+                            const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
+
+                            // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
+                            let settled = false;
+                            const ctx = createEventContext({
+                                raw: rawEvent,
+                                signal: eventSignal,
+                                onAck: async () => {
+                                    settled = true;
+                                    await ack();
+                                },
+                                onNack: async (requeue) => {
+                                    settled = true;
+                                    await nack(requeue);
+                                },
+                            });
+
+                            let completed = false;
+                            try {
+                                await handler(rawEvent, ctx);
+                                completed = true;
+                            } finally {
+                                // Auto-ack fallback for backward compatibility (C-1)
+                                if (!settled && completed) {
+                                    await ack();
+                                }
+                            }
+                        },
+                        group !== undefined ? { group } : {},
+                    );
+
+                    subscriptions.push(sub);
+                }
+
+                started = true;
+            } catch (error) {
+                await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
+                subscriptions.length = 0;
+                await adapter.disconnect();
+                throw error;
             }
         },
 
@@ -154,6 +163,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
             await adapter.disconnect();
             started = false;
+            shutdownSignal = undefined;
         },
 
         async publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, publishOptions?: PublishOptions): Promise<void> {

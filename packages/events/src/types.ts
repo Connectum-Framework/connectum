@@ -261,7 +261,7 @@ export interface EventBusOptions {
  */
 export interface EventBus {
     /** Start the event bus: connect adapter, set up subscriptions */
-    start(): Promise<void>;
+    start(options?: { signal?: AbortSignal }): Promise<void>;
     /** Stop the event bus: drain subscriptions, disconnect adapter */
     stop(): Promise<void>;
     /** Publish a typed event */

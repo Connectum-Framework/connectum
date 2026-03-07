@@ -68,4 +68,41 @@ describe("composeMiddleware", () => {
         await handler(makeRawEvent(), makeCtx());
         assert.equal(handlerCalled, false);
     });
+
+    it("throws when next() is called multiple times", async () => {
+        const badMiddleware: EventMiddleware = async (_e, _c, next) => {
+            await next();
+            await next(); // Should throw
+        };
+
+        const handler = composeMiddleware([badMiddleware], async () => {});
+        await assert.rejects(() => handler(makeRawEvent(), makeCtx()), {
+            message: /next\(\) called multiple times/,
+        });
+    });
+
+    it("error in handler propagates through middleware", async () => {
+        const mw: EventMiddleware = async (_e, _c, next) => {
+            await next();
+        };
+
+        const handler = composeMiddleware([mw], async () => {
+            throw new Error("handler error");
+        });
+
+        await assert.rejects(() => handler(makeRawEvent(), makeCtx()), {
+            message: /handler error/,
+        });
+    });
+
+    it("middleware error propagates without swallowing", async () => {
+        const mw: EventMiddleware = async (_e, _c, _next) => {
+            throw new Error("middleware error");
+        };
+
+        const handler = composeMiddleware([mw], async () => {});
+        await assert.rejects(() => handler(makeRawEvent(), makeCtx()), {
+            message: /middleware error/,
+        });
+    });
 });

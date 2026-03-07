@@ -33,7 +33,7 @@ export function matchPattern(pattern: string, topic: string): boolean {
 
         // ">" matches one or more remaining segments
         if (p === ">") {
-            return i < topicParts.length;
+            return i === patternParts.length - 1 && i < topicParts.length;
         }
 
         // No more topic segments to match

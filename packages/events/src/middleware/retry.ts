@@ -7,7 +7,6 @@
  * @module middleware/retry
  */
 
-import { setTimeout } from "node:timers/promises";
 import type { EventMiddleware, RetryOptions } from "../types.ts";
 
 const DEFAULT_MAX_RETRIES = 3;
@@ -53,11 +52,16 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
     const multiplier = options?.multiplier ?? DEFAULT_MULTIPLIER;
     const retryableErrors = options?.retryableErrors;
 
-    return async (_event, _ctx, next) => {
+    return async (event, ctx, next) => {
         let lastError: unknown;
+        const baseAttempt = event.attempt;
 
         for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
             try {
+                // Propagate attempt number to inner middleware/handler
+                if (attempt > 1) {
+                    (event as { attempt: number }).attempt = baseAttempt + attempt - 1;
+                }
                 await next();
                 return;
             } catch (error) {
@@ -73,9 +77,26 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
                     throw error;
                 }
 
-                // Wait before retry
+                // Honor ctx.signal -- abort retries if signal is aborted
+                if (ctx.signal.aborted) {
+                    throw lastError;
+                }
+
+                // Wait before retry with abort-aware sleep
                 const delay = calculateDelay({ backoff, initialDelay, maxDelay, multiplier }, attempt);
-                await setTimeout(delay);
+                await new Promise<void>((resolve, reject) => {
+                    const timer = globalThis.setTimeout(resolve, delay);
+                    const onAbort = () => {
+                        globalThis.clearTimeout(timer);
+                        reject(ctx.signal.reason);
+                    };
+                    if (ctx.signal.aborted) {
+                        globalThis.clearTimeout(timer);
+                        reject(ctx.signal.reason);
+                        return;
+                    }
+                    ctx.signal.addEventListener("abort", onAbort, { once: true });
+                });
             }
         }
 

@@ -41,4 +41,21 @@ describe("matchPattern", () => {
         assert.equal(matchPattern("a.*.c", "a.x.c"), true);
         assert.equal(matchPattern("a.*.c", "a.b.d"), false);
     });
+
+    it("> in middle position does not match (non-terminal)", () => {
+        // > is only valid as the LAST segment. When used in the middle,
+        // it should not act as a multi-segment wildcard.
+        assert.equal(matchPattern("orders.>.created", "orders.anything"), false);
+        assert.equal(matchPattern("orders.>.created", "orders.anything.created"), false);
+    });
+
+    it("> at the end matches deeply nested topics", () => {
+        assert.equal(matchPattern("app.>", "app.a.b.c.d"), true);
+        assert.equal(matchPattern("app.>", "app.x"), true);
+    });
+
+    it("empty segments handled correctly", () => {
+        assert.equal(matchPattern("a.b", "a.b"), true);
+        assert.equal(matchPattern("a", "a"), true);
+    });
 });

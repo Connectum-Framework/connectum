@@ -35,6 +35,16 @@ const DEFAULT_COUNT = 10;
 const ERROR_RETRY_DELAY_MS = 1000;
 
 /**
+ * How often (in loop iterations) to attempt XAUTOCLAIM for stale pending entries.
+ */
+const PENDING_RECLAIM_INTERVAL = 5;
+
+/**
+ * Minimum idle time in milliseconds before a pending entry is reclaimed via XAUTOCLAIM.
+ */
+const PENDING_IDLE_MS = 30_000;
+
+/**
  * Create a Redis Streams adapter for the Connectum event bus.
  *
  * The adapter uses Redis Streams with consumer groups for durable,
@@ -57,6 +67,9 @@ const ERROR_RETRY_DELAY_MS = 1000;
  */
 export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
     let redis: Redis | null = null;
+
+    /** Blocking reader connections created by subscribe(), tracked for cleanup. */
+    const readers: Redis[] = [];
 
     /**
      * Convert event type to Redis stream key.
@@ -143,11 +156,25 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             if (redis) {
                 throw new Error("RedisAdapter: already connected");
             }
-            redis = createRedisInstance();
-            await waitForReady(redis);
+            const instance = createRedisInstance();
+            try {
+                await waitForReady(instance);
+            } catch (err) {
+                // Connection failed — clean up the half-open client so the adapter
+                // can be retried without being stuck in a broken state.
+                instance.disconnect();
+                throw err;
+            }
+            redis = instance;
         },
 
         async disconnect(): Promise<void> {
+            // Close all blocking reader connections first.
+            for (const reader of readers) {
+                await reader.quit().catch(() => {});
+            }
+            readers.length = 0;
+
             if (redis) {
                 await redis.quit();
                 redis = null;
@@ -220,12 +247,86 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
             // Separate blocking connection for XREADGROUP
             const blockingRedis = redis.duplicate();
+            readers.push(blockingRedis);
             await waitForReady(blockingRedis);
+
+            /**
+             * Process a single stream message entry through the handler.
+             */
+            const processEntry = async (streamKeyForAck: string, entryId: string, fields: string[], attempt: number): Promise<void> => {
+                const fieldMap = parseFields(fields);
+                const metadata = extractMetadata(fieldMap);
+
+                // Base64-decode binary payload (C-3)
+                const payloadStr = fieldMap.get("payload") ?? "";
+                const rawEvent: RawEvent = {
+                    eventId: fieldMap.get("eventId") ?? entryId,
+                    eventType: fieldMap.get("eventType") ?? "",
+                    payload: new Uint8Array(Buffer.from(payloadStr, "base64")),
+                    publishedAt: new Date(fieldMap.get("publishedAt") ?? Date.now()),
+                    attempt,
+                    metadata,
+                };
+
+                // Real ack/nack wired through to EventBus (C-1)
+                const ack = async (): Promise<void> => {
+                    await blockingRedis.xack(streamKeyForAck, group, entryId);
+                };
+                const nack = async (_requeue?: boolean): Promise<void> => {
+                    // Don't XACK -- message remains in the pending entries list (PEL).
+                    // The periodic XAUTOCLAIM below will reclaim stale pending entries
+                    // and redeliver them, providing retry semantics.
+                };
+
+                await handler(rawEvent, ack, nack);
+            };
+
+            /**
+             * Reclaim stale pending entries via XAUTOCLAIM.
+             *
+             * Messages that were nack'd (not XACK'd) remain in the PEL.
+             * XREADGROUP with `>` only delivers *new* messages, so without
+             * this reclaim step nack'd messages would never be retried.
+             */
+            const reclaimPending = async (): Promise<void> => {
+                for (const key of streamKeys) {
+                    try {
+                        // XAUTOCLAIM key group consumer min-idle-time start [COUNT count]
+                        // Returns: [next-start-id, [[id, [fields...]], ...], [deleted-ids...]]
+                        const result = (await blockingRedis.call("XAUTOCLAIM", key, group, consumer, String(PENDING_IDLE_MS), "0-0", "COUNT", String(count))) as
+                            | [string, [string, string[]][], string[]]
+                            | null;
+
+                        if (!result) {
+                            continue;
+                        }
+
+                        const [, entries] = result;
+                        for (const [entryId, fields] of entries) {
+                            if (!subscriptionRunning) {
+                                return;
+                            }
+                            // Reclaimed messages are retries — set attempt > 1.
+                            await processEntry(key, entryId, fields, 2);
+                        }
+                    } catch {
+                        // XAUTOCLAIM errors are non-fatal — will retry on next interval.
+                    }
+                }
+            };
 
             // Background consumption loop
             const consumeLoop = async (): Promise<void> => {
+                let iterationCount = 0;
+
                 while (subscriptionRunning) {
                     try {
+                        // Periodically reclaim stale pending entries (nack'd messages).
+                        iterationCount += 1;
+                        if (iterationCount % PENDING_RECLAIM_INTERVAL === 0) {
+                            await reclaimPending();
+                        }
+
                         // XREADGROUP via redis.call() for proper typing (W-5)
                         const xreadArgs: string[] = [
                             "GROUP",
@@ -248,30 +349,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
                         for (const [resultStreamKey, messages] of results) {
                             for (const [entryId, fields] of messages) {
-                                const fieldMap = parseFields(fields);
-                                const metadata = extractMetadata(fieldMap);
-
-                                // Base64-decode binary payload (C-3)
-                                const payloadStr = fieldMap.get("payload") ?? "";
-                                const rawEvent: RawEvent = {
-                                    eventId: fieldMap.get("eventId") ?? entryId,
-                                    eventType: fieldMap.get("eventType") ?? "",
-                                    payload: new Uint8Array(Buffer.from(payloadStr, "base64")),
-                                    publishedAt: new Date(fieldMap.get("publishedAt") ?? Date.now()),
-                                    attempt: 1,
-                                    metadata,
-                                };
-
-                                // Real ack/nack wired through to EventBus (C-1)
-                                const ack = async (): Promise<void> => {
-                                    await blockingRedis.xack(resultStreamKey, group, entryId);
-                                };
-                                const nack = async (_requeue?: boolean): Promise<void> => {
-                                    // Don't XACK -- message remains in pending entries list
-                                    // and will be redelivered on next XREADGROUP
-                                };
-
-                                await handler(rawEvent, ack, nack);
+                                await processEntry(resultStreamKey, entryId, fields, 1);
                             }
                         }
                     } catch {
@@ -294,6 +372,12 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                     subscriptionRunning = false;
                     await loopPromise.catch(() => {});
                     await blockingRedis.quit();
+
+                    // Remove from tracked readers.
+                    const idx = readers.indexOf(blockingRedis);
+                    if (idx !== -1) {
+                        readers.splice(idx, 1);
+                    }
                 },
             };
         },

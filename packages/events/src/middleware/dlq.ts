@@ -19,6 +19,11 @@ export function dlqMiddleware(options: DlqOptions, adapter: EventAdapter): Event
         try {
             await next();
         } catch (error) {
+            // Prevent DLQ self-loop: if the event is already on the DLQ topic, rethrow
+            if (event.eventType === options.topic) {
+                throw error;
+            }
+
             // Publish to DLQ with original event data + error metadata
             const metadata: Record<string, string> = {
                 "dlq.original-topic": event.eventType,

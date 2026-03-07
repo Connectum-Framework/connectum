@@ -66,4 +66,11 @@ describe("RedisAdapter", () => {
         const adapter = RedisAdapter();
         assert.equal(adapter.name, "redis");
     });
+
+    it("should accept options with redisOptions", () => {
+        const adapter = RedisAdapter({
+            redisOptions: { maxRetriesPerRequest: 3, lazyConnect: true },
+        });
+        assert.equal(adapter.name, "redis");
+    });
 });

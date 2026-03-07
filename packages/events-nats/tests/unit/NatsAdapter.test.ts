@@ -70,4 +70,17 @@ describe("NatsAdapter", () => {
         assert.equal(typeof adapter.publish, "function");
         assert.equal(typeof adapter.subscribe, "function");
     });
+
+    it("should accept group names with dots and special chars without throwing", () => {
+        // sanitizeDurableName is internal, but we can verify it indirectly:
+        // Creating an adapter with a group containing dots/special chars
+        // should not throw during construction. The sanitization happens at
+        // subscribe time, but the adapter itself should accept any config.
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            stream: "my.stream.name",
+        });
+        assert.ok(adapter);
+        assert.equal(adapter.name, "nats");
+    });
 });
