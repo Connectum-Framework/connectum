@@ -96,11 +96,24 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
     /**
      * Wait for a Redis connection to become ready.
+     *
+     * Handles `lazyConnect: true` — if the instance has not started
+     * connecting yet (status "wait"), explicitly triggers connect()
+     * before waiting for the "ready" event.
      */
     async function waitForReady(instance: Redis): Promise<void> {
         // If already connected, return immediately
         if (instance.status === "ready") {
             return;
+        }
+
+        // When lazyConnect is true, ioredis stays in "wait" status
+        // until connect() is explicitly called. Trigger it so
+        // the "ready" event will eventually fire.
+        if (instance.status === "wait") {
+            instance.connect().catch(() => {
+                // Error will be emitted as "error" event and caught below
+            });
         }
 
         await new Promise<void>((resolve, reject) => {
@@ -306,8 +319,21 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             if (!subscriptionRunning) {
                                 return;
                             }
-                            // Reclaimed messages are retries — set attempt > 1.
-                            await processEntry(key, entryId, fields, 2);
+
+                            // Get real delivery count from XPENDING for this entry.
+                            // XPENDING key group start end count returns
+                            // [[id, consumer, idle-time, delivery-count], ...]
+                            let deliveryCount = 2;
+                            try {
+                                const pendingInfo = (await blockingRedis.call("XPENDING", key, group, entryId, entryId, "1")) as [string, string, number, number][] | null;
+                                if (pendingInfo && pendingInfo.length > 0 && pendingInfo[0]) {
+                                    deliveryCount = pendingInfo[0][3] ?? 2;
+                                }
+                            } catch {
+                                // XPENDING error is non-fatal — fall back to default
+                            }
+
+                            await processEntry(key, entryId, fields, deliveryCount);
                         }
                     } catch {
                         // XAUTOCLAIM errors are non-fatal — will retry on next interval.

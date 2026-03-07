@@ -16,6 +16,7 @@ import { dlqMiddleware } from "./middleware/dlq.ts";
 import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
 import type { EventBus, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
+import { matchPattern } from "./wildcard.ts";
 
 /**
  * Create an EventBus instance.
@@ -102,7 +103,14 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     const sub = await adapter.subscribe(
                         allTopics,
                         async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
-                            const handler = topicHandlerMap.get(rawEvent.eventType);
+                            // Find handler by matching topic patterns (supports wildcards * and >)
+                            let handler: ((event: RawEvent, ctx: EventContext) => Promise<void>) | undefined;
+                            for (const [pattern, h] of topicHandlerMap) {
+                                if (matchPattern(pattern, rawEvent.eventType)) {
+                                    handler = h;
+                                    break;
+                                }
+                            }
                             if (!handler) {
                                 await ack();
                                 return;

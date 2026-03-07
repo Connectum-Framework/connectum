@@ -170,30 +170,40 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
-            for (const pattern of patterns) {
-                const subject = `${streamName}.${pattern}`;
-                const durableName = consumerName(group, pattern);
+            try {
+                for (const pattern of patterns) {
+                    const subject = `${streamName}.${pattern}`;
+                    const durableName = consumerName(group, pattern);
 
-                // Ensure consumer exists.
-                await jsm.consumers.add(streamName, {
-                    durable_name: durableName,
-                    ack_policy: AckPolicy.Explicit,
-                    deliver_policy: deliverPolicy,
-                    filter_subject: subject,
-                    ack_wait: ackWaitNs,
-                    max_deliver: maxDeliver,
-                });
+                    // Ensure consumer exists.
+                    await jsm.consumers.add(streamName, {
+                        durable_name: durableName,
+                        ack_policy: AckPolicy.Explicit,
+                        deliver_policy: deliverPolicy,
+                        filter_subject: subject,
+                        ack_wait: ackWaitNs,
+                        max_deliver: maxDeliver,
+                    });
 
-                const consumer = await js.consumers.get(streamName, durableName);
+                    const consumer = await js.consumers.get(streamName, durableName);
 
-                const messages = await consumer.consume();
-                messageIterators.push(messages);
+                    const messages = await consumer.consume();
+                    messageIterators.push(messages);
 
-                // Start the consumption loop in the background.
-                // The loop exits when messages.close() is called.
-                consumeLoop(messages, handler, pattern, streamName).catch((err) => {
-                    console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
-                });
+                    // Start the consumption loop in the background.
+                    // The loop exits when messages.close() is called.
+                    consumeLoop(messages, handler, pattern, streamName).catch((err) => {
+                        console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
+                    });
+                }
+            } catch (error) {
+                // Partial rollback: close all previously created message iterators
+                // to avoid leaked subscriptions when a later pattern fails.
+                for (const iter of messageIterators) {
+                    await iter.close();
+                }
+                messageIterators.length = 0;
+                throw error;
             }
 
             const subscription: EventSubscription = {
