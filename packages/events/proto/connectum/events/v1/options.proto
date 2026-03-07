@@ -1,0 +1,29 @@
+// Copyright 2024-2026 Connectum Framework Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
+syntax = "proto2";
+
+package connectum.events.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Event options for method-level topic override.
+// Applied to service methods that handle events to specify
+// custom topic names instead of the default (input type name).
+message EventOptions {
+  // Custom topic name for this event handler.
+  // When not set, the topic defaults to the input message's typeName.
+  optional string topic = 1;
+}
+
+// Custom option for RPC methods used as event handlers.
+// Field number 50102 is in the 50000-99999 range reserved
+// for organizational use (50100-50101 used by @connectum/auth).
+extend google.protobuf.MethodOptions {
+  optional EventOptions event = 50102;
+}

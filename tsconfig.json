@@ -45,7 +45,11 @@
       "@connectum/reflection": ["./packages/reflection/src"],
       "@connectum/testing": ["./packages/testing/src"],
       "@connectum/cli": ["./packages/cli/src"],
-      "@connectum/auth": ["./packages/auth/src"]
+      "@connectum/auth": ["./packages/auth/src"],
+      "@connectum/events": ["./packages/events/src"],
+      "@connectum/events-nats": ["./packages/events-nats/src"],
+      "@connectum/events-kafka": ["./packages/events-kafka/src"],
+      "@connectum/events-redis": ["./packages/events-redis/src"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"],
