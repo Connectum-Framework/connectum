@@ -14,7 +14,7 @@ import { buildRoutes } from "./buildRoutes.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
-import type { CreateServerOptions, ProtocolRegistration, Server, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -39,6 +39,7 @@ class ServerImpl extends EventEmitter implements Server {
     private _signalHandlers: Map<NodeJS.Signals, () => void> = new Map();
     private _stopPromise: Promise<void> | null = null;
     private readonly _transport = new TransportManager();
+    private readonly _eventBus: EventBusLike | null = null;
 
     // =========================================================================
     // Constructor
@@ -50,6 +51,7 @@ class ServerImpl extends EventEmitter implements Server {
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
+        this._eventBus = options.eventBus ?? null;
     }
 
     // =========================================================================
@@ -82,6 +84,10 @@ class ServerImpl extends EventEmitter implements Server {
 
     get protocols(): ReadonlyArray<ProtocolRegistration> {
         return this._protocols;
+    }
+
+    get eventBus(): EventBusLike | null {
+        return this._eventBus;
     }
 
     get shutdownSignal(): AbortSignal {
@@ -130,6 +136,13 @@ class ServerImpl extends EventEmitter implements Server {
             });
             this._registry.push(...registry);
 
+            if (this._eventBus) {
+                await this._eventBus.start({ signal: this._abortController.signal });
+                this._shutdownManager.addHook("eventbus", async () => {
+                    await this._eventBus!.stop();
+                });
+            }
+
             await this._transport.listen(handler, {
                 port: this._options.port,
                 host: this._options.host,
@@ -143,6 +156,10 @@ class ServerImpl extends EventEmitter implements Server {
             this._setupAutoShutdown();
             this.emit("ready");
         } catch (error) {
+            // Clean up event bus if it was started but transport failed
+            if (this._eventBus) {
+                await this._eventBus.stop().catch(() => {});
+            }
             this._state = ServerState.STOPPED;
             this.emit("error", error instanceof Error ? error : new Error(String(error)));
             throw error;

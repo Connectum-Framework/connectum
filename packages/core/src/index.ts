@@ -36,6 +36,8 @@ export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
 
 export type {
     CreateServerOptions,
+    // Event bus integration
+    EventBusLike,
     HttpHandler,
     // Transport union types
     NodeRequest,
