@@ -122,7 +122,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
         async disconnect(): Promise<void> {
             // Unsubscribe all active subscriptions first.
-            for (const sub of activeSubs) {
+            // Iterate over a snapshot because unsubscribe() splices activeSubs.
+            for (const sub of [...activeSubs]) {
                 await sub.unsubscribe();
             }
             activeSubs.length = 0;

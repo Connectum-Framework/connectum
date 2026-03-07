@@ -71,6 +71,12 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
     /** Blocking reader connections created by subscribe(), tracked for cleanup. */
     const readers: Redis[] = [];
 
+    /** Stop callbacks that set subscriptionRunning = false for each active subscription. */
+    const stopCallbacks: (() => void)[] = [];
+
+    /** Promises for active consume loops, awaited on disconnect. */
+    const activeLoops: Promise<void>[] = [];
+
     /**
      * Convert event type to Redis stream key.
      */
@@ -182,7 +188,17 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
         },
 
         async disconnect(): Promise<void> {
-            // Close all blocking reader connections first.
+            // Signal all consume loops to stop.
+            for (const stop of stopCallbacks) {
+                stop();
+            }
+
+            // Wait for all consume loops to exit.
+            await Promise.all(activeLoops.map((p) => p.catch(() => {})));
+            stopCallbacks.length = 0;
+            activeLoops.length = 0;
+
+            // Close all blocking reader connections.
             for (const reader of readers) {
                 await reader.quit().catch(() => {});
             }
@@ -233,6 +249,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
             if (!redis) {
                 throw new Error("RedisAdapter: not connected");
+            }
+
+            // Redis Streams does not support wildcard patterns.
+            for (const p of patterns) {
+                if (p.includes("*") || p.includes(">")) {
+                    throw new Error(`RedisAdapter: wildcard pattern "${p}" is not supported. ` + `Redis Streams requires explicit topic names.`);
+                }
             }
 
             const group = subOptions?.group ?? `connectum-${randomUUID()}`;
@@ -393,6 +416,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             // Start non-blocking (fire-and-forget)
             const loopPromise = consumeLoop();
 
+            // Track stop callback and loop promise for disconnect().
+            const stopCb = () => {
+                subscriptionRunning = false;
+            };
+            stopCallbacks.push(stopCb);
+            activeLoops.push(loopPromise);
+
             return {
                 async unsubscribe(): Promise<void> {
                     subscriptionRunning = false;
@@ -400,9 +430,19 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                     await blockingRedis.quit();
 
                     // Remove from tracked readers.
-                    const idx = readers.indexOf(blockingRedis);
-                    if (idx !== -1) {
-                        readers.splice(idx, 1);
+                    const readerIdx = readers.indexOf(blockingRedis);
+                    if (readerIdx !== -1) {
+                        readers.splice(readerIdx, 1);
+                    }
+
+                    // Remove from tracked stop callbacks and loop promises.
+                    const stopIdx = stopCallbacks.indexOf(stopCb);
+                    if (stopIdx !== -1) {
+                        stopCallbacks.splice(stopIdx, 1);
+                    }
+                    const loopIdx = activeLoops.indexOf(loopPromise);
+                    if (loopIdx !== -1) {
+                        activeLoops.splice(loopIdx, 1);
                     }
                 },
             };

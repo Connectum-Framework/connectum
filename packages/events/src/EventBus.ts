@@ -46,6 +46,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     const { adapter, routes = [], group, middleware: mwConfig } = options;
     const subscriptions: EventSubscription[] = [];
     let started = false;
+    let starting = false;
+    let stopPromise: Promise<void> | null = null;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
 
@@ -75,16 +77,18 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
     return {
         async start(startOptions?: { signal?: AbortSignal }): Promise<void> {
-            if (started) {
+            if (started || starting) {
                 throw new Error("EventBus already started");
             }
+
+            starting = true;
 
             // Accept shutdown signal from server integration (C-2)
             shutdownSignal = startOptions?.signal ?? defaultSignal;
 
-            await adapter.connect();
-
             try {
+                await adapter.connect();
+
                 // Build topic → handler map and compose middleware per topic
                 const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
 
@@ -157,21 +161,32 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                 subscriptions.length = 0;
                 await adapter.disconnect();
                 throw error;
+            } finally {
+                starting = false;
             }
         },
 
         async stop(): Promise<void> {
+            if (stopPromise) return stopPromise;
             if (!started) return;
 
-            // Unsubscribe all
-            for (const sub of subscriptions) {
-                await sub.unsubscribe();
-            }
-            subscriptions.length = 0;
+            stopPromise = (async () => {
+                try {
+                    // Unsubscribe all
+                    for (const sub of subscriptions) {
+                        await sub.unsubscribe();
+                    }
+                    subscriptions.length = 0;
 
-            await adapter.disconnect();
-            started = false;
-            shutdownSignal = undefined;
+                    await adapter.disconnect();
+                    started = false;
+                    shutdownSignal = undefined;
+                } finally {
+                    stopPromise = null;
+                }
+            })();
+
+            return stopPromise;
         },
 
         async publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, publishOptions?: PublishOptions): Promise<void> {
