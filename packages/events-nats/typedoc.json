@@ -1,0 +1,5 @@
+{
+  "entryPoints": ["src/index.ts", "src/types.ts"],
+
+  "tsconfig": "../../tsconfig.json"
+}
