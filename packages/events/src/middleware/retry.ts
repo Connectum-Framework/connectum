@@ -85,11 +85,14 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
                 // Wait before retry with abort-aware sleep
                 const delay = calculateDelay({ backoff, initialDelay, maxDelay, multiplier }, attempt);
                 await new Promise<void>((resolve, reject) => {
-                    const timer = globalThis.setTimeout(resolve, delay);
                     const onAbort = () => {
                         globalThis.clearTimeout(timer);
                         reject(ctx.signal.reason);
                     };
+                    const timer = globalThis.setTimeout(() => {
+                        ctx.signal.removeEventListener("abort", onAbort);
+                        resolve();
+                    }, delay);
                     if (ctx.signal.aborted) {
                         globalThis.clearTimeout(timer);
                         reject(ctx.signal.reason);

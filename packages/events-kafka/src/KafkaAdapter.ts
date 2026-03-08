@@ -147,15 +147,17 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 throw new Error("KafkaAdapter: not connected");
             }
 
-            const headers: IHeaders = {
-                "x-event-id": Buffer.from(randomUUID(), "utf-8"),
-                "x-published-at": Buffer.from(new Date().toISOString(), "utf-8"),
-            };
+            const headers: IHeaders = {};
 
+            // User metadata first
             if (publishOptions?.metadata) {
                 const userHeaders = encodeMetadata(publishOptions.metadata);
                 Object.assign(headers, userHeaders);
             }
+
+            // Internal headers last (overwrite any user spoofing)
+            headers["x-event-id"] = Buffer.from(randomUUID(), "utf-8");
+            headers["x-published-at"] = Buffer.from(new Date().toISOString(), "utf-8");
 
             const compression = options.producerOptions?.compression;
 
@@ -181,7 +183,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             const sessionTimeout = options.consumerOptions?.sessionTimeout;
             const consumer = kafka.consumer({
                 groupId,
-                allowAutoTopicCreation: true,
+                allowAutoTopicCreation: options.consumerOptions?.allowAutoTopicCreation ?? false,
                 ...(sessionTimeout !== undefined && { sessionTimeout }),
             });
 
@@ -226,16 +228,23 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                         };
 
                         // Real ack/nack wired through to EventBus (C-1)
+                        let nacked = false;
                         const ack = async (): Promise<void> => {
                             resolveOffset(message.offset);
                             await commitOffsetsIfNecessary();
                         };
                         const nack = async (_requeue?: boolean): Promise<void> => {
-                            // Don't resolve offset -- message will be redelivered
-                            // on next consumer fetch or rebalance
+                            nacked = true;
                         };
 
-                        await handler(rawEvent, ack, nack);
+                        try {
+                            await handler(rawEvent, ack, nack);
+                        } catch {
+                            // Handler error — stop batch, KafkaJS will retry from this offset
+                            break;
+                        }
+
+                        if (nacked) break; // Stop processing, retry from this offset
                         await heartbeat();
                     }
                 },

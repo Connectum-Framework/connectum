@@ -34,5 +34,7 @@ export interface KafkaAdapterOptions {
         readonly sessionTimeout?: number;
         /** Whether to start consuming from the beginning of topics (default: false) */
         readonly fromBeginning?: boolean;
+        /** Whether Kafka should auto-create topics on subscribe (default: false) */
+        readonly allowAutoTopicCreation?: boolean;
     };
 }

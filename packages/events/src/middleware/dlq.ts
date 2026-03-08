@@ -11,6 +11,15 @@
 import type { DlqOptions, EventAdapter, EventMiddleware } from "../types.ts";
 
 /**
+ * Truncate and sanitize error message to prevent leaking sensitive data
+ * (connection strings, credentials) into DLQ metadata.
+ */
+function sanitizeError(error: unknown, maxLength = 200): string {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.slice(0, maxLength);
+}
+
+/**
  * Create a DLQ middleware that catches errors from inner middleware
  * (retry), publishes to DLQ topic, and acks the original.
  */
@@ -28,14 +37,17 @@ export function dlqMiddleware(options: DlqOptions, adapter: EventAdapter): Event
             const metadata: Record<string, string> = {
                 "dlq.original-topic": event.eventType,
                 "dlq.original-id": event.eventId,
-                "dlq.error": error instanceof Error ? error.message : String(error),
+                "dlq.error": sanitizeError(error),
                 "dlq.attempt": String(event.attempt),
             };
 
-            await adapter.publish(options.topic, event.payload, { metadata });
-
-            // Ack the original event so it's not redelivered
-            await ctx.ack();
+            try {
+                await adapter.publish(options.topic, event.payload, { metadata });
+                await ctx.ack();
+            } catch {
+                // DLQ publish failed — nack without requeue to prevent infinite loop
+                await ctx.nack(false);
+            }
         }
     };
 }

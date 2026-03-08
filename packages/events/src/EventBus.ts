@@ -66,14 +66,14 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
         middlewares.push(...mwConfig.custom);
     }
 
-    // Retry middleware
-    if (mwConfig?.retry) {
-        middlewares.push(retryMiddleware(mwConfig.retry));
-    }
-
-    // DLQ middleware (innermost, after retry)
+    // DLQ middleware (outermost of built-in — catches after retry exhaustion)
     if (mwConfig?.dlq) {
         middlewares.push(dlqMiddleware(mwConfig.dlq, adapter));
+    }
+
+    // Retry middleware (innermost of built-in — retries before DLQ sees error)
+    if (mwConfig?.retry) {
+        middlewares.push(retryMiddleware(mwConfig.retry));
     }
 
     return {
@@ -94,6 +94,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                 const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
 
                 for (const entry of router.entries) {
+                    if (topicHandlerMap.has(entry.topic)) {
+                        throw new Error(`Duplicate event topic "${entry.topic}". ` + `Use (connectum.events.v1.event).topic option to disambiguate.`);
+                    }
                     const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
                         const message = fromBinary(entry.method.input, rawEvent.payload);
                         await entry.handler(message, ctx);
@@ -146,7 +149,11 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             } finally {
                                 // Auto-ack fallback for backward compatibility (C-1)
                                 if (!settled && completed) {
-                                    await ack();
+                                    try {
+                                        await ack();
+                                    } catch {
+                                        // Auto-ack failed — message will be redelivered by broker timeout
+                                    }
                                 }
                             }
                         },

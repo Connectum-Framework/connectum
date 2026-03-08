@@ -95,6 +95,10 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
         name: "nats",
 
         async connect(): Promise<void> {
+            if (nc) {
+                throw new Error("NatsAdapter: already connected");
+            }
+
             const servers = Array.isArray(options.servers) ? options.servers : [options.servers];
 
             const connection = await connect({
@@ -318,6 +322,11 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
             msg.nak();
         };
 
-        await handler(event, ack, nack);
+        try {
+            await handler(event, ack, nack);
+        } catch {
+            // Handler error — nack for redelivery, continue loop
+            msg.nak();
+        }
     }
 }
