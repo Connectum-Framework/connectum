@@ -261,7 +261,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             // Redis Streams does not support wildcard patterns.
             for (const p of patterns) {
                 if (p.includes("*") || p.includes(">")) {
-                    throw new Error(`RedisAdapter: wildcard pattern "${p}" is not supported. ` + `Redis Streams requires explicit topic names.`);
+                    throw new Error(`RedisAdapter: wildcard pattern "${p}" is not supported. Redis Streams requires explicit topic names.`);
                 }
             }
 
@@ -364,8 +364,8 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         // Batch XPENDING: one round-trip instead of N (EFF-7).
                         const deliveryCounts = new Map<string, number>();
                         try {
-                            const [firstId] = entries[0]!;
-                            const [lastId] = entries[entries.length - 1]!;
+                            const [firstId] = entries[0] as [string, string[]];
+                            const [lastId] = entries[entries.length - 1] as [string, string[]];
                             const pendingAll = (await blockingRedis.call("XPENDING", key, group, firstId, lastId, String(entries.length))) as
                                 | [string, string, number, number][]
                                 | null;
