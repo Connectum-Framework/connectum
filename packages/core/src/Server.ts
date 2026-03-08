@@ -139,7 +139,7 @@ class ServerImpl extends EventEmitter implements Server {
             if (this._eventBus) {
                 await this._eventBus.start({ signal: this._abortController.signal });
                 this._shutdownManager.addHook("eventbus", async () => {
-                    await this._eventBus!.stop();
+                    await this._eventBus?.stop();
                 });
             }
 

@@ -9,6 +9,7 @@
 
 import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+// biome-ignore lint/correctness/useImportExtensions: workspace package, not a relative import
 import type { EventBusLike } from "@connectum/core";
 import { createEventContext } from "./EventContext.ts";
 import { EventRouterImpl } from "./EventRouter.ts";
@@ -98,7 +99,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
                     for (const entry of router.entries) {
                         if (topicHandlerMap.has(entry.topic)) {
-                            throw new Error(`Duplicate event topic "${entry.topic}". ` + `Use (connectum.events.v1.event).topic option to disambiguate.`);
+                            throw new Error(`Duplicate event topic "${entry.topic}". Use (connectum.events.v1.event).topic option to disambiguate.`);
                         }
                         const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
                             const message = fromBinary(entry.method.input, rawEvent.payload);
