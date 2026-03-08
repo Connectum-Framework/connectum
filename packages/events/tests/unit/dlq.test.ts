@@ -58,7 +58,7 @@ describe("dlqMiddleware", () => {
         assert.equal(published[0]!.eventType, "my-service.dlq");
         assert.equal(published[0]!.metadata?.["dlq.original-topic"], "orders.created");
         assert.equal(published[0]!.metadata?.["dlq.original-id"], "evt-42");
-        assert.equal(published[0]!.metadata?.["dlq.error"], "handler failed");
+        assert.equal(published[0]!.metadata?.["dlq.error"], "Error");
         assert.equal(published[0]!.metadata?.["dlq.attempt"], "2");
 
         // Original event was acked
@@ -130,7 +130,7 @@ describe("dlqMiddleware", () => {
         });
 
         assert.equal(published.length, 1);
-        assert.equal(published[0]!.metadata?.["dlq.error"], "string error");
+        assert.equal(published[0]!.metadata?.["dlq.error"], "UnknownError");
     });
 
     it("uses custom errorSerializer when provided (N-8)", async () => {

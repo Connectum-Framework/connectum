@@ -25,6 +25,11 @@
  * ```
  */
 export function matchPattern(pattern: string, topic: string): boolean {
+    // Fast path: literal patterns (no wildcards)
+    if (!pattern.includes("*") && !pattern.includes(">")) {
+        return pattern === topic;
+    }
+
     const patternParts = pattern.split(".");
     const topicParts = topic.split(".");
 

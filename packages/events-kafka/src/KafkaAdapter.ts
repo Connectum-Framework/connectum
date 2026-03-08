@@ -72,7 +72,7 @@ function parseHeaders(headers: IHeaders | undefined): Map<string, string> {
 
         if (Array.isArray(value)) {
             // Take the first element for simplicity
-            const first = value[0];
+            const [first] = value;
             if (first !== undefined) {
                 result.set(key, Buffer.isBuffer(first) ? first.toString("utf-8") : String(first));
             }
@@ -255,8 +255,15 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                             resolveOffset(message.offset);
                             await commitOffsetsIfNecessary();
                         };
-                        const nack = async (_requeue?: boolean): Promise<void> => {
-                            nacked = true;
+                        const nack = async (requeue?: boolean): Promise<void> => {
+                            if (requeue === false) {
+                                // "Reject without requeue" — commit offset so the message
+                                // won't be redelivered. DLQ middleware already saved a copy.
+                                resolveOffset(message.offset);
+                                await commitOffsetsIfNecessary();
+                            } else {
+                                nacked = true;
+                            }
                         };
 
                         try {

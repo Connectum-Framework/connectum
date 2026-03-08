@@ -10,17 +10,16 @@
 
 import type { DlqOptions, EventAdapter, EventMiddleware } from "../types.ts";
 
-/** Default max length for error messages in DLQ metadata. */
-const DEFAULT_MAX_ERROR_LENGTH = 200;
-
 /**
- * Default error serializer: extracts error message and truncates.
- * Users can provide a custom `errorSerializer` in DlqOptions for
- * redaction of sensitive data (credentials, tokens, connection strings).
+ * Default error serializer: returns only the error name (e.g. "TypeError")
+ * to prevent leaking sensitive data such as credentials, tokens,
+ * or connection strings that may appear in error messages.
  */
 function defaultErrorSerializer(error: unknown): string {
-    const msg = error instanceof Error ? error.message : String(error);
-    return msg.slice(0, DEFAULT_MAX_ERROR_LENGTH);
+    if (error instanceof Error) {
+        return error.name;
+    }
+    return "UnknownError";
 }
 
 /**

@@ -224,7 +224,12 @@ export interface RetryOptions {
 export interface DlqOptions {
     /** DLQ topic name */
     topic: string;
-    /** Custom error serializer for DLQ metadata. Defaults to truncated error message (200 chars). */
+    /**
+     * Custom error serializer for DLQ metadata.
+     * Defaults to `error.name` only (e.g. "TypeError") to prevent credential leaks.
+     * For production, provide a custom serializer that redacts sensitive data
+     * (connection strings, tokens) before including error details.
+     */
     errorSerializer?: (error: unknown) => string;
 }
 

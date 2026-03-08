@@ -49,6 +49,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let started = false;
     let starting = false;
     let stopping = false;
+    let startPromise: Promise<void> | null = null;
     let stopPromise: Promise<void> | null = null;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
@@ -88,97 +89,110 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             // Accept shutdown signal from server integration (C-2)
             shutdownSignal = startOptions?.signal ?? defaultSignal;
 
-            try {
-                await adapter.connect();
+            startPromise = (async () => {
+                try {
+                    await adapter.connect();
 
-                // Build topic → handler map and compose middleware per topic
-                const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
+                    // Build topic → handler map and compose middleware per topic
+                    const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
 
-                for (const entry of router.entries) {
-                    if (topicHandlerMap.has(entry.topic)) {
-                        throw new Error(`Duplicate event topic "${entry.topic}". ` + `Use (connectum.events.v1.event).topic option to disambiguate.`);
+                    for (const entry of router.entries) {
+                        if (topicHandlerMap.has(entry.topic)) {
+                            throw new Error(`Duplicate event topic "${entry.topic}". ` + `Use (connectum.events.v1.event).topic option to disambiguate.`);
+                        }
+                        const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
+                            const message = fromBinary(entry.method.input, rawEvent.payload);
+                            await entry.handler(message, ctx);
+                        });
+                        topicHandlerMap.set(entry.topic, composedHandler);
                     }
-                    const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
-                        const message = fromBinary(entry.method.input, rawEvent.payload);
-                        await entry.handler(message, ctx);
-                    });
-                    topicHandlerMap.set(entry.topic, composedHandler);
-                }
 
-                // Single subscribe call with all topics — prevents Kafka consumer group conflicts
-                if (topicHandlerMap.size > 0) {
-                    const allTopics = [...topicHandlerMap.keys()];
+                    // Single subscribe call with all topics — prevents Kafka consumer group conflicts
+                    if (topicHandlerMap.size > 0) {
+                        const allTopics = [...topicHandlerMap.keys()];
 
-                    const sub = await adapter.subscribe(
-                        allTopics,
-                        async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
-                            // Exact match first, then wildcard fallback
-                            let handler = topicHandlerMap.get(rawEvent.eventType);
-                            if (!handler) {
-                                for (const [pattern, h] of topicHandlerMap) {
-                                    if (pattern !== rawEvent.eventType && matchPattern(pattern, rawEvent.eventType)) {
-                                        handler = h;
-                                        break;
+                        const sub = await adapter.subscribe(
+                            allTopics,
+                            async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
+                                // Exact match first, then wildcard fallback
+                                let handler = topicHandlerMap.get(rawEvent.eventType);
+                                if (!handler) {
+                                    for (const [pattern, h] of topicHandlerMap) {
+                                        if (pattern !== rawEvent.eventType && matchPattern(pattern, rawEvent.eventType)) {
+                                            handler = h;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                            if (!handler) {
-                                await ack();
-                                return;
-                            }
-
-                            // Compose per-event signal: timeout + optional server shutdown (C-2, M-5)
-                            const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(handlerTimeout)]) : AbortSignal.timeout(handlerTimeout);
-
-                            // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
-                            let settled = false;
-                            const ctx = createEventContext({
-                                raw: rawEvent,
-                                signal: eventSignal,
-                                onAck: async () => {
-                                    settled = true;
+                                if (!handler) {
                                     await ack();
-                                },
-                                onNack: async (requeue) => {
-                                    settled = true;
-                                    await nack(requeue);
-                                },
-                            });
+                                    return;
+                                }
 
-                            let completed = false;
-                            try {
-                                await handler(rawEvent, ctx);
-                                completed = true;
-                            } finally {
-                                // Auto-ack fallback for backward compatibility (C-1)
-                                if (!settled && completed) {
-                                    try {
+                                // Compose per-event signal: timeout + optional server shutdown (C-2, M-5)
+                                const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(handlerTimeout)]) : AbortSignal.timeout(handlerTimeout);
+
+                                // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
+                                let settled = false;
+                                const ctx = createEventContext({
+                                    raw: rawEvent,
+                                    signal: eventSignal,
+                                    onAck: async () => {
+                                        settled = true;
                                         await ack();
-                                    } catch {
-                                        // Auto-ack failed — message will be redelivered by broker timeout
+                                    },
+                                    onNack: async (requeue) => {
+                                        settled = true;
+                                        await nack(requeue);
+                                    },
+                                });
+
+                                let completed = false;
+                                try {
+                                    await handler(rawEvent, ctx);
+                                    completed = true;
+                                } finally {
+                                    // Auto-ack fallback for backward compatibility (C-1)
+                                    if (!settled && completed) {
+                                        try {
+                                            await ack();
+                                        } catch {
+                                            // Auto-ack failed — message will be redelivered by broker timeout
+                                        }
                                     }
                                 }
-                            }
-                        },
-                        group !== undefined ? { group } : {},
-                    );
+                            },
+                            group !== undefined ? { group } : {},
+                        );
 
-                    subscriptions.push(sub);
+                        subscriptions.push(sub);
+                    }
+
+                    started = true;
+                } catch (error) {
+                    await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
+                    subscriptions.length = 0;
+                    await adapter.disconnect();
+                    throw error;
+                } finally {
+                    starting = false;
+                    startPromise = null;
                 }
+            })();
 
-                started = true;
-            } catch (error) {
-                await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
-                subscriptions.length = 0;
-                await adapter.disconnect();
-                throw error;
-            } finally {
-                starting = false;
-            }
+            return startPromise;
         },
 
         async stop(): Promise<void> {
             if (stopPromise) return stopPromise;
+
+            // If start() is in progress, wait for it to complete, then stop
+            if (starting && startPromise) {
+                await startPromise.catch(() => {});
+                // After start completes (or fails), re-check state
+                if (!started) return;
+            }
+
             if (!started) return;
 
             stopping = true;

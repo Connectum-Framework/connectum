@@ -201,7 +201,12 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             }
 
             // Wait for all consume loops to exit.
-            await Promise.all(activeLoops.map((p) => p.catch(() => {})));
+            const loopResults = await Promise.allSettled(activeLoops);
+            for (const r of loopResults) {
+                if (r.status === "rejected") {
+                    console.error("[RedisAdapter] consume loop error during disconnect:", r.reason);
+                }
+            }
             stopCallbacks.length = 0;
             activeLoops.length = 0;
             readers.length = 0;
@@ -302,11 +307,16 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
                 // Base64-decode binary payload (C-3)
                 const payloadStr = fieldMap.get("payload") ?? "";
+
+                const publishedAtRaw = fieldMap.get("publishedAt");
+                const parsedDate = publishedAtRaw ? new Date(publishedAtRaw) : undefined;
+                const publishedAt = parsedDate && Number.isFinite(parsedDate.getTime()) ? parsedDate : new Date();
+
                 const rawEvent: RawEvent = {
                     eventId: fieldMap.get("eventId") ?? entryId,
                     eventType: fieldMap.get("eventType") ?? "",
                     payload: new Uint8Array(Buffer.from(payloadStr, "base64")),
-                    publishedAt: new Date(fieldMap.get("publishedAt") ?? Date.now()),
+                    publishedAt,
                     attempt,
                     metadata,
                 };
@@ -349,28 +359,33 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         }
 
                         const [, entries] = result;
+                        if (entries.length === 0) continue;
+
+                        // Batch XPENDING: one round-trip instead of N (EFF-7).
+                        const deliveryCounts = new Map<string, number>();
+                        try {
+                            const [firstId] = entries[0]!;
+                            const [lastId] = entries[entries.length - 1]!;
+                            const pendingAll = (await blockingRedis.call("XPENDING", key, group, firstId, lastId, String(entries.length))) as
+                                | [string, string, number, number][]
+                                | null;
+                            if (pendingAll) {
+                                for (const [entryId, , , deliveryCount] of pendingAll) {
+                                    deliveryCounts.set(entryId, deliveryCount ?? 2);
+                                }
+                            }
+                        } catch {
+                            // XPENDING error is non-fatal — fall back to defaults
+                        }
+
                         for (const [entryId, fields] of entries) {
                             if (!subscriptionRunning) {
                                 return;
                             }
-
-                            // Get real delivery count from XPENDING for this entry.
-                            // XPENDING key group start end count returns
-                            // [[id, consumer, idle-time, delivery-count], ...]
-                            let deliveryCount = 2;
-                            try {
-                                const pendingInfo = (await blockingRedis.call("XPENDING", key, group, entryId, entryId, "1")) as [string, string, number, number][] | null;
-                                if (pendingInfo && pendingInfo.length > 0 && pendingInfo[0]) {
-                                    deliveryCount = pendingInfo[0][3] ?? 2;
-                                }
-                            } catch {
-                                // XPENDING error is non-fatal — fall back to default
-                            }
-
-                            await processEntry(key, entryId, fields, deliveryCount);
+                            await processEntry(key, entryId, fields, deliveryCounts.get(entryId) ?? 2);
                         }
-                    } catch {
-                        // XAUTOCLAIM errors are non-fatal — will retry on next interval.
+                    } catch (err) {
+                        console.warn("[RedisAdapter] XAUTOCLAIM error (non-fatal):", err);
                     }
                 }
             };
@@ -409,13 +424,18 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
                         for (const [resultStreamKey, messages] of results) {
                             for (const [entryId, fields] of messages) {
-                                await processEntry(resultStreamKey, entryId, fields, 1);
+                                try {
+                                    await processEntry(resultStreamKey, entryId, fields, 1);
+                                } catch (err) {
+                                    console.error("[RedisAdapter] handler error for entry", entryId, err);
+                                }
                             }
                         }
-                    } catch {
+                    } catch (err) {
                         if (!subscriptionRunning) {
                             break;
                         }
+                        console.error("[RedisAdapter] consume loop error, retrying in", ERROR_RETRY_DELAY_MS, "ms:", err);
                         // Transient error -- wait before retrying
                         await new Promise((resolve) => {
                             globalThis.setTimeout(resolve, ERROR_RETRY_DELAY_MS);

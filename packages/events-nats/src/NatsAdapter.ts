@@ -139,10 +139,12 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
         },
 
         async disconnect(): Promise<void> {
-            // Unsubscribe all active subscriptions first.
-            // Iterate over a snapshot because unsubscribe() splices activeSubs.
-            for (const sub of [...activeSubs]) {
-                await sub.unsubscribe();
+            // Unsubscribe all active subscriptions first (with error isolation).
+            const unsubResults = await Promise.allSettled([...activeSubs].map((sub) => sub.unsubscribe()));
+            for (const r of unsubResults) {
+                if (r.status === "rejected") {
+                    console.error("[NatsAdapter] unsubscribe error:", r.reason);
+                }
             }
             activeSubs.length = 0;
 
@@ -161,16 +163,16 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const subject = `${streamName}.${eventType}`;
 
-            // Always include event-id header for stable identity across redeliveries.
-            const eventId = publishOptions?.metadata?.["event-id"] ?? randomUUID();
+            // Always generate a fresh event-id — never accept from user metadata.
+            const eventId = randomUUID();
             const headers = createNatsHeaders();
-            headers.append("event-id", eventId);
+            headers.append("x-event-id", eventId);
 
-            // Merge user metadata into headers.
+            // Merge user metadata into headers (skip internal x-* headers).
             const metadata = publishOptions?.metadata;
             if (metadata) {
                 for (const [key, value] of Object.entries(metadata)) {
-                    if (key !== "event-id") {
+                    if (!key.startsWith("x-")) {
                         headers.append(key, value);
                     }
                 }
@@ -274,12 +276,12 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse NATS message headers into a `ReadonlyMap<string, string>`.
+ * Parse NATS message headers into a `Map<string, string>`.
  *
  * If a header has multiple values only the first is kept, matching
  * the single-value semantics of {@link RawEvent.metadata}.
  */
-function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string } | undefined): ReadonlyMap<string, string> {
+function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string } | undefined): Map<string, string> {
     const map = new Map<string, string>();
     if (!hdrs) {
         return map;
@@ -310,13 +312,24 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
         // Strip the stream prefix so eventType matches what was originally published.
         const eventType = msg.subject.startsWith(subjectPrefix) ? msg.subject.slice(subjectPrefix.length) : msg.subject;
 
+        const eventId = msg.headers?.get("x-event-id") ?? randomUUID();
+
+        // Convert nanoseconds to milliseconds safely (bigint or number).
+        const tsNanos = msg.info.timestampNanos;
+        const tsMs = typeof tsNanos === "bigint" ? Number(tsNanos / BigInt(MS_TO_NS)) : Math.trunc(tsNanos / MS_TO_NS);
+        const publishedAt = Number.isFinite(tsMs) ? new Date(tsMs) : new Date();
+
+        // Build metadata map, stripping internal x-* headers.
+        const metadata = parseHeaders(msg.headers);
+        metadata.delete("x-event-id");
+
         const event: RawEvent = {
-            eventId: msg.headers?.get("event-id") ?? randomUUID(),
+            eventId,
             eventType,
             payload: msg.data,
-            publishedAt: new Date(msg.info.timestampNanos / MS_TO_NS),
+            publishedAt,
             attempt: msg.info.deliveryCount,
-            metadata: parseHeaders(msg.headers),
+            metadata,
         };
 
         const ack = async (): Promise<void> => {
