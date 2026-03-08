@@ -36,7 +36,7 @@ export class NonRetryableError extends Error {
      * Check if an error is branded as non-retryable.
      * Works across realms (Symbol.for is global).
      */
-    static isNonRetryable(error: unknown): boolean {
+    static isNonRetryable(error: unknown): error is { [NON_RETRYABLE]: true } {
         return typeof error === "object" && error !== null && (error as Record<symbol, unknown>)[NON_RETRYABLE] === true;
     }
 }
@@ -65,7 +65,7 @@ export class RetryableError extends Error {
      * Check if an error is branded as retryable.
      * Works across realms (Symbol.for is global).
      */
-    static isRetryable(error: unknown): boolean {
+    static isRetryable(error: unknown): error is { [RETRYABLE]: true } {
         return typeof error === "object" && error !== null && (error as Record<symbol, unknown>)[RETRYABLE] === true;
     }
 }
