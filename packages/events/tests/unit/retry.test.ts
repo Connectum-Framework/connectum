@@ -59,11 +59,18 @@ describe("retryMiddleware", () => {
         const event = makeRawEvent({ attempt: 1 });
         let callCount = 0;
 
-        await mw(event, makeCtx(), async () => {
-            attempts.push(event.attempt);
+        // next() receives an optional updatedEvent from retry middleware (C-1).
+        // We capture the attempt from the updatedEvent when provided,
+        // falling back to the original event for the first call.
+        await mw(event, makeCtx(), async (updatedEvent) => {
+            const currentEvent = updatedEvent ?? event;
+            attempts.push(currentEvent.attempt);
             callCount++;
             if (callCount < 3) throw new Error("fail");
         });
+
+        // Original event is NOT mutated (readonly contract preserved)
+        assert.equal(event.attempt, 1);
 
         assert.equal(attempts[0], 1); // First attempt
         assert.equal(attempts[1], 2); // Second attempt (retry 1)

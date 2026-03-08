@@ -29,8 +29,11 @@ export function composeMiddleware(
         return handler;
     }
 
-    return async (event: RawEvent, ctx: EventContext) => {
+    return async (initialEvent: RawEvent, ctx: EventContext) => {
         let index = -1;
+        // Mutable event reference: middleware (e.g., retry) can replace
+        // the event object without mutating readonly fields (C-1).
+        let currentEvent = initialEvent;
 
         const dispatch = async (i: number): Promise<void> => {
             if (i <= index) {
@@ -39,7 +42,7 @@ export function composeMiddleware(
             index = i;
 
             if (i === middlewares.length) {
-                return handler(event, ctx);
+                return handler(currentEvent, ctx);
             }
 
             const middleware = middlewares[i];
@@ -48,8 +51,13 @@ export function composeMiddleware(
             }
 
             try {
-                const nextFn: EventMiddlewareNext = () => dispatch(i + 1);
-                return await middleware(event, ctx, nextFn);
+                const nextFn: EventMiddlewareNext = (updatedEvent) => {
+                    if (updatedEvent) {
+                        currentEvent = updatedEvent;
+                    }
+                    return dispatch(i + 1);
+                };
+                return await middleware(currentEvent, ctx, nextFn);
             } catch (error) {
                 // Reset index to allow retry from this position (e.g., retry middleware)
                 index = i - 1;

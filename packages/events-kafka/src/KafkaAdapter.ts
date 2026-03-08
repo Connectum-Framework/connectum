@@ -14,6 +14,22 @@ import { Kafka } from "kafkajs";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
+ * Parse a timestamp from header string or Kafka numeric timestamp.
+ * Returns current time if both are missing or invalid.
+ */
+function parseTimestamp(headerValue: string | undefined, kafkaTimestamp: string | undefined): Date {
+    if (headerValue) {
+        const d = new Date(headerValue);
+        if (Number.isFinite(d.getTime())) return d;
+    }
+    if (kafkaTimestamp) {
+        const n = Number(kafkaTimestamp);
+        if (Number.isFinite(n)) return new Date(n);
+    }
+    return new Date();
+}
+
+/**
  * Convert NATS-style wildcard patterns to Kafka-compatible RegExp.
  *
  * - `*` matches a single segment (between dots)
@@ -117,8 +133,14 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             if (connected) {
                 return;
             }
-            producer = kafka.producer();
-            await producer.connect();
+            const p = kafka.producer();
+            try {
+                await p.connect();
+            } catch (err) {
+                await p.disconnect().catch(() => undefined);
+                throw err;
+            }
+            producer = p;
             connected = true;
         },
 
@@ -127,9 +149,12 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 return;
             }
 
-            // Disconnect all consumers first
-            for (const consumer of consumers) {
-                await consumer.disconnect();
+            // Disconnect all consumers (continue on individual failures)
+            const results = await Promise.allSettled(consumers.map((c) => c.disconnect()));
+            for (const r of results) {
+                if (r.status === "rejected") {
+                    console.error("[KafkaAdapter] consumer disconnect error:", r.reason);
+                }
             }
             consumers.length = 0;
 
@@ -205,18 +230,15 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                         // Extract event ID from headers or use message key/offset
                         const eventId = msgHeaders.get("x-event-id") ?? message.key?.toString("utf-8") ?? randomUUID();
 
-                        // Extract published timestamp from headers or message timestamp
-                        const publishedAtStr = msgHeaders.get("x-published-at");
-                        const publishedAt = publishedAtStr ? new Date(publishedAtStr) : new Date(Number(message.timestamp));
+                        const publishedAt = parseTimestamp(msgHeaders.get("x-published-at"), message.timestamp);
 
-                        // Track delivery attempt via header (W-2)
-                        const attemptStr = msgHeaders.get("x-delivery-attempt");
-                        const attempt = attemptStr ? Number.parseInt(attemptStr, 10) || 1 : 1;
+                        // Kafka does not natively track delivery attempts across redeliveries.
+                        // Attempt defaults to 1; retry middleware tracks retries internally.
+                        const attempt = 1;
 
                         // Remove internal headers from metadata
                         msgHeaders.delete("x-event-id");
                         msgHeaders.delete("x-published-at");
-                        msgHeaders.delete("x-delivery-attempt");
 
                         const rawEvent: RawEvent = {
                             eventId,

@@ -132,4 +132,34 @@ describe("dlqMiddleware", () => {
         assert.equal(published.length, 1);
         assert.equal(published[0]!.metadata?.["dlq.error"], "string error");
     });
+
+    it("uses custom errorSerializer when provided (N-8)", async () => {
+        const published: { metadata?: Record<string, string> }[] = [];
+        const mockAdapter: Pick<EventAdapter, "publish"> = {
+            async publish(_eventType, _payload, options) {
+                published.push({ ...(options?.metadata ? { metadata: options.metadata } : {}) });
+            },
+        };
+
+        const event = makeRawEvent({ eventId: "evt-serial", eventType: "orders.created" });
+        const { ctx } = makeCtx(event);
+
+        const customSerializer = (error: unknown): string => {
+            if (error instanceof Error) {
+                return `CUSTOM:${error.name}:${error.message}`;
+            }
+            return `CUSTOM:${String(error)}`;
+        };
+
+        const mw = dlqMiddleware({ topic: "my-service.dlq", errorSerializer: customSerializer }, mockAdapter as EventAdapter);
+
+        const testError = new TypeError("invalid input");
+        await mw(event, ctx, async () => {
+            throw testError;
+        });
+
+        assert.equal(published.length, 1);
+        assert.equal(published[0]!.metadata?.["dlq.error"], "CUSTOM:TypeError:invalid input");
+        assert.equal(published[0]!.metadata?.["dlq.original-id"], "evt-serial");
+    });
 });

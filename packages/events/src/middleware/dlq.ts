@@ -10,13 +10,17 @@
 
 import type { DlqOptions, EventAdapter, EventMiddleware } from "../types.ts";
 
+/** Default max length for error messages in DLQ metadata. */
+const DEFAULT_MAX_ERROR_LENGTH = 200;
+
 /**
- * Truncate and sanitize error message to prevent leaking sensitive data
- * (connection strings, credentials) into DLQ metadata.
+ * Default error serializer: extracts error message and truncates.
+ * Users can provide a custom `errorSerializer` in DlqOptions for
+ * redaction of sensitive data (credentials, tokens, connection strings).
  */
-function sanitizeError(error: unknown, maxLength = 200): string {
+function defaultErrorSerializer(error: unknown): string {
     const msg = error instanceof Error ? error.message : String(error);
-    return msg.slice(0, maxLength);
+    return msg.slice(0, DEFAULT_MAX_ERROR_LENGTH);
 }
 
 /**
@@ -24,6 +28,8 @@ function sanitizeError(error: unknown, maxLength = 200): string {
  * (retry), publishes to DLQ topic, and acks the original.
  */
 export function dlqMiddleware(options: DlqOptions, adapter: EventAdapter): EventMiddleware {
+    const serializeError = options.errorSerializer ?? defaultErrorSerializer;
+
     return async (event, ctx, next) => {
         try {
             await next();
@@ -37,7 +43,7 @@ export function dlqMiddleware(options: DlqOptions, adapter: EventAdapter): Event
             const metadata: Record<string, string> = {
                 "dlq.original-topic": event.eventType,
                 "dlq.original-id": event.eventId,
-                "dlq.error": sanitizeError(error),
+                "dlq.error": serializeError(error),
                 "dlq.attempt": String(event.attempt),
             };
 

@@ -183,9 +183,13 @@ export type EventRoute = (events: EventRouter) => void;
 // =============================================================================
 
 /**
- * Event middleware next function
+ * Event middleware next function.
+ *
+ * Optionally accepts an updated event to replace the current one
+ * in the pipeline (e.g., retry middleware sets a new attempt number
+ * without mutating the readonly original).
  */
-export type EventMiddlewareNext = () => Promise<void>;
+export type EventMiddlewareNext = (updatedEvent?: RawEvent) => Promise<void>;
 
 /**
  * Event middleware function
@@ -220,6 +224,8 @@ export interface RetryOptions {
 export interface DlqOptions {
     /** DLQ topic name */
     topic: string;
+    /** Custom error serializer for DLQ metadata. Defaults to truncated error message (200 chars). */
+    errorSerializer?: (error: unknown) => string;
 }
 
 /**
@@ -254,6 +260,13 @@ export interface EventBusOptions {
      * Automatically set when used with `createServer({ eventBus })`.
      */
     signal?: AbortSignal;
+    /**
+     * Per-event handler timeout in milliseconds.
+     *
+     * Each event handler invocation gets an AbortSignal that fires after
+     * this duration. Default: 30000 (30 seconds).
+     */
+    handlerTimeout?: number;
 }
 
 /**

@@ -161,16 +161,22 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const subject = `${streamName}.${eventType}`;
 
-            // Build NATS headers from metadata.
-            const metadata = publishOptions?.metadata;
+            // Always include event-id header for stable identity across redeliveries.
+            const eventId = publishOptions?.metadata?.["event-id"] ?? randomUUID();
+            const headers = createNatsHeaders();
+            headers.append("event-id", eventId);
 
-            if (metadata && Object.keys(metadata).length > 0) {
-                await js.publish(subject, payload, {
-                    headers: buildHeaders(metadata),
-                });
-            } else {
-                await js.publish(subject, payload);
+            // Merge user metadata into headers.
+            const metadata = publishOptions?.metadata;
+            if (metadata) {
+                for (const [key, value] of Object.entries(metadata)) {
+                    if (key !== "event-id") {
+                        headers.append(key, value);
+                    }
+                }
             }
+
+            await js.publish(subject, payload, { headers });
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
@@ -178,6 +184,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 throw new Error("NatsAdapter: not connected");
             }
 
+            const isAutoGroup = !subOptions?.group;
             const group = subOptions?.group ?? `sub-${randomUUID().slice(0, 8)}`;
 
             const ackWaitNs = options.consumerOptions?.ackWait ? options.consumerOptions.ackWait * MS_TO_NS : DEFAULT_ACK_WAIT_NS;
@@ -240,6 +247,14 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     }
                     messageIterators.length = 0;
 
+                    // Delete auto-generated durable consumers to prevent broker-side leak.
+                    if (isAutoGroup && jsm) {
+                        for (const durableName of createdDurables) {
+                            await jsm.consumers.delete(streamName, durableName).catch(() => undefined);
+                        }
+                    }
+                    createdDurables.length = 0;
+
                     // Remove from the active subscriptions list.
                     const idx = activeSubs.indexOf(subscription);
                     if (idx !== -1) {
@@ -257,17 +272,6 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Build NATS headers from a plain metadata record.
- */
-function buildHeaders(metadata: Record<string, string>) {
-    const hdrs = createNatsHeaders();
-    for (const [key, value] of Object.entries(metadata)) {
-        hdrs.append(key, value);
-    }
-    return hdrs;
-}
 
 /**
  * Parse NATS message headers into a `ReadonlyMap<string, string>`.
@@ -318,8 +322,12 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
         const ack = async (): Promise<void> => {
             msg.ack();
         };
-        const nack = async (_requeue?: boolean): Promise<void> => {
-            msg.nak();
+        const nack = async (requeue?: boolean): Promise<void> => {
+            if (requeue === false) {
+                msg.term();
+            } else {
+                msg.nak();
+            }
         };
 
         try {

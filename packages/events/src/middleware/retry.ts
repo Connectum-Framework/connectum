@@ -57,12 +57,20 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
         const baseAttempt = event.attempt;
 
         for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+            // Bail out before re-entering handler if shutdown requested
+            if (attempt > 1 && ctx.signal.aborted) {
+                throw ctx.signal.reason;
+            }
+
             try {
-                // Propagate attempt number to inner middleware/handler
+                // Propagate attempt number to inner middleware/handler via shallow copy
+                // passed through next() — avoids mutating the readonly RawEvent (C-1)
                 if (attempt > 1) {
-                    (event as { attempt: number }).attempt = baseAttempt + attempt - 1;
+                    const retryEvent = { ...event, attempt: baseAttempt + attempt - 1 };
+                    await next(retryEvent);
+                } else {
+                    await next();
                 }
-                await next();
                 return;
             } catch (error) {
                 lastError = error;

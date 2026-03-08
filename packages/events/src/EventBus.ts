@@ -44,6 +44,7 @@ import { matchPattern } from "./wildcard.ts";
  */
 export function createEventBus(options: EventBusOptions): EventBus & EventBusLike {
     const { adapter, routes = [], group, middleware: mwConfig } = options;
+    const handlerTimeout = options.handlerTimeout ?? 30_000;
     const subscriptions: EventSubscription[] = [];
     let started = false;
     let starting = false;
@@ -111,12 +112,14 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     const sub = await adapter.subscribe(
                         allTopics,
                         async (rawEvent: RawEvent, ack: () => Promise<void>, nack: (requeue?: boolean) => Promise<void>) => {
-                            // Find handler by matching topic patterns (supports wildcards * and >)
-                            let handler: ((event: RawEvent, ctx: EventContext) => Promise<void>) | undefined;
-                            for (const [pattern, h] of topicHandlerMap) {
-                                if (matchPattern(pattern, rawEvent.eventType)) {
-                                    handler = h;
-                                    break;
+                            // Exact match first, then wildcard fallback
+                            let handler = topicHandlerMap.get(rawEvent.eventType);
+                            if (!handler) {
+                                for (const [pattern, h] of topicHandlerMap) {
+                                    if (pattern !== rawEvent.eventType && matchPattern(pattern, rawEvent.eventType)) {
+                                        handler = h;
+                                        break;
+                                    }
                                 }
                             }
                             if (!handler) {
@@ -124,8 +127,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                 return;
                             }
 
-                            // Compose per-event signal: timeout + optional server shutdown (C-2)
-                            const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
+                            // Compose per-event signal: timeout + optional server shutdown (C-2, M-5)
+                            const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(handlerTimeout)]) : AbortSignal.timeout(handlerTimeout);
 
                             // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
                             let settled = false;
@@ -186,9 +189,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     subscriptions.length = 0;
 
                     await adapter.disconnect();
+                } finally {
                     started = false;
                     shutdownSignal = undefined;
-                } finally {
                     stopping = false;
                     stopPromise = null;
                 }

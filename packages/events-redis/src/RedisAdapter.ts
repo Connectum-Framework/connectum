@@ -315,10 +315,14 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                 const ack = async (): Promise<void> => {
                     await blockingRedis.xack(streamKeyForAck, group, entryId);
                 };
-                const nack = async (_requeue?: boolean): Promise<void> => {
-                    // Don't XACK -- message remains in the pending entries list (PEL).
-                    // The periodic XAUTOCLAIM below will reclaim stale pending entries
-                    // and redeliver them, providing retry semantics.
+                const nack = async (requeue?: boolean): Promise<void> => {
+                    if (requeue === false) {
+                        // "Reject without requeue" — XACK the message so it leaves the PEL
+                        // and won't be redelivered. DLQ middleware already saved a copy. (M-4)
+                        await blockingRedis.xack(streamKeyForAck, group, entryId);
+                    }
+                    // When requeue is true/undefined: don't XACK — message stays in PEL
+                    // and XAUTOCLAIM will reclaim it for redelivery.
                 };
 
                 await handler(rawEvent, ack, nack);
