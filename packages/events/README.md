@@ -204,7 +204,8 @@ function createEventBus(options: EventBusOptions): EventBus
 | `middleware` | `MiddlewareConfig` | `{}` | Middleware configuration |
 | `group` | `string` | `undefined` | Consumer group name |
 | `signal` | `AbortSignal` | `undefined` | External abort signal |
-| `handlerTimeout` | `number` | `undefined` | Per-handler timeout in ms |
+| `handlerTimeout` | `number` | `30000` | Per-handler timeout in ms |
+| `drainTimeout` | `number` | `30000` | Max ms to wait for in-flight handlers during shutdown |
 
 ### EventBus Interface
 
@@ -274,6 +275,27 @@ await bus.stop();
 ```
 
 Supports wildcard subscriptions (`*` and `>` patterns).
+
+## Graceful Shutdown
+
+EventBus tracks in-flight message handlers and waits for them to complete during `stop()`:
+
+```typescript
+const bus = createEventBus({
+  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
+  routes: [eventRoutes],
+  drainTimeout: 15_000, // Wait up to 15s for handlers (default: 30s)
+});
+
+// During stop():
+// 1. Stop accepting new messages (nack with requeue)
+// 2. Wait for in-flight handlers up to drainTimeout
+// 3. Force-abort remaining via AbortSignal
+// 4. Disconnect adapter
+await bus.stop();
+```
+
+Set `drainTimeout: 0` for immediate abort (skip drain).
 
 ## Exports Summary
 
