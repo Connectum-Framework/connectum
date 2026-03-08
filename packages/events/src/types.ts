@@ -100,7 +100,8 @@ export interface EventAdapter {
  * Per-event context with explicit ack/nack control.
  *
  * Passed to event handlers alongside the deserialized message.
- * No implicit acknowledgment -- handler must call ack() or nack().
+ * Supports explicit ack/nack control. If the handler completes
+ * without calling either, the event is automatically acknowledged.
  */
 export interface EventContext {
     /** Abort signal (aborted when server is shutting down) */
