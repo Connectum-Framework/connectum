@@ -1,6 +1,19 @@
 {
   "$schema": "https://typedoc-plugin-markdown.org/schema.json",
-  "entryPoints": ["packages/core", "packages/auth", "packages/interceptors", "packages/healthcheck", "packages/reflection", "packages/otel", "packages/cli", "packages/testing"],
+  "entryPoints": [
+    "packages/core",
+    "packages/auth",
+    "packages/interceptors",
+    "packages/healthcheck",
+    "packages/reflection",
+    "packages/otel",
+    "packages/cli",
+    "packages/testing",
+    "packages/events",
+    "packages/events-nats",
+    "packages/events-kafka",
+    "packages/events-redis"
+  ],
   "entryPointStrategy": "packages",
   "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
   "docsRoot": "../docs",

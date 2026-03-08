@@ -9,7 +9,11 @@
     "@connectum/otel": "1.0.0-beta.2",
     "@connectum/reflection": "1.0.0-beta.2",
     "@connectum/testing": "1.0.0-beta.2",
-    "@connectum/auth": "1.0.0-rc.3"
+    "@connectum/auth": "1.0.0-rc.3",
+    "@connectum/events": "1.0.0-rc.5",
+    "@connectum/events-nats": "1.0.0-rc.5",
+    "@connectum/events-kafka": "1.0.0-rc.5",
+    "@connectum/events-redis": "1.0.0-rc.5"
   },
   "changesets": [
     "auth-proto-authorization",

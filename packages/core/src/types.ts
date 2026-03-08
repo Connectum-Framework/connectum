@@ -114,6 +114,28 @@ export interface TLSOptions {
 }
 
 // =============================================================================
+// EVENT BUS INTEGRATION
+// =============================================================================
+
+/**
+ * Minimal interface for event bus lifecycle integration with the server.
+ *
+ * Packages implementing event bus adapters (e.g., @connectum/events)
+ * must satisfy this interface to be used with `createServer({ eventBus })`.
+ */
+export interface EventBusLike {
+    /**
+     * Start the event bus (connect to broker, set up subscriptions).
+     *
+     * @param options - Optional start parameters
+     * @param options.signal - Abort signal from server for graceful shutdown
+     */
+    start(options?: { signal?: AbortSignal }): Promise<void>;
+    /** Stop the event bus (drain subscriptions, disconnect) */
+    stop(): Promise<void>;
+}
+
+// =============================================================================
 // SERVER API
 // =============================================================================
 
@@ -239,6 +261,30 @@ export interface CreateServerOptions {
      * Use `createDefaultInterceptors()` from `@connectum/interceptors` to get the default chain.
      */
     interceptors?: Interceptor[];
+
+    /**
+     * Event bus instance for pub/sub messaging.
+     *
+     * The event bus is started during `server.start()` (after route building,
+     * before transport listen) and stopped during graceful shutdown.
+     *
+     * @example
+     * ```typescript
+     * import { createEventBus } from '@connectum/events';
+     * import { NatsAdapter } from '@connectum/events-nats';
+     *
+     * const eventBus = createEventBus({
+     *   adapter: NatsAdapter({ servers: ['nats://localhost:4222'] }),
+     *   router: eventRouter,
+     * });
+     *
+     * const server = createServer({
+     *   services: [routes],
+     *   eventBus,
+     * });
+     * ```
+     */
+    eventBus?: EventBusLike;
 
     /**
      * Allow HTTP/1.1 connections.
@@ -446,4 +492,11 @@ export interface Server extends EventEmitter {
      * Registered protocols
      */
     readonly protocols: ReadonlyArray<ProtocolRegistration>;
+
+    /**
+     * Event bus instance, if configured
+     *
+     * Returns null if no event bus was provided to createServer().
+     */
+    readonly eventBus: EventBusLike | null;
 }
