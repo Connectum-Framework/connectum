@@ -233,8 +233,8 @@ interface EventBus {
 | `eventId` | `string` | Unique event identifier |
 | `metadata` | `Map<string, string>` | Event metadata |
 | `signal` | `AbortSignal` | Abort signal (shutdown + timeout) |
-| `ack()` | `() => void` | Acknowledge event (idempotent) |
-| `nack(requeue?)` | `(requeue?: boolean) => void` | Negative-acknowledge event |
+| `ack()` | `() => Promise<void>` | Acknowledge event (idempotent) |
+| `nack(requeue?)` | `(requeue?: boolean) => Promise<void>` | Negative-acknowledge event |
 
 ### DlqOptions
 
