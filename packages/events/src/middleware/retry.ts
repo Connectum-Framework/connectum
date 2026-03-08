@@ -7,6 +7,7 @@
  * @module middleware/retry
  */
 
+import { NonRetryableError, RetryableError } from "../errors.ts";
 import type { EventMiddleware, RetryOptions } from "../types.ts";
 
 const DEFAULT_MAX_RETRIES = 3;
@@ -75,8 +76,11 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
             } catch (error) {
                 lastError = error;
 
-                // Check if error is retryable
-                if (retryableErrors && !retryableErrors(error)) {
+                // Priority: NonRetryable brand > Retryable brand > predicate > retry all
+                if (NonRetryableError.isNonRetryable(error)) {
+                    throw error;
+                }
+                if (!RetryableError.isRetryable(error) && retryableErrors && !retryableErrors(error)) {
                     throw error;
                 }
 
