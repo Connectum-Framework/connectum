@@ -52,6 +52,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let stopping = false;
     let startPromise: Promise<void> | null = null;
     let stopPromise: Promise<void> | null = null;
+    const drainTimeout = options.drainTimeout ?? 30_000;
+    const inFlight = new Set<Promise<void>>();
+    let drainController = new AbortController();
+    let draining = false;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
 
@@ -130,8 +134,16 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                     return;
                                 }
 
-                                // Compose per-event signal: timeout + optional server shutdown (C-2, M-5)
-                                const eventSignal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(handlerTimeout)]) : AbortSignal.timeout(handlerTimeout);
+                                // Gate: nack new messages during drain
+                                if (draining) {
+                                    await nack(true);
+                                    return;
+                                }
+
+                                // Compose per-event signal: timeout + optional server shutdown + drain (C-2, M-5)
+                                const signals: AbortSignal[] = [AbortSignal.timeout(handlerTimeout), drainController.signal];
+                                if (shutdownSignal) signals.push(shutdownSignal);
+                                const eventSignal = AbortSignal.any(signals);
 
                                 // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
                                 let settled = false;
@@ -148,19 +160,27 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                     },
                                 });
 
-                                let completed = false;
-                                try {
-                                    await handler(rawEvent, ctx);
-                                    completed = true;
-                                } finally {
-                                    // Auto-ack fallback for backward compatibility (C-1)
-                                    if (!settled && completed) {
-                                        try {
-                                            await ack();
-                                        } catch {
-                                            // Auto-ack failed — message will be redelivered by broker timeout
+                                const handlerPromise = (async () => {
+                                    let completed = false;
+                                    try {
+                                        await handler(rawEvent, ctx);
+                                        completed = true;
+                                    } finally {
+                                        // Auto-ack fallback for backward compatibility (C-1)
+                                        if (!settled && completed) {
+                                            try {
+                                                await ack();
+                                            } catch {
+                                                // Auto-ack failed — message will be redelivered by broker timeout
+                                            }
                                         }
                                     }
+                                })();
+                                inFlight.add(handlerPromise);
+                                try {
+                                    await handlerPromise;
+                                } finally {
+                                    inFlight.delete(handlerPromise);
                                 }
                             },
                             group !== undefined ? { group } : {},
@@ -197,17 +217,46 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             if (!started) return;
 
             stopping = true;
+            draining = true;
+
             stopPromise = (async () => {
                 try {
-                    // Unsubscribe all — use allSettled so one failure doesn't block the rest.
+                    // 1. Close iterators — stop receiving new messages
                     await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
 
+                    // 2. Drain in-flight handlers with timeout
+                    if (inFlight.size > 0 && drainTimeout > 0) {
+                        const deadline = Date.now() + drainTimeout;
+
+                        while (inFlight.size > 0) {
+                            const remaining = deadline - Date.now();
+                            if (remaining <= 0) break;
+
+                            await Promise.race([
+                                Promise.allSettled([...inFlight]),
+                                new Promise<void>((resolve) => {
+                                    globalThis.setTimeout(resolve, remaining);
+                                }),
+                            ]);
+                        }
+                    }
+
+                    // 3. Force-abort remaining handlers if still in-flight
+                    if (inFlight.size > 0) {
+                        drainController.abort("Drain timeout exceeded");
+                        // Brief settle window for abort handlers
+                        await Promise.allSettled([...inFlight]);
+                    }
+
+                    inFlight.clear();
                     await adapter.disconnect();
                 } finally {
                     started = false;
                     shutdownSignal = undefined;
                     stopping = false;
+                    draining = false;
+                    drainController = new AbortController();
                     stopPromise = null;
                 }
             })();

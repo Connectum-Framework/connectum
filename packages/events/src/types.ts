@@ -273,6 +273,14 @@ export interface EventBusOptions {
      * this duration. Default: 30000 (30 seconds).
      */
     handlerTimeout?: number;
+    /**
+     * Maximum time in milliseconds to wait for in-flight event handlers
+     * to complete during shutdown. After this timeout, remaining handlers
+     * are force-aborted via AbortSignal.
+     *
+     * Default: 30000 (30 seconds). Set to 0 for immediate abort.
+     */
+    drainTimeout?: number;
 }
 
 /**
