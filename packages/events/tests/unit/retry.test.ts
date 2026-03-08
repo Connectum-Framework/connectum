@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createEventContext } from "../../src/EventContext.ts";
+import { NonRetryableError, RetryableError } from "../../src/errors.ts";
 import { retryMiddleware } from "../../src/middleware/retry.ts";
 import type { RawEvent } from "../../src/types.ts";
 
@@ -160,6 +161,89 @@ describe("retryMiddleware", () => {
             callCount++;
         });
 
+        assert.equal(callCount, 1);
+    });
+
+    it("skips retry for NonRetryableError", async () => {
+        let callCount = 0;
+        const mw = retryMiddleware({ maxRetries: 3, backoff: "fixed", initialDelay: 10 });
+
+        await assert.rejects(
+            () =>
+                mw(makeRawEvent(), makeCtx(), async () => {
+                    callCount++;
+                    throw new NonRetryableError("validation failed");
+                }),
+            { message: /validation failed/ },
+        );
+
+        // Should not retry -- only 1 call
+        assert.equal(callCount, 1);
+    });
+
+    it("forces retry for RetryableError even when predicate rejects", async () => {
+        let callCount = 0;
+        const mw = retryMiddleware({
+            maxRetries: 2,
+            backoff: "fixed",
+            initialDelay: 10,
+            // Predicate rejects all errors
+            retryableErrors: () => false,
+        });
+
+        await mw(makeRawEvent(), makeCtx(), async () => {
+            callCount++;
+            if (callCount < 3) throw new RetryableError("temporary failure");
+        });
+
+        // RetryableError overrides predicate: 1 initial + 2 retries = 3
+        assert.equal(callCount, 3);
+    });
+
+    it("NonRetryableError takes priority over RetryableError brand", async () => {
+        let callCount = 0;
+        const mw = retryMiddleware({ maxRetries: 3, backoff: "fixed", initialDelay: 10 });
+
+        // Create an error with both brands
+        const NON_RETRYABLE = Symbol.for("@connectum/events.NonRetryableError");
+        const RETRYABLE = Symbol.for("@connectum/events.RetryableError");
+        const dualBranded = Object.assign(new Error("dual branded"), {
+            [NON_RETRYABLE]: true,
+            [RETRYABLE]: true,
+        });
+
+        await assert.rejects(
+            () =>
+                mw(makeRawEvent(), makeCtx(), async () => {
+                    callCount++;
+                    throw dualBranded;
+                }),
+            { message: /dual branded/ },
+        );
+
+        // NonRetryable wins -- only 1 call
+        assert.equal(callCount, 1);
+    });
+
+    it("backward compat: retryableErrors predicate still works for plain errors", async () => {
+        let callCount = 0;
+        const mw = retryMiddleware({
+            maxRetries: 3,
+            backoff: "fixed",
+            initialDelay: 10,
+            retryableErrors: (err) => err instanceof Error && err.message !== "fatal",
+        });
+
+        await assert.rejects(
+            () =>
+                mw(makeRawEvent(), makeCtx(), async () => {
+                    callCount++;
+                    throw new Error("fatal");
+                }),
+            { message: /fatal/ },
+        );
+
+        // Predicate rejects plain Error("fatal") -- only 1 call
         assert.equal(callCount, 1);
     });
 });

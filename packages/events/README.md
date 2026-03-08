@@ -185,6 +185,24 @@ const bus = createEventBus({
 });
 ```
 
+### Typed Errors
+
+Control retry behavior declaratively by throwing typed error classes:
+
+```typescript
+import { NonRetryableError, RetryableError } from '@connectum/events';
+
+// Skip retry entirely (e.g., validation errors)
+throw new NonRetryableError('Invalid payload schema');
+
+// Force retry regardless of retryableErrors predicate
+throw new RetryableError('Temporary connection lost', { cause: originalError });
+```
+
+**Priority**: `NonRetryableError` > `RetryableError` > `retryableErrors` predicate > retry all (default).
+
+Both classes use `Symbol.for()` branding for cross-realm compatibility.
+
 ## API Reference
 
 ### createEventBus()
@@ -302,6 +320,8 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 | Export | Kind | Description |
 |--------|------|-------------|
 | `createEventBus` | function | Factory for creating an EventBus |
+| `NonRetryableError` | class | Error that skips retry middleware |
+| `RetryableError` | class | Error that forces retry |
 | `EventRouterImpl` | class | Event router implementation |
 | `MemoryAdapter` | function | In-memory adapter factory |
 | `dlqMiddleware` | function | DLQ middleware factory |

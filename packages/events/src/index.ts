@@ -22,6 +22,9 @@ export { createEventContext } from "./EventContext.ts";
 // EventRouter
 export { EventRouterImpl } from "./EventRouter.ts";
 
+// Error classes
+export { NonRetryableError, RetryableError } from "./errors.ts";
+
 // Adapters
 export { MemoryAdapter } from "./MemoryAdapter.ts";
 export { dlqMiddleware } from "./middleware/dlq.ts";
