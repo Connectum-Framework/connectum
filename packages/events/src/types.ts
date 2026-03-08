@@ -279,7 +279,15 @@ export interface EventBusOptions {
  * EventBus interface -- manages adapter, routes, and middleware
  */
 export interface EventBus {
-    /** Start the event bus: connect adapter, set up subscriptions */
+    /**
+     * Start the event bus: connect adapter, set up subscriptions.
+     *
+     * An optional `signal` can be passed for graceful shutdown.
+     * If provided, it **overrides** the construction-time `EventBusOptions.signal`.
+     * The active signal is then composed with `AbortSignal.timeout(handlerTimeout)`
+     * via `AbortSignal.any()` for each event handler invocation, so either
+     * shutdown or per-event timeout will abort in-flight processing.
+     */
     start(options?: { signal?: AbortSignal }): Promise<void>;
     /** Stop the event bus: drain subscriptions, disconnect adapter */
     stop(): Promise<void>;

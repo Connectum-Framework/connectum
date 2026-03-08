@@ -40,6 +40,10 @@ function parseTimestamp(headerValue: string | undefined, kafkaTimestamp: string 
  * @returns RegExp for Kafka topic subscription, or the original string if no wildcards
  */
 function patternToKafkaTopicMatcher(pattern: string): string | RegExp {
+    if (pattern.length > 256) {
+        throw new Error(`Topic pattern exceeds maximum length (256): ${pattern.length}`);
+    }
+
     if (!pattern.includes("*") && !pattern.includes(">")) {
         return pattern;
     }
