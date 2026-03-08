@@ -193,15 +193,17 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                 stop();
             }
 
+            // Interrupt blocking XREADGROUP by disconnecting readers.
+            // disconnect() is synchronous and immediately tears down the socket,
+            // causing pending XREADGROUP calls to reject and unblock the loop.
+            for (const reader of readers) {
+                reader.disconnect();
+            }
+
             // Wait for all consume loops to exit.
             await Promise.all(activeLoops.map((p) => p.catch(() => {})));
             stopCallbacks.length = 0;
             activeLoops.length = 0;
-
-            // Close all blocking reader connections.
-            for (const reader of readers) {
-                await reader.quit().catch(() => {});
-            }
             readers.length = 0;
 
             if (redis) {
@@ -283,8 +285,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
             // Separate blocking connection for XREADGROUP
             const blockingRedis = redis.duplicate();
+            try {
+                await waitForReady(blockingRedis);
+            } catch (err) {
+                blockingRedis.disconnect();
+                throw err;
+            }
             readers.push(blockingRedis);
-            await waitForReady(blockingRedis);
 
             /**
              * Process a single stream message entry through the handler.
@@ -426,8 +433,9 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             return {
                 async unsubscribe(): Promise<void> {
                     subscriptionRunning = false;
+                    // Interrupt blocking XREADGROUP so the loop exits promptly.
+                    blockingRedis.disconnect();
                     await loopPromise.catch(() => {});
-                    await blockingRedis.quit();
 
                     // Remove from tracked readers.
                     const readerIdx = readers.indexOf(blockingRedis);

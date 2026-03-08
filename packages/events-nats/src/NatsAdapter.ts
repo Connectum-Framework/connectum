@@ -8,7 +8,7 @@
  * @module NatsAdapter
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -58,11 +58,14 @@ function sanitizeDurableName(name: string): string {
  *
  * NATS durable consumer names must be alphanumeric plus `-` and `_`.
  * Both group and pattern are sanitized to ensure valid durable names.
+ * A short SHA-256 hash suffix prevents collisions between inputs that
+ * map to the same sanitized form (e.g. `orders.created` vs `orders_created`).
  */
 function consumerName(group: string, pattern: string): string {
     const safeGroup = sanitizeDurableName(group);
     const safePattern = sanitizeDurableName(pattern);
-    return `${safeGroup}--${safePattern}`;
+    const suffix = createHash("sha256").update(`${group}\0${pattern}`).digest("hex").slice(0, 8);
+    return `${safeGroup}--${safePattern}--${suffix}`;
 }
 
 /**
@@ -94,29 +97,40 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
         async connect(): Promise<void> {
             const servers = Array.isArray(options.servers) ? options.servers : [options.servers];
 
-            nc = await connect({
+            const connection = await connect({
                 ...options.connectionOptions,
                 servers,
             });
 
-            js = jetstream(nc);
-            jsm = await jetstreamManager(nc);
-
-            // Ensure the JetStream stream exists.
             try {
-                await jsm.streams.info(streamName);
-            } catch (err: unknown) {
-                // Only create the stream when it does not exist (JetStream API error 10059 / HTTP 404).
-                // Any other error (permissions, connectivity) must propagate.
-                const apiErrCode = err && typeof err === "object" && "api_error" in err ? (err as { api_error: { err_code?: number } }).api_error?.err_code : undefined;
-                if (apiErrCode === 10059) {
-                    await jsm.streams.add({
-                        name: streamName,
-                        subjects: [`${streamName}.>`],
-                    });
-                } else {
-                    throw err;
+                const jetStream = jetstream(connection);
+                const manager = await jetstreamManager(connection);
+
+                // Ensure the JetStream stream exists.
+                try {
+                    await manager.streams.info(streamName);
+                } catch (err: unknown) {
+                    // Only create the stream when it does not exist (JetStream API error 10059 / HTTP 404).
+                    // Any other error (permissions, connectivity) must propagate.
+                    const code = err && typeof err === "object" && "code" in err ? Number((err as { code?: number }).code) : undefined;
+                    const apiErrCode = err && typeof err === "object" && "api_error" in err ? (err as { api_error?: { err_code?: number } }).api_error?.err_code : undefined;
+                    if (code === 404 || apiErrCode === 10059) {
+                        await manager.streams.add({
+                            name: streamName,
+                            subjects: [`${streamName}.>`],
+                        });
+                    } else {
+                        throw err;
+                    }
                 }
+
+                // All setup succeeded — commit to closure-level state.
+                nc = connection;
+                js = jetStream;
+                jsm = manager;
+            } catch (err) {
+                await connection.close().catch(() => undefined);
+                throw err;
             }
         },
 
@@ -171,6 +185,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
+            /** Tracked durable names for rollback on partial failure. */
+            const createdDurables: string[] = [];
+
             try {
                 for (const pattern of patterns) {
                     const subject = `${streamName}.${pattern}`;
@@ -185,6 +202,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                         ack_wait: ackWaitNs,
                         max_deliver: maxDeliver,
                     });
+                    createdDurables.push(durableName);
 
                     const consumer = await js.consumers.get(streamName, durableName);
 
@@ -201,7 +219,11 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 // Partial rollback: close all previously created message iterators
                 // to avoid leaked subscriptions when a later pattern fails.
                 for (const iter of messageIterators) {
-                    await iter.close();
+                    await iter.close().catch(() => undefined);
+                }
+                // Delete broker-side durable consumers created before the failure.
+                for (const durableName of createdDurables) {
+                    await jsm.consumers.delete(streamName, durableName).catch(() => undefined);
                 }
                 messageIterators.length = 0;
                 throw error;

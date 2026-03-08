@@ -47,6 +47,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     const subscriptions: EventSubscription[] = [];
     let started = false;
     let starting = false;
+    let stopping = false;
     let stopPromise: Promise<void> | null = null;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
@@ -77,8 +78,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
     return {
         async start(startOptions?: { signal?: AbortSignal }): Promise<void> {
-            if (started || starting) {
-                throw new Error("EventBus already started");
+            if (started || starting || stopping) {
+                throw new Error("EventBus already started or stopping");
             }
 
             starting = true;
@@ -170,18 +171,18 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             if (stopPromise) return stopPromise;
             if (!started) return;
 
+            stopping = true;
             stopPromise = (async () => {
                 try {
-                    // Unsubscribe all
-                    for (const sub of subscriptions) {
-                        await sub.unsubscribe();
-                    }
+                    // Unsubscribe all — use allSettled so one failure doesn't block the rest.
+                    await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
 
                     await adapter.disconnect();
                     started = false;
                     shutdownSignal = undefined;
                 } finally {
+                    stopping = false;
                     stopPromise = null;
                 }
             })();
@@ -190,7 +191,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
         },
 
         async publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, publishOptions?: PublishOptions): Promise<void> {
-            if (!started) {
+            if (!started || stopping) {
                 throw new Error("EventBus not started. Call start() first.");
             }
 
