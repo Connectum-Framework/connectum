@@ -121,7 +121,7 @@ export default (router: EventRouter) => {
 
 The middleware pipeline wraps event handlers in the order:
 
-```
+```text
 Custom[0] → Custom[1] → ... → DLQ → Retry → Handler
 ```
 
@@ -221,6 +221,7 @@ interface EventBus {
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `metadata` | `Record<string, string>` | `undefined` | Event metadata / headers |
+| `topic` | `string` | `undefined` | Override the schema-derived event type / topic name |
 | `key` | `string` | `undefined` | Partition key (Kafka) or routing key |
 
 ### EventContext

@@ -109,7 +109,7 @@ function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter
 
 Event types map directly to Kafka topics:
 
-```
+```text
 EventType: "user.created"
 Topic:     "user.created"
 ```

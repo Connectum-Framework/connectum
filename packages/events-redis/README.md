@@ -102,7 +102,7 @@ function RedisAdapter(options: RedisAdapterOptions): EventAdapter
 
 Event types are mapped to Redis stream keys with the `events:` prefix:
 
-```
+```text
 EventType: "user.created"
 Stream:    "events:user.created"
 ```
@@ -123,7 +123,7 @@ Each subscription creates a dedicated Redis connection for blocking XREADGROUP c
 
 Event metadata is stored as stream fields with the `meta:` prefix:
 
-```
+```text
 Stream entry fields:
   payload   → serialized event data
   meta:user → "alice"

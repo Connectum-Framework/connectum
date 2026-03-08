@@ -98,7 +98,7 @@ function NatsAdapter(options: NatsAdapterOptions): EventAdapter
 
 Event types are mapped to NATS subjects with the stream name prefix:
 
-```
+```text
 EventType: "user.created"
 Stream:    "events"
 Subject:   "events.user.created"
@@ -106,11 +106,11 @@ Subject:   "events.user.created"
 
 ### Consumer Naming
 
-Durable consumers use deterministic names to ensure load balancing across instances:
+Durable consumers use deterministic names to ensure load balancing across instances. Group and pattern are sanitized (invalid durable-name characters replaced with `_`):
 
-```
-Format: {group}--{pattern}--{hash}
-Example: worker-group--user.created--a1b2c3d4
+```text
+Format:  {sanitized-group}--{sanitized-pattern}--{hash}
+Example: worker-group--user_created--a1b2c3d4
 ```
 
 ### Metadata
