@@ -173,7 +173,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             if (metadata) {
                 for (const [key, value] of Object.entries(metadata)) {
                     if (!key.startsWith("x-")) {
-                        headers.append(key, value);
+                        headers.append(key, String(value));
                     }
                 }
             }

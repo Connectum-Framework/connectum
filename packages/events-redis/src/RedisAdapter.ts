@@ -246,7 +246,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             // User metadata as "meta:key" fields
             if (publishOptions?.metadata) {
                 for (const [metaKey, metaValue] of Object.entries(publishOptions.metadata)) {
-                    xaddArgs.push(`meta:${metaKey}`, metaValue);
+                    xaddArgs.push(`meta:${metaKey}`, String(metaValue));
                 }
             }
 
