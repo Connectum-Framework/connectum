@@ -1,6 +1,6 @@
 {
   "name": "@connectum/otel",
-  "version": "1.0.0-rc.5",
+  "version": "1.0.0-rc.6",
   "description": "OpenTelemetry instrumentation for Connectum",
   "type": "module",
   "main": "./dist/index.js",

@@ -23,9 +23,13 @@
     "compile-before-publish",
     "cross-runtime-tests",
     "dependency-migration-2025",
+    "eventbus-provider",
     "otel-streaming",
     "publickey-priority",
     "security-improvements",
-    "transport-http1-mode"
+    "security-overrides",
+    "testing-utilities-package",
+    "transport-http1-mode",
+    "typedoc-api-reference"
   ]
 }
