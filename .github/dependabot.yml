@@ -28,6 +28,8 @@ updates:
       - dependency-name: "env-var"
       - dependency-name: "husky"
       - dependency-name: "typescript"
+      - dependency-name: "@types/node"
+      - dependency-name: "tsup"
       - dependency-name: "zod"
     open-pull-requests-limit: 10
     commit-message:
