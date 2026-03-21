@@ -84,7 +84,7 @@ describe("RedisAdapter AdapterContext", () => {
         assert.equal(typeof adapter.connect, "function");
     });
 
-    it("connectionName falls back to context.serviceName when redisOptions.connectionName is not set", async () => {
+    it("connect() accepts AdapterContext without TypeError", async () => {
         // Use lazyConnect to prevent automatic connection and an unreachable host
         const adapter = RedisAdapter({
             redisOptions: { lazyConnect: true, host: "invalid-redis-host", port: 1, retryStrategy: () => null },
@@ -102,7 +102,7 @@ describe("RedisAdapter AdapterContext", () => {
         );
     });
 
-    it("explicit redisOptions.connectionName takes priority over context.serviceName", () => {
+    it("adapter can be constructed with explicit redisOptions.connectionName", () => {
         // Verify construction works -- actual priority is tested at connect() time
         const adapter = RedisAdapter({
             redisOptions: { connectionName: "explicit-name", lazyConnect: true },

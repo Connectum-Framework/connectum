@@ -96,7 +96,7 @@ describe("NatsAdapter AdapterContext", () => {
         assert.equal(typeof adapter.connect, "function");
     });
 
-    it("connection name falls back to context.serviceName when connectionOptions.name is not set", async () => {
+    it("connect() accepts AdapterContext without TypeError", async () => {
         const adapter = NatsAdapter({ servers: "nats://invalid-host:4222" });
 
         // connect() will fail (no broker), but should accept the context
@@ -111,7 +111,7 @@ describe("NatsAdapter AdapterContext", () => {
         );
     });
 
-    it("explicit connectionOptions.name takes priority over context.serviceName", () => {
+    it("adapter can be constructed with explicit connectionOptions.name", () => {
         // Verify that providing both connectionOptions.name and context.serviceName
         // is valid. The priority chain is: connectionOptions.name > context.serviceName
         const adapter = NatsAdapter({

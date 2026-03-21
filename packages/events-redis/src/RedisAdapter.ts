@@ -93,7 +93,8 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
     function createRedisInstance(connectionName?: string): Redis {
         // Merge connectionName into redisOptions only when the user has not
         // explicitly set it, preserving user-defined priority.
-        const mergedRedisOptions = connectionName !== undefined && !options.redisOptions?.connectionName ? { ...options.redisOptions, connectionName } : options.redisOptions;
+        const hasExplicitConnectionName = options.redisOptions?.connectionName !== undefined;
+        const mergedRedisOptions = connectionName !== undefined && !hasExplicitConnectionName ? { ...options.redisOptions, connectionName } : options.redisOptions;
 
         if (options.url) {
             if (mergedRedisOptions) {

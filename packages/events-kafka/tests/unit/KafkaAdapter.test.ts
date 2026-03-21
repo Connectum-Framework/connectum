@@ -114,7 +114,7 @@ describe("KafkaAdapter AdapterContext", () => {
         assert.equal(typeof adapter.connect, "function");
     });
 
-    it("clientId falls back to context.serviceName when no clientId is provided", async () => {
+    it("connect() accepts AdapterContext without TypeError", async () => {
         // We cannot verify the actual Kafka clientId without a running broker,
         // but we can verify the adapter does not throw a TypeError when context is provided.
         // The actual clientId = options.clientId ?? context?.serviceName ?? "connectum"
@@ -135,7 +135,7 @@ describe("KafkaAdapter AdapterContext", () => {
         );
     });
 
-    it("explicit clientId takes priority over context.serviceName", () => {
+    it("adapter can be constructed with explicit clientId", () => {
         // Verify construction works with both clientId and context will be provided.
         // The priority chain is: options.clientId > context.serviceName > "connectum"
         const adapter = KafkaAdapter({
