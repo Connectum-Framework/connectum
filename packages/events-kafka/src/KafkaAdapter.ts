@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type { Consumer, EachBatchPayload, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
 import type { KafkaAdapterOptions } from "./types.ts";
@@ -120,11 +120,7 @@ function encodeMetadata(metadata: Record<string, string>): IHeaders {
  * ```
  */
 export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
-    const kafka = new Kafka({
-        clientId: options.clientId ?? "connectum",
-        brokers: options.brokers,
-        ...options.kafkaConfig,
-    });
+    let kafka: Kafka;
 
     let producer: Producer | null = null;
     const consumers: Consumer[] = [];
@@ -133,10 +129,15 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
     return {
         name: "kafka",
 
-        async connect(): Promise<void> {
+        async connect(context?: AdapterContext): Promise<void> {
             if (connected) {
                 return;
             }
+            kafka = new Kafka({
+                clientId: options.clientId ?? context?.serviceName ?? "connectum",
+                brokers: options.brokers,
+                ...options.kafkaConfig,
+            });
             const p = kafka.producer();
             try {
                 await p.connect();

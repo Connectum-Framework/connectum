@@ -9,7 +9,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import type { EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -93,16 +93,21 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
     return {
         name: "nats",
 
-        async connect(): Promise<void> {
+        async connect(context?: AdapterContext): Promise<void> {
             if (nc) {
                 throw new Error("NatsAdapter: already connected");
             }
 
             const servers = Array.isArray(options.servers) ? options.servers : [options.servers];
 
+            // Use serviceName as the NATS connection name (visible in /connz monitoring)
+            // only when the user has not explicitly set connectionOptions.name.
+            const name = options.connectionOptions?.name ?? context?.serviceName;
+
             const connection = await connect({
                 ...options.connectionOptions,
                 servers,
+                ...(name !== undefined && { name }),
             });
 
             try {

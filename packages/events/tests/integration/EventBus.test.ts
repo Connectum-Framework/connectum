@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { hostname } from "node:os";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { EventOptionsSchema } from "../../gen/connectum/events/v1/options_pb.js";
 import { createEventBus } from "../../src/EventBus.ts";
 import { MemoryAdapter } from "../../src/MemoryAdapter.ts";
-import type { EventAdapter, EventSubscription, RawEvent, RawEventHandler } from "../../src/types.ts";
+import type { AdapterContext, EventAdapter, EventSubscription, RawEvent, RawEventHandler } from "../../src/types.ts";
 
 /**
  * Create a minimal fake DescMethod compatible with resolveTopicName().
@@ -114,7 +115,7 @@ describe("EventBus partial startup rollback", () => {
         let disconnectCount = 0;
         const failingAdapter: EventAdapter = {
             name: "failing",
-            async connect() {
+            async connect(_context?: AdapterContext) {
                 connectCount++;
             },
             async disconnect() {
@@ -168,7 +169,7 @@ describe("EventBus handler error propagation", () => {
 
         const trackingAdapter: EventAdapter = {
             name: "tracking",
-            async connect() {},
+            async connect(_context?: AdapterContext) {},
             async disconnect() {},
             async publish() {},
             async subscribe(_patterns, handler): Promise<EventSubscription> {
@@ -234,7 +235,7 @@ describe("EventBus handler error propagation", () => {
 
         const trackingAdapter: EventAdapter = {
             name: "tracking",
-            async connect() {},
+            async connect(_context?: AdapterContext) {},
             async disconnect() {},
             async publish() {},
             async subscribe(_patterns, handler): Promise<EventSubscription> {
@@ -297,7 +298,7 @@ describe("EventBus handler error propagation", () => {
 
         const trackingAdapter: EventAdapter = {
             name: "tracking",
-            async connect() {},
+            async connect(_context?: AdapterContext) {},
             async disconnect() {},
             async publish() {},
             async subscribe(_patterns, handler): Promise<EventSubscription> {
@@ -379,7 +380,7 @@ function createManualAdapter() {
 
     const adapter: EventAdapter = {
         name: "manual-test",
-        async connect() {
+        async connect(_context?: AdapterContext) {
             connected = true;
         },
         async disconnect() {
@@ -660,5 +661,158 @@ describe("EventBus graceful drain", () => {
         const elapsed = Date.now() - start;
 
         assert.ok(elapsed < 500, `empty drain took ${elapsed}ms, expected immediate`);
+    });
+});
+
+// =============================================================================
+// ADAPTER CONTEXT TESTS
+// =============================================================================
+
+describe("EventBus AdapterContext", () => {
+    it("passes derived serviceName to adapter.connect()", async () => {
+        let receivedContext: AdapterContext | undefined;
+
+        const contextTrackingAdapter: EventAdapter = {
+            name: "context-tracking",
+            async connect(context?: AdapterContext) {
+                receivedContext = context;
+            },
+            async disconnect() {},
+            async publish() {},
+            async subscribe(_patterns, _handler): Promise<EventSubscription> {
+                return { async unsubscribe() {} };
+            },
+        };
+
+        const method = fakeDescMethod("orderCreated", "order.v1.OrderCreated");
+        const service = fakeDescService("order.v1.OrderEventService", [method]);
+
+        const bus = createEventBus({
+            adapter: contextTrackingAdapter,
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        orderCreated: async () => {},
+                    } as any);
+                },
+            ],
+        });
+
+        await bus.start();
+
+        assert.ok(receivedContext, "adapter.connect() should receive a context");
+        assert.equal(receivedContext.serviceName, `order.v1@${hostname()}`);
+
+        await bus.stop();
+    });
+
+    it("passes undefined context when no routes are registered", async () => {
+        let receivedContext: AdapterContext | undefined = { serviceName: "should-be-overwritten" };
+        let connectCalled = false;
+
+        const contextTrackingAdapter: EventAdapter = {
+            name: "context-tracking",
+            async connect(context?: AdapterContext) {
+                connectCalled = true;
+                receivedContext = context;
+            },
+            async disconnect() {},
+            async publish() {},
+            async subscribe(): Promise<EventSubscription> {
+                return { async unsubscribe() {} };
+            },
+        };
+
+        const bus = createEventBus({
+            adapter: contextTrackingAdapter,
+            routes: [],
+        });
+
+        await bus.start();
+
+        assert.equal(connectCalled, true);
+        assert.equal(receivedContext, undefined, "context should be undefined when no services are registered");
+
+        await bus.stop();
+    });
+
+    it("derives serviceName from multiple services in different packages", async () => {
+        let receivedContext: AdapterContext | undefined;
+
+        const contextTrackingAdapter: EventAdapter = {
+            name: "context-tracking",
+            async connect(context?: AdapterContext) {
+                receivedContext = context;
+            },
+            async disconnect() {},
+            async publish() {},
+            async subscribe(_patterns, _handler): Promise<EventSubscription> {
+                return { async unsubscribe() {} };
+            },
+        };
+
+        const method1 = fakeDescMethod("orderCreated", "order.v1.OrderCreated");
+        const service1 = fakeDescService("order.v1.OrderEventService", [method1]);
+
+        const method2 = fakeDescMethod("paymentProcessed", "payment.v1.PaymentProcessed");
+        const service2 = fakeDescService("payment.v1.PaymentEventService", [method2]);
+
+        const bus = createEventBus({
+            adapter: contextTrackingAdapter,
+            routes: [
+                (router) => {
+                    router.service(service1, { orderCreated: async () => {} } as any);
+                    router.service(service2, { paymentProcessed: async () => {} } as any);
+                },
+            ],
+        });
+
+        await bus.start();
+
+        assert.ok(receivedContext);
+        assert.equal(receivedContext.serviceName, `order.v1/payment.v1@${hostname()}`);
+
+        await bus.stop();
+    });
+
+    it("deduplicates services from the same package in derived name", async () => {
+        let receivedContext: AdapterContext | undefined;
+
+        const contextTrackingAdapter: EventAdapter = {
+            name: "context-tracking",
+            async connect(context?: AdapterContext) {
+                receivedContext = context;
+            },
+            async disconnect() {},
+            async publish() {},
+            async subscribe(_patterns, _handler): Promise<EventSubscription> {
+                return { async unsubscribe() {} };
+            },
+        };
+
+        const method1 = fakeDescMethod("orderCreated", "order.v1.OrderCreated");
+        const service1 = fakeDescService("order.v1.OrderEventService", [method1]);
+
+        // Different service in the same package
+        const method2 = fakeDescMethod("orderShipped", "order.v1.OrderShipped");
+        const service2 = fakeDescService("order.v1.OrderAuditService", [method2]);
+
+        const bus = createEventBus({
+            adapter: contextTrackingAdapter,
+            routes: [
+                (router) => {
+                    router.service(service1, { orderCreated: async () => {} } as any);
+                    router.service(service2, { orderShipped: async () => {} } as any);
+                },
+            ],
+        });
+
+        await bus.start();
+
+        assert.ok(receivedContext);
+        // Both services are in "order.v1" package, should deduplicate
+        assert.equal(receivedContext.serviceName, `order.v1@${hostname()}`);
+
+        await bus.stop();
     });
 });

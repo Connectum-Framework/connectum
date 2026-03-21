@@ -7,6 +7,7 @@
  * @module EventBus
  */
 
+import { hostname } from "node:os";
 import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 // biome-ignore lint/correctness/useImportExtensions: workspace package, not a relative import
@@ -18,6 +19,30 @@ import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
 import type { EventBus, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
+
+/**
+ * Extract proto package name from a fully qualified type name.
+ *
+ * @example extractPackageName("order.v1.OrderEventService") → "order.v1"
+ */
+function extractPackageName(typeName: string): string {
+    const lastDot = typeName.lastIndexOf(".");
+    return lastDot > 0 ? typeName.substring(0, lastDot) : typeName;
+}
+
+/**
+ * Derive a service identifier from registered proto service type names.
+ *
+ * Extracts unique package names and appends the hostname for
+ * replica disambiguation.
+ *
+ * @returns Service name in format `"{packages}@{hostname}"`, or undefined if no services registered
+ */
+export function deriveServiceName(serviceNames: readonly string[]): string | undefined {
+    if (serviceNames.length === 0) return undefined;
+    const packages = [...new Set(serviceNames.map(extractPackageName))];
+    return `${packages.join("/")}@${hostname()}`;
+}
 
 /**
  * Create an EventBus instance.
@@ -96,7 +121,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
             startPromise = (async () => {
                 try {
-                    await adapter.connect();
+                    const derivedName = deriveServiceName(router.serviceNames);
+                    await adapter.connect(derivedName ? { serviceName: derivedName } : undefined);
 
                     // Build topic → handler map and compose middleware per topic
                     const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();

@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "./types.ts";
+import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
 
 interface MemorySubscription {
@@ -27,7 +27,7 @@ export function MemoryAdapter(): EventAdapter {
     return {
         name: "memory",
 
-        async connect(): Promise<void> {
+        async connect(_context?: AdapterContext): Promise<void> {
             connected = true;
         },
 

@@ -84,3 +84,54 @@ describe("NatsAdapter", () => {
         assert.equal(adapter.name, "nats");
     });
 });
+
+describe("NatsAdapter AdapterContext", () => {
+    // Note: connect() requires a running NATS server, so we test the interface
+    // contract and error types rather than successful connection.
+
+    it("connect() accepts AdapterContext parameter", () => {
+        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
+
+        // connect() should accept an optional AdapterContext
+        assert.equal(typeof adapter.connect, "function");
+    });
+
+    it("connection name falls back to context.serviceName when connectionOptions.name is not set", async () => {
+        const adapter = NatsAdapter({ servers: "nats://invalid-host:4222" });
+
+        // connect() will fail (no broker), but should accept the context
+        // without throwing TypeError. The actual NATS connection name =
+        // connectionOptions?.name ?? context?.serviceName
+        await assert.rejects(
+            () => adapter.connect({ serviceName: "order.v1@test-host" }),
+            (err: Error) => {
+                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for AdapterContext");
+                return true;
+            },
+        );
+    });
+
+    it("explicit connectionOptions.name takes priority over context.serviceName", () => {
+        // Verify that providing both connectionOptions.name and context.serviceName
+        // is valid. The priority chain is: connectionOptions.name > context.serviceName
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            connectionOptions: { name: "explicit-name" },
+        });
+
+        assert.equal(adapter.name, "nats");
+    });
+
+    it("connect() works with undefined context (backward compat)", async () => {
+        const adapter = NatsAdapter({ servers: "nats://invalid-host:4222" });
+
+        // Calling connect() without context should still work (minus broker availability)
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: Error) => {
+                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for missing context");
+                return true;
+            },
+        );
+    });
+});

@@ -70,6 +70,27 @@ export interface PublishOptions {
 }
 
 /**
+ * Context provided to adapters by the EventBus before connect().
+ *
+ * Contains service-level information derived from registered proto
+ * service descriptors. Adapters may use this for broker-level
+ * identification (e.g., Kafka clientId, NATS connection name,
+ * Redis connectionName).
+ */
+export interface AdapterContext {
+    /**
+     * Service identifier derived from proto service names.
+     *
+     * Format: `{packageNames}@{hostname}`
+     *
+     * Examples:
+     * - `"order.v1@pod-abc123"` (single service)
+     * - `"order.v1/payment.v1@pod-abc123"` (multiple services)
+     */
+    readonly serviceName?: string;
+}
+
+/**
  * Minimal adapter interface for message brokers.
  *
  * Inspired by Watermill (Go): minimal surface, broker-specific
@@ -79,8 +100,14 @@ export interface EventAdapter {
     /** Adapter name for identification (e.g., "nats", "kafka", "redis", "memory") */
     readonly name: string;
 
-    /** Connect to the message broker */
-    connect(): Promise<void>;
+    /**
+     * Connect to the message broker.
+     *
+     * @param context - Optional adapter context with service-level information
+     *   derived from proto service descriptors. Adapters may use
+     *   `context.serviceName` for broker-level client identification.
+     */
+    connect(context?: AdapterContext): Promise<void>;
 
     /** Disconnect from the message broker */
     disconnect(): Promise<void>;
