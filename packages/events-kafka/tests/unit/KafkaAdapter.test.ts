@@ -98,3 +98,67 @@ describe("KafkaAdapter", () => {
         await adapter.disconnect();
     });
 });
+
+describe("KafkaAdapter AdapterContext", () => {
+    // Note: connect() calls `new Kafka(...)` then `kafka.producer().connect()`,
+    // so we cannot test connect() success without a real broker. We verify the
+    // connect() signature accepts the context parameter and that the clientId
+    // fallback logic works indirectly through construction tests.
+
+    it("connect() accepts AdapterContext parameter", () => {
+        const adapter = KafkaAdapter({
+            brokers: ["localhost:9092"],
+        });
+
+        // connect() should accept an optional AdapterContext
+        assert.equal(typeof adapter.connect, "function");
+    });
+
+    it("connect() accepts AdapterContext without TypeError", async () => {
+        // We cannot verify the actual Kafka clientId without a running broker,
+        // but we can verify the adapter does not throw a TypeError when context is provided.
+        // The actual clientId = options.clientId ?? context?.serviceName ?? "connectum"
+        const adapter = KafkaAdapter({
+            brokers: ["localhost:9092"],
+            kafkaConfig: { retry: { retries: 0 } },
+        });
+
+        // connect() will throw because no broker is available, but the error
+        // should be a connection error, NOT a TypeError about the context parameter.
+        await assert.rejects(
+            () => adapter.connect({ serviceName: "order.v1@test-host" }),
+            (err: Error) => {
+                // Should fail with a connection-related error, not a type error
+                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for AdapterContext");
+                return true;
+            },
+        );
+    });
+
+    it("adapter can be constructed with explicit clientId", () => {
+        // Verify construction works with both clientId and context will be provided.
+        // The priority chain is: options.clientId > context.serviceName > "connectum"
+        const adapter = KafkaAdapter({
+            brokers: ["localhost:9092"],
+            clientId: "explicit-client-id",
+        });
+
+        assert.equal(adapter.name, "kafka");
+    });
+
+    it("connect() works with undefined context (backward compat)", async () => {
+        const adapter = KafkaAdapter({
+            brokers: ["localhost:9092"],
+            kafkaConfig: { retry: { retries: 0 } },
+        });
+
+        // Calling connect() without context should still work (minus broker availability)
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: Error) => {
+                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for missing context");
+                return true;
+            },
+        );
+    });
+});

@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { Redis } from "ioredis";
 import type { RedisAdapterOptions } from "./types.ts";
 
@@ -86,16 +86,24 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
     /**
      * Create a Redis instance from adapter options.
+     *
+     * @param connectionName - Optional connection name injected via `CLIENT SETNAME`.
+     *   Only applied when the user has not set `redisOptions.connectionName`.
      */
-    function createRedisInstance(): Redis {
+    function createRedisInstance(connectionName?: string): Redis {
+        // Merge connectionName into redisOptions only when the user has not
+        // explicitly set it, preserving user-defined priority.
+        const hasExplicitConnectionName = options.redisOptions?.connectionName !== undefined;
+        const mergedRedisOptions = connectionName !== undefined && !hasExplicitConnectionName ? { ...options.redisOptions, connectionName } : options.redisOptions;
+
         if (options.url) {
-            if (options.redisOptions) {
-                return new Redis(options.url, options.redisOptions);
+            if (mergedRedisOptions) {
+                return new Redis(options.url, mergedRedisOptions);
             }
             return new Redis(options.url);
         }
-        if (options.redisOptions) {
-            return new Redis(options.redisOptions);
+        if (mergedRedisOptions) {
+            return new Redis(mergedRedisOptions);
         }
         return new Redis();
     }
@@ -171,11 +179,11 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
     return {
         name: "redis",
 
-        async connect(): Promise<void> {
+        async connect(context?: AdapterContext): Promise<void> {
             if (redis) {
                 throw new Error("RedisAdapter: already connected");
             }
-            const instance = createRedisInstance();
+            const instance = createRedisInstance(context?.serviceName);
             try {
                 await waitForReady(instance);
             } catch (err) {

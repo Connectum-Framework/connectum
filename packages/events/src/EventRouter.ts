@@ -16,8 +16,10 @@ import type { EventRouteEntry, EventRouter, ServiceEventHandlers, TypedEventHand
  */
 export class EventRouterImpl implements EventRouter {
     readonly entries: EventRouteEntry[] = [];
+    readonly serviceNames: string[] = [];
 
     service<S extends DescService>(serviceDesc: S, handlers: ServiceEventHandlers<S>): void {
+        this.serviceNames.push(serviceDesc.typeName);
         for (const method of serviceDesc.methods) {
             const handlerFn = (handlers as Record<string, TypedEventHandler<unknown>>)[method.localName];
             if (!handlerFn) {

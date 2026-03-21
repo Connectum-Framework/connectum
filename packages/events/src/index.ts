@@ -14,7 +14,7 @@
  */
 
 // EventBus factory
-export { createEventBus } from "./EventBus.ts";
+export { createEventBus, deriveServiceName } from "./EventBus.ts";
 
 // EventContext
 export { createEventContext } from "./EventContext.ts";
@@ -36,6 +36,7 @@ export { composeMiddleware } from "./middleware.ts";
 export { resolveTopicName } from "./topic.ts";
 // Types
 export type {
+    AdapterContext,
     DlqOptions,
     EventAdapter,
     EventBus,
