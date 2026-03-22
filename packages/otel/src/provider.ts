@@ -251,18 +251,17 @@ let provider: OtelProvider | undefined;
 /**
  * Initialize the OpenTelemetry provider with explicit options.
  *
- * Must be called before any telemetry is emitted if custom configuration
- * is needed. Throws if already initialized -- call {@link shutdownProvider}
- * first to re-initialize.
+ * Optional -- {@link getProvider}, {@link getMeter}, {@link getTracer},
+ * and {@link getLogger} auto-initialize with environment-based defaults.
+ * Idempotent: subsequent calls are no-ops if provider is already active.
+ * Call {@link shutdownProvider} first to re-initialize with new options.
  *
  * @param options - Optional provider configuration overrides
- * @throws Error if provider is already initialized
  */
 export function initProvider(options?: ProviderOptions): void {
-    if (provider !== undefined) {
-        throw new Error("OTel provider already initialized. Call shutdownProvider() first.");
+    if (provider === undefined) {
+        provider = new OtelProvider(options);
     }
-    provider = new OtelProvider(options);
 }
 
 /**
