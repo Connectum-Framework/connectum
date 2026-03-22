@@ -49,7 +49,8 @@
       "@connectum/events": ["./packages/events/src"],
       "@connectum/events-nats": ["./packages/events-nats/src"],
       "@connectum/events-kafka": ["./packages/events-kafka/src"],
-      "@connectum/events-redis": ["./packages/events-redis/src"]
+      "@connectum/events-redis": ["./packages/events-redis/src"],
+      "@connectum/events-amqp": ["./packages/events-amqp/src"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"],
