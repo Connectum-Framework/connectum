@@ -13,9 +13,11 @@
     "@connectum/events": "1.0.0-rc.5",
     "@connectum/events-nats": "1.0.0-rc.5",
     "@connectum/events-kafka": "1.0.0-rc.5",
-    "@connectum/events-redis": "1.0.0-rc.5"
+    "@connectum/events-redis": "1.0.0-rc.5",
+    "@connectum/events-amqp": "1.0.0-rc.6"
   },
   "changesets": [
+    "adapter-context",
     "auth-proto-authorization",
     "auth-v2-features",
     "ci-oidc-provenance",
@@ -24,6 +26,8 @@
     "cross-runtime-tests",
     "dependency-migration-2025",
     "eventbus-provider",
+    "events-amqp-adapter",
+    "otel-init-idempotent",
     "otel-streaming",
     "publickey-priority",
     "security-improvements",

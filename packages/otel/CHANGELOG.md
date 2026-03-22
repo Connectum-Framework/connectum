@@ -1,5 +1,16 @@
 # @connectum/otel
 
+## 1.0.0-rc.7
+
+### Patch Changes
+
+- [#66](https://github.com/Connectum-Framework/connectum/pull/66) [`df63c47`](https://github.com/Connectum-Framework/connectum/commit/df63c47bb0886a60ef8551a6b62a7af3041e389d) Thanks [@intech](https://github.com/intech)! - Make initProvider() idempotent instead of throwing on repeated calls
+
+  Previously, calling initProvider() after getMeter()/getTracer()/getLogger()
+  (which auto-initialize the provider) would throw "already initialized".
+  Now initProvider() is a no-op if provider already exists, matching the
+  documented behavior that explicit initialization is optional.
+
 ## 1.0.0-rc.6
 
 ## 1.0.0-rc.5
