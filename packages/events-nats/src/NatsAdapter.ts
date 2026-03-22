@@ -122,7 +122,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     // Any other error (permissions, connectivity) must propagate.
                     const code = err && typeof err === "object" && "code" in err ? Number((err as { code?: number }).code) : undefined;
                     const apiErrCode = err && typeof err === "object" && "api_error" in err ? (err as { api_error?: { err_code?: number } }).api_error?.err_code : undefined;
-                    if (code === 404 || apiErrCode === 10059) {
+                    if (code === 404 || code === 10059 || apiErrCode === 10059) {
                         await manager.streams.add({
                             name: streamName,
                             subjects: [`${streamName}.>`],
