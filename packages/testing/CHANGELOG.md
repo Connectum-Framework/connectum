@@ -1,5 +1,12 @@
 # @connectum/testing
 
+## 1.0.0-rc.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.7
+
 ## 1.0.0-rc.6
 
 ### Minor Changes

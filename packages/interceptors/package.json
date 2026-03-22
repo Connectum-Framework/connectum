@@ -1,6 +1,6 @@
 {
   "name": "@connectum/interceptors",
-  "version": "1.0.0-rc.6",
+  "version": "1.0.0-rc.7",
   "description": "ConnectRPC interceptors for Connectum",
   "type": "module",
   "main": "./dist/index.js",
