@@ -331,12 +331,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         await ch.deleteQueue(queueName).catch(() => undefined);
                     }
 
-                    // Unbind patterns (cleanup for named groups)
-                    if (!isAutoGroup) {
-                        for (const amqpPattern of amqpPatterns) {
-                            await ch.unbindQueue(queueName, exchange, amqpPattern).catch(() => undefined);
-                        }
-                    }
+                    // Do not unbind patterns for named groups — the queue is durable
+                    // and shared across multiple consumers. Unbinding would break
+                    // delivery to other active consumers on the same group.
 
                     await ch.close().catch(() => undefined);
 
