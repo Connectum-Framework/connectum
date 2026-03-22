@@ -117,6 +117,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 console.error("[AmqpAdapter] connection error:", err.message);
             });
 
+            // Reset closure state on broker-initiated close to prevent stale references
+            conn.on("close", () => {
+                connection = null;
+                publishChannel = null;
+            });
+
             try {
                 // Create a ConfirmChannel for publisher confirms (sync mode)
                 const ch = await conn.createConfirmChannel();
