@@ -33,15 +33,22 @@ Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript 
 | Package | What's inside |
 |---------|---------------|
 | [`@connectum/core`](packages/core) | `createServer()`, server lifecycle, TLS, protocol plugin system |
+| [`@connectum/auth`](packages/auth) | JWT, gateway, session authentication; declarative RBAC; proto-based authorization |
 | [`@connectum/interceptors`](packages/interceptors) | `createDefaultInterceptors()` — error handling, retry, circuit breaker, timeout, bulkhead, fallback, validation, logger |
 | [`@connectum/healthcheck`](packages/healthcheck) | `Healthcheck()` — gRPC Health Check protocol + HTTP `/healthz`, `healthcheckManager` |
 | [`@connectum/reflection`](packages/reflection) | `Reflection()` — gRPC Server Reflection v1/v1alpha, `collectFileProtos()` |
 | [`@connectum/otel`](packages/otel) | `initProvider()` — OpenTelemetry tracing, metrics, logging; `traced()`, `getTracer()`, `getMeter()` |
+| [`@connectum/cli`](packages/cli) | CLI tooling for code generation and project scaffolding |
+| [`@connectum/events`](packages/events) | `createEventBus()` — proto-first pub/sub with middleware (retry, DLQ), `MemoryAdapter` |
+| [`@connectum/events-nats`](packages/events-nats) | NATS JetStream adapter for EventBus |
+| [`@connectum/events-kafka`](packages/events-kafka) | Apache Kafka / Redpanda adapter for EventBus |
+| [`@connectum/events-redis`](packages/events-redis) | Redis Streams / Valkey adapter for EventBus |
+| [`@connectum/events-amqp`](packages/events-amqp) | AMQP / RabbitMQ adapter for EventBus |
 | [`@connectum/testing`](packages/testing) | `createTestServer()`, `mockInterceptor()` — testing utilities *(planned)* |
 
 ## Documentation
 
-**[connectum.dev](https://connectum.dev)** — [Quickstart](https://connectum.dev/en/guide/quickstart) · [Interceptors](https://connectum.dev/en/guide/interceptors) · [Health Checks](https://connectum.dev/en/guide/health-checks) · [Observability](https://connectum.dev/en/guide/observability) · [API Testing](https://connectum.dev/en/guide/testing) · [ADR](https://connectum.dev/en/contributing/adr/)
+**[connectum.dev](https://connectum.dev)** — [Quickstart](https://connectum.dev/en/guide/quickstart) · [Interceptors](https://connectum.dev/en/guide/interceptors) · [Health Checks](https://connectum.dev/en/guide/health-checks) · [Events](https://connectum.dev/en/guide/events) · [Observability](https://connectum.dev/en/guide/observability) · [API Testing](https://connectum.dev/en/guide/testing) · [ADR](https://connectum.dev/en/contributing/adr/)
 
 ## Contributing
 

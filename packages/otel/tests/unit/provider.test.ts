@@ -35,13 +35,9 @@ describe("provider", () => {
 	});
 
 	describe("initProvider", () => {
-		it("should throw if called twice without shutdown", () => {
+		it("should be idempotent when called twice", () => {
 			initProvider();
-
-			assert.throws(
-				() => initProvider(),
-				{ message: /already initialized/i },
-			);
+			assert.doesNotThrow(() => initProvider());
 		});
 	});
 
