@@ -1,0 +1,30 @@
+name: Buf Proto
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/auth/proto/**"
+      - "packages/auth/buf.yaml"
+      - "packages/events/proto/**"
+      - "packages/events/buf.yaml"
+      - ".github/workflows/buf.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint:
+    name: Lint & Breaking
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [auth, events]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: packages/${{ matrix.package }}
+          push: false

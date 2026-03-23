@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
@@ -67,6 +68,52 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Check proto changes
+        id: proto-changes
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGED=$(git diff --name-only "$LAST_TAG"..HEAD -- 'packages/auth/proto/' 'packages/events/proto/')
+          else
+            CHANGED="initial"
+          fi
+          if [ -n "$CHANGED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Buf CLI
+        if: steps.proto-changes.outputs.changed == 'true'
+        uses: bufbuild/buf-action@v1
+        with:
+          token: ${{ secrets.BUF_TOKEN }}
+          setup_only: true
+
+      - name: Push proto to BSR
+        if: steps.proto-changes.outputs.changed == 'true'
+        run: |
+          # Assemble proto into a single directory matching package structure
+          mkdir -p .bsr/connectum
+          cp -R packages/auth/proto/connectum/auth .bsr/connectum/
+          cp -R packages/events/proto/connectum/events .bsr/connectum/
+
+          cat > .bsr/buf.yaml <<'YAML'
+          version: v2
+          name: buf.build/connectum-framework/connectum
+          lint:
+            use:
+              - STANDARD
+          breaking:
+            use:
+              - FILE
+          YAML
+
+          buf push .bsr \
+            --label "${{ github.ref_name }}" \
+            --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
