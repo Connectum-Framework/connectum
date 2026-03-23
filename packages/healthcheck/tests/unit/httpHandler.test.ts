@@ -198,3 +198,104 @@ describe("parseServiceFromUrl", () => {
         assert.strictEqual(service, "test.Svc");
     });
 });
+
+describe("createHttpHealthHandler — additional scenarios", () => {
+    let manager: HealthcheckManager;
+
+    beforeEach(() => {
+        manager = new HealthcheckManager();
+        manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+    });
+
+    it("should return 200 with body containing service name for known SERVING service", () => {
+        manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+        const handler = createHttpHealthHandler(manager);
+
+        const req = createMockRequest("/healthz?service=svc.v1.Foo");
+        const res = createMockResponse();
+
+        const handled = handler(req as any, res as any);
+
+        assert.strictEqual(handled, true);
+        assert.strictEqual(res.statusCode, 200);
+
+        const body = JSON.parse(res.getBody());
+        assert.strictEqual(body.status, "SERVING");
+        assert.strictEqual(body.service, "svc.v1.Foo");
+    });
+
+    it("should return 503 for known NOT_SERVING service", () => {
+        manager.update(ServingStatus.NOT_SERVING, "svc.v1.Foo");
+        const handler = createHttpHealthHandler(manager);
+
+        const req = createMockRequest("/healthz?service=svc.v1.Foo");
+        const res = createMockResponse();
+
+        const handled = handler(req as any, res as any);
+
+        assert.strictEqual(handled, true);
+        assert.strictEqual(res.statusCode, 503);
+
+        const body = JSON.parse(res.getBody());
+        assert.strictEqual(body.status, "NOT_SERVING");
+        assert.strictEqual(body.service, "svc.v1.Foo");
+    });
+
+    it("should include timestamp field as ISO string in response", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+
+        const req = createMockRequest("/healthz");
+        const res = createMockResponse();
+
+        handler(req as any, res as any);
+
+        const body = JSON.parse(res.getBody());
+        assert.ok(body.timestamp, "Response should include timestamp field");
+        assert.strictEqual(typeof body.timestamp, "string");
+
+        // Verify it parses as a valid date (ISO 8601)
+        const parsed = new Date(body.timestamp);
+        assert.ok(!Number.isNaN(parsed.getTime()), "timestamp should be a valid ISO date string");
+    });
+
+    it("should set Content-Type header to application/json", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+
+        const req = createMockRequest("/healthz");
+        const res = createMockResponse();
+
+        handler(req as any, res as any);
+
+        const headers = res.getHeaders();
+        const contentType = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+        assert.ok(contentType, "Content-Type header should be set");
+        assert.strictEqual(headers[contentType], "application/json");
+    });
+
+    it("should not match any path when custom paths array is empty", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager, []);
+
+        // None of the default paths should match
+        for (const path of ["/healthz", "/health", "/readyz"]) {
+            const req = createMockRequest(path);
+            const res = createMockResponse();
+
+            const handled = handler(req as any, res as any);
+            assert.strictEqual(handled, false, `Path '${path}' should not be handled with empty custom paths`);
+        }
+    });
+
+    it("should not match paths with trailing slashes (exact match only)", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+
+        const req = createMockRequest("/healthz/");
+        const res = createMockResponse();
+
+        const handled = handler(req as any, res as any);
+        assert.strictEqual(handled, false, "Path with trailing slash should not match");
+    });
+});

@@ -597,6 +597,37 @@ describe("createServer", () => {
         });
     });
 
+    describe("eventBus property", () => {
+        it("should return null when not configured", () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+            });
+
+            servers.push(server);
+
+            assert.strictEqual(server.eventBus, null);
+        });
+
+        it("should return bus instance when configured", () => {
+            const service = createMockService();
+            const mockEventBus = {
+                start: mock.fn(async () => {}),
+                stop: mock.fn(async () => {}),
+            };
+
+            const server = createServer({
+                services: [service],
+                eventBus: mockEventBus,
+            });
+
+            servers.push(server);
+
+            assert.strictEqual(server.eventBus, mockEventBus);
+        });
+    });
+
     describe("graceful shutdown", () => {
         describe("shutdownSignal", () => {
             it("should return an AbortSignal", () => {
@@ -719,6 +750,208 @@ describe("createServer", () => {
                     /Cannot add shutdown hook: server is already stopped/,
                 );
             });
+        });
+
+        describe("stopping event order", () => {
+            it("should emit 'stopping' event BEFORE 'stop' event", async () => {
+                const service = createMockService();
+                const eventOrder: string[] = [];
+
+                const server = createServer({
+                    services: [service],
+                    port: 0,
+                });
+
+                servers.push(server);
+
+                server.on("stopping", () => {
+                    eventOrder.push("stopping");
+                });
+                server.on("stop", () => {
+                    eventOrder.push("stop");
+                });
+
+                await server.start();
+                await server.stop();
+
+                assert.strictEqual(eventOrder[0], "stopping");
+                assert.strictEqual(eventOrder[1], "stop");
+                assert.strictEqual(eventOrder.length, 2);
+            });
+        });
+    });
+
+    describe("addService/addInterceptor/addProtocol in CREATED state", () => {
+        it("should allow addService(), addInterceptor(), addProtocol() in CREATED state", () => {
+            const service = createMockService();
+            const extraService = createMockService();
+            const customInterceptor = mock.fn((next) => next);
+            const mockProtocol = {
+                name: "test-protocol",
+                register(_router: ConnectRouter) {
+                    // no-op
+                },
+            };
+
+            const server = createServer({
+                services: [service],
+            });
+
+            servers.push(server);
+
+            assert.strictEqual(server.state, ServerState.CREATED);
+
+            // All three should NOT throw in CREATED state
+            assert.doesNotThrow(() => server.addService(extraService));
+            assert.doesNotThrow(() => server.addInterceptor(customInterceptor));
+            assert.doesNotThrow(() => server.addProtocol(mockProtocol));
+
+            assert.strictEqual(server.routes.length, 2);
+            assert.strictEqual(server.interceptors.length, 1);
+            assert.strictEqual(server.protocols.length, 1);
+        });
+    });
+
+    describe("start() from STOPPED state", () => {
+        it("should throw when calling start() after stop()", async () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+            });
+
+            servers.push(server);
+
+            await server.start();
+            await server.stop();
+
+            assert.strictEqual(server.state, ServerState.STOPPED);
+
+            await assert.rejects(
+                () => server.start(),
+                /Cannot start server: current state is "stopped"/,
+            );
+        });
+    });
+
+    describe("addService/addInterceptor/addProtocol from STOPPED state", () => {
+        it("should throw when calling addService() after stop()", async () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+            });
+
+            await server.start();
+            await server.stop();
+
+            assert.strictEqual(server.state, ServerState.STOPPED);
+
+            assert.throws(
+                () => server.addService(createMockService()),
+                /Cannot add service: server is already stopped/,
+            );
+        });
+
+        it("should throw when calling addInterceptor() after stop()", async () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+            });
+
+            await server.start();
+            await server.stop();
+
+            assert.strictEqual(server.state, ServerState.STOPPED);
+
+            assert.throws(
+                () => server.addInterceptor(mock.fn((next) => next)),
+                /Cannot add interceptor: server is already stopped/,
+            );
+        });
+
+        it("should throw when calling addProtocol() after stop()", async () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+            });
+
+            await server.start();
+            await server.stop();
+
+            assert.strictEqual(server.state, ServerState.STOPPED);
+
+            assert.throws(
+                () =>
+                    server.addProtocol({
+                        name: "test-protocol",
+                        register(_router: ConnectRouter) {
+                            // no-op
+                        },
+                    }),
+                /Cannot add protocol: server is already stopped/,
+            );
+        });
+    });
+
+    describe("eventBus error during start()", () => {
+        it("should emit error event when eventBus.start() throws", async () => {
+            const service = createMockService();
+            const busError = new Error("connection refused");
+            const mockEventBus = {
+                start: mock.fn(async () => {
+                    throw busError;
+                }),
+                stop: mock.fn(async () => {}),
+            };
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+                eventBus: mockEventBus,
+            });
+
+            servers.push(server);
+
+            const errorHandler = mock.fn();
+            server.on("error", errorHandler);
+
+            await assert.rejects(() => server.start());
+
+            assert.strictEqual(errorHandler.mock.calls.length, 1);
+            assert.strictEqual(server.state, ServerState.STOPPED);
+        });
+    });
+
+    describe("concurrent start() calls", () => {
+        it("should reject second start() call while first is in progress", async () => {
+            const service = createMockService();
+
+            const server = createServer({
+                services: [service],
+                port: 0,
+            });
+
+            servers.push(server);
+
+            // First start() begins — state transitions to STARTING
+            const firstStart = server.start();
+
+            // Second start() should reject because state is no longer CREATED
+            await assert.rejects(
+                () => server.start(),
+                /Cannot start server: current state is "starting"/,
+            );
+
+            // Let first start complete
+            await firstStart;
+            assert.strictEqual(server.state, ServerState.RUNNING);
         });
     });
 });

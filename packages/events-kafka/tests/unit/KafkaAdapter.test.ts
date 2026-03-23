@@ -99,6 +99,82 @@ describe("KafkaAdapter", () => {
     });
 });
 
+describe("KafkaAdapter internal utilities (indirect testing)", () => {
+    // -----------------------------------------------------------------------
+    // patternToKafkaTopicMatcher() — private function
+    //
+    // Maps NATS-style wildcard patterns to Kafka RegExp:
+    //   - Literal pattern → returned as string
+    //   - `*` → [^.]+ (single segment)
+    //   - `>` → .+ (one or more segments)
+    //   - Length > 256 → throws Error
+    //
+    // This function is called inside subscribe() which requires a connected
+    // Kafka broker. We cannot test it directly in unit tests.
+    //
+    // However, we can verify the adapter's behavior with various pattern
+    // inputs through the subscribe() error path (adapter must be connected).
+    // Since subscribe() checks `if (!connected)` before calling
+    // patternToKafkaTopicMatcher(), we can only test construction acceptance.
+    //
+    // For full coverage of this function, integration tests with a running
+    // Kafka broker are required.
+    // -----------------------------------------------------------------------
+
+    it("should accept adapter construction with literal pattern-style topic names", () => {
+        // patternToKafkaTopicMatcher("user.created") returns "user.created" (string)
+        // This is tested indirectly via construction and subscribe error message
+        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+        assert.ok(adapter);
+    });
+
+    it("should reject subscribe with literal pattern when not connected", async () => {
+        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+
+        // subscribe() fails before reaching patternToKafkaTopicMatcher
+        await assert.rejects(
+            () => adapter.subscribe(["user.created"], async () => {}),
+            { message: "KafkaAdapter: not connected" },
+        );
+    });
+
+    it("should reject subscribe with wildcard * pattern when not connected", async () => {
+        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+
+        // Pattern "user.*" would be converted to RegExp /^user\.[^.]+$/
+        // but subscribe() fails before reaching patternToKafkaTopicMatcher
+        await assert.rejects(
+            () => adapter.subscribe(["user.*"], async () => {}),
+            { message: "KafkaAdapter: not connected" },
+        );
+    });
+
+    it("should reject subscribe with wildcard > pattern when not connected", async () => {
+        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+
+        // Pattern "events.>" would be converted to RegExp /^events\..+$/
+        // but subscribe() fails before reaching patternToKafkaTopicMatcher
+        await assert.rejects(
+            () => adapter.subscribe(["events.>"], async () => {}),
+            { message: "KafkaAdapter: not connected" },
+        );
+    });
+
+    // NOTE: The 256-char limit check in patternToKafkaTopicMatcher() cannot be
+    // tested without a connected adapter, because subscribe() checks connection
+    // state before processing patterns. This would require an integration test.
+    it("should reject subscribe with long pattern when not connected (pre-validation)", async () => {
+        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+
+        const longPattern = "a".repeat(300);
+        // subscribe() rejects with "not connected" before the length check
+        await assert.rejects(
+            () => adapter.subscribe([longPattern], async () => {}),
+            { message: "KafkaAdapter: not connected" },
+        );
+    });
+});
+
 describe("KafkaAdapter AdapterContext", () => {
     // Note: connect() calls `new Kafka(...)` then `kafka.producer().connect()`,
     // so we cannot test connect() success without a real broker. We verify the

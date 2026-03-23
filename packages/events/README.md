@@ -4,7 +4,7 @@ Universal event adapter layer for Connectum: proto-first pub/sub with pluggable 
 
 **@connectum/events** provides a transport-agnostic EventBus for publishing and subscribing to events using protobuf schemas. Swap between NATS, Kafka, Redis Streams, or in-memory adapter without changing application code.
 
-**Layer**: 1 (Extension) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 1 (Extension) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Features
 
@@ -356,7 +356,7 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **pnpm**: >=10.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 

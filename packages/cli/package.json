@@ -34,9 +34,9 @@
   "scripts": {
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/**/*.test.ts",
-    "test:unit": "node --test tests/unit/**/*.test.ts",
-    "test:integration": "node --test tests/integration/**/*.test.ts",
+    "test": "exodus-test --typescript tests/**/*.test.ts",
+    "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
+    "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
     "test:bun": "echo 'SKIP: CLI has Node-specific gRPC transport deps'",
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
@@ -55,7 +55,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "publishConfig": {
     "access": "public"

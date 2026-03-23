@@ -214,4 +214,118 @@ describe('retry interceptor', () => {
         const interceptor = createRetryInterceptor();
         assert.ok(interceptor);
     });
+
+    describe('additional retry scenarios', () => {
+        it('should preserve non-retryable code (InvalidArgument) after retries', async () => {
+            const interceptor = createRetryInterceptor({ maxRetries: 3, initialDelay: 10 });
+
+            const mockReq = createMockRequest({
+                service: 'test.Service',
+                method: 'Method',
+                message: { field: 'value' },
+            });
+
+            const next = createMockNextError(Code.InvalidArgument, 'Invalid argument');
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.InvalidArgument);
+                    return true;
+                },
+            );
+        });
+
+        it('should throw the last error after exhausting all retries', async () => {
+            const interceptor = createRetryInterceptor({ maxRetries: 2, initialDelay: 10 });
+
+            const mockReq = createMockRequest({
+                service: 'test.Service',
+                method: 'Method',
+                message: { field: 'value' },
+            });
+
+            let attempt = 0;
+            const next = mock.fn(async () => {
+                attempt++;
+                throw new ConnectError(`Unavailable attempt ${attempt}`, Code.Unavailable);
+            });
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable);
+                    assert.ok(err instanceof ConnectError);
+                    assert.ok(err.message.includes('Unavailable attempt'));
+                    return true;
+                },
+            );
+
+            // initial attempt + maxRetries = 3 total
+            assert(next.mock.calls.length >= 3, `Expected at least 3 attempts, got ${next.mock.calls.length}`);
+        });
+
+        it('should retry on custom retryable code and succeed after recovery', async () => {
+            let attempts = 0;
+            const interceptor = createRetryInterceptor({
+                maxRetries: 3,
+                initialDelay: 10,
+                retryableCodes: [Code.Aborted],
+            });
+
+            const mockReq = createMockRequest({
+                service: 'test.Service',
+                method: 'Method',
+                message: { field: 'value' },
+            });
+
+            const next = mock.fn(async () => {
+                attempts++;
+                if (attempts < 3) {
+                    throw new ConnectError('Aborted', Code.Aborted);
+                }
+                return { message: { result: 'recovered' } };
+            });
+
+            const handler = interceptor(next as any);
+            const result = await handler(mockReq);
+
+            assert.strictEqual((result.message as any).result, 'recovered');
+            assert(attempts >= 3, `Expected at least 3 attempts, got ${attempts}`);
+        });
+
+        it('should pass through streaming request when skipStreaming=true (default)', async () => {
+            const interceptor = createRetryInterceptor({
+                maxRetries: 3,
+                initialDelay: 10,
+                skipStreaming: true,
+            });
+
+            const mockReq = createMockRequest({
+                service: 'test.Service',
+                method: 'StreamMethod',
+                stream: true,
+                message: { field: 'value' },
+            });
+
+            const next = createMockNextError(Code.Unavailable, 'Service unavailable');
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable);
+                    return true;
+                },
+            );
+
+            // Should only be called once (no retry for streaming)
+            assert.strictEqual(next.mock.calls.length, 1, 'should not retry streaming calls');
+        });
+    });
 });

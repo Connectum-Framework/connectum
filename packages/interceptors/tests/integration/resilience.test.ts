@@ -124,7 +124,7 @@ describe('Resilience Pattern Integration', () => {
         // Setup: circuit breaker threshold 2, fallback returns cached data
         const circuitBreakerInterceptor = createCircuitBreakerInterceptor({
             threshold: 2,
-            halfOpenAfter: 10,
+            halfOpenAfter: 60_000, // large value to keep circuit open during test
         });
 
         const fallbackInterceptor = createFallbackInterceptor({

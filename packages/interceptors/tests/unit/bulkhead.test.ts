@@ -4,7 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextError, createMockNextSlow, createMockRequest } from "@connectum/testing";
 import { createBulkheadInterceptor } from "../../src/bulkhead.ts";
 
@@ -205,5 +205,60 @@ describe("bulkhead interceptor", () => {
     it("should reject invalid queueSize", () => {
         assert.throws(() => createBulkheadInterceptor({ queueSize: -1 }), /queueSize must be a non-negative finite number/);
         assert.throws(() => createBulkheadInterceptor({ queueSize: Number.POSITIVE_INFINITY }), /queueSize must be a non-negative finite number/);
+    });
+
+    describe("capacity and queue overflow scenarios", () => {
+        it("should immediately reject when queueSize=0 and capacity is full", async () => {
+            const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
+
+            const next = createMockNextSlow(200);
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "Method",
+                message: { field: "value" },
+            });
+
+            const handler = interceptor(next as any);
+
+            // First request fills the capacity
+            const p1 = handler(mockReq);
+            // Second request should be immediately rejected (no queue)
+            const p2 = handler(mockReq);
+
+            const results = await Promise.allSettled([p1, p2]);
+            const rejected = results.filter((r) => r.status === "rejected");
+            assert.strictEqual(rejected.length, 1, "exactly one request should be rejected");
+
+            const err = (rejected[0] as PromiseRejectedResult).reason;
+            assertConnectError(err, Code.ResourceExhausted, "Bulkhead capacity exceeded");
+        });
+
+        it("should include slot info in ResourceExhausted message when exceeding capacity + queue", async () => {
+            const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 1 });
+
+            const next = createMockNextSlow(200);
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "Method",
+                message: { field: "value" },
+            });
+
+            const handler = interceptor(next as any);
+
+            // 2 active + 1 queued + 1 overflow
+            const promises = [handler(mockReq), handler(mockReq), handler(mockReq), handler(mockReq)];
+
+            const results = await Promise.allSettled(promises);
+            const rejected = results.filter((r) => r.status === "rejected");
+            assert.strictEqual(rejected.length, 1, "exactly one request should be rejected");
+
+            const err = (rejected[0] as PromiseRejectedResult).reason;
+            assertConnectError(err, Code.ResourceExhausted);
+            assert.ok(err instanceof ConnectError, "should be ConnectError");
+            assert.ok(err.message.includes("active:"), "error message should contain active slot info");
+            assert.ok(err.message.includes("queued:"), "error message should contain queued slot info");
+        });
     });
 });

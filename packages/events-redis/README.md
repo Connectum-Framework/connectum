@@ -4,7 +4,7 @@ Redis Streams adapter for `@connectum/events`.
 
 **@connectum/events-redis** connects the Connectum EventBus to [Redis Streams](https://redis.io/docs/data-types/streams/) via [ioredis](https://github.com/redis/ioredis) for lightweight, low-latency event streaming with consumer group support.
 
-**Layer**: 2 (Tools) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Tools) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Features
 
@@ -142,7 +142,7 @@ Stream entry fields:
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **Redis**: >=6.2 (for XAUTOCLAIM support)
 
 ## Documentation

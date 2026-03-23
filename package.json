@@ -67,7 +67,7 @@
     "@changesets/cli": "^2.30.0",
     "@commitlint/cli": "catalog:",
     "@commitlint/config-conventional": "catalog:",
-    "@exodus/test": "^1.0.0-rc.116",
+    "@exodus/test": "catalog:",
     "@types/node": "catalog:",
     "c8": "^10.1.3",
     "husky": "catalog:",

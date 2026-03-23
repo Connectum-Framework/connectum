@@ -2,7 +2,7 @@
 
 Testing utilities for the Connectum framework. Provides mock factories, assertion helpers, and a test server utility to eliminate boilerplate in ConnectRPC interceptor and service tests.
 
-**Layer**: 2 (Testing Utilities) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Testing Utilities) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Installation
 

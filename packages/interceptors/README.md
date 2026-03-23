@@ -758,7 +758,7 @@ Resilience interceptors (timeout, bulkhead, circuitBreaker, retry, fallback) are
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=20.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

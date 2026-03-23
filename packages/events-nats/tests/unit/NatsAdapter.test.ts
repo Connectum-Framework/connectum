@@ -85,6 +85,81 @@ describe("NatsAdapter", () => {
     });
 });
 
+describe("NatsAdapter internal utilities (indirect testing)", () => {
+    // -----------------------------------------------------------------------
+    // toDeliverPolicy() — private, maps "all"|"last"|undefined → DeliverPolicy
+    //
+    // This function is called inside subscribe() when creating a durable
+    // consumer. Because subscribe() requires a live NATS broker, we cannot
+    // invoke it in unit tests. We verify indirectly that the adapter accepts
+    // all three deliver policy values without construction errors.
+    // -----------------------------------------------------------------------
+
+    it("should accept deliverPolicy 'all' without construction error", () => {
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            consumerOptions: { deliverPolicy: "all" },
+        });
+        assert.ok(adapter);
+    });
+
+    it("should accept deliverPolicy 'last' without construction error", () => {
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            consumerOptions: { deliverPolicy: "last" },
+        });
+        assert.ok(adapter);
+    });
+
+    it("should accept deliverPolicy 'new' without construction error", () => {
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            consumerOptions: { deliverPolicy: "new" },
+        });
+        assert.ok(adapter);
+    });
+
+    it("should default deliverPolicy when undefined (no consumerOptions)", () => {
+        // When consumerOptions is omitted, toDeliverPolicy(undefined) returns
+        // DeliverPolicy.New. This is tested indirectly: the adapter should not
+        // throw during construction with no consumerOptions.
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+        });
+        assert.ok(adapter);
+    });
+
+    // -----------------------------------------------------------------------
+    // sanitizeDurableName() — private, replaces [^a-zA-Z0-9_-] with "_"
+    //
+    // This function is called inside subscribe() via consumerName().
+    // We cannot directly test it without a live broker. Instead, we verify
+    // that the adapter accepts stream names with special characters (dots,
+    // wildcards) which would be passed through sanitizeDurableName().
+    //
+    // NOTE: sanitizeDurableName is exercised at subscribe time, not at
+    // construction. The tests below verify construction accepts these values
+    // without TypeError, but actual sanitization correctness requires an
+    // integration test with a running NATS server.
+    // -----------------------------------------------------------------------
+
+    it("should accept stream name with dots (sanitized at subscribe time)", () => {
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            stream: "my.events.stream",
+        });
+        assert.ok(adapter);
+    });
+
+    it("should accept stream name with hyphens and underscores", () => {
+        const adapter = NatsAdapter({
+            servers: "nats://localhost:4222",
+            stream: "my-events_stream",
+        });
+        assert.ok(adapter);
+    });
+});
+
 describe("NatsAdapter AdapterContext", () => {
     // Note: connect() requires a running NATS server, so we test the interface
     // contract and error types rather than successful connection.
