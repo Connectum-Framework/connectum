@@ -48,7 +48,7 @@ export function composeMiddleware(
 
                 const middleware = middlewares[i];
                 if (!middleware) {
-                    return;
+                    throw new Error(`Missing middleware at index ${i}`);
                 }
 
                 const nextFn: EventMiddlewareNext = (updatedEvent) => {

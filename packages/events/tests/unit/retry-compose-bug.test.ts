@@ -6,8 +6,8 @@
  * dispatch() guard `if (i <= index)` prevents re-entry because the index
  * is already advanced to the handler position after the first call.
  *
- * The catch block in composeMiddleware (line 63) resets `index = i - 1`,
- * but the question is whether this actually works correctly for retry.
+ * The catch block in composeMiddleware's dispatch() resets `index = i - 1`,
+ * allowing retry middleware to re-enter dispatch from the same position.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
