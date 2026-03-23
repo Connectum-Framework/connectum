@@ -158,7 +158,7 @@ await server.start();
 
 ## Requirements
 
-- **Node.js**: >=25.2.0 (for stable type stripping)
+- **Node.js**: >=20.0.0
 - **pnpm**: >=10.0.0
 
 ## License

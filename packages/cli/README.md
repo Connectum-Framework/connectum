@@ -8,7 +8,7 @@ CLI tools for the Connectum gRPC/ConnectRPC framework.
 pnpm add @connectum/cli
 ```
 
-Requires Node.js >= 25.2.0 (native TypeScript support).
+Requires Node.js >= 20.0.0.
 
 ## Commands
 

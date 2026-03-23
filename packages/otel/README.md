@@ -730,7 +730,7 @@ await repository.findById("123");
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

@@ -4,7 +4,7 @@ Kafka/Redpanda adapter for `@connectum/events`.
 
 **@connectum/events-kafka** connects the Connectum EventBus to [Apache Kafka](https://kafka.apache.org/) or [Redpanda](https://redpanda.com/) via [KafkaJS](https://kafka.js.org/) for high-throughput, partitioned event streaming.
 
-**Layer**: 2 (Tools) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Tools) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Features
 
@@ -150,7 +150,7 @@ Event metadata is transmitted as Kafka message headers (Buffer-encoded).
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **Kafka**: >=2.0 (or Redpanda)
 
 ## Documentation

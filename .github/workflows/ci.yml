@@ -14,8 +14,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Typecheck, Lint & Test
+  # ── Lint, Typecheck, Audit (run once on dev Node) ──────────────────────
+  quality:
+    name: Typecheck & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -42,9 +43,80 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+  # ── Node.js test matrix ────────────────────────────────────────────────
+  test-node:
+    name: "Node ${{ matrix.node-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22", "25.2.0"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
       - name: Unit tests
         run: pnpm test:unit
 
       - name: Integration tests
         run: pnpm test:integration
         continue-on-error: true
+
+  # ── Bun runtime tests ──────────────────────────────────────────────────
+  test-bun:
+    name: Bun (latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "25.2.0"
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2
+        with:
+          bun-version: latest
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Bun runtime tests
+        run: pnpm test:bun
+
+  # ── esbuild transpilation tests ────────────────────────────────────────
+  test-esbuild:
+    name: esbuild transpilation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "25.2.0"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: esbuild tests
+        run: pnpm test:esbuild

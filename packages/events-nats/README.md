@@ -4,7 +4,7 @@ NATS JetStream adapter for `@connectum/events`.
 
 **@connectum/events-nats** connects the Connectum EventBus to [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, at-least-once event delivery with automatic stream management.
 
-**Layer**: 2 (Tools) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Tools) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Features
 
@@ -130,7 +130,7 @@ Event metadata is transmitted as NATS message headers. Internal headers (prefixe
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **NATS Server**: >=2.9 with JetStream enabled
 
 ## Documentation

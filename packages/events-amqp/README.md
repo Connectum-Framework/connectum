@@ -4,7 +4,7 @@ AMQP/RabbitMQ adapter for `@connectum/events`.
 
 **@connectum/events-amqp** connects the Connectum EventBus to [RabbitMQ](https://www.rabbitmq.com/) (AMQP 0-9-1) for durable, at-least-once event delivery with topic exchanges, consumer groups, and dead-letter support.
 
-**Layer**: 2 (Tools) | **Node.js**: >=18.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Tools) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
 
 ## Features
 
@@ -183,7 +183,7 @@ When `publishOptions.sync: true`, the adapter uses `ConfirmChannel.waitForConfir
 
 ## Requirements
 
-- **Node.js**: >=18.0.0
+- **Node.js**: >=20.0.0
 - **RabbitMQ**: >=3.8
 
 ## Documentation
