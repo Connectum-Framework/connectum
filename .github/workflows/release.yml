@@ -68,6 +68,52 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NPM_CONFIG_PROVENANCE: "true"
 
+      - name: Check proto changes
+        id: proto-changes
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGED=$(git diff --name-only "$LAST_TAG"..HEAD -- 'packages/auth/proto/' 'packages/events/proto/')
+          else
+            CHANGED="initial"
+          fi
+          if [ -n "$CHANGED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Buf CLI
+        if: steps.proto-changes.outputs.changed == 'true'
+        uses: bufbuild/buf-action@v1
+        with:
+          token: ${{ secrets.BUF_TOKEN }}
+          setup_only: true
+
+      - name: Push proto to BSR
+        if: steps.proto-changes.outputs.changed == 'true'
+        run: |
+          # Assemble proto into a single directory matching package structure
+          mkdir -p .bsr/connectum/auth/v1 .bsr/connectum/events/v1
+          cp packages/auth/proto/connectum/auth/v1/options.proto .bsr/connectum/auth/v1/
+          cp packages/events/proto/connectum/events/v1/options.proto .bsr/connectum/events/v1/
+
+          cat > .bsr/buf.yaml <<'YAML'
+          version: v2
+          name: buf.build/connectum-framework/connectum
+          lint:
+            use:
+              - STANDARD
+          breaking:
+            use:
+              - FILE
+          YAML
+
+          buf push .bsr \
+            --label "${{ github.ref_name }}" \
+            --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
+
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         run: |
