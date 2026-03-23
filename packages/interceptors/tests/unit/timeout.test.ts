@@ -155,4 +155,50 @@ describe("timeout interceptor", () => {
 
         assert.strictEqual((result.message as any).result, "success");
     });
+
+    describe("streaming with skipStreaming option", () => {
+        it("should apply timeout to streaming request when skipStreaming=false", async () => {
+            const interceptor = createTimeoutInterceptor({ duration: 100, skipStreaming: false });
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "StreamMethod",
+                message: { field: "value" },
+                stream: true,
+            });
+
+            const next = createMockNextSlow(200);
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.DeadlineExceeded, "100ms");
+                    return true;
+                },
+            );
+
+            // Wait for mock timer to drain
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        });
+
+        it("should pass through streaming request when skipStreaming=true (default)", async () => {
+            const interceptor = createTimeoutInterceptor({ duration: 50, skipStreaming: true });
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "StreamMethod",
+                message: { field: "value" },
+                stream: true,
+            });
+
+            const next = createMockNextSlow(100, { message: { result: "streamed" } });
+
+            const handler = interceptor(next as any);
+            const result = await handler(mockReq);
+
+            assert.strictEqual((result.message as any).result, "streamed");
+        });
+    });
 });

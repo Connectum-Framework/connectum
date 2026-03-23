@@ -4,7 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
-import { Code } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
 import { createErrorHandlerInterceptor } from "../../src/errorHandler.ts";
 
@@ -203,5 +203,109 @@ describe("errorHandler interceptor", () => {
                 return true;
             },
         );
+    });
+
+    describe("additional error scenarios", () => {
+        it("should wrap non-Error thrown value (string) via ConnectError.from", async () => {
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false });
+
+            const next = mock.fn(async () => {
+                throw "plain string thrown";
+            });
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal);
+                    assert.ok(err instanceof ConnectError, "should be a ConnectError instance");
+                    assert.ok(err.message.includes("plain string thrown"), "should preserve original message");
+                    return true;
+                },
+            );
+        });
+
+        it("should default to Code.Internal when Error has no code property", async () => {
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false });
+
+            const next = mock.fn(async () => {
+                throw new Error("error without code");
+            });
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal);
+                    return true;
+                },
+            );
+        });
+
+        it("should pass serverDetails to onError callback for SanitizableError", async () => {
+            let capturedInfo: {
+                error: Error;
+                code: number;
+                serverDetails?: Readonly<Record<string, unknown>>;
+                stack?: string;
+            } | null = null;
+
+            const interceptor = createErrorHandlerInterceptor({
+                logErrors: false,
+                onError: (info) => {
+                    capturedInfo = info;
+                },
+            });
+
+            const sanitizableError = Object.assign(new Error("internal db error"), {
+                clientMessage: "Something went wrong",
+                serverDetails: { query: "SELECT *", table: "users", duration: 150 },
+                code: Code.Internal,
+            });
+
+            const next = mock.fn(async () => {
+                throw sanitizableError;
+            });
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal, "Something went wrong");
+                    return true;
+                },
+            );
+
+            // capturedInfo is assigned inside onError callback; TypeScript CFA doesn't track it
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const info = capturedInfo as any;
+            assert.ok(info, "onError callback should have been called");
+            assert.ok(info.serverDetails, "serverDetails should be present");
+            assert.strictEqual(info.serverDetails.query, "SELECT *");
+            assert.strictEqual(info.serverDetails.table, "users");
+            assert.strictEqual(info.serverDetails.duration, 150);
+            assert.strictEqual(info.code, Code.Internal);
+        });
+
+        it("should be silent with logErrors: false and no onError callback", async () => {
+            const consoleErrorMock = mock.method(console, "error", () => {});
+
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false });
+
+            const next = mock.fn(async () => {
+                throw new Error("silent error");
+            });
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(() => handler(mockReq));
+
+            assert.strictEqual(consoleErrorMock.mock.calls.length, 0, "console.error should not be called");
+
+            consoleErrorMock.mock.restore();
+        });
     });
 });

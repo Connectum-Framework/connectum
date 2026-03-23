@@ -122,6 +122,86 @@ describe("AmqpAdapter", () => {
     });
 });
 
+describe("AmqpAdapter connection guard", () => {
+    // -----------------------------------------------------------------------
+    // Double connect → throws "already connected"
+    //
+    // The AmqpAdapter.connect() checks `if (connection)` and throws
+    // "AmqpAdapter: already connected" on a second call. However, the first
+    // connect() requires a running AMQP broker to succeed.
+    //
+    // We cannot test the actual "already connected" throw in a unit test
+    // without mocking amqplib.connect() (which is dynamically imported inside
+    // connect()). Instead, we verify the error message contract for the
+    // NOT-connected case and document the limitation.
+    //
+    // NOTE: Full "double connect" testing requires either:
+    //   - An integration test with a running RabbitMQ instance
+    //   - A mock of the dynamic `import("amqplib")` inside connect()
+    // -----------------------------------------------------------------------
+
+    it("should throw 'not connected' when publishing before connect", async () => {
+        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
+        await assert.rejects(
+            () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
+            { message: "AmqpAdapter: not connected" },
+        );
+    });
+
+    it("should throw 'not connected' when subscribing before connect", async () => {
+        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
+        await assert.rejects(
+            () => adapter.subscribe(["test.>"], async () => {}),
+            { message: "AmqpAdapter: not connected" },
+        );
+    });
+
+    it("should be safe to call disconnect() multiple times", async () => {
+        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
+        // Multiple disconnect() calls should not throw
+        await adapter.disconnect();
+        await adapter.disconnect();
+        await adapter.disconnect();
+    });
+});
+
+describe("AmqpAdapter parseHeaders (indirect)", () => {
+    // -----------------------------------------------------------------------
+    // parseHeaders() — private function
+    //
+    // Extracts string-coercible values from AMQP message headers, skips
+    // null/undefined. This function is called inside the subscribe() consumer
+    // callback, which requires a live AMQP broker.
+    //
+    // Since parseHeaders() is not exported and is only invoked inside a
+    // broker-connected subscribe() callback, it cannot be tested directly
+    // in unit tests.
+    //
+    // The function's behavior:
+    //   - Iterates Object.entries(headers)
+    //   - Skips entries where value === undefined || value === null
+    //   - Converts remaining values with String(value) into Map<string, string>
+    //
+    // For testing this, consider either:
+    //   1. Exporting parseHeaders() as a named export (preferred for testability)
+    //   2. Integration tests with a running RabbitMQ instance
+    //
+    // The tests below verify related behavior through the public API.
+    // -----------------------------------------------------------------------
+
+    it("should accept adapter with all header-related options", () => {
+        // Publisher options affect how headers are built in publish()
+        const adapter = AmqpAdapter({
+            url: "amqp://localhost:5672",
+            publisherOptions: {
+                persistent: true,
+                mandatory: false,
+            },
+        });
+        assert.ok(adapter);
+    });
+});
+
 describe("AmqpAdapter AdapterContext", () => {
     it("connect() accepts AdapterContext parameter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });

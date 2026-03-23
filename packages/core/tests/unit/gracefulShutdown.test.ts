@@ -337,4 +337,52 @@ describe("performGracefulShutdown()", () => {
             assert.deepStrictEqual(order, ["destroyAllSessions", "executeAll", "dispose"]);
         });
     });
+
+    // -----------------------------------------------------------------
+    // shutdownManager.executeAll() throws
+    // -----------------------------------------------------------------
+
+    describe("when shutdownManager.executeAll() throws", () => {
+        it("should propagate the error", async () => {
+            const transport = createMockTransport();
+            const shutdownManager = {
+                executeAll: mock.fn(async () => {
+                    throw new Error("hook explosion");
+                }),
+                addHook: mock.fn(),
+            } as unknown as ShutdownManager & { executeAll: ReturnType<typeof mock.fn> };
+
+            await assert.rejects(
+                () => performGracefulShutdown(transport, shutdownManager, defaultOptions),
+                { message: "hook explosion" },
+            );
+        });
+    });
+
+    // -----------------------------------------------------------------
+    // timeout: 0 — immediate timeout path
+    // -----------------------------------------------------------------
+
+    describe("when timeout is 0", () => {
+        it("should take the timeout path immediately and call destroyAllSessions", async () => {
+            // close() has a small delay so timeout=0 should always win
+            const transport = createMockTransport({ closeDelay: 50 });
+            const shutdownManager = createMockShutdownManager();
+
+            await performGracefulShutdown(transport, shutdownManager, {
+                timeout: 0,
+                forceCloseOnTimeout: true,
+            });
+
+            assert.strictEqual(
+                mockCallCount(transport.destroyAllSessions),
+                1,
+                "destroyAllSessions should be called when timeout is 0",
+            );
+
+            // Hooks and dispose should still run
+            assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1);
+            assert.strictEqual(mockCallCount(transport.dispose), 1);
+        });
+    });
 });

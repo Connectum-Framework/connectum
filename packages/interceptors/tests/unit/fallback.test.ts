@@ -180,4 +180,82 @@ describe("fallback interceptor", () => {
 
         assert.strictEqual(result.message, null);
     });
+
+    describe("fallback response properties", () => {
+        it("should return response with correct service, method, and stream: false", async () => {
+            const interceptor = createFallbackInterceptor({
+                handler: () => ({ fallback: "data" }),
+            });
+
+            const mockReq = createMockRequest({
+                service: "my.package.MyService",
+                method: "GetItems",
+                message: { id: 1 },
+            });
+
+            const next = createMockNextError(Code.Internal, "Service error");
+
+            const handler = interceptor(next as any);
+            const result = await handler(mockReq);
+
+            assert.strictEqual(result.stream, false, "fallback response should have stream: false");
+            assert.strictEqual(
+                result.service.typeName,
+                "my.package.MyService",
+                "fallback response should preserve service",
+            );
+            assert.strictEqual(result.method.name, "GetItems", "fallback response should preserve method");
+            assert.deepStrictEqual(result.message, { fallback: "data" });
+        });
+
+        it("should handle async fallback handler that resolves", async () => {
+            const interceptor = createFallbackInterceptor({
+                handler: async () => {
+                    await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+                    return { items: [], total: 0 };
+                },
+            });
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "Method",
+                message: { field: "value" },
+            });
+
+            const next = createMockNextError(Code.Unavailable, "Service unavailable");
+
+            const handler = interceptor(next as any);
+            const result = await handler(mockReq);
+
+            assert.deepStrictEqual(result.message, { items: [], total: 0 });
+            assert.strictEqual(result.stream, false);
+        });
+
+        it("should propagate error when async fallback handler rejects", async () => {
+            const interceptor = createFallbackInterceptor({
+                handler: async () => {
+                    throw new Error("Async fallback failed");
+                },
+            });
+
+            const mockReq = createMockRequest({
+                service: "test.Service",
+                method: "Method",
+                message: { field: "value" },
+            });
+
+            const next = createMockNextError(Code.Internal, "Service error");
+
+            const handler = interceptor(next as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.strictEqual(err.message, "Async fallback failed");
+                    return true;
+                },
+            );
+        });
+    });
 });

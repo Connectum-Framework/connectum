@@ -139,3 +139,85 @@ describe("createHealthcheckManager", () => {
         assert.strictEqual(manager2.getAllStatuses().size, 0);
     });
 });
+
+describe("HealthcheckManager — additional scenarios", () => {
+    let manager: HealthcheckManager;
+
+    beforeEach(() => {
+        manager = new HealthcheckManager();
+    });
+
+    describe("initialize merge behavior", () => {
+        it("should preserve existing service status when re-initialized with overlapping names", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+
+            // Re-initialize with overlapping "Foo" and new "Baz"
+            manager.initialize(["svc.v1.Foo", "svc.v1.Baz"]);
+
+            // Foo should retain SERVING status
+            assert.strictEqual(
+                manager.getStatus("svc.v1.Foo")?.status,
+                ServingStatus.SERVING,
+                "Overlapping service should retain its current status",
+            );
+
+            // Baz is new, should be UNKNOWN
+            assert.strictEqual(
+                manager.getStatus("svc.v1.Baz")?.status,
+                ServingStatus.UNKNOWN,
+                "New service should start as UNKNOWN",
+            );
+
+            // Bar was not in the new list, should be gone
+            assert.strictEqual(
+                manager.getStatus("svc.v1.Bar"),
+                undefined,
+                "Service not in new list should be removed",
+            );
+        });
+
+        it("should clear all services when initialized with empty array", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            assert.strictEqual(manager.getAllStatuses().size, 2);
+
+            manager.initialize([]);
+
+            assert.strictEqual(manager.getAllStatuses().size, 0);
+            assert.strictEqual(manager.getStatus("svc.v1.Foo"), undefined);
+            assert.strictEqual(manager.getStatus("svc.v1.Bar"), undefined);
+        });
+
+        it("should deduplicate when initialized with duplicate names", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Foo", "svc.v1.Foo"]);
+
+            assert.strictEqual(manager.getAllStatuses().size, 1);
+            assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.UNKNOWN);
+        });
+    });
+
+    describe("areAllHealthy edge cases", () => {
+        it("should return false with mixed SERVING + NOT_SERVING statuses", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            manager.update(ServingStatus.NOT_SERVING, "svc.v1.Bar");
+
+            assert.strictEqual(manager.areAllHealthy(), false);
+        });
+
+        it("should return false with mixed SERVING + UNKNOWN statuses", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            // Bar remains UNKNOWN from initialization
+
+            assert.strictEqual(manager.areAllHealthy(), false);
+        });
+
+        it("should return false when all services are NOT_SERVING", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.update(ServingStatus.NOT_SERVING);
+
+            assert.strictEqual(manager.areAllHealthy(), false);
+        });
+    });
+});

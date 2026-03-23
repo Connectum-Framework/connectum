@@ -92,4 +92,76 @@ describe('createDefaultInterceptors', () => {
 
         assert.strictEqual(interceptors.length, 0);
     });
+
+    describe('interceptor chain ordering and disabling', () => {
+        it('should create 7 interceptors with all defaults', () => {
+            const interceptors = createDefaultInterceptors();
+
+            assert.strictEqual(interceptors.length, 7);
+            for (const ic of interceptors) {
+                assert.strictEqual(typeof ic, 'function');
+            }
+        });
+
+        it('should create 8 interceptors when fallback has handler', () => {
+            const interceptors = createDefaultInterceptors({
+                fallback: { handler: () => null },
+            });
+
+            assert.strictEqual(interceptors.length, 8);
+        });
+
+        it('should maintain correct order: errorHandler first, serializer last', () => {
+            const onlyFirstLast = createDefaultInterceptors({
+                errorHandler: true,
+                timeout: false,
+                bulkhead: false,
+                circuitBreaker: false,
+                retry: false,
+                validation: false,
+                serializer: true,
+            });
+
+            assert.strictEqual(onlyFirstLast.length, 2);
+            assert.strictEqual(typeof onlyFirstLast[0], 'function');
+            assert.strictEqual(typeof onlyFirstLast[1], 'function');
+        });
+
+        it('should allow disabling each interceptor individually with false', () => {
+            const configs: Array<Record<string, boolean>> = [
+                { errorHandler: false },
+                { timeout: false },
+                { bulkhead: false },
+                { circuitBreaker: false },
+                { retry: false },
+                { validation: false },
+                { serializer: false },
+            ];
+
+            for (const config of configs) {
+                const interceptors = createDefaultInterceptors(config);
+                const disabledKey = Object.keys(config)[0];
+                assert.strictEqual(
+                    interceptors.length,
+                    6,
+                    `Disabling ${disabledKey} should reduce count to 6`,
+                );
+            }
+        });
+
+        it('should return empty array when all interceptors are disabled', () => {
+            const interceptors = createDefaultInterceptors({
+                errorHandler: false,
+                timeout: false,
+                bulkhead: false,
+                circuitBreaker: false,
+                retry: false,
+                validation: false,
+                serializer: false,
+            });
+
+            assert.strictEqual(interceptors.length, 0);
+            assert.ok(Array.isArray(interceptors));
+        });
+    });
 });

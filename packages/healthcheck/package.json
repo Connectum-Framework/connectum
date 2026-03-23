@@ -74,6 +74,7 @@
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
     "@connectum/core": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",
