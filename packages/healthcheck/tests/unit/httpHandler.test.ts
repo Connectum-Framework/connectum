@@ -269,7 +269,9 @@ describe("createHttpHealthHandler — additional scenarios", () => {
         handler(req as any, res as any);
 
         const headers = res.getHeaders();
-        assert.strictEqual(headers["Content-Type"], "application/json");
+        const contentType = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+        assert.ok(contentType, "Content-Type header should be set");
+        assert.strictEqual(headers[contentType], "application/json");
     });
 
     it("should not match any path when custom paths array is empty", () => {

@@ -588,11 +588,6 @@ describe("Server lifecycle integration", () => {
             const signal = server.shutdownSignal;
             assert.strictEqual(signal.aborted, false, "signal should not be aborted before stop");
 
-            server.on("stopping", () => {
-                // By the time "stopping" fires, the abort controller has already been triggered
-                // (stop() calls emit("stopping") then _abortController.abort())
-            });
-
             await server.stop();
 
             assert.strictEqual(signal.aborted, true, "signal should be aborted after stop completes");

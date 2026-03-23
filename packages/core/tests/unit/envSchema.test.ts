@@ -266,11 +266,26 @@ describe("safeParseEnvConfig()", () => {
 
 describe("parseEnvConfig() process.env fallback", () => {
     it("should use process.env when no argument is passed", () => {
-        // parseEnvConfig() without args should not throw -- process.env
-        // contains string values and Zod defaults handle missing keys.
-        const config = parseEnvConfig();
-        assert.ok(typeof config.PORT === "number");
-        assert.ok(typeof config.LOG_LEVEL === "string");
+        // Save and clear schema-relevant env vars to avoid host interference
+        const saved: Record<string, string | undefined> = {};
+        const keysToClean = ["PORT", "LOG_LEVEL", "LOG_FORMAT", "LOG_BACKEND", "NODE_ENV",
+            "GRACEFUL_SHUTDOWN_ENABLED", "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
+            "OTEL_SERVICE_NAME", "OTEL_EXPORTER_OTLP_ENDPOINT"];
+        for (const key of keysToClean) {
+            saved[key] = process.env[key];
+            delete process.env[key];
+        }
+        try {
+            const config = parseEnvConfig();
+            assert.ok(typeof config.PORT === "number");
+            assert.ok(typeof config.LOG_LEVEL === "string");
+        } finally {
+            // Restore original env vars
+            for (const key of keysToClean) {
+                if (saved[key] !== undefined) process.env[key] = saved[key];
+                else delete process.env[key];
+            }
+        }
     });
 });
 

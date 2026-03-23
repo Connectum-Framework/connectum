@@ -61,6 +61,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@connectum/events": "workspace:^",
+    "@exodus/test": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

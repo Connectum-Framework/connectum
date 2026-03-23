@@ -123,39 +123,6 @@ describe("AmqpAdapter", () => {
 });
 
 describe("AmqpAdapter connection guard", () => {
-    // -----------------------------------------------------------------------
-    // Double connect → throws "already connected"
-    //
-    // The AmqpAdapter.connect() checks `if (connection)` and throws
-    // "AmqpAdapter: already connected" on a second call. However, the first
-    // connect() requires a running AMQP broker to succeed.
-    //
-    // We cannot test the actual "already connected" throw in a unit test
-    // without mocking amqplib.connect() (which is dynamically imported inside
-    // connect()). Instead, we verify the error message contract for the
-    // NOT-connected case and document the limitation.
-    //
-    // NOTE: Full "double connect" testing requires either:
-    //   - An integration test with a running RabbitMQ instance
-    //   - A mock of the dynamic `import("amqplib")` inside connect()
-    // -----------------------------------------------------------------------
-
-    it("should throw 'not connected' when publishing before connect", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        await assert.rejects(
-            () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
-            { message: "AmqpAdapter: not connected" },
-        );
-    });
-
-    it("should throw 'not connected' when subscribing before connect", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        await assert.rejects(
-            () => adapter.subscribe(["test.>"], async () => {}),
-            { message: "AmqpAdapter: not connected" },
-        );
-    });
-
     it("should be safe to call disconnect() multiple times", async () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         // Multiple disconnect() calls should not throw

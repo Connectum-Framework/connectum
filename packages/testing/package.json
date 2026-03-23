@@ -56,7 +56,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
-    "@exodus/test": "^1.0.0-rc.116",
+    "@exodus/test": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"
