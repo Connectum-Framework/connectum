@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
@@ -95,9 +96,9 @@ jobs:
         if: steps.proto-changes.outputs.changed == 'true'
         run: |
           # Assemble proto into a single directory matching package structure
-          mkdir -p .bsr/connectum/auth/v1 .bsr/connectum/events/v1
-          cp packages/auth/proto/connectum/auth/v1/options.proto .bsr/connectum/auth/v1/
-          cp packages/events/proto/connectum/events/v1/options.proto .bsr/connectum/events/v1/
+          mkdir -p .bsr/connectum
+          cp -R packages/auth/proto/connectum/auth .bsr/connectum/
+          cp -R packages/events/proto/connectum/events .bsr/connectum/
 
           cat > .bsr/buf.yaml <<'YAML'
           version: v2
