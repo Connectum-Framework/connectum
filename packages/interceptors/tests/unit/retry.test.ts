@@ -236,6 +236,8 @@ describe('retry interceptor', () => {
                     return true;
                 },
             );
+
+            assert.strictEqual(next.mock.calls.length, 1, 'should not retry non-retryable errors');
         });
 
         it('should throw the last error after exhausting all retries', async () => {
@@ -266,7 +268,7 @@ describe('retry interceptor', () => {
             );
 
             // initial attempt + maxRetries = 3 total
-            assert(next.mock.calls.length >= 3, `Expected at least 3 attempts, got ${next.mock.calls.length}`);
+            assert.strictEqual(next.mock.calls.length, 3, `Expected 3 attempts, got ${next.mock.calls.length}`);
         });
 
         it('should retry on custom retryable code and succeed after recovery', async () => {
@@ -295,7 +297,7 @@ describe('retry interceptor', () => {
             const result = await handler(mockReq);
 
             assert.strictEqual((result.message as any).result, 'recovered');
-            assert(attempts >= 3, `Expected at least 3 attempts, got ${attempts}`);
+            assert.strictEqual(attempts, 3, `Expected 3 attempts, got ${attempts}`);
         });
 
         it('should pass through streaming request when skipStreaming=true (default)', async () => {

@@ -132,32 +132,8 @@ describe("AmqpAdapter connection guard", () => {
     });
 });
 
-describe("AmqpAdapter parseHeaders (indirect)", () => {
-    // -----------------------------------------------------------------------
-    // parseHeaders() — private function
-    //
-    // Extracts string-coercible values from AMQP message headers, skips
-    // null/undefined. This function is called inside the subscribe() consumer
-    // callback, which requires a live AMQP broker.
-    //
-    // Since parseHeaders() is not exported and is only invoked inside a
-    // broker-connected subscribe() callback, it cannot be tested directly
-    // in unit tests.
-    //
-    // The function's behavior:
-    //   - Iterates Object.entries(headers)
-    //   - Skips entries where value === undefined || value === null
-    //   - Converts remaining values with String(value) into Map<string, string>
-    //
-    // For testing this, consider either:
-    //   1. Exporting parseHeaders() as a named export (preferred for testability)
-    //   2. Integration tests with a running RabbitMQ instance
-    //
-    // The tests below verify related behavior through the public API.
-    // -----------------------------------------------------------------------
-
-    it("should accept adapter with all header-related options", () => {
-        // Publisher options affect how headers are built in publish()
+describe("AmqpAdapter publisher options", () => {
+    it("should construct with publisher options", () => {
         const adapter = AmqpAdapter({
             url: "amqp://localhost:5672",
             publisherOptions: {
