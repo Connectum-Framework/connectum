@@ -32,11 +32,11 @@ mock.module("../../src/utils/reflection.ts", {
 	},
 });
 
-const mockExecSync = mock.fn((_command: string, _options?: any) => Buffer.from(""));
+const mockExecFileSync = mock.fn((_file: string, _args?: string[], _options?: any) => Buffer.from(""));
 
 mock.module("node:child_process", {
 	namedExports: {
-		execSync: mockExecSync,
+		execFileSync: mockExecFileSync,
 	},
 });
 
@@ -89,7 +89,7 @@ describe("proto-sync unit tests", () => {
 	beforeEach(() => {
 		mockFetchReflectionData.mock.resetCalls();
 		mockFetchFileDescriptorSetBinary.mock.resetCalls();
-		mockExecSync.mock.resetCalls();
+		mockExecFileSync.mock.resetCalls();
 		mockMkdtempSync.mock.resetCalls();
 		mockRmSync.mock.resetCalls();
 		mockWriteFileSync.mock.resetCalls();
@@ -208,7 +208,7 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should NOT call execSync in dry-run mode", async () => {
+		it("should NOT call execFileSync in dry-run mode", async () => {
 			await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
@@ -218,9 +218,9 @@ describe("proto-sync unit tests", () => {
 			});
 
 			assert.strictEqual(
-				mockExecSync.mock.calls.length,
+				mockExecFileSync.mock.calls.length,
 				0,
-				"execSync should not be called in dry-run mode",
+				"execFileSync should not be called in dry-run mode",
 			);
 		});
 	});
@@ -269,12 +269,15 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			assert.strictEqual(mockExecSync.mock.calls.length, 1);
+			assert.strictEqual(mockExecFileSync.mock.calls.length, 1);
 
-			const command = mockExecSync.mock.calls[0]!.arguments[0] as string;
-			assert.ok(command.startsWith("buf generate"), "Command should start with 'buf generate'");
-			assert.ok(command.includes("--output ./gen"), "Command should include --output flag");
-			assert.ok(!command.includes("--template"), "Command should NOT include --template when not specified");
+			const [file, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.strictEqual(file, "buf", "Should call 'buf' executable");
+			assert.ok(Array.isArray(args), "Args should be an array");
+			assert.strictEqual(args[0], "generate", "First arg should be 'generate'");
+			assert.ok(args.includes("--output"), "Args should include --output flag");
+			assert.strictEqual(args[args.indexOf("--output") + 1], "./gen", "--output value should be './gen'");
+			assert.ok(!args.includes("--template"), "Args should NOT include --template when not specified");
 		});
 
 		it("should include --template flag when template is specified", async () => {
@@ -286,12 +289,15 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			assert.strictEqual(mockExecSync.mock.calls.length, 1);
+			assert.strictEqual(mockExecFileSync.mock.calls.length, 1);
 
-			const command = mockExecSync.mock.calls[0]!.arguments[0] as string;
-			assert.ok(
-				command.includes("--template ./custom-buf.gen.yaml"),
-				`Command should include --template flag, got: ${command}`,
+			const [, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.ok(Array.isArray(args), "Args should be an array");
+			assert.ok(args.includes("--template"), "Args should include --template flag");
+			assert.strictEqual(
+				args[args.indexOf("--template") + 1],
+				"./custom-buf.gen.yaml",
+				"--template value should be './custom-buf.gen.yaml'",
 			);
 		});
 
@@ -303,7 +309,7 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const options = mockExecSync.mock.calls[0]!.arguments[1] as Record<string, unknown>;
+			const options = mockExecFileSync.mock.calls[0]!.arguments[2] as Record<string, unknown>;
 			assert.strictEqual(options?.stdio, "inherit", "Should pass stdio: inherit");
 		});
 
@@ -324,7 +330,7 @@ describe("proto-sync unit tests", () => {
 		});
 
 		it("should clean up temp directory even when buf generate fails", async () => {
-			mockExecSync.mock.mockImplementationOnce(() => {
+			mockExecFileSync.mock.mockImplementationOnce(() => {
 				throw new Error("buf generate failed");
 			});
 
@@ -440,7 +446,7 @@ describe("proto-sync unit tests", () => {
 		});
 
 		it("should propagate buf CLI ENOENT error when buf is not installed", async () => {
-			mockExecSync.mock.mockImplementationOnce(() => {
+			mockExecFileSync.mock.mockImplementationOnce(() => {
 				const error = new Error("spawnSync buf ENOENT") as NodeJS.ErrnoException;
 				error.code = "ENOENT";
 				throw error;
@@ -467,7 +473,7 @@ describe("proto-sync unit tests", () => {
 		});
 
 		it("should propagate non-zero exit code from buf generate", async () => {
-			mockExecSync.mock.mockImplementationOnce(() => {
+			mockExecFileSync.mock.mockImplementationOnce(() => {
 				const error = new Error("Command failed: buf generate") as any;
 				error.status = 1;
 				error.stderr = Buffer.from("unknown flag --invalid");
@@ -493,11 +499,10 @@ describe("proto-sync unit tests", () => {
 	// -----------------------------------------------------------------------
 
 	describe("template parameter handling", () => {
-		it("should pass template value directly to the command string", async () => {
-			// NOTE: The current implementation does NOT sanitize the template value.
-			// This test documents the behavior for awareness.
-			// In a real attack, the template would be a user-provided CLI arg,
-			// and citty parses it as a string flag value.
+		it("should safely pass malicious template as array argument (no shell injection)", async () => {
+			// With execFileSync, arguments are passed as array elements,
+			// not interpolated into a shell command string.
+			// Shell metacharacters in template value are harmless.
 			const maliciousTemplate = '"; rm -rf / #';
 
 			await captureConsoleLog(async () => {
@@ -508,14 +513,17 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const command = mockExecSync.mock.calls[0]!.arguments[0] as string;
+			const [file, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.strictEqual(file, "buf", "Should call 'buf' executable");
+			assert.ok(Array.isArray(args), "Args should be an array");
 
-			// Document that the template IS included unsanitized in the command
-			// This is a known limitation - the template value from citty CLI args
-			// is concatenated into the shell command without escaping.
-			assert.ok(
-				command.includes(maliciousTemplate),
-				"Template value is passed as-is to the command string (no shell escaping)",
+			// The malicious string is safely contained as a single array element
+			const templateIdx = args.indexOf("--template");
+			assert.ok(templateIdx >= 0, "Should have --template flag");
+			assert.strictEqual(
+				args[templateIdx + 1],
+				maliciousTemplate,
+				"Template value is safely passed as a separate argument (no shell interpolation)",
 			);
 		});
 
@@ -528,10 +536,15 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const command = mockExecSync.mock.calls[0]!.arguments[0] as string;
-			assert.ok(
-				command.includes("--template ./my templates/buf.gen.yaml"),
-				`Template with spaces should be included, got: ${command}`,
+			const [, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.ok(Array.isArray(args), "Args should be an array");
+
+			const templateIdx = args.indexOf("--template");
+			assert.ok(templateIdx >= 0, "Should have --template flag");
+			assert.strictEqual(
+				args[templateIdx + 1],
+				"./my templates/buf.gen.yaml",
+				"Template with spaces should be a single array element",
 			);
 		});
 	});
@@ -611,7 +624,7 @@ describe("proto-sync unit tests", () => {
 				0,
 				"Should NOT call fetchFileDescriptorSetBinary",
 			);
-			assert.strictEqual(mockExecSync.mock.calls.length, 0, "Should NOT call execSync");
+			assert.strictEqual(mockExecFileSync.mock.calls.length, 0, "Should NOT call execFileSync");
 		});
 
 		it("should route to full sync when dryRun is false", async () => {
@@ -633,7 +646,7 @@ describe("proto-sync unit tests", () => {
 				1,
 				"Should call fetchFileDescriptorSetBinary",
 			);
-			assert.strictEqual(mockExecSync.mock.calls.length, 1, "Should call execSync");
+			assert.strictEqual(mockExecFileSync.mock.calls.length, 1, "Should call execFileSync");
 		});
 
 		it("should route to full sync when dryRun is undefined", async () => {

@@ -12,7 +12,7 @@
  * @module commands/proto-sync
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,12 +91,14 @@ async function executeFullSync(url: string, out: string, template?: string): Pro
     writeFileSync(binpbPath, binpb);
 
     try {
-        // Step 3: Run buf generate
-        const templateFlag = template ? `--template ${template}` : "";
-        const command = `buf generate ${binpbPath} --output ${out} ${templateFlag}`.trim();
+        // Step 3: Run buf generate (execFileSync prevents command injection)
+        const args = ["generate", binpbPath, "--output", out];
+        if (template) {
+            args.push("--template", template);
+        }
 
-        console.log(`Running: ${command}`);
-        execSync(command, { stdio: "inherit" });
+        console.log(`Running: buf ${args.join(" ")}`);
+        execFileSync("buf", args, { stdio: "inherit" });
 
         console.log(`Proto types synced to ${out}`);
     } finally {

@@ -9,7 +9,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { ExponentialBackoff, handleAll, retry } from "cockatiel";
+import { ExponentialBackoff, handleWhen, retry } from "cockatiel";
 import type { RetryOptions } from "./types.ts";
 
 /**
@@ -57,11 +57,19 @@ export function createRetryInterceptor(options: RetryOptions = {}): Interceptor 
         throw new Error("maxDelay must be a non-negative finite number");
     }
 
-    // Create retry policy with exponential backoff using cockatiel
-    const retryPolicy = retry(handleAll, {
-        maxAttempts: maxRetries,
-        backoff: new ExponentialBackoff({ initialDelay, maxDelay }),
-    });
+    // Create retry policy with exponential backoff using cockatiel.
+    // handleWhen filters errors so only retryable codes trigger retries;
+    // non-retryable errors propagate immediately without consuming attempts.
+    const retryPolicy = retry(
+        handleWhen((err) => {
+            const connectErr = ConnectError.from(err);
+            return retryableCodes.includes(connectErr.code);
+        }),
+        {
+            maxAttempts: maxRetries,
+            backoff: new ExponentialBackoff({ initialDelay, maxDelay }),
+        },
+    );
 
     return (next) => async (req) => {
         // Skip streaming calls
@@ -69,25 +77,8 @@ export function createRetryInterceptor(options: RetryOptions = {}): Interceptor 
             return await next(req);
         }
 
-        return await retryPolicy.execute(async ({ attempt }) => {
-            try {
-                return await next(req);
-            } catch (err) {
-                const connectErr = ConnectError.from(err);
-
-                // Only retry on retryable error codes
-                if (!retryableCodes.includes(connectErr.code)) {
-                    throw err;
-                }
-
-                // On last attempt, throw the original error
-                if (attempt >= maxRetries) {
-                    throw err;
-                }
-
-                // Throw to trigger retry
-                throw err;
-            }
+        return await retryPolicy.execute(async () => {
+            return await next(req);
         });
     };
 }
