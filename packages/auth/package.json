@@ -73,7 +73,7 @@
     "@bufbuild/protobuf": "catalog:",
     "@connectrpc/connect": "catalog:",
     "@connectum/core": "workspace:^",
-    "jose": "^6.2.1"
+    "jose": "^6.2.2"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
