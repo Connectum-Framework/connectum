@@ -46,7 +46,7 @@ errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> fallback -> va
 | 5 | retry | enabled (3 attempts) | Retry transient failures with exponential backoff |
 | 6 | fallback | **disabled** | Graceful degradation (requires a handler function) |
 | 7 | validation | enabled | `@connectrpc/validate` (`createValidateInterceptor()`) |
-| 8 | serializer | enabled | JSON serialization of protobuf responses |
+| 8 | serializer | **disabled** | JSON serialization of protobuf responses |
 
 **Why this order:**
 
@@ -329,7 +329,29 @@ message CreateUserRequest {
 
 ### Serializer
 
-Automatic JSON serialization of protobuf messages via `@bufbuild/protobuf`.
+Automatic JSON serialization of protobuf messages via `@bufbuild/protobuf`. **Disabled by default** (opt-in) since most gRPC services use binary protobuf and don't need JSON serialization.
+
+> **When to enable**: Enable the serializer when your service uses the **Connect protocol** (HTTP/1.1 JSON) and you need automatic protobuf ↔ JSON conversion. Not needed for pure **gRPC** services (binary protobuf format).
+
+```typescript
+// Connect protocol service with JSON responses — enable serializer
+const interceptors = createDefaultInterceptors({
+  serializer: true,
+});
+
+// gRPC service (binary protobuf) — serializer not needed (default)
+const interceptors = createDefaultInterceptors();
+
+// Custom serializer options
+const interceptors = createDefaultInterceptors({
+  serializer: {
+    alwaysEmitImplicit: true,
+    ignoreUnknownFields: false,
+  },
+});
+```
+
+Standalone usage:
 
 ```typescript
 import { createSerializerInterceptor } from "@connectum/interceptors";
@@ -504,7 +526,7 @@ interface DefaultInterceptorOptions {
   retry?: boolean | RetryOptions;
   fallback?: boolean | FallbackOptions;
   validation?: boolean;
-  serializer?: boolean | SerializerOptions;
+  serializer?: boolean | SerializerOptions;  // default: false (opt-in)
 }
 ```
 
@@ -628,7 +650,7 @@ const server = createServer({
     },
     // fallback disabled by default
     // validation enabled by default
-    // serializer enabled by default
+    // serializer disabled by default (opt-in)
   }),
 });
 
