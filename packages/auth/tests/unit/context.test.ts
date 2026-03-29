@@ -107,14 +107,12 @@ describe("globalThis singleton resilience", () => {
         });
     });
 
-    it("should throw on corrupted globalThis storage", () => {
+    it("should detect corrupted globalThis storage via structural check", () => {
         const g = globalThis as Record<symbol, unknown>;
         const original = g[STORAGE_KEY];
 
         try {
             g[STORAGE_KEY] = "not-a-storage";
-            // Re-import would call resolveStorage() which should throw
-            // We test the structural check directly
             const value = g[STORAGE_KEY];
             const isValid = (
                 value != null &&
