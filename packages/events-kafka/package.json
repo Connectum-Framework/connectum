@@ -1,6 +1,6 @@
 {
   "name": "@connectum/events-kafka",
-  "version": "1.0.0-rc.7",
+  "version": "1.0.0-rc.8",
   "description": "Kafka/Redpanda adapter for @connectum/events",
   "type": "module",
   "main": "./dist/index.js",

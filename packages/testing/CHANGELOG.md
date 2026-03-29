@@ -1,5 +1,12 @@
 # @connectum/testing
 
+## 1.0.0-rc.8
+
+### Patch Changes
+
+- Updated dependencies [[`752f6f5`](https://github.com/Connectum-Framework/connectum/commit/752f6f565d5a555d340df68283e0de96ffb1adda)]:
+  - @connectum/core@1.0.0-rc.8
+
 ## 1.0.0-rc.7
 
 ### Patch Changes
