@@ -27,7 +27,7 @@ import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, Fallb
  * - `true` to enable with default options
  * - An options object to enable with custom configuration
  *
- * All interceptors are enabled by default except fallback
+ * All interceptors are enabled by default except fallback and serializer
  * (which requires a handler function).
  */
 export interface DefaultInterceptorOptions {
@@ -84,7 +84,8 @@ export interface DefaultInterceptorOptions {
     /**
      * Serializer interceptor (last in chain).
      * Auto JSON serialization for ConnectRPC responses.
-     * @default true
+     * Disabled by default — enable explicitly when JSON output is needed.
+     * @default false
      */
     serializer?: boolean | SerializerOptions;
 }
@@ -100,7 +101,7 @@ export interface DefaultInterceptorOptions {
  * 5. **retry** - Retry transient failures (exponential backoff)
  * 6. **fallback** - Graceful degradation (DISABLED by default)
  * 7. **validation** - @connectrpc/validate (createValidateInterceptor)
- * 8. **serializer** - JSON serialization (innermost)
+ * 8. **serializer** - JSON serialization (innermost, DISABLED by default)
  *
  * @param options - Configuration for each interceptor
  * @returns Array of configured interceptors in the correct order
@@ -168,8 +169,8 @@ export function createDefaultInterceptors(options: DefaultInterceptorOptions = {
         interceptors.push(createValidateInterceptor());
     }
 
-    // 8. Serializer
-    if (options.serializer !== false) {
+    // 8. Serializer (opt-in, disabled by default)
+    if (options.serializer === true || typeof options.serializer === "object") {
         const opts = typeof options.serializer === "object" ? options.serializer : {};
         interceptors.push(createSerializerInterceptor(opts));
     }

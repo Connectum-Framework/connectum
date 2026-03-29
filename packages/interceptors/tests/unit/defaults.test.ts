@@ -9,12 +9,12 @@ import { describe, it } from 'node:test';
 import { createDefaultInterceptors } from '../../src/defaults.ts';
 
 describe('createDefaultInterceptors', () => {
-    it('should create default chain with 8 interceptors', () => {
+    it('should create default chain with 6 interceptors', () => {
         const interceptors = createDefaultInterceptors();
 
-        // 7 enabled by default (fallback disabled)
-        // errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, serializer
-        assert.strictEqual(interceptors.length, 7);
+        // 6 enabled by default (fallback and serializer disabled)
+        // errorHandler, timeout, bulkhead, circuitBreaker, retry, validation
+        assert.strictEqual(interceptors.length, 6);
     });
 
     it('should enable fallback when handler provided', () => {
@@ -22,8 +22,8 @@ describe('createDefaultInterceptors', () => {
             fallback: { handler: () => ({ data: [] }) },
         });
 
-        // 8 interceptors (all including fallback)
-        assert.strictEqual(interceptors.length, 8);
+        // 7 interceptors (all default + fallback)
+        assert.strictEqual(interceptors.length, 7);
     });
 
     it('should not enable fallback when set to true without handler', () => {
@@ -34,7 +34,7 @@ describe('createDefaultInterceptors', () => {
         });
 
         // fallback: true is not typeof "object", so it's skipped
-        assert.strictEqual(interceptors.length, 7);
+        assert.strictEqual(interceptors.length, 6);
     });
 
     it('should disable individual interceptors', () => {
@@ -94,21 +94,21 @@ describe('createDefaultInterceptors', () => {
     });
 
     describe('interceptor chain ordering and disabling', () => {
-        it('should create 7 interceptors with all defaults', () => {
+        it('should create 6 interceptors with all defaults', () => {
             const interceptors = createDefaultInterceptors();
 
-            assert.strictEqual(interceptors.length, 7);
+            assert.strictEqual(interceptors.length, 6);
             for (const ic of interceptors) {
                 assert.strictEqual(typeof ic, 'function');
             }
         });
 
-        it('should create 8 interceptors when fallback has handler', () => {
+        it('should create 7 interceptors when fallback has handler', () => {
             const interceptors = createDefaultInterceptors({
                 fallback: { handler: () => null },
             });
 
-            assert.strictEqual(interceptors.length, 8);
+            assert.strictEqual(interceptors.length, 7);
         });
 
         it('should maintain correct order: errorHandler first, serializer last', () => {
@@ -127,26 +127,35 @@ describe('createDefaultInterceptors', () => {
             assert.strictEqual(typeof onlyFirstLast[1], 'function');
         });
 
-        it('should allow disabling each interceptor individually with false', () => {
-            const configs: Array<Record<string, boolean>> = [
-                { errorHandler: false },
-                { timeout: false },
-                { bulkhead: false },
-                { circuitBreaker: false },
-                { retry: false },
-                { validation: false },
-                { serializer: false },
+        it('should allow disabling each default-enabled interceptor individually with false', () => {
+            const enabledByDefault = [
+                'errorHandler', 'timeout', 'bulkhead',
+                'circuitBreaker', 'retry', 'validation',
             ];
 
-            for (const config of configs) {
-                const interceptors = createDefaultInterceptors(config);
-                const disabledKey = Object.keys(config)[0];
+            for (const key of enabledByDefault) {
+                const interceptors = createDefaultInterceptors({ [key]: false });
                 assert.strictEqual(
                     interceptors.length,
-                    6,
-                    `Disabling ${disabledKey} should reduce count to 6`,
+                    5,
+                    `Disabling ${key} should reduce count to 5`,
                 );
             }
+        });
+
+        it('should not change count when disabling already-disabled serializer', () => {
+            const interceptors = createDefaultInterceptors({ serializer: false });
+            assert.strictEqual(interceptors.length, 6);
+        });
+
+        it('should enable serializer when set to true', () => {
+            const interceptors = createDefaultInterceptors({ serializer: true });
+            assert.strictEqual(interceptors.length, 7);
+        });
+
+        it('should enable serializer when given options object', () => {
+            const interceptors = createDefaultInterceptors({ serializer: { skipGrpcServices: false } });
+            assert.strictEqual(interceptors.length, 7);
         });
 
         it('should return empty array when all interceptors are disabled', () => {
