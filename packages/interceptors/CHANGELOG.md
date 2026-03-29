@@ -1,5 +1,12 @@
 # @connectum/interceptors
 
+## 1.0.0-rc.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.9
+
 ## 1.0.0-rc.8
 
 ### Major Changes

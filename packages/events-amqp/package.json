@@ -1,6 +1,6 @@
 {
   "name": "@connectum/events-amqp",
-  "version": "1.0.0-rc.8",
+  "version": "1.0.0-rc.9",
   "description": "AMQP/RabbitMQ adapter for @connectum/events",
   "type": "module",
   "main": "./dist/index.js",

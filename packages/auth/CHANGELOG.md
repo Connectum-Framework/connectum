@@ -1,5 +1,23 @@
 # @connectum/auth
 
+## 1.0.0-rc.9
+
+### Patch Changes
+
+- [#78](https://github.com/Connectum-Framework/connectum/pull/78) [`913cafe`](https://github.com/Connectum-Framework/connectum/commit/913cafeb34cdac8d988ee592aca3cd31d3543f69) Thanks [@intech](https://github.com/intech)! - fix(auth): make authContextStorage resilient to multiple module evaluations
+
+  Uses globalThis + Symbol.for() to ensure a single AsyncLocalStorage instance
+  per process, even when the module is evaluated through multiple runtime paths
+  (e.g., tsx source + built workspace output in dev).
+
+  Emits a one-time `CONNECTUM_AUTH_DUP_INIT` warning when dual initialization
+  is detected, helping diagnose mixed src/dist import issues.
+
+  Fixes [#75](https://github.com/Connectum-Framework/connectum/issues/75). Thanks to @kebr0m for the detailed bug report and root cause analysis.
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.9
+
 ## 1.0.0-rc.8
 
 ### Patch Changes

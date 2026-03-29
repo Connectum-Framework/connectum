@@ -1,6 +1,6 @@
 {
   "name": "@connectum/auth",
-  "version": "1.0.0-rc.8",
+  "version": "1.0.0-rc.9",
   "description": "Authentication and authorization interceptors for Connectum",
   "type": "module",
   "main": "./dist/index.js",
