@@ -1,5 +1,12 @@
 # @connectum/events-redis
 
+## 1.0.0-rc.8
+
+### Patch Changes
+
+- Updated dependencies [[`752f6f5`](https://github.com/Connectum-Framework/connectum/commit/752f6f565d5a555d340df68283e0de96ffb1adda), [`d42e2bd`](https://github.com/Connectum-Framework/connectum/commit/d42e2bdc7229635214abc63553b39d9dee8985b2)]:
+  - @connectum/events@1.0.0-rc.8
+
 ## 1.0.0-rc.7
 
 ### Minor Changes
