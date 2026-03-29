@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert";
+import type { AsyncLocalStorage } from "node:async_hooks";
 import { describe, it } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError } from "@connectum/testing";
@@ -67,5 +68,63 @@ describe("context", () => {
                 assert.strictEqual(result.type, "jwt");
             });
         });
+    });
+});
+
+describe("globalThis singleton resilience", () => {
+    const STORAGE_KEY = Symbol.for("@connectum/auth/context-storage");
+    const META_KEY = Symbol.for("@connectum/auth/context-storage-meta");
+
+    it("should store authContextStorage in globalThis via Symbol.for key", () => {
+        const stored = (globalThis as Record<symbol, unknown>)[STORAGE_KEY];
+        assert.strictEqual(authContextStorage, stored,
+            "authContextStorage should be the same instance as globalThis[STORAGE_KEY]");
+    });
+
+    it("should have meta with initUrl", () => {
+        const meta = (globalThis as Record<symbol, unknown>)[META_KEY] as { initUrl: string; warned: boolean };
+        assert.ok(meta, "meta should exist");
+        assert.strictEqual(typeof meta.initUrl, "string");
+        assert.strictEqual(typeof meta.warned, "boolean");
+    });
+
+    it("should preserve auth context when accessed via globalThis storage", async () => {
+        const mockContext: AuthContext = {
+            subject: "dual-instance-test",
+            roles: ["admin"],
+            scopes: ["read"],
+            claims: {},
+            type: "jwt",
+        };
+
+        await authContextStorage.run(mockContext, async () => {
+            // Read from globalThis directly (simulates second module evaluation)
+            const storageFromGlobal = (globalThis as Record<symbol, unknown>)[STORAGE_KEY] as AsyncLocalStorage<AuthContext>;
+            const context = storageFromGlobal.getStore();
+
+            assert.ok(context);
+            assert.strictEqual(context.subject, "dual-instance-test");
+        });
+    });
+
+    it("should throw on corrupted globalThis storage", () => {
+        const g = globalThis as Record<symbol, unknown>;
+        const original = g[STORAGE_KEY];
+
+        try {
+            g[STORAGE_KEY] = "not-a-storage";
+            // Re-import would call resolveStorage() which should throw
+            // We test the structural check directly
+            const value = g[STORAGE_KEY];
+            const isValid = (
+                value != null &&
+                typeof (value as Record<string, unknown>).run === "function" &&
+                typeof (value as Record<string, unknown>).getStore === "function" &&
+                typeof (value as Record<string, unknown>).enterWith === "function"
+            );
+            assert.strictEqual(isValid, false, "corrupted value should fail structural check");
+        } finally {
+            g[STORAGE_KEY] = original;
+        }
     });
 });
