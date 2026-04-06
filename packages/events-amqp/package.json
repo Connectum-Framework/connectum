@@ -48,7 +48,7 @@
     "access": "public"
   },
   "dependencies": {
-    "amqplib": "^1.0.2"
+    "amqplib": "^1.0.3"
   },
   "peerDependencies": {
     "@connectum/events": "workspace:^"
