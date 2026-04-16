@@ -32,6 +32,9 @@ export class EventRouterImpl implements EventRouter {
             if (typeof handlerOrConfig === "function") {
                 handler = handlerOrConfig;
             } else {
+                if (typeof handlerOrConfig.handler !== "function") {
+                    throw new Error(`Invalid event handler config for method "${method.localName}" in service "${serviceDesc.typeName}": "handler" must be a function`);
+                }
                 handler = handlerOrConfig.handler;
                 perHandlerMiddleware = handlerOrConfig.middleware;
             }

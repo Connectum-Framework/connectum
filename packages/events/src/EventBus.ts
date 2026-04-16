@@ -131,7 +131,12 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     // Build publish topic lookup: input message typeName → resolved topic
                     publishTopicMap.clear();
                     for (const entry of router.entries) {
-                        publishTopicMap.set(entry.method.input.typeName, entry.topic);
+                        const messageType = entry.method.input.typeName;
+                        const existingTopic = publishTopicMap.get(messageType);
+                        if (existingTopic !== undefined && existingTopic !== entry.topic) {
+                            throw new Error(`Ambiguous publish topic for "${messageType}": "${existingTopic}" and "${entry.topic}". Pass publishOptions.topic explicitly.`);
+                        }
+                        publishTopicMap.set(messageType, entry.topic);
                     }
 
                     // Build topic → handler map and compose middleware per topic
