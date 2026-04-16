@@ -3,12 +3,13 @@
  *
  * Authentication and authorization interceptors for Connectum.
  *
- * Provides seven interceptor factories:
+ * Provides eight interceptor factories:
  * - createAuthInterceptor() — generic, pluggable authentication
  * - createJwtAuthInterceptor() — JWT convenience with jose
  * - createGatewayAuthInterceptor() — gateway-injected headers
  * - createSessionAuthInterceptor() — session-based auth (better-auth, etc.)
  * - createAuthzInterceptor() — declarative rules-based authorization
+ * - createProtoAuthzInterceptor() — proto-option-driven authorization
  * - createClientBearerInterceptor() — client-side Bearer token
  * - createClientGatewayInterceptor() — client-side gateway service-to-service auth
  *

@@ -8,6 +8,7 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
+import { MAX_HEADER_BYTES, sanitizeHeaderValue } from "./headers.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -53,10 +54,13 @@ export function createClientGatewayInterceptor(options: ClientGatewayInterceptor
 
     return (next) => async (req) => {
         req.header.set(GATEWAY_SECRET_HEADER, secret);
-        req.header.set(AUTH_HEADERS.SUBJECT, subject);
+        req.header.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(subject, 512));
 
         if (roles && roles.length > 0) {
-            req.header.set(AUTH_HEADERS.ROLES, JSON.stringify(roles));
+            const rolesValue = JSON.stringify(roles);
+            if (rolesValue.length <= MAX_HEADER_BYTES) {
+                req.header.set(AUTH_HEADERS.ROLES, rolesValue);
+            }
         }
 
         return await next(req);
