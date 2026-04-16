@@ -54,7 +54,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should reject requests when circuit open", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 10 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 60_000 });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
@@ -183,7 +183,7 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should handle custom threshold", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 10 });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 60_000 });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 

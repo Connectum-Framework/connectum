@@ -76,7 +76,7 @@ describe('Resilience Pattern Integration', () => {
         // Setup: circuit breaker threshold 2 (will open after 2 failures)
         const circuitBreakerInterceptor = createCircuitBreakerInterceptor({
             threshold: 2,
-            halfOpenAfter: 10,
+            halfOpenAfter: 60_000,
         });
 
         const mockReq = {
