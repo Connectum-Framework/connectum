@@ -43,6 +43,7 @@ export type {
     EventBusOptions,
     EventContext,
     EventContextInit,
+    EventHandlerConfig,
     EventMiddleware,
     EventMiddlewareNext,
     EventRoute,
