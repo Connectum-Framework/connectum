@@ -1,23 +1,23 @@
 /**
  * Factories for mock ConnectRPC `next` handler functions.
  *
- * These helpers produce spy-enabled mock functions (via `node:test` `mock.fn`)
+ * These helpers produce spy-enabled mock functions (via {@link createMockFn})
  * that simulate the downstream handler in an interceptor chain, allowing tests
  * to verify that interceptors correctly invoke (or skip) the next handler.
  *
  * @module
  */
 
-import { mock } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { type Code, ConnectError } from "@connectrpc/connect";
+import { createMockFn } from "./mock-compat.ts";
 import type { MockNextOptions } from "./types.ts";
 
 /**
  * Create a mock `next` handler that resolves with a successful response.
  *
- * The returned function is a `mock.fn()` spy, so callers can inspect
- * `next.mock.calls` and `next.mock.callCount()` after the test.
+ * The returned function is a spy (via {@link createMockFn}), so callers can
+ * inspect `next.mock.calls` and `next.mock.callCount()` after the test.
  *
  * @param options - Optional overrides for the response payload and stream flag.
  * @returns A spy-enabled async function matching the ConnectRPC `next` signature.
@@ -37,7 +37,7 @@ export function createMockNext(options?: MockNextOptions): any {
     const stream = options?.stream ?? false;
     const baseMessage = options?.message ?? { result: "success" };
 
-    return mock.fn(async (_req: unknown) => ({
+    return createMockFn(async (_req: unknown) => ({
         stream,
         message: { ...baseMessage },
     }));
@@ -66,7 +66,7 @@ export function createMockNext(options?: MockNextOptions): any {
  */
 // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextError(code: Code, message?: string): any {
-    return mock.fn(async (_req: unknown) => {
+    return createMockFn(async (_req: unknown) => {
         throw new ConnectError(message ?? "Mock error", code);
     });
 }
@@ -91,7 +91,7 @@ export function createMockNextError(code: Code, message?: string): any {
  */
 // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextSlow(delay: number, options?: MockNextOptions): any {
-    return mock.fn(async (_req: unknown) => {
+    return createMockFn(async (_req: unknown) => {
         await setTimeout(delay);
         return {
             stream: options?.stream ?? false,

@@ -9,6 +9,9 @@
 
 export { assertConnectError } from "./assertions.ts";
 export { createFakeMethod, createFakeService } from "./fake-service.ts";
+export type { MockCall, MockFn } from "./mock-compat.ts";
+// Portable mock function factory
+export { createMockFn } from "./mock-compat.ts";
 // Phase 2 (P1): Protobuf descriptor mocks & streaming
 export { createMockDescField, createMockDescMessage, createMockDescMethod } from "./mock-desc.ts";
 export { createMockNext, createMockNextError, createMockNextSlow } from "./mock-next.ts";
