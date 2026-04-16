@@ -10,12 +10,13 @@
 import type { AuthContext } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
-const MAX_HEADER_BYTES = 8192;
+/** Maximum byte length for a single header value (shared with client interceptors). */
+export const MAX_HEADER_BYTES = 8192;
 
 /**
  * Sanitize a header value by removing control characters and enforcing length limits.
  */
-function sanitizeHeaderValue(value: string, maxLength: number): string {
+export function sanitizeHeaderValue(value: string, maxLength: number): string {
     // Remove control characters (except tab/LF/CR which are valid in headers)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control char removal for header sanitization
     const cleaned = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
