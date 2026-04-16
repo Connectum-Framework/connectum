@@ -1,5 +1,21 @@
 # @connectum/auth
 
+## 1.0.0-rc.10
+
+### Minor Changes
+
+- [#92](https://github.com/Connectum-Framework/connectum/pull/92) [`4800ce8`](https://github.com/Connectum-Framework/connectum/commit/4800ce8ed8f063680b2d6e3def9d4f59bd2a8217) Thanks [@intech](https://github.com/intech)! - feat(auth): add client-side auth interceptors (bearer, gateway)
+
+  Added two client interceptor factories:
+
+  - `createClientBearerInterceptor()` — sets Authorization header with static or async token
+  - `createClientGatewayInterceptor()` — sets gateway secret and auth context headers for service-to-service communication
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.10
+
 ## 1.0.0-rc.9
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @connectum/testing
 
+## 1.0.0-rc.10
+
+### Patch Changes
+
+- [#93](https://github.com/Connectum-Framework/connectum/pull/93) [`5671e77`](https://github.com/Connectum-Framework/connectum/commit/5671e775a0bb86fc7e1ed2400304653553bf5b34) Thanks [@intech](https://github.com/intech)! - fix(testing): replace node:test mock with portable implementation
+
+  Replaced `mock.fn()` from `node:test` with a portable `createMockFn()`
+  implementation that works across Node.js, Bun, and bundler environments.
+  The public API surface (`.mock.calls`, `.mock.callCount()`) is preserved.
+
+  This unblocks Bun users from using `@connectum/testing` utilities.
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.10
+
 ## 1.0.0-rc.9
 
 ### Patch Changes
