@@ -3,12 +3,14 @@
  *
  * Authentication and authorization interceptors for Connectum.
  *
- * Provides five interceptor factories:
+ * Provides seven interceptor factories:
  * - createAuthInterceptor() — generic, pluggable authentication
  * - createJwtAuthInterceptor() — JWT convenience with jose
  * - createGatewayAuthInterceptor() — gateway-injected headers
  * - createSessionAuthInterceptor() — session-based auth (better-auth, etc.)
  * - createAuthzInterceptor() — declarative rules-based authorization
+ * - createClientBearerInterceptor() — client-side Bearer token
+ * - createClientGatewayInterceptor() — client-side gateway service-to-service auth
  *
  * Plus context propagation via AsyncLocalStorage and request headers.
  *
@@ -16,11 +18,14 @@
  * @mergeModuleWith <project>
  */
 
-// Interceptor factories
+// Interceptor factories (server-side)
 export { createAuthInterceptor } from "./auth-interceptor.ts";
 export { createAuthzInterceptor } from "./authz-interceptor.ts";
 // Cache
 export { LruCache } from "./cache.ts";
+// Interceptor factories (client-side)
+export { createClientBearerInterceptor } from "./client-bearer-interceptor.ts";
+export { createClientGatewayInterceptor } from "./client-gateway-interceptor.ts";
 // Context management
 export { authContextStorage, getAuthContext, requireAuthContext } from "./context.ts";
 export type { AuthzDeniedDetails } from "./errors.ts";
@@ -44,6 +49,8 @@ export type {
     AuthzInterceptorOptions,
     AuthzRule,
     CacheOptions,
+    ClientBearerInterceptorOptions,
+    ClientGatewayInterceptorOptions,
     GatewayAuthInterceptorOptions,
     GatewayHeaderMapping,
     InterceptorFactory,

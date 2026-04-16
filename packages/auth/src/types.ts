@@ -360,6 +360,36 @@ export interface SessionAuthInterceptorOptions {
 }
 
 /**
+ * Client-side Bearer token interceptor options.
+ *
+ * @see {@link createClientBearerInterceptor}
+ */
+export interface ClientBearerInterceptorOptions {
+    /**
+     * Bearer token value or async factory function.
+     *
+     * When a string is provided, the same token is sent with every request.
+     * When a function is provided, it is called before each request to
+     * support token refresh flows.
+     */
+    readonly token: string | (() => Promise<string>);
+}
+
+/**
+ * Client-side gateway service-to-service auth interceptor options.
+ *
+ * @see {@link createClientGatewayInterceptor}
+ */
+export interface ClientGatewayInterceptorOptions {
+    /** Shared secret for gateway trust verification */
+    readonly secret: string;
+    /** Authenticated subject identifier (e.g., service name) */
+    readonly subject: string;
+    /** Optional roles to propagate (JSON-encoded in header) */
+    readonly roles?: string[] | undefined;
+}
+
+/**
  * Proto-based authorization interceptor options.
  *
  * Uses proto custom options (connectum.auth.v1) for declarative authorization
