@@ -169,13 +169,28 @@ export interface EventContextInit {
 export type TypedEventHandler<I> = (event: I, ctx: EventContext) => Promise<void>;
 
 /**
+ * Per-handler middleware configuration.
+ *
+ * Overrides global EventBus middleware for this specific handler.
+ * When present, the global middleware pipeline is bypassed entirely
+ * and only the per-handler middleware array is applied.
+ */
+export interface EventHandlerConfig<I> {
+    /** Event handler function */
+    readonly handler: TypedEventHandler<I>;
+    /** Per-handler middleware array (overrides global middleware for this handler) */
+    readonly middleware?: EventMiddleware[];
+}
+
+/**
  * Maps service methods to typed event handlers.
  *
- * Conditional type: for each method in the service descriptor,
- * creates a handler expecting the method's input type.
+ * Each handler can be either:
+ * - A simple function (uses global middleware)
+ * - An object with `handler` and optional `middleware` (per-handler override)
  */
 export type ServiceEventHandlers<S extends DescService> = {
-    [K in S["methods"][number] as K["localName"]]: TypedEventHandler<MessageShape<K["input"]>>;
+    [K in keyof S["method"]]: TypedEventHandler<MessageShape<S["method"][K]["input"]>> | EventHandlerConfig<MessageShape<S["method"][K]["input"]>>;
 };
 
 /**
@@ -188,6 +203,8 @@ export interface EventRouteEntry {
     readonly method: DescMethod;
     /** Typed handler function */
     readonly handler: TypedEventHandler<unknown>;
+    /** Per-handler middleware (overrides global when present) */
+    readonly middleware?: EventMiddleware[];
 }
 
 /**

@@ -90,6 +90,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
         route(router);
     }
 
+    // Publish topic lookup: message typeName → resolved topic from proto annotation.
+    // Populated in start() after routes are registered.
+    const publishTopicMap = new Map<string, string>();
+
     // Build middleware chain
     const middlewares: EventMiddleware[] = [];
 
@@ -124,6 +128,12 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     const derivedName = deriveServiceName(router.serviceNames);
                     await adapter.connect(derivedName ? { serviceName: derivedName } : undefined);
 
+                    // Build publish topic lookup: input message typeName → resolved topic
+                    publishTopicMap.clear();
+                    for (const entry of router.entries) {
+                        publishTopicMap.set(entry.method.input.typeName, entry.topic);
+                    }
+
                     // Build topic → handler map and compose middleware per topic
                     const topicHandlerMap = new Map<string, (event: RawEvent, ctx: EventContext) => Promise<void>>();
 
@@ -131,7 +141,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                         if (topicHandlerMap.has(entry.topic)) {
                             throw new Error(`Duplicate event topic "${entry.topic}". Use (connectum.events.v1.event).topic option to disambiguate.`);
                         }
-                        const composedHandler = composeMiddleware(middlewares, async (rawEvent, ctx) => {
+                        // Per-handler middleware overrides global when present
+                        const effectiveMiddleware = entry.middleware !== undefined ? entry.middleware : middlewares;
+                        const composedHandler = composeMiddleware(effectiveMiddleware, async (rawEvent, ctx) => {
                             const message = fromBinary(entry.method.input, rawEvent.payload);
                             await entry.handler(message, ctx);
                         });
@@ -298,7 +310,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             // Create message instance and serialize
             const message = create(schema, data);
             const payload = toBinary(schema, message);
-            const eventType = publishOptions?.topic ?? schema.typeName;
+            const eventType = publishOptions?.topic ?? publishTopicMap.get(schema.typeName) ?? schema.typeName;
 
             await adapter.publish(eventType, payload, publishOptions);
         },
