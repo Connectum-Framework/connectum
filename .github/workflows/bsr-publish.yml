@@ -1,0 +1,82 @@
+name: Publish Proto to BSR
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "BSR label (e.g., main, v1.0.0-rc.10)"
+        type: string
+        default: "main"
+      dry_run:
+        description: "Dry run — lint and validate without pushing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to Buf Schema Registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Buf CLI
+        uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1
+        with:
+          token: ${{ secrets.BUF_TOKEN }}
+          setup_only: true
+
+      - name: Assemble proto modules
+        run: |
+          mkdir -p .bsr/connectum
+          for proto_root in packages/*/proto/connectum/*/; do
+            [ -d "$proto_root" ] || continue
+            dest=".bsr/connectum/$(basename "$proto_root")"
+            if [ -d "$dest" ]; then
+              echo "::error::Proto collision: ${proto_root} → ${dest} already exists"
+              exit 1
+            fi
+            cp -R "$proto_root" .bsr/connectum/
+          done
+
+          printf '%s\n' \
+            'version: v2' \
+            'modules:' \
+            '  - path: connectum' \
+            '    name: buf.build/connectum-framework/connectum' \
+            'lint:' \
+            '  use:' \
+            '    - STANDARD' \
+            'breaking:' \
+            '  use:' \
+            '    - FILE' \
+            > .bsr/buf.yaml
+
+          echo "### Proto modules assembled" >> "$GITHUB_STEP_SUMMARY"
+          find .bsr -name '*.proto' | sort | while read -r f; do
+            echo "- \`${f}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Lint proto
+        run: buf lint .bsr
+
+      - name: Push to BSR
+        if: inputs.dry_run == false
+        run: |
+          buf push .bsr \
+            --label "${{ inputs.label }}" \
+            --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
+
+          echo "### Published to BSR" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module:** \`buf.build/connectum-framework/connectum\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Label:** \`${{ inputs.label }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "### Dry Run Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "Proto files linted successfully. No push to BSR." >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run with **dry_run = false** and label (e.g. \`v1.0.0-rc.10\`) to publish." >> "$GITHUB_STEP_SUMMARY"
