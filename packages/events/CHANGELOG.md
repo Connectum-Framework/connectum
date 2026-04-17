@@ -1,5 +1,48 @@
 # @connectum/events
 
+## 1.0.0-rc.10
+
+### Minor Changes
+
+- [#91](https://github.com/Connectum-Framework/connectum/pull/91) [`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4) Thanks [@intech](https://github.com/intech)! - feat(events): support per-handler middleware configuration
+
+  Event handlers registered via `router.service()` can now specify per-handler
+  middleware that overrides the global EventBus middleware pipeline.
+
+  Handlers support two forms:
+
+  - Simple function: `onEvent: async (msg, ctx) => { ... }` (uses global middleware)
+  - Config object: `onEvent: { handler: async (msg, ctx) => { ... }, middleware: [...] }` (per-handler override)
+
+  Closes [#49](https://github.com/Connectum-Framework/connectum/issues/49)
+
+- [#91](https://github.com/Connectum-Framework/connectum/pull/91) [`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4) Thanks [@intech](https://github.com/intech)! - feat(events): auto-resolve publish topic from proto annotations
+
+  EventBus.publish() now automatically resolves the topic from proto
+  `(connectum.events.v1.event).topic` option when no explicit topic is
+  provided in PublishOptions. This eliminates the need to manually
+  duplicate topic strings between proto definitions and publish calls.
+
+  Priority order:
+
+  1. Explicit `publishOptions.topic` (override)
+  2. Proto annotation topic (auto-resolved from registered routes)
+  3. `schema.typeName` (fallback, backward compatible)
+
+### Patch Changes
+
+- [#91](https://github.com/Connectum-Framework/connectum/pull/91) [`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4) Thanks [@intech](https://github.com/intech)! - fix(events): preserve concrete input types in ServiceEventHandlers
+
+  Changed `ServiceEventHandlers` mapped type to derive handler input types from
+  `S["method"]` (concrete GenService record) instead of `S["methods"][number]`
+  (generic DescMethod array). This preserves concrete protobuf message types
+  in event handlers, eliminating the need for `as unknown as T` casts.
+
+  Closes [#86](https://github.com/Connectum-Framework/connectum/issues/86)
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.10
+
 ## 1.0.0-rc.9
 
 ### Patch Changes

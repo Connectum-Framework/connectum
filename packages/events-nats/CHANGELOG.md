@@ -1,5 +1,12 @@
 # @connectum/events-nats
 
+## 1.0.0-rc.10
+
+### Patch Changes
+
+- Updated dependencies [[`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4), [`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4), [`7f23c41`](https://github.com/Connectum-Framework/connectum/commit/7f23c4120680a57e084a03de0a6da978c31b65f4)]:
+  - @connectum/events@1.0.0-rc.10
+
 ## 1.0.0-rc.9
 
 ### Patch Changes
