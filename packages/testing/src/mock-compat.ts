@@ -23,6 +23,7 @@ export interface MockCall<Args extends readonly unknown[] = readonly unknown[]> 
  * The shape intentionally mirrors the subset of `node:test` `mock.fn()`
  * that Connectum testing utilities rely on.
  */
+// biome-ignore lint/suspicious/noExplicitAny: generic function constraint requires any for Parameters<F>/ReturnType<F> inference
 export interface MockFn<F extends (...args: any[]) => any> {
     (...args: Parameters<F>): ReturnType<F>;
     /** Spy metadata. */
@@ -49,6 +50,7 @@ export interface MockFn<F extends (...args: any[]) => any> {
  * add.mock.calls[0].arguments; // [1, 2]
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: generic function constraint requires any for Parameters<F>/ReturnType<F> inference
 export function createMockFn<F extends (...args: any[]) => any>(impl: F): MockFn<F> {
     const calls: Array<MockCall<Parameters<F>>> = [];
 
