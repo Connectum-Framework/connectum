@@ -41,6 +41,15 @@ jobs:
             cp -R "$proto_root" .bsr/connectum/
           done
 
+          # buf lint expects package connectum.auth.v1 at connectum/auth/v1/
+          # relative to module path "connectum", so nest under connectum/connectum/
+          mkdir -p .bsr/connectum/connectum
+          for subdir in .bsr/connectum/*/; do
+            name=$(basename "$subdir")
+            [ "$name" = "connectum" ] && continue
+            mv "$subdir" .bsr/connectum/connectum/
+          done
+
           printf '%s\n' \
             'version: v2' \
             'modules:' \

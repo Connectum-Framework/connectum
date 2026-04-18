@@ -95,21 +95,32 @@ jobs:
       - name: Push proto to BSR
         if: steps.proto-changes.outputs.changed == 'true'
         run: |
-          # Assemble proto into a single directory matching package structure
           mkdir -p .bsr/connectum
-          cp -R packages/auth/proto/connectum/auth .bsr/connectum/
-          cp -R packages/events/proto/connectum/events .bsr/connectum/
+          for proto_root in packages/*/proto/connectum/*/; do
+            [ -d "$proto_root" ] || continue
+            cp -R "$proto_root" .bsr/connectum/
+          done
 
-          cat > .bsr/buf.yaml <<'YAML'
-          version: v2
-          name: buf.build/connectum-framework/connectum
-          lint:
-            use:
-              - STANDARD
-          breaking:
-            use:
-              - FILE
-          YAML
+          # Nest under connectum/connectum/ so buf resolves package paths correctly
+          mkdir -p .bsr/connectum/connectum
+          for subdir in .bsr/connectum/*/; do
+            name=$(basename "$subdir")
+            [ "$name" = "connectum" ] && continue
+            mv "$subdir" .bsr/connectum/connectum/
+          done
+
+          printf '%s\n' \
+            'version: v2' \
+            'modules:' \
+            '  - path: connectum' \
+            '    name: buf.build/connectum-framework/connectum' \
+            'lint:' \
+            '  use:' \
+            '    - STANDARD' \
+            'breaking:' \
+            '  use:' \
+            '    - FILE' \
+            > .bsr/buf.yaml
 
           buf push .bsr \
             --label "${{ github.ref_name }}" \
