@@ -1,0 +1,142 @@
+name: Create GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — show what would be released without creating anything"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine version from @connectum/core
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' packages/core/package.json)
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # Check if tag already exists
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag ${TAG} already exists"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Check if GitHub Release already exists
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release ${TAG} already exists"
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Detect pre-release
+          if echo "${VERSION}" | grep -qE "(alpha|beta|rc)"; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "### Release Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag exists:** $(git rev-parse "${TAG}" >/dev/null 2>&1 && echo 'yes' || echo 'no')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Release exists:** $(gh release view "${TAG}" >/dev/null 2>&1 && echo 'yes' || echo 'no')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pre-release:** $(echo "${VERSION}" | grep -qE '(alpha|beta|rc)' && echo 'yes' || echo 'no')" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect changelog from all packages
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHANGELOG=""
+          for pkg_dir in packages/*/; do
+            changelog_file="${pkg_dir}CHANGELOG.md"
+            [ -f "$changelog_file" ] || continue
+            pkg_name=$(jq -r '.name' "${pkg_dir}package.json")
+            ver_re=$(printf '%s' "$VERSION" | sed 's/[.[\*^$/]/\\&/g')
+            section=$(awk "/^## ${ver_re}\$/{found=1; next} /^## [0-9]/{if(found) exit} found" "$changelog_file")
+            if [ -n "$section" ]; then
+              CHANGELOG+="## ${pkg_name}@${VERSION}"$'\n'"${section}"$'\n'
+            fi
+          done
+
+          # Guard: fail if no changelog content found
+          if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
+            echo "::error::No changelog entries found for version ${VERSION}. Ensure CHANGELOG.md files contain a ## ${VERSION} section."
+            exit 1
+          fi
+
+          echo "$CHANGELOG" > release-notes.md
+
+          echo "### Changelog Preview" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -50 release-notes.md >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify published packages on npm
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "### NPM Package Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Package | npm version | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|-------------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          for pkg_dir in packages/*/; do
+            pkg_name=$(jq -r '.name' "${pkg_dir}package.json")
+            pkg_private=$(jq -r '.private // false' "${pkg_dir}package.json")
+            [ "$pkg_private" = "true" ] && continue
+            npm_version=$(npm view "${pkg_name}@${VERSION}" version 2>/dev/null || echo "NOT FOUND")
+            if [ "$npm_version" = "$VERSION" ]; then
+              echo "| ${pkg_name} | ${npm_version} | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| ${pkg_name} | ${npm_version} | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Create git tag
+        if: inputs.dry_run == false && steps.version.outputs.tag_exists == 'false'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+          echo "Created and pushed tag ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
+        if: inputs.dry_run == false && steps.version.outputs.release_exists == 'false'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --title "Connectum ${TAG}" \
+            --notes-file release-notes.md \
+            ${PRERELEASE_FLAG} \
+            --verify-tag
+
+          echo "Created GitHub Release ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "### Dry Run Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "No tag or release was created. Review the changelog and npm status above." >> "$GITHUB_STEP_SUMMARY"
+          echo "To create the release, re-run this workflow with **dry_run = false**." >> "$GITHUB_STEP_SUMMARY"
