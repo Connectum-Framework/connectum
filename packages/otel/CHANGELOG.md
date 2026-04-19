@@ -1,5 +1,41 @@
 # @connectum/otel
 
+## 1.0.0-rc.11
+
+### Patch Changes
+
+- [#98](https://github.com/Connectum-Framework/connectum/pull/98) [`15f4dbb`](https://github.com/Connectum-Framework/connectum/commit/15f4dbbe919041e1b7337fe30b3243baf55a0129) Thanks [@intech](https://github.com/intech)! - Bump OpenTelemetry SDK to 0.215.0 / v2.7.0 and semantic conventions to 1.40.0.
+
+  Highlights (auto-gain, no API changes in `@connectum/otel`):
+
+  - Hand-rolled `ProtobufLogsSerializer` (PR open-telemetry/opentelemetry-js#6390, v0.215.0) — +67–73% throughput for typical batch sizes (100–1024 logs); +72% at 512 logs, +67% at 1024 logs per upstream benchmarks in PR [#6228](https://github.com/Connectum-Framework/connectum/issues/6228)
+  - `cardinalitySelector` support in `PeriodicExportingMetricReader` (PR [#6460](https://github.com/Connectum-Framework/connectum/issues/6460), v2.7.0) — protection against cardinality explosion on high-variance attributes
+  - SDK self-observability: span + log creation metrics (PRs [#6213](https://github.com/Connectum-Framework/connectum/issues/6213), [#6433](https://github.com/Connectum-Framework/connectum/issues/6433))
+  - Internal `mergeTwoObjects` safety checks (PR [#6587](https://github.com/Connectum-Framework/connectum/issues/6587), v2.7.0) — additional guards against unsafe key merges
+  - Updated semantic conventions (semconv v1.40.0) — stable RPC attributes including `rpc.response.status_code` and `error.type` (stabilized in semconv v1.39.0)
+
+  Breaking changes upstream that do NOT affect `@connectum/otel` (verified):
+
+  - Custom `LogRecordExporter.forceFlush()` requirement — not applicable (we use stock exporters only)
+  - gRPC exporter config `headers` field removal — not applicable (`CollectorOptions` has no `headers`)
+
+- [#99](https://github.com/Connectum-Framework/connectum/pull/99) [`5b3f01d`](https://github.com/Connectum-Framework/connectum/commit/5b3f01d8fdbe50afe1c3b074cf08f40f4f00458f) Thanks [@intech](https://github.com/intech)! - security(deps): force patched versions of protobufjs and basic-ftp via pnpm overrides
+
+  Resolves Dependabot alerts on main branch:
+
+  - **GHSA-xq3m-2v4x-88gg** (Critical) — Arbitrary code execution in protobufjs < 7.5.5
+    (transitive via `@grpc/proto-loader` under OTel gRPC exporters).
+  - **GHSA-xq3m-2v4x-88gg** (Critical) — Arbitrary code execution in protobufjs 8.0.0
+    (transitive via `@opentelemetry/otlp-transformer`).
+  - **GHSA-chqc-8p9q-pq6q** (High) — basic-ftp 5.2.0 FTP Command Injection via CRLF
+    (dev-only transitive via `@exodus/test` → puppeteer-core).
+  - **GHSA-6v7q-wjvx-w8wg** (High) — basic-ftp ≤ 5.2.1 incomplete CRLF protection
+    (dev-only transitive via `@exodus/test` → puppeteer-core).
+
+  No runtime API changes. Only `pnpm.overrides` in the monorepo root were adjusted
+  to force patched transitive versions: `protobufjs@<7.5.5 → 7.5.5`,
+  `protobufjs@>=8.0.0 <8.0.1 → 8.0.1`, `basic-ftp@<5.2.2 → 5.2.2`.
+
 ## 1.0.0-rc.10
 
 ## 1.0.0-rc.9

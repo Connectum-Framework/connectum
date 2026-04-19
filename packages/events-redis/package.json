@@ -1,6 +1,6 @@
 {
   "name": "@connectum/events-redis",
-  "version": "1.0.0-rc.10",
+  "version": "1.0.0-rc.11",
   "description": "Redis Streams adapter for @connectum/events",
   "type": "module",
   "main": "./dist/index.js",

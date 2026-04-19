@@ -1,5 +1,12 @@
 # @connectum/events
 
+## 1.0.0-rc.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.0.0-rc.11
+
 ## 1.0.0-rc.10
 
 ### Minor Changes

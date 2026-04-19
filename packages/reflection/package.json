@@ -1,6 +1,6 @@
 {
   "name": "@connectum/reflection",
-  "version": "1.0.0-rc.10",
+  "version": "1.0.0-rc.11",
   "description": "gRPC Server Reflection protocol for Connectum (v1 + v1alpha)",
   "type": "module",
   "main": "./dist/index.js",
