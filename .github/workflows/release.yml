@@ -69,6 +69,58 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NPM_CONFIG_PROVENANCE: "true"
 
+      - name: Create aggregated GitHub release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r '.version' packages/core/package.json)
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping aggregated release"
+            exit 0
+          fi
+
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "## What's Changed in ${VERSION}"
+            echo ""
+            for pkg_changelog in packages/*/CHANGELOG.md; do
+              pkg_dir=$(dirname "$pkg_changelog")
+              pkg_name=$(jq -r '.name' "$pkg_dir/package.json")
+              section=$(awk -v ver="## ${VERSION}" '
+                $0 == ver { found = 1; next }
+                /^## / && found { exit }
+                found { print }
+              ' "$pkg_changelog")
+              if [ -n "$(echo "$section" | tr -d '[:space:]')" ]; then
+                echo "### ${pkg_name}@${VERSION}"
+                echo ""
+                echo "$section"
+                echo ""
+              fi
+            done
+            echo "---"
+            echo "_Released from commit ${GITHUB_SHA}_"
+          } > "$NOTES_FILE"
+
+          PRERELEASE_FLAG=""
+          if [[ "$VERSION" == *"-"* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" \
+            --title "Connectum $TAG" \
+            --notes-file "$NOTES_FILE" \
+            $PRERELEASE_FLAG
+
       - name: Check proto changes
         id: proto-changes
         if: steps.changesets.outputs.published == 'true'
