@@ -69,6 +69,54 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NPM_CONFIG_PROVENANCE: "true"
 
+      - name: Create draft GitHub release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r '.version' packages/core/package.json)
+          TAG="v${VERSION}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::notice::Release ${TAG} already exists, skipping draft creation"
+            exit 0
+          fi
+
+          NOTES_FILE="$(mktemp)"
+          ver_re=$(printf '%s' "${VERSION}" | sed 's/[.[\*^$/]/\\&/g')
+          for pkg_dir in packages/*/; do
+            changelog_file="${pkg_dir}CHANGELOG.md"
+            [ -f "$changelog_file" ] || continue
+            pkg_name=$(jq -r '.name' "${pkg_dir}package.json")
+            section=$(awk "/^## ${ver_re}\$/{found=1; next} /^## [0-9]/{if(found) exit} found" "$changelog_file")
+            if [ -n "$(echo "$section" | tr -d '[:space:]')" ]; then
+              {
+                echo "## ${pkg_name}@${VERSION}"
+                echo "$section"
+                echo ""
+              } >> "$NOTES_FILE"
+            fi
+          done
+
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::warning::No changelog entries found for ${VERSION}; creating draft release with empty notes"
+          fi
+
+          PRERELEASE_FLAG=""
+          if echo "${VERSION}" | grep -qE "(alpha|beta|rc)"; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --title "Connectum ${TAG}" \
+            --notes-file "$NOTES_FILE" \
+            --target "${{ github.sha }}" \
+            --draft \
+            ${PRERELEASE_FLAG}
+
+          echo "::notice::Created draft release ${TAG} — review and publish at https://github.com/${{ github.repository }}/releases"
+
       - name: Check proto changes
         id: proto-changes
         if: steps.changesets.outputs.published == 'true'
