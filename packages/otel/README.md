@@ -702,6 +702,33 @@ await repository.findById("123");
 // - function.args: '["123"]'
 ```
 
+## Performance Characteristics
+
+### OTLP protobuf serialization
+
+`@connectum/otel` re-exports OpenTelemetry SDK components and the OTLP exporters. For the OTLP/protobuf wire format, the serializer behind the exporters is provided by `@opentelemetry/otlp-transformer` and currently differs per telemetry signal upstream:
+
+| Signal  | Serializer (upstream status)                                                                                                                                                       | Notes |
+|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
+| Logs    | Hand-rolled protobuf writer starting with `otlp-transformer` `0.215.0` ([PR #6390](https://github.com/open-telemetry/opentelemetry-js/pull/6390))                                  | Stable path going forward for logs. |
+| Traces  | `protobufjs`                                                                                                                                                                       | Stable; no dedicated replacement landed yet. |
+| Metrics | `protobufjs`                                                                                                                                                                       | Stable; hand-rolled replacement tracked in [issue #6570](https://github.com/open-telemetry/opentelemetry-js/issues/6570). |
+
+**Background.** OpenTelemetry JS initially migrated `otlp-transformer` to `@bufbuild/protobuf` in [PR #6179](https://github.com/open-telemetry/opentelemetry-js/pull/6179) (merged 2025-12-05). That migration was reverted in [PR #6225](https://github.com/open-telemetry/opentelemetry-js/pull/6225) on 2025-12-17 because of a serialization regression documented in [issue #6221](https://github.com/open-telemetry/opentelemetry-js/issues/6221). The follow-up direction adopted by upstream is a hand-rolled protobuf writer per signal, landed first for logs in [PR #6390](https://github.com/open-telemetry/opentelemetry-js/pull/6390) and intended to be extended to metrics (tracked in [#6570](https://github.com/open-telemetry/opentelemetry-js/issues/6570)) and traces.
+
+### Version pin rationale
+
+`@connectum/otel` pins the OpenTelemetry JS toolchain through the workspace catalog (currently `@opentelemetry/sdk-node` `^0.212.0`, which resolves `@opentelemetry/otlp-transformer` to a release predating the PR #6179 migration / PR #6225 revert cycle). The pin is intentional: it avoids the short-lived regression window and gives us a single place to coordinate a future bump once the hand-rolled serializer path stabilizes for all three signals. Monitor the upstream issues/PRs above before proposing a catalog bump.
+
+### Guidance for high-volume span workloads
+
+If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the current `protobufjs`-backed trace serializer:
+
+- Prefer **batching** — the default `BatchSpanProcessor` tuned via `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, and `OTEL_BSP_EXPORT_TIMEOUT` (see [Environment Variables](#environment-variables)).
+- Consider **head or tail sampling** to reduce export volume before it reaches the serializer.
+- Watch SDK self-metrics exposed by recent `@opentelemetry/sdk-node` releases (e.g., span queue size and dropped spans) to detect exporter back-pressure.
+- Track the trace serializer migration via upstream [#6570](https://github.com/open-telemetry/opentelemetry-js/issues/6570) and the [#6221](https://github.com/open-telemetry/opentelemetry-js/issues/6221) follow-ups; a catalog bump will be coordinated through a Connectum release once the hand-rolled path covers traces.
+
 ## Known Limitations
 
 - **AsyncLocalStorage context loss in async generators**: Node.js loses `AsyncLocalStorage` context when crossing async generator boundaries. The streaming instrumentation works around this by capturing the span via closure at the point where the stream is created, so all `rpc.message` events are correctly attached to the parent RPC span regardless of ALS state.
