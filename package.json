@@ -44,26 +44,13 @@
   ],
   "author": "Highload.Zone",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.23.0",
+  "packageManager": "pnpm@11.0.4",
   "engines": {
     "node": ">=25.2.0",
-    "pnpm": ">=10"
+    "pnpm": ">=11"
   },
   "publishConfig": {
     "access": "public"
-  },
-  "pnpm": {
-    "overrides": {
-      "ajv@<8.18.0": "8.18.0",
-      "minimatch@<10.2.3": "10.2.3",
-      "basic-ftp@<5.2.2": "5.2.2",
-      "rollup@>=4.0.0 <4.59.0": "4.59.0",
-      "picomatch@<2.3.2": "2.3.2",
-      "picomatch@>=4.0.0 <4.0.4": "4.0.4",
-      "brace-expansion@>=4.0.0 <5.0.5": "5.0.5",
-      "protobufjs@<7.5.5": "7.5.5",
-      "protobufjs@>=8.0.0 <8.0.1": "8.0.1"
-    }
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
