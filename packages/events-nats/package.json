@@ -48,8 +48,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@nats-io/jetstream": "^3.3.1",
-    "@nats-io/transport-node": "^3.3.1"
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
   },
   "peerDependencies": {
     "@connectum/events": "workspace:^"
