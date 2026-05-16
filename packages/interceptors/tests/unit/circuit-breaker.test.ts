@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
+import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
 import { createCircuitBreakerInterceptor } from "../../src/circuit-breaker.ts";
 
 describe("circuit breaker interceptor", () => {

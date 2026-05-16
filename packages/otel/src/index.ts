@@ -11,6 +11,8 @@
 export type { Meter, Tracer } from "@opentelemetry/api";
 // Semantic conventions
 export {
+    ATTR_CONNECTUM_TRANSPORT,
+    ATTR_CONNECTUM_TRANSPORT_METRIC,
     ATTR_ERROR_TYPE,
     ATTR_NETWORK_PEER_ADDRESS,
     ATTR_NETWORK_PEER_PORT,
@@ -22,6 +24,8 @@ export {
     ATTR_RPC_SYSTEM,
     ATTR_SERVER_ADDRESS,
     ATTR_SERVER_PORT,
+    CONNECTUM_INTERNAL_TRANSPORT_HEADER,
+    CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS,
     ConnectErrorCode,
     ConnectErrorCodeName,
     RPC_SYSTEM_CONNECT_RPC,
@@ -54,7 +58,7 @@ export type { ProviderOptions } from "./provider.ts";
 // Provider management
 export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
 // Shared utilities (for advanced users)
-export { buildErrorAttributes, estimateMessageSize } from "./shared.ts";
+export { buildErrorAttributes, detectConnectumTransport, estimateMessageSize } from "./shared.ts";
 export { traceAll } from "./traceAll.ts";
 // Deep tracing helpers (business logic instrumentation)
 export { traced } from "./traced.ts";

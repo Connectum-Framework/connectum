@@ -17,6 +17,16 @@
 // SERVER API
 // =============================================================================
 
+// In-process transport
+//
+// NOTE: `LOCAL_TRANSPORT_HEADER` and `LOCAL_TRANSPORT_VALUE` are intentionally
+// NOT re-exported from the public surface (security finding F3, P2.a). They
+// are framework-internal markers used by `createLocalTransport` and
+// `@connectum/otel` (which duplicates the literal values locally). Exposing
+// them publicly would encourage external callers to forge or rely on the
+// header — see SECURITY_REVIEW.md §4 F1.
+export type { CreateLocalTransportOptions } from "./localTransport.ts";
+export { createLocalTransport } from "./localTransport.ts";
 // Main createServer factory
 export { createServer } from "./Server.ts";
 
@@ -47,6 +57,7 @@ export type {
     ProtocolRegistration,
     // Server API
     Server,
+    ServerClientOptions,
     // Common types
     ServiceRoute,
     ShutdownHook,

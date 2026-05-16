@@ -7,7 +7,7 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { Code } from '@connectrpc/connect';
-import { assertConnectError, createMockNextError, createMockRequest } from '@connectum/testing';
+import { assertConnectError, createMockNextError, createMockRequest } from '@connectum/test-fixtures';
 import { createLoggerInterceptor } from '../../src/logger.ts';
 
 describe('logger interceptor', () => {

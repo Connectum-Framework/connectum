@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import type { Interceptor } from "@connectrpc/connect";
-import { createMockNext, createMockRequest } from "@connectum/testing";
+import { createMockNext, createMockRequest } from "@connectum/test-fixtures";
 import { createMethodFilterInterceptor } from "../../src/method-filter.ts";
 
 /**

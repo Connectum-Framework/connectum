@@ -8,6 +8,7 @@
     "packages/reflection",
     "packages/otel",
     "packages/cli",
+    "packages/test-fixtures",
     "packages/testing",
     "packages/events",
     "packages/events-nats",

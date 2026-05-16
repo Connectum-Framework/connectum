@@ -8,13 +8,15 @@
 
 import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
-import type { DescFile } from "@bufbuild/protobuf";
-import type { Interceptor } from "@connectrpc/connect";
+import type { DescFile, DescService } from "@bufbuild/protobuf";
+import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
+import { createLocalTransport } from "./localTransport.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
-import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -40,6 +42,16 @@ class ServerImpl extends EventEmitter implements Server {
     private _stopPromise: Promise<void> | null = null;
     private readonly _transport = new TransportManager();
     private readonly _eventBus: EventBusLike | null = null;
+
+    /**
+     * Memoized output of buildRoutes() — populated on first access (either via
+     * server.start() or via the in-process transport accessor). Once built, the
+     * registered services/interceptors/protocols become immutable.
+     */
+    private _builtRoutes: ReturnType<typeof buildRoutes> | null = null;
+
+    /** Memoized in-process transport (lazy, created on first localClient call) */
+    private _localTransport: Transport | null = null;
 
     // =========================================================================
     // Constructor
@@ -128,13 +140,13 @@ class ServerImpl extends EventEmitter implements Server {
         this.emit("start");
 
         try {
-            const { handler, registry } = buildRoutes({
-                services: this._routes,
-                protocols: this._protocols,
-                interceptors: this._interceptors,
-                shutdownSignal: this._abortController.signal,
-            });
-            this._registry.push(...registry);
+            const built = this._ensureRoutesBuilt();
+            const { handler, registry } = built;
+            // Only push registry entries not already collected (lazy build may
+            // have populated it before start()).
+            if (this._registry.length === 0) {
+                this._registry.push(...registry);
+            }
 
             if (this._eventBus) {
                 await this._eventBus.start({ signal: this._abortController.signal });
@@ -216,12 +228,18 @@ class ServerImpl extends EventEmitter implements Server {
         if (this._state !== ServerState.CREATED) {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }
+        if (this._builtRoutes !== null) {
+            throw new Error("Cannot add service: routes have already been materialized (e.g. via server.localClient()). Add services before any local-transport access.");
+        }
         this._routes.push(service);
     }
 
     addInterceptor(interceptor: Interceptor): void {
         if (this._state !== ServerState.CREATED) {
             throw new Error(`Cannot add interceptor: server is already ${this._state}. Add interceptors before calling start().`);
+        }
+        if (this._builtRoutes !== null) {
+            throw new Error("Cannot add interceptor: routes have already been materialized (e.g. via server.localClient()). Add interceptors before any local-transport access.");
         }
         this._interceptors.push(interceptor);
     }
@@ -230,7 +248,122 @@ class ServerImpl extends EventEmitter implements Server {
         if (this._state !== ServerState.CREATED) {
             throw new Error(`Cannot add protocol: server is already ${this._state}. Add protocols before calling start().`);
         }
+        if (this._builtRoutes !== null) {
+            throw new Error("Cannot add protocol: routes have already been materialized (e.g. via server.localClient()). Add protocols before any local-transport access.");
+        }
         this._protocols.push(protocol);
+    }
+
+    // =========================================================================
+    // In-process transport
+    // =========================================================================
+
+    /**
+     * Return a fully-typed ConnectRPC client backed by an in-process transport.
+     *
+     * The transport dispatches calls directly to handlers registered on this
+     * server's `ConnectRouter`, without opening any TCP socket. Safe to call
+     * before `server.start()`.
+     *
+     * @internal Implementation detail: see `createLocalTransport`.
+     */
+    localClient<T extends DescService>(service: T): Client<T> {
+        let transport = this._localTransport;
+        if (transport === null) {
+            transport = createLocalTransport(this);
+            this._localTransport = transport;
+        }
+        return createClient(service, transport);
+    }
+
+    /**
+     * Synchronous lookup: is the given proto service descriptor served locally
+     * by this `Server`? Triggers route materialization on first call.
+     *
+     * @example
+     * ```typescript
+     * if (server.hasService(GreeterService)) { /* local *\/ }
+     * ```
+     */
+    hasService(desc: DescService): boolean {
+        const names = this._getRegisteredServiceTypeNames();
+        return names.has(desc.typeName);
+    }
+
+    /**
+     * Unified client factory — routes to in-process transport for locally
+     * registered services, falls back to `options.fallback` for remote
+     * services, and fails fast (`ConnectError(Code.Unimplemented)`) when
+     * neither applies. Same call site works for monolith and split
+     * deployments alike.
+     *
+     * @example
+     * ```typescript
+     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * ```
+     */
+    client<T extends DescService>(service: T, options?: ServerClientOptions): Client<T> {
+        if (this.hasService(service)) {
+            return this.localClient(service);
+        }
+        if (options?.fallback) {
+            return createClient(service, options.fallback);
+        }
+        throw new ConnectError(`service ${service.typeName} is not registered locally and no fallback transport provided`, Code.Unimplemented);
+    }
+
+    /**
+     * Materialize the ConnectRouter routes callback. Idempotent: subsequent
+     * calls return the same memoized result, and further mutations to
+     * services/interceptors/protocols are rejected.
+     *
+     * @internal Used by Server.start() and createLocalTransport().
+     */
+    _ensureRoutesBuilt(): ReturnType<typeof buildRoutes> {
+        if (this._builtRoutes === null) {
+            this._builtRoutes = buildRoutes({
+                services: this._routes,
+                protocols: this._protocols,
+                interceptors: this._interceptors,
+                shutdownSignal: this._abortController.signal,
+            });
+            // Lazy-built path: populate registry now so server.routes consumers
+            // see the same DescFile[] before start().
+            if (this._registry.length === 0) {
+                this._registry.push(...this._builtRoutes.registry);
+            }
+        }
+        return this._builtRoutes;
+    }
+
+    /**
+     * Expose the underlying `(router) => void` route-registration callback
+     * for in-process transport construction.
+     *
+     * @internal
+     */
+    _getRoutesCallback(): (router: ConnectRouter) => void {
+        return this._ensureRoutesBuilt().routes;
+    }
+
+    /**
+     * Expose the registered server-side interceptors as a fresh array.
+     *
+     * @internal
+     */
+    _getServerInterceptors(): Interceptor[] {
+        return [...this._interceptors];
+    }
+
+    /**
+     * Expose the set of `DescService.typeName` strings actually registered via
+     * `router.service()` in this server. Drives auto-routing in
+     * {@link ServerImpl.client}.
+     *
+     * @internal
+     */
+    _getRegisteredServiceTypeNames(): ReadonlySet<string> {
+        return this._ensureRoutesBuilt().registeredServiceTypeNames;
     }
 
     // =========================================================================

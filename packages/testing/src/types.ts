@@ -1,110 +1,22 @@
 /**
  * Type definitions for @connectum/testing.
  *
+ * Mock/fixture option types live in `@connectum/test-fixtures` and are
+ * re-exported from this module for backwards compatibility.
+ *
  * @module
  */
 
-import type { DescMessage } from "@bufbuild/protobuf";
-
-// ============================================================
-// Mock Request
-// ============================================================
-
-/** Options for {@link createMockRequest}. */
-export interface MockRequestOptions {
-    /** Service type name. Default: `'test.TestService'` */
-    service?: string;
-    /** Method name. Default: `'TestMethod'` */
-    method?: string;
-    /** Request message payload. Default: `{}` */
-    message?: unknown;
-    /** Streaming request flag. Default: `false` */
-    stream?: boolean;
-    /** Request URL. Auto-generated from service/method if omitted. */
-    url?: string;
-    /** Request headers. Default: `new Headers()` */
-    headers?: Headers;
-}
-
-// ============================================================
-// Mock Next
-// ============================================================
-
-/** Options for {@link createMockNext} and {@link createMockNextSlow}. */
-export interface MockNextOptions {
-    /** Response message. Default: `{ result: 'success' }` */
-    message?: unknown;
-    /** Streaming response flag. Default: `false` */
-    stream?: boolean;
-}
-
-// ============================================================
-// Mock Protobuf Descriptors
-// ============================================================
-
-/** Options for {@link createMockDescMessage}. */
-export interface MockDescMessageOptions {
-    /** Field definitions. Default: `[]` */
-    fields?: Array<{
-        name: string;
-        type?: string;
-        fieldNumber?: number;
-    }>;
-    /** Oneof group names. Default: `[]` */
-    oneofs?: string[];
-}
-
-/** Options for {@link createMockDescField}. */
-export interface MockDescFieldOptions {
-    /** Mark field as sensitive (for redact interceptor). Default: `false` */
-    isSensitive?: boolean;
-    /** Proto field number. Default: auto-incremented */
-    fieldNumber?: number;
-    /** Field scalar type. Default: `'string'` */
-    type?: string;
-}
-
-/** Options for {@link createMockDescMethod}. */
-export interface MockDescMethodOptions {
-    /** Input message descriptor. */
-    input?: DescMessage;
-    /** Output message descriptor. */
-    output?: DescMessage;
-    /** Method kind. Default: `'unary'` */
-    kind?: "unary" | "server_streaming" | "client_streaming" | "bidi_streaming";
-    /** Enable sensitive field redaction for this method. Default: `false` */
-    useSensitiveRedaction?: boolean;
-}
-
-// ============================================================
-// Mock Stream
-// ============================================================
-
-/** Options for {@link createMockStream}. */
-export interface MockStreamOptions {
-    /** Delay in milliseconds between yielded items. */
-    delayMs?: number;
-}
-
-// ============================================================
-// Fake Service / Method
-// ============================================================
-
-/** Options for {@link createFakeService}. */
-export interface FakeServiceOptions {
-    /** Service type name. Default: `'test.v1.TestService'` */
-    typeName?: string;
-    /** Service name (short). Default: derived from typeName */
-    name?: string;
-}
-
-/** Options for {@link createFakeMethod}. */
-export interface FakeMethodOptions {
-    /** Method kind. Default: `'unary'` */
-    methodKind?: "unary" | "server_streaming" | "client_streaming" | "bidi_streaming";
-    /** Whether to register the method in service.methods. Default: `false` */
-    register?: boolean;
-}
+export type {
+    FakeMethodOptions,
+    FakeServiceOptions,
+    MockDescFieldOptions,
+    MockDescMessageOptions,
+    MockDescMethodOptions,
+    MockNextOptions,
+    MockRequestOptions,
+    MockStreamOptions,
+} from "@connectum/test-fixtures/types";
 
 // ============================================================
 // Test Server

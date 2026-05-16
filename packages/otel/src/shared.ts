@@ -24,6 +24,8 @@ import {
     ATTR_RPC_SYSTEM,
     ATTR_SERVER_ADDRESS,
     ATTR_SERVER_PORT,
+    CONNECTUM_INTERNAL_TRANSPORT_HEADER,
+    CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS,
     ConnectErrorCodeName,
     RPC_MESSAGE_EVENT,
     RPC_SYSTEM_CONNECT_RPC,
@@ -169,6 +171,21 @@ export function buildBaseAttributes(params: BaseAttributeParams): Record<string,
         attrs[ATTR_SERVER_PORT] = params.serverPort;
     }
     return attrs;
+}
+
+/**
+ * Connectum transport identifier observed from request headers.
+ *
+ * `@connectum/core`'s `createLocalTransport` sets a synthetic request header
+ * (`connectum-internal-transport: in-process`) on every outgoing call so that
+ * the OTel interceptors can tag spans and metrics with the originating
+ * transport without parsing the synthetic `https://in-memory/...` URL.
+ *
+ * @param headers - The request headers (Connect `req.header`)
+ * @returns `"in-process"` if the marker is present, `"http"` otherwise.
+ */
+export function detectConnectumTransport(headers: Headers): "in-process" | "http" {
+    return headers.get(CONNECTUM_INTERNAL_TRANSPORT_HEADER) === CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS ? "in-process" : "http";
 }
 
 /**
