@@ -40,4 +40,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Run parity suite
-        run: ./scripts/parity-suite.sh
+        run: bash ./scripts/parity-suite.sh

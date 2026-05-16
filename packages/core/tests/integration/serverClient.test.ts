@@ -75,6 +75,19 @@ describe("Server.client (unified auto-routing)", () => {
         assert.strictEqual(server.address, null, "no TCP port opened");
     });
 
+    it("uses local transport even when fallback is provided (local takes precedence)", async () => {
+        // Registry HAS EchoService → local invoke must win regardless of the
+        // fallback transport that the caller passed. Proven by the response
+        // prefix: local handler prefixes with "echo:", the remote fallback
+        // would prefix with "remote:".
+        const server = createServer({ services: [makeEchoRoutes()] });
+        const fallback = makeRemoteFallbackTransport("remote");
+        const client = server.client(EchoService, { fallback });
+        const response = await client.echo(create(EchoRequestSchema, { message: "test" }));
+        assert.strictEqual(response.message, "echo:test", "local handler must be used, not fallback");
+        assert.strictEqual(server.address, null, "no TCP port opened — proves no HTTP roundtrip");
+    });
+
     it("uses fallback transport when service is not in registry", async () => {
         const emptyServer = createServer({ services: [] });
         const fallback = makeRemoteFallbackTransport("remote");

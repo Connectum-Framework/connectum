@@ -37,13 +37,29 @@
  * the source of the violation needs to change.
  */
 
+import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createLocalTransport, createServer } from "@connectum/core";
-import { transportParityTest } from "../../src/transportParityTest.ts";
+import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
+
+/**
+ * Build an explicit error-oracle `compare` callback (see authorization.parity
+ * for rationale). Prevents the false-positive where BOTH transports
+ * unexpectedly succeed and the placeholder payload is silently compared equal.
+ */
+function expectErrorOnBothTransports(expectedCode: Code) {
+    return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        assert.strictEqual(http.error.code, expectedCode, `HTTP transport error code must be ${expectedCode}`);
+        assert.strictEqual(local.error.code, expectedCode, `Local transport error code must be ${expectedCode}`);
+        defaultCompare(http, local);
+    };
+}
 
 /**
  * Inline validation interceptor mimicking `protovalidate` semantics.
@@ -203,11 +219,12 @@ transportParityTest("parity 3a.3: single-rule violation produces identical Inval
         const client = createClient(EchoService, transport);
         try {
             await client.echo(create(EchoRequestSchema, { message: "" }));
-            return { response: { unreachable: true } };
+            throw new Error("expected validation to reject empty message, but call succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.InvalidArgument),
 });
 
 // -- 3a.4 ---------------------------------------------------------------
@@ -233,11 +250,12 @@ transportParityTest("parity 3a.4: multi-rule violation aggregates identically ac
         const tooLongWithBad = `bad${"x".repeat(48)}`;
         try {
             await client.echo(create(EchoRequestSchema, { message: tooLongWithBad }));
-            return { response: { unreachable: true } };
+            throw new Error("expected validation to reject multi-rule-violating message, but call succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.InvalidArgument),
 });
 
 // -- 3a.5 ---------------------------------------------------------------
@@ -259,14 +277,18 @@ transportParityTest("parity 3a.5: client-streaming mid-stream violation surfaces
         }
         try {
             const res = await client.client(messages());
-            return { response: { total: res.total } };
+            // Streaming validation must reject the empty Item mid-stream on
+            // BOTH transports. A successful response here means the invariant
+            // is broken — fail loudly instead of returning a placeholder
+            // payload that the structural diff could mis-compare as equal.
+            throw new Error(`expected streaming validation to reject empty Item, but call returned total=${res.total}`);
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.InvalidArgument),
 });
 
-import assert from "node:assert";
 // -- 3a.6 ---------------------------------------------------------------
 // Negative test: there is NO public API on the local transport that lets a
 // caller bypass server-side interceptors (and therefore validation). The

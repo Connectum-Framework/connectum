@@ -8,10 +8,26 @@
  *   5.3 server interceptor throw -> identical mapping
  */
 
+import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
-import { transportParityTest } from "../../src/transportParityTest.ts";
+import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+
+/**
+ * Build an explicit error-oracle `compare` callback (see authorization.parity
+ * for rationale). Prevents the false-positive where BOTH transports
+ * unexpectedly succeed and the placeholder payload is silently compared equal.
+ */
+function expectErrorOnBothTransports(expectedCode: Code) {
+    return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        assert.strictEqual(http.error.code, expectedCode, `HTTP transport error code must be ${expectedCode}`);
+        assert.strictEqual(local.error.code, expectedCode, `Local transport error code must be ${expectedCode}`);
+        defaultCompare(http, local);
+    };
+}
 
 function notFoundRoutes() {
     return (router: ConnectRouter) => {
@@ -93,11 +109,12 @@ transportParityTest("parity 5.1: ConnectError(NotFound) maps identically with me
         const client = createClient(EchoService, transport);
         try {
             await client.echo(create(EchoRequestSchema, { message: "x" }));
-            return { response: { unreachable: true } };
+            throw new Error("expected handler to throw ConnectError(NotFound), but call succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.NotFound),
 });
 
 // 5.2 — plain Error → Code.Internal, message contains "boom".
@@ -142,9 +159,10 @@ transportParityTest("parity 5.3: server interceptor error maps identically", {
         const client = createClient(EchoService, transport);
         try {
             await client.echo(create(EchoRequestSchema, { message: "x" }));
-            return { response: { unreachable: true } };
+            throw new Error("expected interceptor to reject the call, but it succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.PermissionDenied),
 });

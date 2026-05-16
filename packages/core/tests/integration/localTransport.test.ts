@@ -65,9 +65,24 @@ describe("createLocalTransport / server.localClient (Phase 1)", () => {
 
     it("memoizes the local transport across multiple localClient() calls", () => {
         const server = createServer({ services: [makeEchoRoutes()] });
+        // Access the private `_localTransport` slot to prove that the same
+        // Transport instance is reused across `localClient()` calls — a
+        // truthy check on the returned clients alone cannot distinguish
+        // "memoized" from "re-created every call".
+        const internal = server as unknown as { _localTransport: unknown };
+        assert.strictEqual(internal._localTransport, null, "transport must be lazily created");
+
         const a = server.localClient(EchoService);
+        const firstTransport = internal._localTransport;
+        assert.ok(firstTransport, "transport must be materialized after first localClient() call");
+
         const b = server.localClient(EchoService);
-        // Different client wrappers, but the underlying transport is reused.
+        const secondTransport = internal._localTransport;
+        assert.strictEqual(secondTransport, firstTransport, "underlying transport must be memoized across calls");
+
+        // Sanity: the client wrappers themselves are independent values
+        // (createClient returns a fresh wrapper each time) but they share
+        // the same underlying transport, proven above.
         assert.ok(a);
         assert.ok(b);
     });

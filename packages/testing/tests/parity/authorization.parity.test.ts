@@ -44,8 +44,29 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createLocalTransport, createServer } from "@connectum/core";
-import { transportParityTest } from "../../src/transportParityTest.ts";
+import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+
+/**
+ * Build an explicit error-oracle `compare` callback for parity scenarios that
+ * MUST fail with a specific `Code`.
+ *
+ * The default structural diff over `ParityScenarioResult` can silently pass if
+ * BOTH transports unexpectedly return a placeholder success payload (e.g.
+ * `{ response: { unreachable: true } }`). This oracle prevents that
+ * false-positive by asserting that an error was captured on each side, that
+ * both errors carry the expected `Code`, and finally delegating to the
+ * structural diff to compare message + metadata.
+ */
+function expectErrorOnBothTransports(expectedCode: Code) {
+    return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        assert.strictEqual(http.error.code, expectedCode, `HTTP transport error code must be ${expectedCode}`);
+        assert.strictEqual(local.error.code, expectedCode, `Local transport error code must be ${expectedCode}`);
+        defaultCompare(http, local);
+    };
+}
 
 /**
  * Proto-declared scope requirements (semantic equivalent of
@@ -159,11 +180,16 @@ transportParityTest("parity 3b.3: protected method without authorization → Una
         const client = createClient(EchoService, transport);
         try {
             await client.secureEcho(create(EchoRequestSchema, { message: "hello" }));
-            return { response: { unreachable: true } };
+            // A successful return here is a contract violation on BOTH
+            // transports (authz must have rejected). Throw so the test fails
+            // loudly instead of producing a placeholder payload that the
+            // structural diff could mis-compare as "identical success".
+            throw new Error("expected authz to reject missing credentials, but call succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.Unauthenticated),
 });
 
 // -- 3b.4 ---------------------------------------------------------------
@@ -176,11 +202,12 @@ transportParityTest("parity 3b.4: protected method with token but no required sc
             await client.secureEcho(create(EchoRequestSchema, { message: "hello" }), {
                 headers: { authorization: "Bearer alice|wrong:scope" },
             });
-            return { response: { unreachable: true } };
+            throw new Error("expected authz to reject insufficient scope, but call succeeded");
         } catch (err) {
             return { error: describeError(err) };
         }
     },
+    compare: expectErrorOnBothTransports(Code.PermissionDenied),
 });
 
 // -- 3b.5 ---------------------------------------------------------------
