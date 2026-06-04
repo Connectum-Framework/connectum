@@ -8,7 +8,7 @@ import type { EventEmitter } from "node:events";
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node:http";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
-import type { DescFile } from "@bufbuild/protobuf";
+import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 
 // =============================================================================
@@ -307,6 +307,31 @@ export interface CreateServerOptions {
      * Additional HTTP/2 server options
      */
     http2Options?: SecureServerOptions;
+
+    /**
+     * Connect JSON serialization options applied server-wide.
+     *
+     * Passed through to the underlying `connectNodeAdapter`, so it affects every
+     * registered service and protocol (e.g. healthcheck, reflection). The most
+     * common use is `alwaysEmitImplicit: true`, which includes fields with
+     * implicit presence (proto3 scalar `0`, empty string/list, enum default) in
+     * JSON responses instead of omitting them.
+     *
+     * For per-service control, pass the same option as the third argument of
+     * `router.service()` inside a {@link ServiceRoute} instead.
+     *
+     * Note: the relevant `JsonWriteOptions` field in `@bufbuild/protobuf` v2 is
+     * `alwaysEmitImplicit` (named `emitDefaultValues` in v1).
+     *
+     * @example
+     * ```typescript
+     * const server = createServer({
+     *   services: [routes],
+     *   jsonOptions: { alwaysEmitImplicit: true },
+     * });
+     * ```
+     */
+    jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
 }
 
 /**

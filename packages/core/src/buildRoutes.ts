@@ -7,7 +7,7 @@
  * @module buildRoutes
  */
 
-import type { DescFile } from "@bufbuild/protobuf";
+import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration, ServiceRoute } from "./types.ts";
@@ -20,6 +20,8 @@ export interface BuildRoutesOptions {
     protocols: ProtocolRegistration[];
     interceptors: Interceptor[];
     shutdownSignal: AbortSignal;
+    /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
+    jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
 }
 
 /**
@@ -41,7 +43,7 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions } = options;
 
     const registry: DescFile[] = [];
 
@@ -75,6 +77,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         routes,
         interceptors,
         shutdownSignal,
+        ...(jsonOptions ? { jsonOptions } : {}),
         fallback(req, res) {
             // Delegate to protocol HTTP handlers
             for (const httpHandler of httpHandlers) {
