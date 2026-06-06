@@ -158,7 +158,7 @@ await server.start();
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **pnpm**: >=10.0.0
 
 ## License
