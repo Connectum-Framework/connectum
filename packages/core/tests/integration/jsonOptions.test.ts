@@ -49,7 +49,11 @@ function buildEchoService(): DescService {
                         name: "value",
                         jsonName: "value",
                         number: 1,
-                        // LABEL_OPTIONAL = 1 (singular field with implicit presence in proto3)
+                        // LABEL_OPTIONAL = 1 marks a singular field. In proto3 this label covers
+                        // both implicit-presence fields and explicit `optional` fields; the
+                        // distinction is the `proto3_optional` flag, not the label. Here it is
+                        // left unset, so `value` is a regular singular scalar with implicit
+                        // presence (omitted from JSON when zero).
                         label: 1,
                         // TYPE_INT32 = 5
                         type: 5,
