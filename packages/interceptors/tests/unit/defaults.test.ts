@@ -1,6 +1,10 @@
 /**
  * Unit tests for default interceptor chain factory
  *
+ * Resilience interceptors (timeout, bulkhead, circuitBreaker, retry) are
+ * opt-in: a bare createDefaultInterceptors() returns only errorHandler and
+ * validation — no hidden behavioral logic.
+ *
  * @module defaults.test
  */
 
@@ -9,12 +13,45 @@ import { describe, it } from 'node:test';
 import { createDefaultInterceptors } from '../../src/defaults.ts';
 
 describe('createDefaultInterceptors', () => {
-    it('should create default chain with 6 interceptors', () => {
+    it('should create default chain with only errorHandler and validation', () => {
         const interceptors = createDefaultInterceptors();
 
-        // 6 enabled by default (fallback and serializer disabled)
-        // errorHandler, timeout, bulkhead, circuitBreaker, retry, validation
-        assert.strictEqual(interceptors.length, 6);
+        // Only structural interceptors enabled by default; resilience
+        // (timeout, bulkhead, circuitBreaker, retry) is opt-in
+        assert.strictEqual(interceptors.length, 2);
+    });
+
+    it('should not include resilience interceptors unless explicitly enabled', () => {
+        const bare = createDefaultInterceptors();
+        const explicit = createDefaultInterceptors({
+            timeout: true,
+            bulkhead: true,
+            circuitBreaker: true,
+            retry: true,
+        });
+
+        assert.strictEqual(bare.length, 2);
+        assert.strictEqual(explicit.length, 6);
+    });
+
+    it('should enable individual resilience interceptors with true', () => {
+        const resilienceKeys = ['timeout', 'bulkhead', 'circuitBreaker', 'retry'];
+
+        for (const key of resilienceKeys) {
+            const interceptors = createDefaultInterceptors({ [key]: true });
+            assert.strictEqual(
+                interceptors.length,
+                3,
+                `Enabling ${key} should increase count to 3`,
+            );
+        }
+    });
+
+    it('should enable individual resilience interceptors with options object', () => {
+        assert.strictEqual(createDefaultInterceptors({ timeout: { duration: 10000 } }).length, 3);
+        assert.strictEqual(createDefaultInterceptors({ bulkhead: { capacity: 5, queueSize: 5 } }).length, 3);
+        assert.strictEqual(createDefaultInterceptors({ circuitBreaker: { threshold: 3 } }).length, 3);
+        assert.strictEqual(createDefaultInterceptors({ retry: { maxRetries: 5 } }).length, 3);
     });
 
     it('should enable fallback when handler provided', () => {
@@ -22,8 +59,8 @@ describe('createDefaultInterceptors', () => {
             fallback: { handler: () => ({ data: [] }) },
         });
 
-        // 7 interceptors (all default + fallback)
-        assert.strictEqual(interceptors.length, 7);
+        // errorHandler + fallback + validation
+        assert.strictEqual(interceptors.length, 3);
     });
 
     it('should not enable fallback when set to true without handler', () => {
@@ -34,10 +71,24 @@ describe('createDefaultInterceptors', () => {
         });
 
         // fallback: true is not typeof "object", so it's skipped
-        assert.strictEqual(interceptors.length, 6);
+        assert.strictEqual(interceptors.length, 2);
     });
 
-    it('should disable individual interceptors', () => {
+    it('should treat null option as "use defaults", not crash (typeof null === object)', () => {
+        // { timeout: null } must not forward null to the factory and crash.
+        const interceptors = createDefaultInterceptors({
+            timeout: null as never,
+            bulkhead: null as never,
+            circuitBreaker: null as never,
+            retry: null as never,
+            fallback: null as never,
+            serializer: null as never,
+        });
+        // Opt-in resilience with null stays disabled; errorHandler + validation remain
+        assert.strictEqual(interceptors.length, 2);
+    });
+
+    it('should support explicit false for every interceptor', () => {
         const interceptors = createDefaultInterceptors({
             errorHandler: false,
             timeout: false,
@@ -61,63 +112,23 @@ describe('createDefaultInterceptors', () => {
             serializer: { skipGrpcServices: false },
         });
 
+        // errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, serializer
         assert.strictEqual(interceptors.length, 7);
     });
 
-    it('should disable all interceptors except specific ones', () => {
-        const interceptors = createDefaultInterceptors({
-            errorHandler: true,
-            timeout: false,
-            bulkhead: false,
-            circuitBreaker: false,
-            retry: false,
-            validation: false,
-            serializer: true,
-        });
-
-        // Only errorHandler and serializer
-        assert.strictEqual(interceptors.length, 2);
-    });
-
-    it('should return empty array when all disabled', () => {
-        const interceptors = createDefaultInterceptors({
-            errorHandler: false,
-            timeout: false,
-            bulkhead: false,
-            circuitBreaker: false,
-            retry: false,
-            validation: false,
-            serializer: false,
-        });
-
-        assert.strictEqual(interceptors.length, 0);
-    });
-
     describe('interceptor chain ordering and disabling', () => {
-        it('should create 6 interceptors with all defaults', () => {
+        it('should create 2 interceptors with all defaults', () => {
             const interceptors = createDefaultInterceptors();
 
-            assert.strictEqual(interceptors.length, 6);
+            assert.strictEqual(interceptors.length, 2);
             for (const ic of interceptors) {
                 assert.strictEqual(typeof ic, 'function');
             }
         });
 
-        it('should create 7 interceptors when fallback has handler', () => {
-            const interceptors = createDefaultInterceptors({
-                fallback: { handler: () => null },
-            });
-
-            assert.strictEqual(interceptors.length, 7);
-        });
-
         it('should maintain correct order: errorHandler first, serializer last', () => {
             const onlyFirstLast = createDefaultInterceptors({
                 errorHandler: true,
-                timeout: false,
-                bulkhead: false,
-                circuitBreaker: false,
-                retry: false,
                 validation: false,
                 serializer: true,
             });
@@ -128,45 +139,37 @@ describe('createDefaultInterceptors', () => {
         });
 
         it('should allow disabling each default-enabled interceptor individually with false', () => {
-            const enabledByDefault = [
-                'errorHandler', 'timeout', 'bulkhead',
-                'circuitBreaker', 'retry', 'validation',
-            ];
+            const enabledByDefault = ['errorHandler', 'validation'];
 
             for (const key of enabledByDefault) {
                 const interceptors = createDefaultInterceptors({ [key]: false });
                 assert.strictEqual(
                     interceptors.length,
-                    5,
-                    `Disabling ${key} should reduce count to 5`,
+                    1,
+                    `Disabling ${key} should reduce count to 1`,
                 );
             }
         });
 
         it('should not change count when disabling already-disabled serializer', () => {
             const interceptors = createDefaultInterceptors({ serializer: false });
-            assert.strictEqual(interceptors.length, 6);
+            assert.strictEqual(interceptors.length, 2);
         });
 
         it('should enable serializer when set to true', () => {
             const interceptors = createDefaultInterceptors({ serializer: true });
-            assert.strictEqual(interceptors.length, 7);
+            assert.strictEqual(interceptors.length, 3);
         });
 
         it('should enable serializer when given options object', () => {
             const interceptors = createDefaultInterceptors({ serializer: { skipGrpcServices: false } });
-            assert.strictEqual(interceptors.length, 7);
+            assert.strictEqual(interceptors.length, 3);
         });
 
         it('should return empty array when all interceptors are disabled', () => {
             const interceptors = createDefaultInterceptors({
                 errorHandler: false,
-                timeout: false,
-                bulkhead: false,
-                circuitBreaker: false,
-                retry: false,
                 validation: false,
-                serializer: false,
             });
 
             assert.strictEqual(interceptors.length, 0);

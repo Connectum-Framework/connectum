@@ -141,6 +141,36 @@ export interface CircuitBreakerOptions {
      * @default true
      */
     skipStreaming?: boolean;
+
+    /**
+     * Decides whether an error counts as a circuit failure.
+     *
+     * Receives the default predicate as the second argument so the default
+     * policy can be composed (extended or restricted) instead of reimplemented:
+     *
+     * ```typescript
+     * // Extend: also trip on NotFound
+     * failurePredicate: (err, def) =>
+     *     def(err) || (err instanceof ConnectError && err.code === Code.NotFound)
+     *
+     * // Restrict: never trip on ResourceExhausted (e.g. upstream rate limits)
+     * failurePredicate: (err, def) =>
+     *     def(err) && !(err instanceof ConnectError && err.code === Code.ResourceExhausted)
+     *
+     * // Legacy behavior: every error trips the breaker
+     * failurePredicate: () => true
+     * ```
+     *
+     * Errors NOT classified as failures never open or re-arm the breaker and,
+     * in half-open state, close the circuit (treated as a successful probe).
+     * A predicate that throws is treated as if it returned `true` (fail-closed);
+     * the original upstream error is always the one propagated to the caller.
+     *
+     * @default defaultFailurePredicate (infrastructure codes only: Unknown,
+     * DeadlineExceeded, Internal, Unavailable, DataLoss, ResourceExhausted;
+     * non-ConnectError values count as failures)
+     */
+    failurePredicate?: (error: unknown, defaultPredicate: (error: unknown) => boolean) => boolean;
 }
 
 /**
