@@ -115,20 +115,64 @@ Class for managing service health statuses.
 
 | Method | Description |
 |--------|-------------|
-| `update(status, service?)` | Update status. Without `service` -- updates all registered services. |
-| `getStatus(service)` | Get the status of a specific service |
+| `update(status, service?)` | Update status. Without `service` -- updates all registered entries. Throws on unknown names. |
+| `register(component, initialStatus?)` | Register an application health component (default `UNKNOWN`). Re-registering preserves the current status. |
+| `set(component, status)` | Set a component's status (upsert: registers the component if absent). |
+| `unregister(component)` | Remove a registered component. |
+| `getStatus(service)` | Get the status of a specific service or component |
 | `getAllStatuses()` | Get a Map of all statuses |
-| `areAllHealthy()` | Check if all services are in SERVING status |
-| `initialize(serviceNames)` | Initialize service tracking |
-| `clear()` | Clear all services |
+| `areAllHealthy()` | Check if all services and components are in SERVING status |
+| `initialize(serviceNames)` | Initialize RPC service tracking (called by the protocol) |
+| `clear()` | Clear all services and components |
+
+#### Services vs components
+
+The registry tracks two kinds of entries:
+
+- **Services** -- Connect RPC services, owned by the Healthcheck protocol.
+  `initialize()` adds, preserves, and removes these on server start.
+- **Components** -- application-defined readiness gates (`process`, `amqp`,
+  a database connection, ...), owned by the application via
+  `register()`/`set()`/`unregister()`. `initialize()` never touches them.
+
+Component names must be non-empty and dot-free: proto service typeNames are
+always dotted, so the two namespaces cannot collide. A registered component is
+a readiness gate -- it participates in `areAllHealthy()`, gRPC `Check`/`Watch`
+(queryable by name), and `/healthz` exactly like a service.
 
 #### initialize() Behavior
 
-The `initialize()` method performs a **merge** with existing state:
-- Services that were already registered retain their current status
+`initialize()` replaces only the **service slice** of the registry:
+- Services already registered retain their current status
 - New services are added with `UNKNOWN` status
+- Services absent from the new list are removed (active `Watch` streams on
+  them observe `SERVICE_UNKNOWN`)
+- Components are never touched
 
-This allows updating the service list without losing previously set statuses (e.g., during hot reload).
+#### Workers without RPC
+
+A worker with no public RPCs (`services: []`) can never become SERVING through
+the service registry -- the registry is empty and `/healthz` answers 503
+permanently. Register a process component instead; registration works before
+or after `server.start()`:
+
+```typescript
+import { createServer } from '@connectum/core';
+import { Healthcheck, healthcheckManager, ServingStatus } from '@connectum/healthcheck';
+
+const server = createServer({
+  services: [],            // poller / publisher / exporter — no public RPCs
+  protocols: [Healthcheck({ httpEnabled: true })],
+});
+
+healthcheckManager.register('process');  // UNKNOWN until ready
+
+server.on('ready', () => healthcheckManager.set('process', ServingStatus.SERVING));
+server.on('stopping', () => healthcheckManager.set('process', ServingStatus.NOT_SERVING));
+
+await server.start();
+// docker-compose `service_healthy` gating now works: /healthz → 200 when ready
+```
 
 ### ServingStatus
 
