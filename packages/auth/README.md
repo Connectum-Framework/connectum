@@ -578,7 +578,7 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License
