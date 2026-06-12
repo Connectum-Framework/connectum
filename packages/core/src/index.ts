@@ -29,6 +29,9 @@ export type { SanitizableError } from "./errors.ts";
 export { isSanitizableError } from "./errors.ts";
 // TLS utilities
 export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
+// Transport validation (streaming kinds vs transport)
+export type { EffectiveTransport, StreamingMethodInfo, TransportValidationMode } from "./TransportValidation.ts";
+export { collectStreamingMethods, resolveEffectiveTransport, TRANSPORT_VALIDATION_ERROR_CODE, TransportValidationError } from "./TransportValidation.ts";
 
 // =============================================================================
 // TYPES

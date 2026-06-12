@@ -437,14 +437,15 @@ interface TLSOptions {
 
 ### Interceptors
 
-`@connectum/core` does not include built-in interceptors. Use `@connectum/interceptors` for a production-ready chain:
+`@connectum/core` does not include built-in interceptors. Use `@connectum/interceptors` for a production-ready chain (errorHandler + validation by default; resilience interceptors such as timeout, bulkhead, circuitBreaker, retry are opt-in):
 
 ```typescript
 import { createDefaultInterceptors } from '@connectum/interceptors';
 
 const server = createServer({
   services: [routes],
-  interceptors: createDefaultInterceptors(),
+  // Defaults to errorHandler + validation only. Enable resilience explicitly:
+  interceptors: createDefaultInterceptors({ timeout: true, retry: true }),
 });
 ```
 
