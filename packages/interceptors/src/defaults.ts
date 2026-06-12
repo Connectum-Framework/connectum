@@ -1,9 +1,11 @@
 /**
  * Default interceptor chain factory
  *
- * Creates the production-ready interceptor chain with resilience patterns.
- * The interceptor order is fixed:
+ * Creates the interceptor chain in a fixed order:
  * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer.
+ * Only errorHandler and validation are enabled by default; resilience
+ * interceptors (timeout, bulkhead, circuitBreaker, retry) are opt-in —
+ * no hidden behavioral logic.
  *
  * @module defaults
  */
@@ -27,8 +29,12 @@ import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, Fallb
  * - `true` to enable with default options
  * - An options object to enable with custom configuration
  *
- * All interceptors are enabled by default except fallback and serializer
- * (which requires a handler function).
+ * Only structural interceptors (errorHandler, validation) are enabled by
+ * default. Behavioral resilience interceptors (timeout, bulkhead,
+ * circuitBreaker, retry) are opt-in: implicitly enabled behavior-altering
+ * logic is hidden logic, and hidden logic caused a confirmed production
+ * incident (a server-side circuit breaker tripping on expected business
+ * errors). Enable each one explicitly where you need it.
  */
 export interface DefaultInterceptorOptions {
     /**
@@ -41,28 +47,33 @@ export interface DefaultInterceptorOptions {
     /**
      * Timeout interceptor.
      * Enforces request deadline before any processing.
-     * @default true (30s)
+     * Opt-in: no hidden behavioral logic.
+     * @default false
      */
     timeout?: boolean | TimeoutOptions;
 
     /**
      * Bulkhead interceptor.
      * Limits concurrent requests to prevent resource exhaustion.
-     * @default true (10/10)
+     * Opt-in: no hidden behavioral logic.
+     * @default false
      */
     bulkhead?: boolean | BulkheadOptions;
 
     /**
      * Circuit breaker interceptor.
      * Prevents cascading failures by breaking circuit on consecutive errors.
-     * @default true (5 failures)
+     * Opt-in: no hidden behavioral logic. Intended primarily for outbound
+     * client transports — see the README before enabling it server-side.
+     * @default false
      */
     circuitBreaker?: boolean | CircuitBreakerOptions;
 
     /**
      * Retry interceptor.
      * Retries transient failures with exponential backoff.
-     * @default true (3 retries)
+     * Opt-in: no hidden behavioral logic.
+     * @default false
      */
     retry?: boolean | RetryOptions;
 
@@ -94,27 +105,32 @@ export interface DefaultInterceptorOptions {
  * Creates the default interceptor chain with the specified configuration.
  *
  * The interceptor order is fixed and intentional:
- * 1. **errorHandler** - Catch-all error normalization (outermost, must be first)
- * 2. **timeout** - Enforce deadline before any processing
- * 3. **bulkhead** - Limit concurrency
- * 4. **circuitBreaker** - Prevent cascading failures
- * 5. **retry** - Retry transient failures (exponential backoff)
- * 6. **fallback** - Graceful degradation (DISABLED by default)
- * 7. **validation** - @connectrpc/validate (createValidateInterceptor)
- * 8. **serializer** - JSON serialization (innermost, DISABLED by default)
+ * 1. **errorHandler** - Catch-all error normalization (outermost, must be first; enabled by default)
+ * 2. **timeout** - Enforce deadline before any processing (OPT-IN)
+ * 3. **bulkhead** - Limit concurrency (OPT-IN)
+ * 4. **circuitBreaker** - Prevent cascading failures (OPT-IN; wraps retry — one logical
+ *    request increments the failure counter once, regardless of retry attempts)
+ * 5. **retry** - Retry transient failures with exponential backoff (OPT-IN)
+ * 6. **fallback** - Graceful degradation (OPT-IN, requires handler)
+ * 7. **validation** - @connectrpc/validate (enabled by default)
+ * 8. **serializer** - JSON serialization (innermost, OPT-IN)
+ *
+ * Resilience interceptors (2-5) are opt-in by design: the recommended path
+ * must not silently alter request behavior.
  *
  * @param options - Configuration for each interceptor
  * @returns Array of configured interceptors in the correct order
  *
  * @example
  * ```typescript
- * // All defaults (fallback disabled)
+ * // Defaults: errorHandler + validation only
  * const interceptors = createDefaultInterceptors();
  *
- * // Disable retry, custom timeout
+ * // Explicitly enable resilience where needed
  * const interceptors = createDefaultInterceptors({
- *   retry: false,
  *   timeout: { duration: 10000 },
+ *   bulkhead: true,
+ *   retry: { maxAttempts: 3 },
  * });
  *
  * // Enable fallback with handler
@@ -135,26 +151,26 @@ export function createDefaultInterceptors(options: DefaultInterceptorOptions = {
         interceptors.push(createErrorHandlerInterceptor(opts));
     }
 
-    // 2. Timeout
-    if (options.timeout !== false) {
+    // 2. Timeout (opt-in: no hidden behavioral logic)
+    if (options.timeout === true || typeof options.timeout === "object") {
         const opts = typeof options.timeout === "object" ? options.timeout : {};
         interceptors.push(createTimeoutInterceptor(opts));
     }
 
-    // 3. Bulkhead
-    if (options.bulkhead !== false) {
+    // 3. Bulkhead (opt-in: no hidden behavioral logic)
+    if (options.bulkhead === true || typeof options.bulkhead === "object") {
         const opts = typeof options.bulkhead === "object" ? options.bulkhead : {};
         interceptors.push(createBulkheadInterceptor(opts));
     }
 
-    // 4. Circuit breaker
-    if (options.circuitBreaker !== false) {
+    // 4. Circuit breaker (opt-in: no hidden behavioral logic)
+    if (options.circuitBreaker === true || typeof options.circuitBreaker === "object") {
         const opts = typeof options.circuitBreaker === "object" ? options.circuitBreaker : {};
         interceptors.push(createCircuitBreakerInterceptor(opts));
     }
 
-    // 5. Retry
-    if (options.retry !== false) {
+    // 5. Retry (opt-in: no hidden behavioral logic)
+    if (options.retry === true || typeof options.retry === "object") {
         const opts = typeof options.retry === "object" ? options.retry : {};
         interceptors.push(createRetryInterceptor(opts));
     }
