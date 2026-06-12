@@ -59,8 +59,6 @@ export interface RawSubscribeOptions {
 export interface PublishOptions {
     /** Override topic name (default: schema.typeName) */
     topic?: string;
-    /** Wait for broker confirmation (default: false = fire-and-forget) */
-    sync?: boolean;
     /** Named group tag for workflow grouping */
     group?: string;
     /** Additional metadata / headers */

@@ -95,7 +95,7 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
-            { message: "AmqpAdapter: not connected" },
+            { message: "AmqpAdapter: not connected (or recovery in progress)" },
         );
     });
 
@@ -103,7 +103,7 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.subscribe(["test.>"], async () => {}),
-            { message: "AmqpAdapter: not connected" },
+            { message: "AmqpAdapter: not connected (or recovery in progress)" },
         );
     });
 
@@ -154,7 +154,9 @@ describe("AmqpAdapter AdapterContext", () => {
     });
 
     it("connect() accepts AdapterContext without TypeError", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672" });
+        // recovery: false — with recovery enabled (default), connect() retries
+        // with backoff until the broker appears instead of rejecting.
+        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
 
         // connect() will fail (no broker), but should accept the context
         // without throwing TypeError. The serviceName is mapped to
@@ -172,7 +174,9 @@ describe("AmqpAdapter AdapterContext", () => {
     });
 
     it("connect() works with undefined context (backward compat)", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672" });
+        // recovery: false — with recovery enabled (default), connect() retries
+        // with backoff until the broker appears instead of rejecting.
+        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
 
         // Calling connect() without context should still work (minus broker availability)
         await assert.rejects(

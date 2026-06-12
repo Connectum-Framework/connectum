@@ -1,18 +1,26 @@
 packages:
   - packages/*
 
+allowBuilds:
+  '@biomejs/biome': true
+  '@bufbuild/buf': true
+  cpu-features: false
+  esbuild: true
+  protobufjs: true
+  ssh2: false
+
 catalog:
   '@biomejs/biome': ^2.3.15
   '@bufbuild/buf': ^1.65.0
   '@bufbuild/protobuf': ^2.11.0
   '@bufbuild/protoc-gen-es': ^2.11.0
   '@bufbuild/protovalidate': ^1.1.1
-  '@exodus/test': ^1.0.0-rc.116
   '@commitlint/cli': ^20.4.1
   '@commitlint/config-conventional': ^20.4.1
   '@connectrpc/connect': ^2.1.1
   '@connectrpc/connect-node': ^2.1.1
   '@connectrpc/validate': ^0.2.0
+  '@exodus/test': ^1.0.0-rc.116
   '@opentelemetry/api': ^1.9.0
   '@opentelemetry/api-logs': ^0.215.0
   '@opentelemetry/auto-instrumentations-node': ^0.69.0
@@ -38,19 +46,13 @@ catalog:
   tsup: ^8.5.0
   typescript: ^5.9.3
   zod: ^4.3.6
-
-allowBuilds:
-  '@biomejs/biome': true
-  '@bufbuild/buf': true
-  esbuild: true
-  protobufjs: true
 overrides:
   ajv@<8.18.0: 8.18.0
-  minimatch@<10.2.3: 10.2.3
   basic-ftp@<5.2.2: 5.2.2
-  rollup@>=4.0.0 <4.59.0: 4.59.0
+  brace-expansion@>=4.0.0 <5.0.5: 5.0.5
+  minimatch@<10.2.3: 10.2.3
   picomatch@<2.3.2: 2.3.2
   picomatch@>=4.0.0 <4.0.4: 4.0.4
-  brace-expansion@>=4.0.0 <5.0.5: 5.0.5
   protobufjs@<7.5.5: 7.5.5
   protobufjs@>=8.0.0 <8.0.1: 8.0.1
+  rollup@>=4.0.0 <4.59.0: 4.59.0
