@@ -64,7 +64,7 @@
     "@connectum/events": "workspace:^",
     "@exodus/test": "catalog:",
     "c8": "catalog:",
-    "testcontainers": "^12.0.1",
+    "testcontainers": "^12.0.2",
     "tsup": "catalog:",
     "typescript": "catalog:"
   }
