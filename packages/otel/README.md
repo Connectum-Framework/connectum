@@ -757,7 +757,7 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

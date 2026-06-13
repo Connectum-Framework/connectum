@@ -14,6 +14,7 @@ import { buildRoutes } from "./buildRoutes.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
+import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
 import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
@@ -128,7 +129,7 @@ class ServerImpl extends EventEmitter implements Server {
         this.emit("start");
 
         try {
-            const { handler, registry } = buildRoutes({
+            const { handler, registry, userRegistry } = buildRoutes({
                 services: this._routes,
                 protocols: this._protocols,
                 interceptors: this._interceptors,
@@ -136,6 +137,27 @@ class ServerImpl extends EventEmitter implements Server {
                 ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
             });
             this._registry.push(...registry);
+
+            // Streaming kinds vs transport: USER bidi methods on a plaintext
+            // HTTP/1.1 server hang silently at runtime — fail fast instead;
+            // on a TLS server that also allows HTTP/1.1 the same hang is a
+            // residual risk for HTTP/1.1-negotiating clients → one-time warn.
+            // Protocol-contributed services (gRPC Reflection's
+            // ServerReflectionInfo is bidi) are excluded: their transport
+            // limitations are documented, not a user misconfiguration.
+            // The thrown error and the 'error' event below carry the SAME
+            // object; the framework itself prints nothing (no double reporting).
+            const validationError = validateTransport({
+                registry: userRegistry,
+                // Boolean() mirrors TransportManager's truthy TLS check, so a
+                // falsy-but-defined tls (e.g. null from untyped JS) is treated
+                // as plaintext consistently with the actual transport selection.
+                transport: resolveEffectiveTransport({ hasTls: Boolean(this._options.tls), allowHTTP1: this._options.allowHTTP1 }),
+                mode: this._options.transportValidation ?? "error",
+            });
+            if (validationError) {
+                throw validationError;
+            }
 
             if (this._eventBus) {
                 await this._eventBus.start({ signal: this._abortController.signal });

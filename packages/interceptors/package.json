@@ -83,7 +83,7 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "access": "public"
@@ -93,7 +93,7 @@
     "@connectrpc/validate": "catalog:",
     "@bufbuild/protobuf": "catalog:",
     "@connectum/core": "workspace:^",
-    "cockatiel": "^3.2.1"
+    "cockatiel": "^4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

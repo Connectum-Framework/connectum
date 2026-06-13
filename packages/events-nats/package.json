@@ -42,14 +42,14 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "@nats-io/jetstream": "^3.3.1",
-    "@nats-io/transport-node": "^3.3.1"
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
   },
   "peerDependencies": {
     "@connectum/events": "workspace:^"

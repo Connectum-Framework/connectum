@@ -25,10 +25,20 @@
  */
 
 export { AmqpAdapter, toAmqpPattern } from "./AmqpAdapter.ts";
+export { AmqpAdapterError, AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
 export type {
     AmqpAdapterOptions,
+    AmqpBindingDeclaration,
     AmqpConsumerOptions,
+    AmqpExchangeDeclaration,
     AmqpExchangeOptions,
+    AmqpLifecycleCallbacks,
     AmqpPublisherOptions,
+    AmqpQueueDeclaration,
     AmqpQueueOptions,
+    AmqpQueueOverride,
+    AmqpRecoveryOptions,
+    AmqpSerializationOptions,
+    AmqpTopology,
 } from "./types.ts";
+export { AmqpTopologyMode } from "./types.ts";

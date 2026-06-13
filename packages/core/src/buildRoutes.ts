@@ -30,6 +30,14 @@ export interface BuildRoutesOptions {
 export interface BuildRoutesResult {
     handler: (req: NodeRequest, res: NodeResponse) => void;
     registry: DescFile[];
+    /**
+     * The prefix of `registry` contributed by user services (before protocol
+     * registration). Transport validation runs against this slice only:
+     * protocol-contributed services (e.g. gRPC Reflection, whose
+     * ServerReflectionInfo is bidi) own their documented transport
+     * limitations and must not fail the user's startup.
+     */
+    userRegistry: DescFile[];
 }
 
 /**
@@ -46,6 +54,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     const { services, protocols, interceptors, shutdownSignal, jsonOptions } = options;
 
     const registry: DescFile[] = [];
+    let userFileCount = 0;
 
     // Setup routes with registry interceptor
     const routes = (router: ConnectRouter) => {
@@ -61,6 +70,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         for (const serviceRoute of services) {
             serviceRoute(router);
         }
+        // Everything registered up to here came from user services;
+        // descriptors added below belong to protocols.
+        userFileCount = registry.length;
 
         // Register protocols
         const context: ProtocolContext = { registry };
@@ -92,5 +104,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         },
     });
 
-    return { handler: handler as (req: NodeRequest, res: NodeResponse) => void, registry };
+    // connectNodeAdapter invokes routes() synchronously, so both the full
+    // registry and the user-service prefix are populated at this point.
+    return { handler: handler as (req: NodeRequest, res: NodeResponse) => void, registry, userRegistry: registry.slice(0, userFileCount) };
 }

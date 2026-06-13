@@ -3,15 +3,18 @@
  *
  * Production-ready ConnectRPC interceptors with resilience patterns.
  *
- * Default chain (8 interceptors):
+ * Fixed chain order (8 interceptors):
  * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer
+ *
+ * Default-enabled: errorHandler, validation. Resilience interceptors
+ * (timeout, bulkhead, circuitBreaker, retry) are opt-in.
  *
  * @module @connectum/interceptors
  * @mergeModuleWith <project>
  */
 
 export { createBulkheadInterceptor } from "./bulkhead.ts";
-export { createCircuitBreakerInterceptor } from "./circuit-breaker.ts";
+export { createCircuitBreakerInterceptor, defaultFailurePredicate } from "./circuit-breaker.ts";
 export type { DefaultInterceptorOptions } from "./defaults.ts";
 // Default interceptor chain factory
 export { createDefaultInterceptors } from "./defaults.ts";

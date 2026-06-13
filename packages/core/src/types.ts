@@ -298,6 +298,28 @@ export interface CreateServerOptions {
     allowHTTP1?: boolean;
 
     /**
+     * Startup validation of streaming method kinds vs the effective transport.
+     *
+     * Bidi-streaming methods require HTTP/2 (Connect protocol: "Bidirectional
+     * streaming requires HTTP/2, but the other RPC types also support
+     * HTTP/1.1"). On a plaintext HTTP/1.1 server (no TLS + `allowHTTP1: true`,
+     * the default) they fail silently at runtime — the first send hangs
+     * forever. With `"error"` (default) `start()` rejects with a
+     * `TransportValidationError` (code `CONNECTUM_UNSUPPORTED_STREAMING_TRANSPORT`)
+     * naming the affected methods and both fixes; `"warn"` logs once and
+     * starts anyway; `"off"` skips the check.
+     *
+     * On a TLS server that also allows HTTP/1.1 (`allowHTTP1: true`), bidi
+     * works for HTTP/2 clients but a client negotiating HTTP/1.1 over TLS
+     * hits the same hang — this residual risk is always a one-time warning
+     * (never a hard error), silenced only by `"off"`. Set `allowHTTP1: false`
+     * to remove the risk (the server refuses HTTP/1.1 at ALPN).
+     *
+     * @default "error"
+     */
+    transportValidation?: "error" | "warn" | "off";
+
+    /**
      * Handshake timeout in milliseconds
      * @default 30000
      */

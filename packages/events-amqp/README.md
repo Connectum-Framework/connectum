@@ -2,15 +2,20 @@
 
 AMQP/RabbitMQ adapter for `@connectum/events`.
 
-**@connectum/events-amqp** connects the Connectum EventBus to [RabbitMQ](https://www.rabbitmq.com/) (AMQP 0-9-1) for durable, at-least-once event delivery with topic exchanges, consumer groups, and dead-letter support.
+**@connectum/events-amqp** connects the Connectum EventBus to [RabbitMQ](https://www.rabbitmq.com/) (AMQP 0-9-1) for durable, at-least-once event delivery with topic exchanges, consumer groups, dead-letter support, explicit external topology, automatic connection recovery, and per-message publisher confirms.
 
-**Layer**: 2 (Tools) | **Node.js**: >=20.0.0 | **License**: Apache-2.0
+**Layer**: 2 (Tools) | **Node.js**: >=22.13.0 | **License**: Apache-2.0
 
 ## Features
 
 - **Topic Exchange** -- flexible routing via AMQP topic exchange with wildcard patterns
 - **Consumer Groups** -- load-balanced consumption via named queues (competing consumers)
-- **Publisher Confirms** -- optional synchronous publishing with broker acknowledgement
+- **Per-Message Publisher Confirms** -- every publish resolves on its own broker ack and rejects on nack
+- **Explicit Topology** -- declare external exchanges, queues (raw `arguments`, e.g. `x-dead-letter-exchange`), and bindings (including exchange-to-exchange)
+- **Queue Overrides** -- attach a consumer group to an externally named queue from a contract
+- **Automatic Recovery** -- native amqplib v2 connection recovery with backoff and jitter (enabled by default)
+- **Typed Errors** -- every terminal publish/topology outcome is a distinct error class
+- **Serialization Control** -- `contentType` label and optional wire transcoding hooks
 - **Dead Letter Exchange** -- built-in DLX support for rejected messages
 - **Metadata as Headers** -- event metadata mapped to AMQP message headers
 - **Prefetch Control** -- configurable QoS prefetch count per consumer
@@ -67,7 +72,21 @@ const bus = createEventBus({
     },
     publisherOptions: {
       persistent: true,
+      mandatory: false,
     },
+    recovery: {
+      initialDelay: 100,
+      maxDelay: 30000,
+      factor: 2,
+      jitter: 0.2,
+    },
+    lifecycle: {
+      onConnected: () => console.log('AMQP connected'),
+      onDisconnected: (cause) => console.error('AMQP disconnected', cause),
+      onReconnecting: ({ attempt, delay }) => console.warn(`Reconnect #${attempt} in ${delay}ms`),
+      onReconnectFailed: (cause) => console.error('AMQP recovery exhausted', cause),
+    },
+    publishTimeoutMs: 30000,
   }),
   routes: [eventRoutes],
   group: 'worker-group',
@@ -97,9 +116,16 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | `exchange` | `string` | `'connectum.events'` | Exchange name |
 | `exchangeType` | `'topic' \| 'direct' \| 'fanout' \| 'headers'` | `'topic'` | Exchange type |
 | `exchangeOptions` | `AmqpExchangeOptions` | `{}` | Exchange assertion options |
-| `queueOptions` | `AmqpQueueOptions` | `{}` | Queue assertion options |
+| `queueOptions` | `AmqpQueueOptions` | `{}` | Default queue assertion options |
 | `consumerOptions` | `AmqpConsumerOptions` | `{}` | Consumer options |
 | `publisherOptions` | `AmqpPublisherOptions` | `{}` | Publisher options |
+| `serialization` | `AmqpSerializationOptions` | `{}` | `contentType` label and optional wire transcoding |
+| `topology` | `AmqpTopology` | `undefined` | Explicit topology declared on connect (and after recovery) |
+| `topologyMode` | `'assert' \| 'check' \| 'skip'` | `'assert'` | How topology is established |
+| `queueOverrides` | `Record<string, AmqpQueueOverride>` | `undefined` | Map a consumer group to an externally named queue |
+| `recovery` | `boolean \| AmqpRecoveryOptions` | `true` | Automatic connection recovery (amqplib native); `false` disables |
+| `lifecycle` | `AmqpLifecycleCallbacks` | `undefined` | Connection lifecycle callbacks |
+| `publishTimeoutMs` | `number` | `30000` | Per-publish broker-outcome deadline |
 
 ### AmqpExchangeOptions
 
@@ -130,7 +156,75 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `persistent` | `boolean` | `true` | Persist messages (deliveryMode=2) |
-| `mandatory` | `boolean` | `false` | Return unroutable messages |
+| `mandatory` | `boolean` | `false` | Reject the publish with `AmqpUnroutableError` if the broker cannot route the message |
+| `correlationHeader` | `boolean` | `true` | Correlate `basic.return` frames via a private `x-connectum-publish-id` header on mandatory publishes; `false` switches to single-flight serialization |
+
+### AmqpSerializationOptions
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `contentType` | `string` | `'application/protobuf'` | AMQP `contentType` message property |
+| `encode` | `(payload: Uint8Array) => Uint8Array` | `undefined` | Transform the outgoing wire body; failures reject the publish with `AmqpSerializationError` |
+| `decode` | `(content: Uint8Array) => Uint8Array` | `undefined` | Transform the incoming wire body before the handler; failures nack the message without requeue |
+
+> The adapter receives payloads as bytes -- the EventBus serializes protobuf upstream. `contentType` is a label, not a converter: setting `'application/json'` does not make the EventBus emit JSON. For external JSON contracts the application publishes pre-serialized bytes through the adapter directly and sets `contentType` accordingly (see [External AMQP Contract](#external-amqp-contract)).
+
+### AmqpTopology
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `exchanges` | `AmqpExchangeDeclaration[]` | Exchanges to declare: `name`, `type`, `durable`, `autoDelete`, raw `arguments` |
+| `queues` | `AmqpQueueDeclaration[]` | Queues to declare: `name`, `durable`, `autoDelete`, `exclusive`, raw `arguments` (e.g. `x-dead-letter-exchange`) |
+| `bindings` | `AmqpBindingDeclaration[]` | Bindings: `source` exchange + `routingKey` to either a `queue` or another `exchange` (exchange-to-exchange) |
+
+Queues declared in `topology.queues` are asserted once (with their full arguments) when topology is applied. `subscribe()` does **not** re-assert them -- it only binds patterns. Re-asserting without the original arguments would be a conflicting redeclare (`PRECONDITION_FAILED` 406).
+
+### Topology Modes
+
+| Mode | Behavior |
+|------|----------|
+| `'assert'` (default) | Declare topology idempotently (`assertExchange` / `assertQueue` / bind) |
+| `'check'` | Existence-only verification (`checkExchange` / `checkQueue`); fails fast with `AmqpTopologyError` on missing objects |
+| `'skip'` | No topology operations; the application owns topology |
+
+> **`check` limitations**: AMQP has no passive introspection. `check` mode verifies only that exchanges and queues *exist* -- argument equivalence and binding presence are NOT verifiable. A conflicting redeclare elsewhere still fails with `PRECONDITION_FAILED` (406).
+
+### AmqpQueueOverride
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `queue` | `string` | required | Externally defined queue name to consume from |
+| `arguments` | `Record<string, unknown>` | `undefined` | Raw AMQP arguments used when asserting the queue (assert mode only) |
+| `durable` | `boolean` | `true` | Queue durability |
+
+By default a consumer group consumes from `${exchange}.${group}`. A `queueOverrides` entry attaches the subscription to a queue from an external contract instead:
+
+```typescript
+queueOverrides: {
+  'partner': { queue: 'partner.inbound.v1' },
+}
+```
+
+### AmqpRecoveryOptions
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `initialDelay` | `number` | `100` | First reconnect delay in ms |
+| `maxDelay` | `number` | `30000` | Delay cap in ms |
+| `factor` | `number` | `2` | Exponential backoff factor |
+| `jitter` | `number` | `0.2` | Randomization factor (0..1) |
+| `maxRetries` | `number` | `Infinity` | Give up after this many attempts |
+
+### AmqpLifecycleCallbacks
+
+| Callback | Signature | Fires when |
+|----------|-----------|------------|
+| `onConnected` | `() => void` | Connection established (initial and after recovery) |
+| `onDisconnected` | `(cause: Error) => void` | Connection lost |
+| `onReconnecting` | `(info: { attempt, delay, error }) => void` | A reconnect attempt is scheduled |
+| `onReconnectFailed` | `(cause: Error) => void` | Recovery exhausted (`maxRetries` reached) |
+
+Connection errors are surfaced through these callbacks -- never console-only.
 
 ## How It Works
 
@@ -160,22 +254,119 @@ Example: "order.>"  →  "order.#"
 
 | Mode | Queue Name | Behavior |
 |------|-----------|----------|
+| With `group` + `queueOverrides[group]` | override `queue` | External contract queue (bound, consumed) |
 | With `group` | `{exchange}.{group}` | Shared, durable, competing consumers |
 | Without `group` | `{exchange}.sub-{uuid}` | Exclusive, auto-delete (fan-out) |
 
 ### Metadata
 
-Event metadata is transmitted as AMQP message headers. Internal headers (`x-event-id`, `x-published-at`) are set on publish and stripped from metadata on delivery.
+Event metadata is transmitted as AMQP message headers. Internal headers (`x-event-id`, `x-published-at`, `x-connectum-publish-id`) are set on publish and stripped from metadata on delivery.
 
-### Publisher Confirms
+### Reliable Publishing (Per-Message Confirms)
 
-When `publishOptions.sync: true`, the adapter uses `ConfirmChannel.waitForConfirms()` to wait for broker acknowledgement before returning.
+The adapter publishes on a confirm channel with **per-message confirms**: every `publish()` resolves when the broker acks that specific message and rejects when the broker nacks it. There is no batching and no `waitForConfirms()` -- each publish has its own outcome.
+
+- A publish with no broker outcome (ack/nack/return/connection loss) within `publishTimeoutMs` (default 30000 ms) rejects with `AmqpPublishTimeoutError`. The message state is then UNKNOWN -- it may or may not have been routed; an at-least-once producer should republish.
+- A publish during a disconnected window (or while recovery is in progress) fails fast with `AmqpConnectionError`. In-flight publishes at the moment of a connection loss also reject with `AmqpConnectionError`.
+
+> **Note**: confirms are always per-message — every `publish()` resolves on its own broker ack (or rejects with a typed error). There is no fire-and-forget mode. (The legacy `sync` flag was removed from `PublishOptions` ahead of the first stable release.)
+
+### Mandatory Publishing and basic.return Correlation
+
+With `publisherOptions.mandatory: true`, an unroutable message (no queue bound for the routing key) rejects the publish with `AmqpUnroutableError` (carries `.routingKey`). The AMQP `basic.return` frame has no delivery tag, so the adapter must correlate returns to publishes:
+
+- **`correlationHeader: true` (default)** -- mandatory publishes are stamped with a private `x-connectum-publish-id` header and returns are matched by it. **The header is visible on the wire to external consumers** -- document it in external contracts.
+- **`correlationHeader: false`** -- no header on the wire; mandatory publishes are serialized (single-flight, at most one outstanding at a time) so correlation stays unambiguous at the cost of throughput.
+
+### Connection Recovery
+
+Recovery is delegated to amqplib v2 native opt-in recovery and is **enabled by default** (`recovery: false` restores single-shot, no-reconnect behavior). On every successful (re)connect the adapter:
+
+1. Re-creates its publish and consumer channels.
+2. Re-applies topology (per `topologyMode`).
+3. Replays all active subscriptions.
+
+Connection behavior:
+
+- **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering.
+- **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable, and a lost connection is not restored.
+
+### Error Taxonomy
+
+Every terminal publish/topology outcome is distinguishable by error class -- what an at-least-once producer needs for an "advance cursor after confirm" pattern:
+
+| Error | Meaning |
+|-------|---------|
+| `AmqpAdapterError` | Base class for all adapter errors |
+| `AmqpConnectionError` | Connection absent, lost, or recovery in progress / exhausted |
+| `AmqpUnroutableError` | Broker returned a `mandatory` message as unroutable (`basic.return`); has `.routingKey` |
+| `AmqpPublishNackError` | Broker negatively acknowledged (nacked) a published message |
+| `AmqpPublishTimeoutError` | No broker outcome within `publishTimeoutMs`; message state UNKNOWN |
+| `AmqpTopologyError` | Topology declaration or verification failed (missing object in `check` mode, conflicting redeclare in `assert` mode) |
+| `AmqpSerializationError` | Payload encoding failed in a custom `serialization.encode` hook |
+
+## External AMQP Contract
+
+A complete recipe for integrating with an externally defined AMQP contract (AsyncAPI-style): direct exchange, named durable queue with DLQ arguments, JSON `contentType`, mandatory routing, and per-message confirms. The application serializes JSON itself and publishes through the adapter directly:
+
+```typescript
+import { AmqpAdapter, AmqpUnroutableError } from '@connectum/events-amqp';
+
+const adapter = AmqpAdapter({
+  url: 'amqp://broker:5672',
+  exchange: 'partner.direct',
+  exchangeType: 'direct',
+  serialization: { contentType: 'application/json' },
+  topology: {
+    exchanges: [{ name: 'partner.dlx', type: 'direct' }],
+    queues: [
+      { name: 'partner.dead.v1', durable: true },
+      {
+        name: 'partner.inbound.v1',
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': 'partner.dlx',
+          'x-dead-letter-routing-key': 'inbound.dead',
+        },
+      },
+    ],
+    bindings: [
+      { queue: 'partner.dead.v1', source: 'partner.dlx', routingKey: 'inbound.dead' },
+      { queue: 'partner.inbound.v1', source: 'partner.direct', routingKey: 'inbound' },
+    ],
+  },
+  queueOverrides: {
+    partner: { queue: 'partner.inbound.v1' },
+  },
+  publisherOptions: { persistent: true, mandatory: true },
+});
+
+await adapter.connect();
+
+// Consume from the external queue (group "partner" → partner.inbound.v1)
+await adapter.subscribe(
+  ['inbound'],
+  async (event, ack) => {
+    const message = JSON.parse(new TextDecoder().decode(event.payload));
+    // ...
+    await ack();
+  },
+  { group: 'partner' },
+);
+
+// Publish pre-serialized JSON bytes; resolves on broker ack,
+// rejects with AmqpUnroutableError if no queue is bound
+const body = new TextEncoder().encode(JSON.stringify({ code: '0104603...' }));
+await adapter.publish('inbound', body);
+```
+
+> **Wire-visible header**: with `mandatory: true` and the default `correlationHeader: true`, every mandatory publish carries a private `x-connectum-publish-id` header that external consumers will see. Either document it in the contract, or set `publisherOptions.correlationHeader: false` for a clean wire (single-flight throughput trade-off).
 
 ## Dependencies
 
 ### External
 
-- `amqplib` -- AMQP 0-9-1 client for Node.js
+- `amqplib` (^2.0.1) -- AMQP 0-9-1 client for Node.js with native connection recovery
 
 ### Peer
 
@@ -183,7 +374,7 @@ When `publishOptions.sync: true`, the adapter uses `ConfirmChannel.waitForConfir
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **RabbitMQ**: >=3.8
 
 ## Documentation

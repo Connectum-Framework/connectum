@@ -221,3 +221,164 @@ describe("HealthcheckManager — additional scenarios", () => {
         });
     });
 });
+
+describe("HealthcheckManager components", () => {
+    let manager: HealthcheckManager;
+
+    beforeEach(() => {
+        manager = new HealthcheckManager();
+    });
+
+    describe("register", () => {
+        it("should register a component with UNKNOWN status by default", () => {
+            manager.register("process");
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.UNKNOWN);
+            assert.ok(manager.getAllStatuses().has("process"));
+        });
+
+        it("should register a component with explicit initial status", () => {
+            manager.register("amqp", ServingStatus.NOT_SERVING);
+
+            assert.strictEqual(manager.getStatus("amqp")?.status, ServingStatus.NOT_SERVING);
+        });
+
+        it("should not reset status on re-register", () => {
+            manager.register("process");
+            manager.set("process", ServingStatus.SERVING);
+            manager.register("process");
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+        });
+
+        it("should reject empty component name", () => {
+            assert.throws(() => manager.register(""), /must not be empty/);
+        });
+
+        it("should reject dotted component name", () => {
+            assert.throws(() => manager.register("acme.process"), /must not contain dots/);
+        });
+
+        it("should reject register() of a name already held by an RPC service", () => {
+            // A dot-free (package-less) service name reaches the kind check.
+            manager.initialize(["Health"]);
+            assert.throws(() => manager.register("Health"), /registered RPC service/);
+        });
+    });
+
+    describe("set (upsert)", () => {
+        it("should reject set() of a name already held by an RPC service", () => {
+            manager.initialize(["Health"]);
+            assert.throws(() => manager.set("Health", ServingStatus.SERVING), /registered RPC service/);
+        });
+
+        it("should register an unknown component on set", () => {
+            manager.set("process", ServingStatus.SERVING);
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+        });
+
+        it("should update an existing component", () => {
+            manager.register("process");
+            manager.set("process", ServingStatus.SERVING);
+            manager.set("process", ServingStatus.NOT_SERVING);
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.NOT_SERVING);
+        });
+
+        it("should reject empty and dotted names", () => {
+            assert.throws(() => manager.set("", ServingStatus.SERVING), /must not be empty/);
+            assert.throws(() => manager.set("a.b", ServingStatus.SERVING), /must not contain dots/);
+        });
+    });
+
+    describe("unregister", () => {
+        it("should remove a component", () => {
+            manager.register("process");
+            manager.unregister("process");
+
+            assert.strictEqual(manager.getStatus("process"), undefined);
+        });
+
+        it("should be a no-op for unknown names", () => {
+            manager.unregister("ghost");
+        });
+
+        it("should reject unregistering an RPC service", () => {
+            manager.initialize(["svc.v1.Foo"]);
+
+            assert.throws(() => manager.unregister("svc.v1.Foo"), /registered RPC service/);
+        });
+    });
+
+    describe("kind collision", () => {
+        it("update() works for components by name", () => {
+            manager.register("process");
+            manager.update(ServingStatus.SERVING, "process");
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+        });
+
+        it("update() without name updates components too", () => {
+            manager.initialize(["svc.v1.Foo"]);
+            manager.register("process");
+            manager.update(ServingStatus.SERVING);
+
+            assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.SERVING);
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+        });
+    });
+
+    describe("initialize with components", () => {
+        it("should preserve components registered before initialization", () => {
+            manager.register("process");
+            manager.initialize(["svc.v1.Foo"]);
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.UNKNOWN);
+            assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.UNKNOWN);
+            assert.strictEqual(manager.getAllStatuses().size, 2);
+        });
+
+        it("should preserve component status across re-initialization", () => {
+            manager.register("process");
+            manager.set("process", ServingStatus.SERVING);
+            manager.initialize(["svc.v1.Foo"]);
+            manager.initialize(["svc.v1.Bar"]);
+
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+            assert.strictEqual(manager.getStatus("svc.v1.Foo"), undefined);
+            assert.strictEqual(manager.getStatus("svc.v1.Bar")?.status, ServingStatus.UNKNOWN);
+        });
+
+        it("should remove stale services but never components", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.register("process");
+            manager.initialize(["svc.v1.Foo"]);
+
+            assert.strictEqual(manager.getStatus("svc.v1.Bar"), undefined);
+            assert.ok(manager.getAllStatuses().has("process"));
+            assert.ok(manager.getAllStatuses().has("svc.v1.Foo"));
+        });
+    });
+
+    describe("aggregate health with components", () => {
+        it("NOT_SERVING component fails aggregate health", () => {
+            manager.set("process", ServingStatus.SERVING);
+            manager.set("amqp", ServingStatus.NOT_SERVING);
+
+            assert.strictEqual(manager.areAllHealthy(), false);
+        });
+
+        it("all SERVING components and services are healthy", () => {
+            manager.initialize(["svc.v1.Foo"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            manager.set("process", ServingStatus.SERVING);
+
+            assert.strictEqual(manager.areAllHealthy(), true);
+        });
+
+        it("empty registry stays unhealthy", () => {
+            assert.strictEqual(manager.areAllHealthy(), false);
+        });
+    });
+});
