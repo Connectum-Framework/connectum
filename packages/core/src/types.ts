@@ -8,7 +8,7 @@ import type { EventEmitter } from "node:events";
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node:http";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
-import type { DescFile, DescService } from "@bufbuild/protobuf";
+import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
 
 // =============================================================================
@@ -298,6 +298,28 @@ export interface CreateServerOptions {
     allowHTTP1?: boolean;
 
     /**
+     * Startup validation of streaming method kinds vs the effective transport.
+     *
+     * Bidi-streaming methods require HTTP/2 (Connect protocol: "Bidirectional
+     * streaming requires HTTP/2, but the other RPC types also support
+     * HTTP/1.1"). On a plaintext HTTP/1.1 server (no TLS + `allowHTTP1: true`,
+     * the default) they fail silently at runtime — the first send hangs
+     * forever. With `"error"` (default) `start()` rejects with a
+     * `TransportValidationError` (code `CONNECTUM_UNSUPPORTED_STREAMING_TRANSPORT`)
+     * naming the affected methods and both fixes; `"warn"` logs once and
+     * starts anyway; `"off"` skips the check.
+     *
+     * On a TLS server that also allows HTTP/1.1 (`allowHTTP1: true`), bidi
+     * works for HTTP/2 clients but a client negotiating HTTP/1.1 over TLS
+     * hits the same hang — this residual risk is always a one-time warning
+     * (never a hard error), silenced only by `"off"`. Set `allowHTTP1: false`
+     * to remove the risk (the server refuses HTTP/1.1 at ALPN).
+     *
+     * @default "error"
+     */
+    transportValidation?: "error" | "warn" | "off";
+
+    /**
      * Handshake timeout in milliseconds
      * @default 30000
      */
@@ -307,6 +329,31 @@ export interface CreateServerOptions {
      * Additional HTTP/2 server options
      */
     http2Options?: SecureServerOptions;
+
+    /**
+     * Connect JSON serialization options applied server-wide.
+     *
+     * Passed through to the underlying `connectNodeAdapter`, so it affects every
+     * registered service and protocol (e.g. healthcheck, reflection). The most
+     * common use is `alwaysEmitImplicit: true`, which includes fields with
+     * implicit presence (proto3 scalar `0`, empty string/list, enum default) in
+     * JSON responses instead of omitting them.
+     *
+     * For per-service control, pass the same option as the third argument of
+     * `router.service()` inside a {@link ServiceRoute} instead.
+     *
+     * Note: the relevant `JsonWriteOptions` field in `@bufbuild/protobuf` v2 is
+     * `alwaysEmitImplicit` (named `emitDefaultValues` in v1).
+     *
+     * @example
+     * ```typescript
+     * const server = createServer({
+     *   services: [routes],
+     *   jsonOptions: { alwaysEmitImplicit: true },
+     * });
+     * ```
+     */
+    jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
 }
 
 /**

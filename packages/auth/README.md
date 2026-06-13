@@ -399,10 +399,10 @@ AuthzEffect.DENY   // 'deny'
 
 ## Interceptor Chain Order
 
-Auth interceptors should be placed **after** the default interceptor chain (error handler, timeout, bulkhead, etc.) and **before** business logic:
+Auth interceptors should be placed **after** the default interceptor chain (error handler and validation by default, plus any resilience interceptors you explicitly enable) and **before** business logic:
 
 ```text
-errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> validation -> auth -> authz -> handler
+errorHandler -> [timeout -> bulkhead -> circuitBreaker -> retry, opt-in] -> validation -> auth -> authz -> handler
 ```
 
 ```typescript
@@ -578,7 +578,7 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License

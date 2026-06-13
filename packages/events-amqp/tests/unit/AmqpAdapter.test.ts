@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { AmqpAdapter, toAmqpPattern } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, isConnectionLostError, toAmqpPattern } from "../../src/AmqpAdapter.ts";
+
+describe("isConnectionLostError", () => {
+    it("classifies amqplib channel/connection-close errors as connection loss", () => {
+        // amqplib rejects outstanding confirms with Error("channel closed") on drop
+        assert.equal(isConnectionLostError(new Error("channel closed")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed: 320")), true);
+        assert.equal(isConnectionLostError(new Error("Socket closed unexpectedly")), true);
+    });
+
+    it("does NOT classify a genuine broker nack as connection loss", () => {
+        // amqplib uses Error("message nacked") for a real negative ack
+        assert.equal(isConnectionLostError(new Error("message nacked")), false);
+    });
+
+    it("returns false for non-Error values", () => {
+        assert.equal(isConnectionLostError(undefined), false);
+        assert.equal(isConnectionLostError("channel closed"), false);
+        assert.equal(isConnectionLostError(null), false);
+    });
+});
 
 describe("AmqpAdapter", () => {
     it("should return an adapter with name 'amqp'", () => {
@@ -95,7 +115,7 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
-            { message: "AmqpAdapter: not connected" },
+            { message: "AmqpAdapter: not connected (or recovery in progress)" },
         );
     });
 
@@ -103,7 +123,7 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.subscribe(["test.>"], async () => {}),
-            { message: "AmqpAdapter: not connected" },
+            { message: "AmqpAdapter: not connected (or recovery in progress)" },
         );
     });
 
@@ -154,7 +174,9 @@ describe("AmqpAdapter AdapterContext", () => {
     });
 
     it("connect() accepts AdapterContext without TypeError", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672" });
+        // recovery: false — with recovery enabled (default), connect() retries
+        // with backoff until the broker appears instead of rejecting.
+        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
 
         // connect() will fail (no broker), but should accept the context
         // without throwing TypeError. The serviceName is mapped to
@@ -172,7 +194,9 @@ describe("AmqpAdapter AdapterContext", () => {
     });
 
     it("connect() works with undefined context (backward compat)", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672" });
+        // recovery: false — with recovery enabled (default), connect() retries
+        // with backoff until the broker appears instead of rejecting.
+        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
 
         // Calling connect() without context should still work (minus broker availability)
         await assert.rejects(

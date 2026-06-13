@@ -55,7 +55,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
-    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.0",
     "@commitlint/cli": "catalog:",
     "@commitlint/config-conventional": "catalog:",
@@ -63,10 +63,10 @@
     "@types/node": "catalog:",
     "c8": "^10.1.3",
     "husky": "catalog:",
-    "turbo": "^2.9.8",
+    "turbo": "^2.9.18",
     "typedoc": "^0.28.19",
-    "typedoc-plugin-markdown": "^4.11.0",
-    "typedoc-vitepress-theme": "^1.1.2",
+    "typedoc-plugin-markdown": "^4.12.0",
+    "typedoc-vitepress-theme": "^1.1.3",
     "typescript": "catalog:"
   }
 }

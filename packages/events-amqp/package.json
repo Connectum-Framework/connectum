@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit",
     "test": "exodus-test --typescript tests/**/*.test.ts",
     "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
+    "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
     "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts",
     "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts",
     "lint": "biome check src",
@@ -42,13 +43,13 @@
   "author": "Highload.Zone",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "amqplib": "^1.0.3"
+    "amqplib": "^2.0.1"
   },
   "peerDependencies": {
     "@connectum/events": "workspace:^"
@@ -62,8 +63,8 @@
     "@biomejs/biome": "catalog:",
     "@connectum/events": "workspace:^",
     "@exodus/test": "catalog:",
-    "@types/amqplib": "^0.10.8",
     "c8": "catalog:",
+    "testcontainers": "^12.0.2",
     "tsup": "catalog:",
     "typescript": "catalog:"
   }

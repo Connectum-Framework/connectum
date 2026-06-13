@@ -7,7 +7,7 @@
  * @module buildRoutes
  */
 
-import type { DescFile } from "@bufbuild/protobuf";
+import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
@@ -50,6 +50,8 @@ export interface BuildRoutesOptions {
     protocols: ProtocolRegistration[];
     interceptors: Interceptor[];
     shutdownSignal: AbortSignal;
+    /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
+    jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
 }
 
 /**
@@ -77,6 +79,14 @@ export interface BuildRoutesResult {
      * @internal
      */
     registeredServiceTypeNames: Set<string>;
+    /**
+     * The prefix of `registry` contributed by user services (before protocol
+     * registration). Transport validation runs against this slice only:
+     * protocol-contributed services (e.g. gRPC Reflection, whose
+     * ServerReflectionInfo is bidi) own their documented transport
+     * limitations and must not fail the user's startup.
+     */
+    userRegistry: DescFile[];
 }
 
 /**
@@ -90,10 +100,11 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions } = options;
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
+    let userFileCount = 0;
 
     // Setup routes with registry interceptor.
     // Note: `routes` may be invoked more than once against different ConnectRouter
@@ -116,6 +127,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         for (const serviceRoute of services) {
             serviceRoute(router);
         }
+        // Everything registered up to here came from user services;
+        // descriptors added below belong to protocols.
+        userFileCount = registry.length;
 
         // Register protocols
         const context: ProtocolContext = { registry };
@@ -139,6 +153,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         routes,
         interceptors: [stripLocalTransportHeaderOnHttp, ...interceptors],
         shutdownSignal,
+        ...(jsonOptions ? { jsonOptions } : {}),
         fallback(req, res) {
             // Delegate to protocol HTTP handlers
             for (const httpHandler of httpHandlers) {
@@ -153,10 +168,13 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         },
     });
 
+    // connectNodeAdapter invokes routes() synchronously, so both the full
+    // registry and the user-service prefix are populated at this point.
     return {
         handler: handler as (req: NodeRequest, res: NodeResponse) => void,
         registry,
         routes,
         registeredServiceTypeNames,
+        userRegistry: registry.slice(0, userFileCount),
     };
 }

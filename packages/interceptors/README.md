@@ -31,7 +31,7 @@ pnpm add @connectrpc/connect @bufbuild/protobuf
 
 ## Default interceptor chain
 
-The package provides a ready-made chain of 8 interceptors with a fixed order:
+The package provides a chain factory for 8 interceptors with a fixed order:
 
 ```
 errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> fallback -> validation -> serializer
@@ -40,24 +40,79 @@ errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> fallback -> va
 | # | Interceptor | Default | Purpose |
 |---|-------------|---------|---------|
 | 1 | errorHandler | enabled | Catch-all error normalization (must be first) |
-| 2 | timeout | enabled (30s) | Enforce deadline before processing starts |
-| 3 | bulkhead | enabled (10/10) | Concurrency limiting |
-| 4 | circuitBreaker | enabled (5 failures) | Cascading failure prevention |
-| 5 | retry | enabled (3 attempts) | Retry transient failures with exponential backoff |
-| 6 | fallback | **disabled** | Graceful degradation (requires a handler function) |
+| 2 | timeout | **opt-in** (30s when enabled) | Enforce deadline before processing starts |
+| 3 | bulkhead | **opt-in** (10/10 when enabled) | Concurrency limiting |
+| 4 | circuitBreaker | **opt-in** (5 failures when enabled) | Cascading failure prevention (outbound pattern, see below) |
+| 5 | retry | **opt-in** (3 attempts when enabled) | Retry transient failures with exponential backoff |
+| 6 | fallback | **opt-in** | Graceful degradation (requires a handler function) |
 | 7 | validation | enabled | `@connectrpc/validate` (`createValidateInterceptor()`) |
-| 8 | serializer | **disabled** | JSON serialization of protobuf responses |
+| 8 | serializer | **opt-in** | JSON serialization of protobuf responses |
 
-**Why this order:**
+**No hidden behavioral logic.** Only structural interceptors (errorHandler,
+validation) are enabled by default. Resilience interceptors (timeout,
+bulkhead, circuitBreaker, retry) alter request behavior and must be enabled
+explicitly — implicitly enabled resilience caused a confirmed production
+incident (a server-side circuit breaker tripped by expected business errors).
+
+**Why this order** (applies to whichever interceptors you enable; `interceptors[0]` is outermost in Connect-ES):
 
 1. **errorHandler** -- outer layer, catches all errors from the entire chain
 2. **timeout** -- fail fast for slow requests before processing starts
 3. **bulkhead** -- limit concurrent load to protect resources
-4. **circuitBreaker** -- fast rejection during cascading failures
+4. **circuitBreaker** -- fast rejection during cascading failures; **wraps retry**, so one logical request increments the failure counter at most once regardless of retry attempts (guaranteed)
 5. **retry** -- retry for transient failures
 6. **fallback** -- last chance for graceful degradation
 7. **validation** -- verify data correctness before business logic
 8. **serializer** -- serialize response (innermost)
+
+## Circuit breaker: placement and error classification
+
+The circuit breaker is an **outbound/client-side pattern**: it protects the
+caller from a sick upstream (fail fast instead of waiting on timeouts) and
+gives that upstream room to recover. On a server's inbound stack it
+degenerates into error-rate load shedding — for inbound protection prefer
+explicit `timeout` + `bulkhead`.
+
+```typescript
+// Recommended: circuit breaker on an outbound client transport
+import { createConnectTransport } from "@connectrpc/connect-node";
+import { createCircuitBreakerInterceptor } from "@connectum/interceptors";
+
+const transport = createConnectTransport({
+  baseUrl: "http://upstream:5000",
+  interceptors: [
+    createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 30_000 }),
+  ],
+});
+```
+
+**Error classification.** By default only infrastructure errors count as
+circuit failures: `Unknown`, `DeadlineExceeded`, `Internal`, `Unavailable`,
+`DataLoss`, `ResourceExhausted` (plus any non-`ConnectError` thrown value).
+Business codes (`invalid_argument`, `not_found`, `failed_precondition`,
+`already_exists`, ...) are expected responses of a healthy service: they
+never open the breaker, and in half-open state they close it (the upstream
+answered — it is alive).
+
+Customize with `failurePredicate(error, defaultPredicate)` — the default is
+passed in for composition:
+
+```typescript
+import { Code, ConnectError } from "@connectrpc/connect";
+import { createCircuitBreakerInterceptor, defaultFailurePredicate } from "@connectum/interceptors";
+
+// Exclude upstream per-client rate limits from tripping the breaker
+createCircuitBreakerInterceptor({
+  failurePredicate: (err, def) =>
+    def(err) && !(err instanceof ConnectError && err.code === Code.ResourceExhausted),
+});
+
+// Restore legacy behavior (every error trips the breaker)
+createCircuitBreakerInterceptor({ failurePredicate: () => true });
+```
+
+A predicate that throws is fail-closed: the error counts as a failure and the
+original upstream error is propagated to the caller.
 
 ## Quick Start
 
@@ -74,11 +129,10 @@ const server = createServer({
   services: [routes],
   port: 5000,
 
-  // Default chain with custom options
+  // errorHandler + validation by default; resilience is opt-in
   interceptors: createDefaultInterceptors({
-    timeout: { duration: 10000 },    // Custom timeout
-    retry: false,                    // Disable retry
-    // rest use defaults
+    timeout: { duration: 10000 },    // Explicitly enable timeout
+    bulkhead: true,                  // Explicitly enable bulkhead (10/10)
   }),
 });
 
@@ -108,8 +162,11 @@ const server = createServer({
 import { createDefaultInterceptors } from "@connectum/interceptors";
 import { createConnectTransport } from "@connectrpc/connect-node";
 
+// On an outbound transport the full resilience set makes sense —
+// enable each interceptor explicitly
 const interceptors = createDefaultInterceptors({
   timeout: { duration: 10000 },
+  circuitBreaker: { threshold: 5 },
   retry: { maxRetries: 5 },
   fallback: {
     handler: () => ({ data: [] }),
@@ -573,6 +630,10 @@ interface CircuitBreakerOptions {
   threshold?: number;       // default: 5
   halfOpenAfter?: number;   // default: 30000
   skipStreaming?: boolean;  // default: true
+  // Classify whether an error counts as a circuit failure. Receives the
+  // default predicate for composition. Default: defaultFailurePredicate
+  // (infrastructure codes only). See "Circuit breaker" above.
+  failurePredicate?: (error: unknown, defaultPredicate: (error: unknown) => boolean) => boolean;
 }
 ```
 
@@ -762,7 +823,18 @@ const interceptor = createValidateInterceptor();
 
 ### Changes in default chain
 
-Resilience interceptors (timeout, bulkhead, circuitBreaker, retry, fallback) are now **included** in the default chain (previously optional). Fallback remains disabled by default.
+Resilience interceptors (timeout, bulkhead, circuitBreaker, retry) are **opt-in**: a bare `createDefaultInterceptors()` enables only errorHandler and validation. Enable resilience explicitly:
+
+```typescript
+createDefaultInterceptors({
+  timeout: true,
+  bulkhead: true,
+  circuitBreaker: true,
+  retry: true,
+});
+```
+
+The circuit breaker additionally classifies errors (infrastructure codes only by default) — restore the legacy all-errors behavior with `failurePredicate: () => true`. See [Circuit breaker: placement and error classification](#circuit-breaker-placement-and-error-classification).
 
 ## Dependencies
 
@@ -780,7 +852,7 @@ Resilience interceptors (timeout, bulkhead, circuitBreaker, retry, fallback) are
 
 ## Requirements
 
-- **Node.js**: >=20.0.0
+- **Node.js**: >=22.13.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## License
