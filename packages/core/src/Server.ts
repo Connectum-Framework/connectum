@@ -134,6 +134,7 @@ class ServerImpl extends EventEmitter implements Server {
                 protocols: this._protocols,
                 interceptors: this._interceptors,
                 shutdownSignal: this._abortController.signal,
+                ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
             });
             this._registry.push(...registry);
 
