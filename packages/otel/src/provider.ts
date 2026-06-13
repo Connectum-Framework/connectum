@@ -17,6 +17,7 @@ import { OTLPMetricExporter as OTLPMetricExporterGRPC } from "@opentelemetry/exp
 import { OTLPMetricExporter as OTLPMetricExporterHTTP } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter as OTLPTraceExporterGRPC } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPTraceExporter as OTLPTraceExporterHTTP } from "@opentelemetry/exporter-trace-otlp-http";
+import type { Resource } from "@opentelemetry/resources";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ConsoleLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
@@ -24,6 +25,9 @@ import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@op
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import type { CollectorOptions, OTLPSettings } from "./config.ts";
 import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+
+/** OpenTelemetry semconv key for the service instance id. */
+const ATTR_SERVICE_INSTANCE_ID = "service.instance.id";
 
 /**
  * Options for initializing the OpenTelemetry provider
@@ -33,8 +37,88 @@ export interface ProviderOptions {
     serviceName?: string;
     /** Override service version (defaults to npm_package_version) */
     serviceVersion?: string;
+    /**
+     * Sets `service.instance.id` on the resource (OTel semconv). Lets a fleet of
+     * same-role processes be told apart in telemetry. Takes precedence over the
+     * `OTEL_SERVICE_INSTANCE_ID` env var.
+     */
+    instanceId?: string;
+    /**
+     * Extra resource attributes merged into the resource (e.g. `device.id`,
+     * `facility`). Applied to traces, metrics, and logs alike. Takes precedence
+     * over attributes parsed from the `OTEL_RESOURCE_ATTRIBUTES` env var.
+     */
+    resourceAttributes?: Record<string, string | number | boolean>;
     /** Override OTLP exporter settings (defaults to env-based config) */
     settings?: Partial<OTLPSettings>;
+}
+
+/**
+ * Parse the standard `OTEL_RESOURCE_ATTRIBUTES` env var
+ * (`key1=value1,key2=value2`) into an attribute record. Malformed pairs (no
+ * `=`, empty key) are skipped. Values are kept as strings; whitespace around
+ * keys and values is trimmed.
+ */
+export function parseOtelResourceAttributesEnv(raw: string | undefined): Record<string, string> {
+    if (raw === undefined || raw === "") {
+        return {};
+    }
+    const result: Record<string, string> = {};
+    for (const pair of raw.split(",")) {
+        const eq = pair.indexOf("=");
+        if (eq <= 0) {
+            continue;
+        }
+        const key = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        if (key !== "") {
+            result[key] = value;
+        }
+    }
+    return result;
+}
+
+/** Inputs for {@link buildResourceAttributes}. */
+export interface ResourceAttributeInputs {
+    serviceName: string;
+    serviceVersion: string;
+    instanceId?: string | undefined;
+    resourceAttributes?: Record<string, string | number | boolean> | undefined;
+    /** Environment source (defaults to `process.env`). */
+    env?: { OTEL_RESOURCE_ATTRIBUTES?: string; OTEL_SERVICE_INSTANCE_ID?: string } | undefined;
+}
+
+/**
+ * Build the flat resource-attribute record shared by traces, metrics, and logs.
+ *
+ * Precedence (lowest to highest): `service.name`/`service.version` → env
+ * (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SERVICE_INSTANCE_ID`) → explicit
+ * `resourceAttributes` → explicit `instanceId`.
+ */
+export function buildResourceAttributes(inputs: ResourceAttributeInputs): Record<string, string | number | boolean> {
+    const env = inputs.env ?? process.env;
+
+    const attributes: Record<string, string | number | boolean> = {
+        [ATTR_SERVICE_NAME]: inputs.serviceName,
+        [ATTR_SERVICE_VERSION]: inputs.serviceVersion,
+        // Env-provided attributes (lower precedence than explicit options).
+        ...parseOtelResourceAttributesEnv(env.OTEL_RESOURCE_ATTRIBUTES),
+    };
+
+    const envInstanceId = env.OTEL_SERVICE_INSTANCE_ID;
+    if (envInstanceId !== undefined && envInstanceId !== "") {
+        attributes[ATTR_SERVICE_INSTANCE_ID] = envInstanceId;
+    }
+
+    // Explicit options take precedence over env.
+    if (inputs.resourceAttributes !== undefined) {
+        Object.assign(attributes, inputs.resourceAttributes);
+    }
+    if (inputs.instanceId !== undefined && inputs.instanceId !== "") {
+        attributes[ATTR_SERVICE_INSTANCE_ID] = inputs.instanceId;
+    }
+
+    return attributes;
 }
 
 /**
@@ -57,6 +141,7 @@ class OtelProvider {
     private readonly collectorOptions: CollectorOptions;
     private readonly serviceName: string;
     private readonly serviceVersion: string;
+    private readonly resource: Resource;
 
     constructor(options?: ProviderOptions) {
         // Set diagnostic logger to ERROR level
@@ -76,10 +161,30 @@ class OtelProvider {
         this.serviceName = options?.serviceName ?? metadata.name;
         this.serviceVersion = options?.serviceVersion ?? metadata.version;
 
+        // Build the resource once and share it across traces, metrics, and logs
+        // so service.instance.id and custom attributes apply to every signal.
+        this.resource = this.buildResource(options);
+
         // Initialize providers
         this.tracer = this.createTracer();
         this.meter = this.createMeter();
         this.logger = this.createLogger();
+    }
+
+    /**
+     * Build the OpenTelemetry resource from service metadata, environment
+     * variables, and explicit options. See {@link buildResourceAttributes} for
+     * the precedence rules.
+     */
+    private buildResource(options?: ProviderOptions): Resource {
+        return resourceFromAttributes(
+            buildResourceAttributes({
+                serviceName: this.serviceName,
+                serviceVersion: this.serviceVersion,
+                instanceId: options?.instanceId,
+                resourceAttributes: options?.resourceAttributes,
+            }),
+        );
     }
 
     /**
@@ -93,11 +198,8 @@ class OtelProvider {
             return trace.getTracer(this.serviceName, this.serviceVersion);
         }
 
-        // Create resource with service metadata
-        const resource = resourceFromAttributes({
-            [ATTR_SERVICE_NAME]: this.serviceName,
-            [ATTR_SERVICE_VERSION]: this.serviceVersion,
-        });
+        // Shared resource (service metadata + instance id + custom attributes)
+        const resource = this.resource;
 
         // Create exporter based on protocol
         let traceExporter: OTLPTraceExporterHTTP | OTLPTraceExporterGRPC | ConsoleSpanExporter;
@@ -165,10 +267,7 @@ class OtelProvider {
 
         // Create meter provider with periodic exporter
         this.meterProvider = new MeterProvider({
-            resource: resourceFromAttributes({
-                [ATTR_SERVICE_NAME]: this.serviceName,
-                [ATTR_SERVICE_VERSION]: this.serviceVersion,
-            }),
+            resource: this.resource,
             readers: [
                 new PeriodicExportingMetricReader({
                     exporter: metricExporter,
@@ -212,10 +311,7 @@ class OtelProvider {
 
         // Create logger provider with processors
         this.loggerProvider = new LoggerProvider({
-            resource: resourceFromAttributes({
-                [ATTR_SERVICE_NAME]: this.serviceName,
-                [ATTR_SERVICE_VERSION]: this.serviceVersion,
-            }),
+            resource: this.resource,
             processors: [new SimpleLogRecordProcessor(logExporter)],
         });
 
