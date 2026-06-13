@@ -104,9 +104,10 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
     }
 
     // Classification wrapper. The try/catch is mandatory, not defensive:
-    // cockatiel calls the error filter without protection (Executor.invoke),
-    // so an exception thrown from it propagates as an UNHANDLED error — in
-    // half-open state that would close the circuit, inverting fail-closed.
+    // cockatiel invokes the error filter without guarding it (verified in the
+    // policy executor through cockatiel v4), so an exception thrown from the
+    // predicate propagates as an UNHANDLED error — in half-open state that
+    // would close the circuit, inverting fail-closed.
     const isFailure = (error: unknown): boolean => {
         if (failurePredicate === undefined) {
             return defaultFailurePredicate(error);
@@ -119,9 +120,9 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
         }
     };
 
-    // Errors rejected by the predicate are "unhandled" for cockatiel: they do
-    // not increment the breaker and, in half-open, close the circuit
-    // ("Task failed successfully" path in CircuitBreakerPolicy.halfOpen).
+    // Errors rejected by the predicate are "unhandled" for cockatiel: the
+    // executor rethrows them, so they do not increment the breaker and, in
+    // half-open, they take the success path and close the circuit.
     const breaker = circuitBreaker(handleWhen(isFailure), {
         halfOpenAfter,
         breaker: new ConsecutiveBreaker(threshold),
