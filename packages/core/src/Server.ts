@@ -9,11 +9,12 @@
 import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
-import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
+import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
+import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
@@ -497,6 +498,18 @@ class ServerImpl extends EventEmitter implements Server {
      */
     _getRegisteredServiceTypeNames(): ReadonlySet<string> {
         return this._ensureRoutesBuilt().registeredServiceTypeNames;
+    }
+
+    /**
+     * Build a catalog {@link Context} over a (typically synthetic)
+     * `HandlerContext`, driving the same dispatcher as a live request. Used by
+     * `@connectum/testing`'s `createMockContext` to test handler `ctx.call` /
+     * `ctx.stream` logic in isolation.
+     *
+     * @internal
+     */
+    _makeCatalogContext(hctx: HandlerContext): Context {
+        return this._dispatcher.makeContext(hctx);
     }
 
     // =========================================================================
