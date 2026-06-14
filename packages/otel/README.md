@@ -562,7 +562,8 @@ type BatchSpanProcessorOptions = {
 ### Full setup with createServer
 
 ```typescript
-import { createServer, ServingStatus } from "@connectum/core";
+import { createServer } from "@connectum/core";
+import { healthcheckManager, ServingStatus } from "@connectum/healthcheck";
 import { createOtelInterceptor, getLogger } from "@connectum/otel";
 import routes from "#gen/routes.js";
 
@@ -583,7 +584,7 @@ server.on("ready", () => {
     port: server.address?.port,
     host: server.address?.address,
   });
-  server.health.update(ServingStatus.SERVING);
+  healthcheckManager.update(ServingStatus.SERVING);
 });
 
 await server.start();

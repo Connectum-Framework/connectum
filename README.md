@@ -44,7 +44,8 @@ Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript 
 | [`@connectum/events-kafka`](packages/events-kafka) | Apache Kafka / Redpanda adapter for EventBus |
 | [`@connectum/events-redis`](packages/events-redis) | Redis Streams / Valkey adapter for EventBus |
 | [`@connectum/events-amqp`](packages/events-amqp) | AMQP / RabbitMQ adapter for EventBus |
-| [`@connectum/testing`](packages/testing) | `createTestServer()`, `mockInterceptor()` — testing utilities *(planned)* |
+| [`@connectum/protoc-gen-catalog`](packages/protoc-gen-catalog) | Buf plugin generating the typed service catalog (`ctx.call` / `ctx.stream`) |
+| [`@connectum/testing`](packages/testing) | `createTestServer()`, `mockResolver()`, `createMockContext()` — testing utilities |
 
 ## Documentation
 
