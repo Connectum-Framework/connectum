@@ -45,6 +45,7 @@
       "@connectum/reflection": ["./packages/reflection/src"],
       "@connectum/testing": ["./packages/testing/src"],
       "@connectum/cli": ["./packages/cli/src"],
+      "@connectum/protoc-gen-catalog": ["./packages/protoc-gen-catalog/src/plugin.ts"],
       "@connectum/auth": ["./packages/auth/src"],
       "@connectum/events": ["./packages/events/src"],
       "@connectum/events-nats": ["./packages/events-nats/src"],

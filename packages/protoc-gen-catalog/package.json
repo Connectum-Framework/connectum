@@ -1,0 +1,66 @@
+{
+  "name": "@connectum/protoc-gen-catalog",
+  "version": "1.0.0-rc.11",
+  "description": "Buf/protoc plugin that generates a Connectum service catalog (ctx.call / ctx.stream typing) from proto files.",
+  "type": "module",
+  "main": "./dist/plugin.js",
+  "types": "./dist/plugin.d.ts",
+  "bin": {
+    "protoc-gen-connectum-catalog": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/plugin.d.ts",
+      "default": "./dist/plugin.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/protoc-gen-catalog"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "exodus-test --typescript tests/**/*.test.ts",
+    "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
+    "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
+    "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts",
+    "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
+  },
+  "keywords": [
+    "connectum",
+    "connectrpc",
+    "grpc",
+    "protobuf",
+    "buf",
+    "protoc-plugin",
+    "codegen",
+    "service-catalog"
+  ],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
+    "@bufbuild/protoplugin": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@connectum/core": "workspace:^",
+    "tsup": "catalog:",
+    "typescript": "catalog:"
+  }
+}

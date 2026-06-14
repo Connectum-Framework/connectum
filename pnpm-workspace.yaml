@@ -14,6 +14,7 @@ catalog:
   '@bufbuild/buf': ^1.65.0
   '@bufbuild/protobuf': ^2.11.0
   '@bufbuild/protoc-gen-es': ^2.11.0
+  '@bufbuild/protoplugin': ^2.11.0
   '@bufbuild/protovalidate': ^1.1.1
   '@commitlint/cli': ^20.4.1
   '@commitlint/config-conventional': ^20.4.1
