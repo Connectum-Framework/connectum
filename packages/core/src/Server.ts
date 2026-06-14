@@ -12,6 +12,7 @@ import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
+import { CatalogConfigError } from "./catalogErrors.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
@@ -54,6 +55,9 @@ class ServerImpl extends EventEmitter implements Server {
 
     /** Memoized in-process transport (lazy, created on first localClient call) */
     private _localTransport: Transport | null = null;
+
+    /** Resolver-supplied remote transports, cached per `(typeName, endpoint)` key. */
+    private readonly _remoteTransports = new Map<string, Transport>();
 
     // =========================================================================
     // Constructor
@@ -142,6 +146,10 @@ class ServerImpl extends EventEmitter implements Server {
         this.emit("start");
 
         try {
+            // Shape check (always runs): enabledServices must be a subset of the
+            // catalog. A typo here is a configuration mistake → CatalogConfigError.
+            this._validateCatalogConfig();
+
             // Lazy-built path: routes may already have been materialized via
             // localClient()/client() before start(). _ensureRoutesBuilt()
             // memoizes the full BuildRoutesResult (including userRegistry and
@@ -318,25 +326,74 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
-     * Unified client factory — routes to in-process transport for locally
-     * registered services, falls back to `options.fallback` for remote
-     * services, and fails fast (`ConnectError(Code.Unimplemented)`) when
-     * neither applies. Same call site works for monolith and split
-     * deployments alike.
+     * Unified client factory — routes to the in-process transport for locally
+     * mounted services and to the configured `remoteResolver` for everything
+     * else. The same call site works for monolith and split deployments.
+     *
+     * Eager checks (Q18): a non-local service with no `remoteResolver` is a
+     * configuration mistake → `CatalogConfigError`; a resolver that returns
+     * `null` is an operational miss → `ConnectError(Code.Unavailable)`.
+     * `Code.Unimplemented` is reserved for a runtime `ctx.call` dispatch miss.
      *
      * @example
      * ```typescript
-     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * const inventory = server.client(InventoryService); // local or remote — same call
      * ```
      */
     client<T extends DescService>(service: T, options?: ServerClientOptions): Client<T> {
         if (this.hasService(service)) {
             return this.localClient(service);
         }
-        if (options?.fallback) {
-            return createClient(service, options.fallback);
+        if (!this._options.remoteResolver) {
+            throw new CatalogConfigError(
+                `Cannot create a client for "${service.typeName}": it is not mounted locally and no remoteResolver is configured. ` +
+                    `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
+            );
         }
-        throw new ConnectError(`service ${service.typeName} is not registered locally and no fallback transport provided`, Code.Unimplemented);
+        const transport = this._resolveRemoteTransport(service.typeName, options?.endpoint);
+        if (!transport) {
+            const at = options?.endpoint ? ` (endpoint "${options.endpoint}")` : "";
+            throw new ConnectError(`No route for service "${service.typeName}"${at}: the resolver returned null.`, Code.Unavailable);
+        }
+        return createClient(service, transport);
+    }
+
+    /**
+     * Resolve (and cache) the `Transport` for a remote service via the configured
+     * `remoteResolver`. Cached per unique `(typeName, endpoint)` key so the
+     * resolver runs at most once per route.
+     *
+     * @internal
+     */
+    private _resolveRemoteTransport(typeName: string, endpoint?: string): Transport | null {
+        const key = `${typeName} ${endpoint ?? ""}`;
+        const cached = this._remoteTransports.get(key);
+        if (cached) return cached;
+        const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
+        const transport = this._options.remoteResolver?.(ctx) ?? null;
+        if (transport) this._remoteTransports.set(key, transport);
+        return transport;
+    }
+
+    /**
+     * Validate the catalog configuration at startup. Currently the always-on
+     * shape check: every `enabledServices` entry must be a known catalog key
+     * (when a `catalog` is configured). A mismatch is a programmer error
+     * → `CatalogConfigError`.
+     *
+     * @internal
+     */
+    private _validateCatalogConfig(): void {
+        const { catalog, enabledServices } = this._options;
+        if (!catalog || !enabledServices) return;
+        const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
+        if (missing.length > 0) {
+            const known = Object.keys(catalog);
+            throw new CatalogConfigError(
+                `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
+                    `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+            );
+        }
     }
 
     /**
@@ -358,6 +415,8 @@ class ServerImpl extends EventEmitter implements Server {
                 // serialization (otherwise jsonOptions would be silently
                 // dropped on the lazy-built route materialization).
                 ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
+                // Mount only the locally-enabled services; the rest are remote.
+                ...(this._options.enabledServices ? { enabledServices: this._options.enabledServices } : {}),
             });
             // Lazy-built path: populate registry now so server.routes consumers
             // see the same DescFile[] before start().

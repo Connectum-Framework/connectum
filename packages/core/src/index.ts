@@ -17,6 +17,8 @@
 // SERVER API
 // =============================================================================
 
+// Service catalog — declarative cross-service call primitives
+export { CatalogConfigError } from "./catalogErrors.ts";
 // Service registration
 export type { ServiceDefinition } from "./defineService.ts";
 export { defineLazyService, defineService } from "./defineService.ts";
@@ -35,7 +37,6 @@ export type { DnsResolverOptions, PerServiceEnvResolverOptions, RemoteResolver, 
 export { dnsResolver, mapResolver, perServiceEnvResolver, singleTransportResolver } from "./remoteResolver.ts";
 // Main createServer factory
 export { createServer } from "./Server.ts";
-// Service catalog — declarative cross-service call primitives
 export type { ConnectumCallMap, ConnectumStreamMap, ServiceCatalog } from "./serviceCatalog.ts";
 export { defineCatalog, mergeCatalogs } from "./serviceCatalog.ts";
 

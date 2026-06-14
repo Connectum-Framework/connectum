@@ -11,6 +11,8 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
 import type { ServiceDefinition } from "./defineService.ts";
+import type { RemoteResolver } from "./remoteResolver.ts";
+import type { ServiceCatalog } from "./serviceCatalog.ts";
 
 // =============================================================================
 // TRANSPORT UNION TYPES
@@ -354,6 +356,38 @@ export interface CreateServerOptions {
      * ```
      */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+
+    // ── Service catalog (optional; a plain monolith needs none of these) ──
+
+    /**
+     * The full set of services known to the system, `typeName → DescService`
+     * (typically the generated `serviceCatalog`). Drives startup validation and
+     * remote routing. Optional — a process that hosts everything locally and
+     * makes no cross-service calls needs no catalog.
+     */
+    catalog?: ServiceCatalog;
+
+    /**
+     * Proto `typeName`s to mount **locally** from `services`. A service in
+     * `services` whose `typeName` is not listed is treated as remote (resolved
+     * via {@link CreateServerOptions.remoteResolver}). `undefined` mounts every
+     * provided service locally.
+     */
+    enabledServices?: readonly string[];
+
+    /**
+     * Resolves a service that is not mounted locally to a `Transport`. Consulted
+     * by `server.client()` (and `ctx.call`) for remote services. Synchronous and
+     * must not perform network I/O — see {@link RemoteResolver}.
+     */
+    remoteResolver?: RemoteResolver;
+
+    /**
+     * Client-side interceptors applied to every outgoing `server.client()` /
+     * `ctx.call` call (cross-cutting concerns like auth or logging), so call
+     * sites stay free of boilerplate.
+     */
+    outgoingInterceptors?: readonly Interceptor[];
 }
 
 /**
@@ -613,11 +647,9 @@ export interface Server extends EventEmitter {
  */
 export interface ServerClientOptions {
     /**
-     * Transport used when the requested service is NOT registered on this
-     * `Server`. Typically a remote HTTP/gRPC transport.
-     *
-     * If omitted and the service is not local, `Server.client()` throws
-     * `ConnectError` with `Code.Unimplemented`.
+     * Opaque endpoint hint forwarded to the configured `remoteResolver` when the
+     * requested service is not mounted locally (polymorphic deployments — one
+     * proto served at several endpoints). Ignored for locally-mounted services.
      */
-    fallback?: import("@connectrpc/connect").Transport;
+    endpoint?: string;
 }

@@ -11,6 +11,7 @@
  */
 
 import type { DescService } from "@bufbuild/protobuf";
+import { CatalogConfigError } from "./catalogErrors.ts";
 
 /**
  * A readonly registry mapping a proto service `typeName`
@@ -70,7 +71,7 @@ export function mergeCatalogs(...catalogs: readonly ServiceCatalog[]): ServiceCa
     for (const catalog of catalogs) {
         for (const [typeName, descriptor] of Object.entries(catalog)) {
             if (Object.hasOwn(merged, typeName)) {
-                throw new Error(`mergeCatalogs: duplicate typeName: "${typeName}"`);
+                throw new CatalogConfigError(`mergeCatalogs: duplicate typeName: "${typeName}"`);
             }
             merged[typeName] = descriptor;
         }

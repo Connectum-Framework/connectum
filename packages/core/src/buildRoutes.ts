@@ -53,6 +53,11 @@ export interface BuildRoutesOptions {
     shutdownSignal: AbortSignal;
     /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+    /**
+     * Proto `typeName`s to mount locally. A service whose `typeName` is not in
+     * the set is skipped (treated as remote). `undefined` mounts every service.
+     */
+    enabledServices?: readonly string[];
 }
 
 /**
@@ -101,7 +106,7 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal, jsonOptions } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions, enabledServices } = options;
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
@@ -124,8 +129,13 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             return originalService.apply(router, args);
         }) as typeof originalService;
 
-        // Register user services
+        // Register user services. With `enabledServices`, mount only the listed
+        // typeNames locally; the rest are reached remotely via the resolver (and
+        // a defineLazyService factory for an unmounted service never runs).
         for (const definition of services) {
+            if (enabledServices !== undefined && !enabledServices.includes(definition.descriptor.typeName)) {
+                continue;
+            }
             definition.register(router);
         }
         // Everything registered up to here came from user services;
