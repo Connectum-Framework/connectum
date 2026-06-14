@@ -19,8 +19,8 @@
 
 // Service catalog — declarative cross-service call primitives
 export { CatalogConfigError } from "./catalogErrors.ts";
-// Handler context (ctx.call) + handler implementation types
-export type { CallOptions, ConnectumMethodImpl, ConnectumServiceImpl, Context } from "./context.ts";
+// Handler context (ctx.call / ctx.stream) + handler implementation types
+export type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumMethodImpl, ConnectumServiceImpl, Context, StreamReturn } from "./context.ts";
 // Service registration
 export type { ServiceDefinition } from "./defineService.ts";
 export { defineLazyService, defineService } from "./defineService.ts";

@@ -27,7 +27,7 @@ import type {
     MessageShape,
 } from "@bufbuild/protobuf";
 import type { HandlerContext } from "@connectrpc/connect";
-import type { ConnectumCallMap } from "./serviceCatalog.ts";
+import type { ConnectumCallMap, ConnectumStreamMap } from "./serviceCatalog.ts";
 
 /**
  * Per-call overrides for {@link Context.call}.
@@ -66,16 +66,52 @@ export type CallOptions = {
 };
 
 /**
+ * Push handle for a client-streaming catalog call: send N requests, then
+ * `close()` to receive the single aggregated response.
+ */
+export interface ClientStreamHandle<Req, Res> {
+    /** Enqueue one request message. */
+    send(request: Req): void;
+    /** End the request stream and resolve with the server's single response. */
+    close(): Promise<Res>;
+}
+
+/**
+ * Push handle for a bidi-streaming catalog call: `send()` requests while
+ * iterating `responses`; `close()` ends only the request (send) half — the
+ * response half keeps yielding until the server completes.
+ */
+export interface BidiStreamHandle<Req, Res> {
+    /** Enqueue one request message. */
+    send(request: Req): void;
+    /** End the request (send) half; the response half is unaffected. */
+    close(): void;
+    /** The server's response messages, in order. */
+    readonly responses: AsyncIterable<Res>;
+}
+
+/**
+ * Maps a {@link ConnectumStreamMap} entry to the ergonomic shape returned by
+ * {@link Context.stream}, discriminated by the entry's `kind`.
+ */
+export type StreamReturn<E> = E extends { kind: "server-stream"; request: infer Req; response: infer Res }
+    ? (request: Req, options?: CallOptions) => AsyncIterable<Res>
+    : E extends { kind: "client-stream"; request: infer Req; response: infer Res }
+      ? (options?: CallOptions) => ClientStreamHandle<Req, Res>
+      : E extends { kind: "bidi"; request: infer Req; response: infer Res }
+        ? (options?: CallOptions) => BidiStreamHandle<Req, Res>
+        : never;
+
+/**
  * The context object passed to every Connectum service handler.
  *
  * Extends ConnectRPC's `HandlerContext` (all of its fields remain available)
- * and adds {@link Context.call}. `ctx.stream` for streaming catalog calls is
- * introduced in a follow-up; until then streaming handlers still receive the
- * full `HandlerContext` surface plus `ctx.call`.
+ * and adds {@link Context.call} (unary catalog calls) and {@link Context.stream}
+ * (streaming catalog calls).
  */
 export interface Context extends HandlerContext {
     /**
-     * Invoke another service in the catalog. The transport is chosen
+     * Invoke a unary service in the catalog. The transport is chosen
      * automatically: an in-process call when the target is mounted locally,
      * otherwise the `remoteResolver`-supplied transport.
      *
@@ -85,6 +121,19 @@ export interface Context extends HandlerContext {
      * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumCallMap}.
      */
     call<K extends keyof ConnectumCallMap>(method: K, request: ConnectumCallMap[K]["request"], options?: CallOptions): Promise<ConnectumCallMap[K]["response"]>;
+
+    /**
+     * Open a streaming call to a service in the catalog. Returns a kind-specific
+     * factory: server-streaming yields an `AsyncIterable`; client- and
+     * bidi-streaming return push handles (see {@link ClientStreamHandle} /
+     * {@link BidiStreamHandle}).
+     *
+     * On a mid-stream transport failure the iterator delivers the messages
+     * received so far and then throws the terminal `ConnectError`.
+     *
+     * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumStreamMap}.
+     */
+    stream<K extends keyof ConnectumStreamMap>(method: K): StreamReturn<ConnectumStreamMap[K]>;
 }
 
 /**

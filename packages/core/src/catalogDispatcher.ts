@@ -15,11 +15,12 @@
  * @module catalogDispatcher
  */
 
-import type { DescMessage, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
+import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import type { HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import type { CallOptions, ConnectumServiceImpl, Context } from "./context.ts";
+import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
+import { createInputQueue, singleInput } from "./streamBridge.ts";
 
 /**
  * The server-side surface the dispatcher reads at call time. Implemented by
@@ -105,7 +106,9 @@ export class CatalogDispatcher {
     makeContext(hctx: HandlerContext): Context {
         const ctx = Object.create(hctx) as Context;
         const call = ((method: string, request: unknown, options?: CallOptions): Promise<unknown> => this._dispatchUnary(method, request, options, hctx)) as Context["call"];
+        const stream = ((method: string): unknown => this._makeStreamHandle(method, hctx)) as Context["stream"];
         Object.defineProperty(ctx, "call", { value: call, enumerable: false, writable: false, configurable: false });
+        Object.defineProperty(ctx, "stream", { value: stream, enumerable: false, writable: false, configurable: false });
         return ctx;
     }
 
@@ -117,25 +120,9 @@ export class CatalogDispatcher {
      * @internal
      */
     private async _dispatchUnary(method: string, request: unknown, options: CallOptions | undefined, hctx: HandlerContext): Promise<unknown> {
-        const parts = splitMethodKey(method);
-        if (parts === null) {
-            throw new ConnectError(`ctx.call: malformed method key "${method}" (expected "\${typeName}/\${Method}").`, Code.Unimplemented);
-        }
-        const { typeName, methodName } = parts;
-
-        const catalog = this.host.catalog;
-        if (catalog === undefined) {
-            throw new ConnectError("ctx.call: no catalog is configured; pass createServer({ catalog }) to enable cross-service calls.", Code.FailedPrecondition);
-        }
-
-        const descriptor = catalog[typeName];
-        if (descriptor === undefined) {
-            throw new ConnectError(`ctx.call: unknown service "${typeName}" (no such key in the catalog).`, Code.Unimplemented);
-        }
-
-        const descMethod = descriptor.methods.find((m) => m.name === methodName);
-        if (descMethod === undefined || descMethod.methodKind !== "unary") {
-            throw new ConnectError(`ctx.call: "${typeName}" has no unary method "${methodName}".`, Code.Unimplemented);
+        const { typeName, descMethod } = this._lookupCatalogMethod(method);
+        if (descMethod.methodKind !== "unary") {
+            throw new ConnectError(`ctx.call: "${method}" is a streaming method — use ctx.stream instead.`, Code.Unimplemented);
         }
 
         const transport = this._resolveTransport(typeName, options?.endpoint);
@@ -154,6 +141,134 @@ export class CatalogDispatcher {
             hctx.values,
         );
         return response.message;
+    }
+
+    /**
+     * Resolve a catalog method key to its `(typeName, DescMethod)`. Throws the
+     * operational `ConnectError` for a missing catalog / unknown service /
+     * unknown method (the kind check is left to the caller).
+     *
+     * @internal
+     */
+    private _lookupCatalogMethod(method: string): { typeName: string; descMethod: DescMethod } {
+        const parts = splitMethodKey(method);
+        if (parts === null) {
+            throw new ConnectError(`ctx: malformed method key "${method}" (expected "\${typeName}/\${Method}").`, Code.Unimplemented);
+        }
+        const { typeName, methodName } = parts;
+
+        const catalog = this.host.catalog;
+        if (catalog === undefined) {
+            throw new ConnectError("ctx: no catalog is configured; pass createServer({ catalog }) to enable cross-service calls.", Code.FailedPrecondition);
+        }
+
+        const descriptor = catalog[typeName];
+        if (descriptor === undefined) {
+            throw new ConnectError(`ctx: unknown service "${typeName}" (no such key in the catalog).`, Code.Unimplemented);
+        }
+
+        const descMethod = descriptor.methods.find((m) => m.name === methodName);
+        if (descMethod === undefined) {
+            throw new ConnectError(`ctx: "${typeName}" has no method "${methodName}".`, Code.Unimplemented);
+        }
+        return { typeName, descMethod };
+    }
+
+    /**
+     * Build the kind-specific factory returned by `ctx.stream`. Validation
+     * (catalog/service/method) is eager — calling `ctx.stream` on an unknown or
+     * unary method throws here; operational failures (resolver/transport)
+     * surface lazily on iteration / `close()`.
+     *
+     * @internal
+     */
+    private _makeStreamHandle(method: string, hctx: HandlerContext): unknown {
+        const { typeName, descMethod } = this._lookupCatalogMethod(method);
+        switch (descMethod.methodKind) {
+            case "server_streaming":
+                return (request: unknown, options?: CallOptions): AsyncIterable<unknown> => this._serverStream(typeName, descMethod, request, options, hctx);
+            case "client_streaming":
+                return (options?: CallOptions): ClientStreamHandle<unknown, unknown> => this._clientStream(typeName, descMethod, options, hctx);
+            case "bidi_streaming":
+                return (options?: CallOptions): BidiStreamHandle<unknown, unknown> => this._bidiStream(typeName, descMethod, options, hctx);
+            default:
+                throw new ConnectError(`ctx.stream: "${method}" is a unary method — use ctx.call instead.`, Code.Unimplemented);
+        }
+    }
+
+    /** Server-streaming: one request in, an `AsyncIterable` of responses out. @internal */
+    private _serverStream(typeName: string, descMethod: DescMethod, request: unknown, options: CallOptions | undefined, hctx: HandlerContext): AsyncIterable<unknown> {
+        const dispatcher = this;
+        return {
+            async *[Symbol.asyncIterator]() {
+                const { transport, signal, timeoutMs, headers } = dispatcher._prepareStream(typeName, options, hctx);
+                const input = singleInput(request as MessageInitShape<DescMessage>);
+                const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
+                yield* response.message;
+            },
+        };
+    }
+
+    /** Client-streaming: push N requests, `close()` resolves the single response. @internal */
+    private _clientStream(typeName: string, descMethod: DescMethod, options: CallOptions | undefined, hctx: HandlerContext): ClientStreamHandle<unknown, unknown> {
+        const queue = createInputQueue<MessageInitShape<DescMessage>>();
+        const responsePromise = (async (): Promise<unknown> => {
+            const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
+            const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, queue.iterable, hctx.values);
+            for await (const message of response.message) {
+                return message;
+            }
+            throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
+        })();
+        // Avoid an unhandled rejection before the caller awaits close().
+        responsePromise.catch(() => {});
+        return {
+            send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+            close: () => {
+                queue.close();
+                return responsePromise;
+            },
+        };
+    }
+
+    /** Bidi-streaming: push requests while iterating `responses`; `close()` ends the send half. @internal */
+    private _bidiStream(typeName: string, descMethod: DescMethod, options: CallOptions | undefined, hctx: HandlerContext): BidiStreamHandle<unknown, unknown> {
+        const queue = createInputQueue<MessageInitShape<DescMessage>>();
+        return {
+            send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+            close: () => queue.close(),
+            responses: this._bidiResponses(typeName, descMethod, options, hctx, queue.iterable),
+        };
+    }
+
+    /** @internal */
+    private async *_bidiResponses(
+        typeName: string,
+        descMethod: DescMethod,
+        options: CallOptions | undefined,
+        hctx: HandlerContext,
+        input: AsyncIterable<MessageInitShape<DescMessage>>,
+    ): AsyncIterable<unknown> {
+        const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
+        const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
+        yield* response.message;
+    }
+
+    /**
+     * Resolve transport + cascade for a streaming call (shared by all kinds).
+     *
+     * @internal
+     */
+    private _prepareStream(
+        typeName: string,
+        options: CallOptions | undefined,
+        hctx: HandlerContext,
+    ): { transport: Transport; signal: AbortSignal; timeoutMs: number | undefined; headers: Headers | undefined } {
+        const transport = this._resolveTransport(typeName, options?.endpoint);
+        const signal = options?.signal ?? hctx.signal;
+        const timeoutMs = clampTimeout(options?.timeoutMs, hctx.timeoutMs());
+        const headers = this._buildHeaders(hctx, options);
+        return { transport, signal, timeoutMs, headers };
     }
 
     /**
