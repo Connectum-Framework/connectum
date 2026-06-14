@@ -17,6 +17,9 @@
 // SERVER API
 // =============================================================================
 
+// Service registration
+export type { ServiceDefinition } from "./defineService.ts";
+export { defineLazyService, defineService } from "./defineService.ts";
 export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./enabledServices.ts";
 // In-process transport
 //
@@ -67,8 +70,6 @@ export type {
     // Server API
     Server,
     ServerClientOptions,
-    // Common types
-    ServiceRoute,
     ShutdownHook,
     ShutdownOptions,
     TLSOptions,

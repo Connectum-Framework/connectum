@@ -10,8 +10,9 @@
 import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
+import type { ServiceDefinition } from "./defineService.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
-import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration, ServiceRoute } from "./types.ts";
+import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
 
 /**
  * Server-side interceptor applied ONLY on the HTTP entry path (via
@@ -46,7 +47,7 @@ const stripLocalTransportHeaderOnHttp: Interceptor = (next) => (req) => {
  * Options for building routes
  */
 export interface BuildRoutesOptions {
-    services: ServiceRoute[];
+    services: readonly ServiceDefinition[];
     protocols: ProtocolRegistration[];
     interceptors: Interceptor[];
     shutdownSignal: AbortSignal;
@@ -124,8 +125,8 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         }) as typeof originalService;
 
         // Register user services
-        for (const serviceRoute of services) {
-            serviceRoute(router);
+        for (const definition of services) {
+            definition.register(router);
         }
         // Everything registered up to here came from user services;
         // descriptors added below belong to protocols.

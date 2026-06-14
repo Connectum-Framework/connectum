@@ -11,9 +11,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { DescFile } from "@bufbuild/protobuf";
+import type { ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { TRANSPORT_VALIDATION_ERROR_CODE, TransportValidationError } from "../../src/TransportValidation.ts";
-import type { ProtocolRegistration, ServiceRoute } from "../../src/types.ts";
+import type { ProtocolRegistration } from "../../src/types.ts";
 
 const BIDI_FILE = {
     services: [
@@ -25,19 +26,22 @@ const BIDI_FILE = {
 } as unknown as DescFile;
 
 /**
- * User service route contributing a bidi descriptor. buildRoutes intercepts
+ * User service definition contributing a bidi descriptor. buildRoutes intercepts
  * router.service() and records service.file BEFORE delegating to the real
- * Connect router — which rejects the structural mock, so the route swallows
- * that error: the registry entry is what the test needs.
+ * Connect router — which rejects the structural mock, so the register closure
+ * swallows that error: the registry entry is what the test needs.
  */
-function bidiUserService(): ServiceRoute {
-    return (router) => {
-        try {
-            router.service({ file: BIDI_FILE } as never, {} as never);
-        } catch {
-            // Connect router rejects the structural mock — irrelevant here:
-            // the descriptor has already been recorded in the registry.
-        }
+function bidiUserService(): ServiceDefinition {
+    return {
+        descriptor: { file: BIDI_FILE } as never,
+        register(router) {
+            try {
+                router.service({ file: BIDI_FILE } as never, {} as never);
+            } catch {
+                // Connect router rejects the structural mock — irrelevant here:
+                // the descriptor has already been recorded in the registry.
+            }
+        },
     };
 }
 

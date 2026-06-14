@@ -41,9 +41,9 @@
 import assert from "node:assert";
 import { test as nodeTest } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { createLocalTransport, createServer } from "@connectum/core";
+import { createLocalTransport, createServer, defineService } from "@connectum/core";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
@@ -133,13 +133,11 @@ function createInlineAuthInterceptor(): Interceptor {
 }
 
 function echoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => create(EchoResponseSchema, { message: `public:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: `secure:${req.message}`, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: `public:${req.message}`, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req) => create(EchoResponseSchema, { message: `public:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: `secure:${req.message}`, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: `public:${req.message}`, timestamp: 0n }),
+    });
 }
 
 function describeError(err: unknown): { code: number | string; message: string; metadata?: Record<string, string> } {

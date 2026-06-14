@@ -57,7 +57,7 @@ describe("buildRoutes()", () => {
                 // No-op: just verifying it gets called
             });
 
-            buildRoutes(createOptions({ services: [serviceRoute] }));
+            buildRoutes(createOptions({ services: [{ descriptor: {} as never, register: serviceRoute }] }));
 
             // The routes function is deferred -- it's called by connectNodeAdapter internally.
             // buildRoutes creates a closure `routes` that gets passed to connectNodeAdapter.

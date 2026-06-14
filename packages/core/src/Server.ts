@@ -12,12 +12,13 @@ import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
+import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
-import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -33,7 +34,7 @@ class ServerImpl extends EventEmitter implements Server {
 
     private _state: ServerState = ServerState.CREATED;
     private readonly _options: CreateServerOptions;
-    private readonly _routes: ServiceRoute[];
+    private readonly _routes: ServiceDefinition[];
     private readonly _protocols: ProtocolRegistration[];
     private readonly _interceptors: Interceptor[];
     private readonly _registry: DescFile[] = [];
@@ -87,7 +88,7 @@ class ServerImpl extends EventEmitter implements Server {
         return this._transport.server;
     }
 
-    get routes(): ReadonlyArray<ServiceRoute> {
+    get routes(): ReadonlyArray<ServiceDefinition> {
         return this._routes;
     }
 
@@ -250,7 +251,7 @@ class ServerImpl extends EventEmitter implements Server {
     // Runtime operations
     // =========================================================================
 
-    addService(service: ServiceRoute): void {
+    addService(service: ServiceDefinition): void {
         if (this._state !== ServerState.CREATED) {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }

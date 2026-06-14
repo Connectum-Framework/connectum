@@ -16,9 +16,10 @@ import { afterEach, describe, it } from "node:test";
 import type { DescService, JsonReadOptions, JsonValue, JsonWriteOptions } from "@bufbuild/protobuf";
 import { create, createFileRegistry } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import type { ConnectRouter, ServiceImpl } from "@connectrpc/connect";
+import type { ServiceImpl } from "@connectrpc/connect";
+import type { ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
-import type { Server, ServiceRoute } from "../../src/types.ts";
+import type { Server } from "../../src/types.ts";
 
 // =============================================================================
 // RUNTIME PROTO SCHEMA
@@ -82,23 +83,26 @@ function buildEchoService(): DescService {
 }
 
 /**
- * ServiceRoute that always responds with `value` left at its zero default.
+ * ServiceDefinition that always responds with `value` left at its zero default.
  *
  * @param perServiceJsonOptions - When provided, passed as the third argument of
  *   `router.service()` (the per-service lever), independent of the server-level option.
  */
-function createEchoRoute(service: DescService, perServiceJsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>): ServiceRoute {
-    return (router: ConnectRouter) => {
-        const method = service.methods[0];
-        assert.ok(method, "EchoService should expose its Echo method");
-        // Respond with the message left at defaults (value = 0).
-        // The schema is dynamic, so the typed ServiceImpl shape cannot be inferred here.
-        const impl = { [method.localName]: () => create(method.output, {}) } as unknown as Partial<ServiceImpl<DescService>>;
-        if (perServiceJsonOptions) {
-            router.service(service, impl, { jsonOptions: perServiceJsonOptions });
-        } else {
-            router.service(service, impl);
-        }
+function createEchoRoute(service: DescService, perServiceJsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>): ServiceDefinition {
+    return {
+        descriptor: service,
+        register(router) {
+            const method = service.methods[0];
+            assert.ok(method, "EchoService should expose its Echo method");
+            // Respond with the message left at defaults (value = 0).
+            // The schema is dynamic, so the typed ServiceImpl shape cannot be inferred here.
+            const impl = { [method.localName]: () => create(method.output, {}) } as unknown as Partial<ServiceImpl<DescService>>;
+            if (perServiceJsonOptions) {
+                router.service(service, impl, { jsonOptions: perServiceJsonOptions });
+            } else {
+                router.service(service, impl);
+            }
+        },
     };
 }
 

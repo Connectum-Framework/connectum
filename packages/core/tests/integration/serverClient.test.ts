@@ -8,19 +8,17 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import type { ConnectRouter } from "@connectrpc/connect";
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
+import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 function makeEchoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 /**

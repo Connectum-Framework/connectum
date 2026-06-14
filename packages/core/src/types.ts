@@ -10,6 +10,7 @@ import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerRes
 import type { AddressInfo } from "node:net";
 import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
+import type { ServiceDefinition } from "./defineService.ts";
 
 // =============================================================================
 // TRANSPORT UNION TYPES
@@ -24,12 +25,10 @@ export type NodeResponse = ServerResponse | Http2ServerResponse;
 /** Underlying transport server — HTTP/1.1, HTTP/2 plaintext, or HTTP/2 TLS */
 export type TransportServer = HttpServer | Http2Server | Http2SecureServer;
 
-/**
- * Service route function
- *
- * Function that registers services on the ConnectRouter.
- */
-export type ServiceRoute = (router: ConnectRouter) => void;
+// Service registration is expressed with `ServiceDefinition` (see
+// ./defineService.ts) — a `{ descriptor, register }` pair produced by
+// `defineService` / `defineLazyService`. The legacy `ServiceRoute =
+// (router) => void` form was removed in favour of it.
 
 /**
  * Shutdown hook function type
@@ -215,7 +214,7 @@ export interface CreateServerOptions {
     /**
      * Service routes to register
      */
-    services: ServiceRoute[];
+    services: readonly ServiceDefinition[];
 
     /**
      * Server port
@@ -340,7 +339,8 @@ export interface CreateServerOptions {
      * JSON responses instead of omitting them.
      *
      * For per-service control, pass the same option as the third argument of
-     * `router.service()` inside a {@link ServiceRoute} instead.
+     * `router.service()` inside a {@link ServiceDefinition}'s `register` closure
+     * instead.
      *
      * Note: the relevant `JsonWriteOptions` field in `@bufbuild/protobuf` v2 is
      * `alwaysEmitImplicit` (named `emitDefaultValues` in v1).
@@ -457,7 +457,7 @@ export interface Server extends EventEmitter {
      *
      * @throws Error if server is already running
      */
-    addService(service: ServiceRoute): void;
+    addService(service: ServiceDefinition): void;
 
     /**
      * Add an interceptor at runtime
@@ -528,7 +528,7 @@ export interface Server extends EventEmitter {
     /**
      * Registered service routes
      */
-    readonly routes: ReadonlyArray<ServiceRoute>;
+    readonly routes: ReadonlyArray<ServiceDefinition>;
 
     /**
      * Registered interceptors

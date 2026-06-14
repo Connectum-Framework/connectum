@@ -10,7 +10,8 @@
 
 import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
@@ -30,53 +31,47 @@ function expectErrorOnBothTransports(expectedCode: Code) {
 }
 
 function notFoundRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: () => {
-                const headers = new Headers();
-                headers.set("x-error-tag", "user-42");
-                throw new ConnectError("missing record", Code.NotFound, headers);
-            },
-            secureEcho: () => {
-                throw new ConnectError("nope", Code.NotFound);
-            },
-            rateLimitedEcho: () => {
-                throw new ConnectError("nope", Code.NotFound);
-            },
-        });
-    };
+    return defineService(EchoService, {
+        echo: () => {
+            const headers = new Headers();
+            headers.set("x-error-tag", "user-42");
+            throw new ConnectError("missing record", Code.NotFound, headers);
+        },
+        secureEcho: () => {
+            throw new ConnectError("nope", Code.NotFound);
+        },
+        rateLimitedEcho: () => {
+            throw new ConnectError("nope", Code.NotFound);
+        },
+    });
 }
 
 function plainErrorRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: () => {
-                throw new Error("boom");
-            },
-            secureEcho: () => {
-                throw new Error("boom");
-            },
-            rateLimitedEcho: () => {
-                throw new Error("boom");
-            },
-        });
-    };
+    return defineService(EchoService, {
+        echo: () => {
+            throw new Error("boom");
+        },
+        secureEcho: () => {
+            throw new Error("boom");
+        },
+        rateLimitedEcho: () => {
+            throw new Error("boom");
+        },
+    });
 }
 
 function passthroughRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: () => {
-                throw new Error("should not be reached");
-            },
-            secureEcho: () => {
-                throw new Error("should not be reached");
-            },
-            rateLimitedEcho: () => {
-                throw new Error("should not be reached");
-            },
-        });
-    };
+    return defineService(EchoService, {
+        echo: () => {
+            throw new Error("should not be reached");
+        },
+        secureEcho: () => {
+            throw new Error("should not be reached");
+        },
+        rateLimitedEcho: () => {
+            throw new Error("should not be reached");
+        },
+    });
 }
 
 const throwingInterceptor: Interceptor = () => () => {

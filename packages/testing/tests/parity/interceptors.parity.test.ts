@@ -12,7 +12,8 @@
  */
 
 import { create } from "@bufbuild/protobuf";
-import { type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { createClient, type Interceptor } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import {
     createBulkheadInterceptor,
     createCircuitBreakerInterceptor,
@@ -25,19 +26,17 @@ import { transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 function echoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req, ctx) => {
-                // Forward observed interceptor order header into response header
-                // so client can compare it across transports.
-                const trace = ctx.requestHeader.get("x-trace") ?? "";
-                ctx.responseHeader.set("x-server-trace", trace);
-                return create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n });
-            },
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req, ctx) => {
+            // Forward observed interceptor order header into response header
+            // so client can compare it across transports.
+            const trace = ctx.requestHeader.get("x-trace") ?? "";
+            ctx.responseHeader.set("x-server-trace", trace);
+            return create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n });
+        },
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 function makeOrderingInterceptor(tag: string): Interceptor {

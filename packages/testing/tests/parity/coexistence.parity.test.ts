@@ -11,10 +11,10 @@
 import assert from "node:assert";
 import { test } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import { type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { createServer } from "@connectum/core";
+import { createServer, defineService } from "@connectum/core";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 test("coexistence 6.1: one Server serves HTTP and local clients; interceptor observes both", async () => {
@@ -24,13 +24,11 @@ test("coexistence 6.1: one Server serves HTTP and local clients; interceptor obs
         return next(req);
     };
 
-    const routes = (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    const routes = defineService(EchoService, {
+        echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 
     const server = createServer({
         services: [routes],

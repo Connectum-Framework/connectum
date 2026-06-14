@@ -19,7 +19,7 @@ import { test } from "node:test";
 import type { Interceptor, Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceRoute } from "@connectum/core";
+import { createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 
 /**
@@ -75,8 +75,8 @@ export interface ParityScenarioResult {
  * Options for {@link transportParityTest}.
  */
 export interface TransportParityTestOptions {
-    /** Service route handlers registered on both servers. */
-    services: ServiceRoute[];
+    /** Service definitions registered on both servers. */
+    services: readonly ServiceDefinition[];
     /** Server-side interceptors applied identically on both servers. */
     interceptors?: Interceptor[];
     /**

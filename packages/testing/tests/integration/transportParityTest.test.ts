@@ -11,18 +11,17 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import { type ConnectRouter, createClient } from "@connectrpc/connect";
+import { createClient } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import { defaultCompare, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 function makeEchoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 // Top-level driver registration: identical behaviour → green test.
