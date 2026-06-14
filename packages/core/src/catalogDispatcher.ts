@@ -67,6 +67,31 @@ function splitMethodKey(method: string): { typeName: string; methodName: string 
 }
 
 /**
+ * Message-framing headers that the in-process router transport tags onto
+ * responses but that are illegal in gRPC/HTTP-2 trailers. A `ctx.call` error
+ * re-enters the caller's response, so if it carried these in its metadata the
+ * outer HTTP-2 server would emit invalid trailers (`NGHTTP2_PROTOCOL_ERROR` on
+ * the client). Strip them so the downstream `Code` surfaces cleanly.
+ *
+ * @internal
+ */
+const NON_TRAILER_HEADERS = ["content-length", "content-type", "content-encoding"] as const;
+
+/**
+ * Sanitize an error propagated out of `ctx.call`/`ctx.stream`: remove framing
+ * headers from a `ConnectError`'s metadata (see {@link NON_TRAILER_HEADERS}).
+ * Returns the error unchanged otherwise.
+ *
+ * @internal
+ */
+function sanitizeCallError(error: unknown): unknown {
+    if (error instanceof ConnectError) {
+        for (const name of NON_TRAILER_HEADERS) error.metadata.delete(name);
+    }
+    return error;
+}
+
+/**
  * Per-server engine that materializes `ctx.call` and wraps user handlers so
  * they receive a Connectum {@link Context}.
  *
@@ -132,15 +157,19 @@ export class CatalogDispatcher {
         const timeoutMs = clampTimeout(options?.timeoutMs, hctx.timeoutMs());
         const headers = this._buildHeaders(hctx, options);
 
-        const response = await transport.unary(
-            descMethod as DescMethodUnary<DescMessage, DescMessage>,
-            signal,
-            timeoutMs,
-            headers,
-            request as MessageInitShape<DescMessage>,
-            hctx.values,
-        );
-        return response.message;
+        try {
+            const response = await transport.unary(
+                descMethod as DescMethodUnary<DescMessage, DescMessage>,
+                signal,
+                timeoutMs,
+                headers,
+                request as MessageInitShape<DescMessage>,
+                hctx.values,
+            );
+            return response.message;
+        } catch (error) {
+            throw sanitizeCallError(error);
+        }
     }
 
     /**
@@ -201,10 +230,14 @@ export class CatalogDispatcher {
         const dispatcher = this;
         return {
             async *[Symbol.asyncIterator]() {
-                const { transport, signal, timeoutMs, headers } = dispatcher._prepareStream(typeName, options, hctx);
-                const input = singleInput(request as MessageInitShape<DescMessage>);
-                const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
-                yield* response.message;
+                try {
+                    const { transport, signal, timeoutMs, headers } = dispatcher._prepareStream(typeName, options, hctx);
+                    const input = singleInput(request as MessageInitShape<DescMessage>);
+                    const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
+                    yield* response.message;
+                } catch (error) {
+                    throw sanitizeCallError(error);
+                }
             },
         };
     }
@@ -213,12 +246,16 @@ export class CatalogDispatcher {
     private _clientStream(typeName: string, descMethod: DescMethod, options: CallOptions | undefined, hctx: HandlerContext): ClientStreamHandle<unknown, unknown> {
         const queue = createInputQueue<MessageInitShape<DescMessage>>();
         const responsePromise = (async (): Promise<unknown> => {
-            const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
-            const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, queue.iterable, hctx.values);
-            for await (const message of response.message) {
-                return message;
+            try {
+                const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
+                const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, queue.iterable, hctx.values);
+                for await (const message of response.message) {
+                    return message;
+                }
+                throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
+            } catch (error) {
+                throw sanitizeCallError(error);
             }
-            throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
         })();
         // Avoid an unhandled rejection before the caller awaits close().
         responsePromise.catch(() => {});
@@ -249,9 +286,13 @@ export class CatalogDispatcher {
         hctx: HandlerContext,
         input: AsyncIterable<MessageInitShape<DescMessage>>,
     ): AsyncIterable<unknown> {
-        const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
-        const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
-        yield* response.message;
+        try {
+            const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
+            const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
+            yield* response.message;
+        } catch (error) {
+            throw sanitizeCallError(error);
+        }
     }
 
     /**
