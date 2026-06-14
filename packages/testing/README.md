@@ -369,6 +369,71 @@ it('should respond to health check', async () => {
 });
 ```
 
+## In-Process Transport & Cross-Transport Parity
+
+For features that depend on `createLocalTransport` from `@connectum/core`,
+`@connectum/testing` ships an ergonomic client factory and a parity-test
+driver that runs the same scenario over both HTTP and in-process transports.
+
+### `createLocalClient(server, ServiceDesc)`
+
+A thin wrapper over `server.localClient(service)` — useful when a test only
+needs the in-memory pipe and should not start an HTTP/2 socket.
+
+```typescript
+import { createServer } from "@connectum/core";
+import { createLocalClient } from "@connectum/testing";
+
+const server = createServer({ services: [greeterRoutes] });
+const client = createLocalClient(server, GreeterService);
+const res = await client.sayHello({ name: "world" });
+```
+
+### `transportParityTest(name, opts)`
+
+Registers a `node:test` test that runs the scenario twice — once over
+`createGrpcTransport({ baseUrl })` and once over `createLocalTransport(server)` —
+with identical services / server-side interceptors / protocols. Any
+structural diff between the two `ParityScenarioResult` payloads fails the
+test.
+
+```typescript
+import { createClient } from "@connectrpc/connect";
+import { transportParityTest } from "@connectum/testing";
+
+transportParityTest("Greeter.sayHello is identical across transports", {
+  services: [greeterRoutes],
+  scenario: async ({ transport }) => {
+    const client = createClient(GreeterService, transport);
+    const res = await client.sayHello({ name: "world" });
+    return { response: { greeting: res.greeting } };
+  },
+});
+```
+
+The default comparator (`defaultCompare`) diffs `response`, `error`,
+`responseHeaders`, `trailers`, normalized `spans`, and normalized `metrics`.
+Pass `opts.compare` to override.
+
+### `InMemorySpanCollector` / `InMemoryMetricCollector`
+
+Fresh per-run OTEL collectors are injected into the scenario context
+(`ctx.spans`, `ctx.metrics`). Call `ctx.spans.flush()` /
+`await ctx.metrics.flush()` to obtain a normalized snapshot — the
+`connectum.transport` span attribute and `transport` metric label are
+stripped automatically so that parity diff is meaningful.
+
+```typescript
+transportParityTest("emits matching spans", {
+  services: [greeterRoutes],
+  scenario: async ({ transport, spans }) => {
+    const client = createClient(GreeterService, transport);
+    await client.sayHello({ name: "x" });
+    return { spans: spans.flush() };
+  },
+});
+```
+
 ## Running Tests
 
 ```bash

@@ -12,7 +12,7 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { Code, ConnectError } from '@connectrpc/connect';
-import { assertConnectError, createMockNextError } from '@connectum/testing';
+import { assertConnectError, createMockNextError } from '@connectum/test-fixtures';
 import { createCircuitBreakerInterceptor } from '../../src/circuit-breaker.ts';
 import { createFallbackInterceptor } from '../../src/fallback.ts';
 import { createRetryInterceptor } from '../../src/retry.ts';

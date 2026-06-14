@@ -1,0 +1,65 @@
+{
+  "name": "@connectum/test-fixtures",
+  "version": "1.0.0-rc.11",
+  "description": "Mock factories, assertion helpers, and protobuf descriptor fixtures for Connectum tests",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Connectum-Framework/connectum.git",
+    "directory": "packages/test-fixtures"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "exodus-test --typescript tests/unit/**/*.test.ts",
+    "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
+    "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts",
+    "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts",
+    "lint": "biome check src",
+    "format": "biome check --write src",
+    "build": "tsup",
+    "clean": "rm -rf coverage dist"
+  },
+  "keywords": [
+    "testing",
+    "connectum",
+    "test-utilities",
+    "mocks",
+    "fixtures"
+  ],
+  "author": "Highload.Zone",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@exodus/test": "catalog:",
+    "c8": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:"
+  }
+}

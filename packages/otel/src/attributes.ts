@@ -25,6 +25,34 @@ export const ATTR_NETWORK_TRANSPORT = "network.transport";
 export const ATTR_NETWORK_PEER_ADDRESS = "network.peer.address";
 export const ATTR_NETWORK_PEER_PORT = "network.peer.port";
 
+/**
+ * Connectum-specific span attribute that distinguishes RPC observations
+ * carried by the in-process router transport from those carried by HTTP/2.
+ *
+ * Values:
+ *   - `"in-process"` — the call traversed `createLocalTransport`
+ *   - `"http"`       — the call traversed `createGrpcTransport` /
+ *                      `createConnectTransport` (the network path)
+ *
+ * Parity tests strip this attribute before structural diffing so that the
+ * remaining shape (spans, events, metric instruments) is invariant across
+ * transports.
+ *
+ * @see ATTR_CONNECTUM_TRANSPORT_METRIC for the metric-label counterpart
+ */
+export const ATTR_CONNECTUM_TRANSPORT = "connectum.transport";
+/**
+ * Metric-label counterpart of {@link ATTR_CONNECTUM_TRANSPORT}.
+ *
+ * Uses the short, lowercase form to align with OpenTelemetry metric
+ * label conventions and existing `network.*` keys.
+ */
+export const ATTR_CONNECTUM_TRANSPORT_METRIC = "transport";
+/** Marker request header set by `createLocalTransport` from `@connectum/core`. */
+export const CONNECTUM_INTERNAL_TRANSPORT_HEADER = "connectum-internal-transport";
+/** Header value indicating an in-process call (the only one currently defined). */
+export const CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS = "in-process";
+
 // RPC message event constants (per OTel semconv)
 export const RPC_MESSAGE_EVENT = "rpc.message";
 export const ATTR_RPC_MESSAGE_TYPE = "rpc.message.type";

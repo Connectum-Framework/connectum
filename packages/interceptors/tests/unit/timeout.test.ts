@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code } from "@connectrpc/connect";
-import { assertConnectError, createMockNext, createMockNextSlow, createMockRequest } from "@connectum/testing";
+import { assertConnectError, createMockNext, createMockNextSlow, createMockRequest } from "@connectum/test-fixtures";
 import { createTimeoutInterceptor } from "../../src/timeout.ts";
 
 describe("timeout interceptor", () => {

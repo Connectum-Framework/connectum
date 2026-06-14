@@ -6,7 +6,7 @@ import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
+import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
 import { createCircuitBreakerInterceptor, defaultFailurePredicate } from "../../src/circuit-breaker.ts";
 import { createRetryInterceptor } from "../../src/retry.ts";
 

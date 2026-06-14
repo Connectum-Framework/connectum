@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { createMockNext, createMockNextError, createMockRequest } from "@connectum/testing";
+import { createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
 import { createFallbackInterceptor } from "../../src/fallback.ts";
 
 describe("fallback interceptor", () => {

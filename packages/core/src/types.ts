@@ -8,8 +8,8 @@ import type { EventEmitter } from "node:events";
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node:http";
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
-import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
-import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
+import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
+import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
 
 // =============================================================================
 // TRANSPORT UNION TYPES
@@ -546,4 +546,78 @@ export interface Server extends EventEmitter {
      * Returns null if no event bus was provided to createServer().
      */
     readonly eventBus: EventBusLike | null;
+
+    // ==========================================================================
+    // In-process transport
+    // ==========================================================================
+
+    /**
+     * Create a fully-typed ConnectRPC client that dispatches calls directly
+     * to handlers registered on this server, without opening any TCP socket.
+     *
+     * Safe to call before `server.start()` — the routes are materialized
+     * lazily on first access. Once materialized, `addService` / `addInterceptor`
+     * / `addProtocol` will throw.
+     *
+     * @example
+     * ```typescript
+     * import { GreeterService } from './gen/greeter_pb.js';
+     *
+     * const server = createServer({ services: [routes] });
+     * const client = server.localClient(GreeterService);
+     * const response = await client.sayHello({ name: 'world' });
+     * ```
+     */
+    localClient<T extends DescService>(service: T): Client<T>;
+
+    /**
+     * Synchronous registry lookup: returns whether the given proto service
+     * descriptor is served locally by this `Server`. Triggers route
+     * materialization on first call.
+     *
+     * Source of truth is the same `ConnectRouter.service(desc, impl)` chain
+     * used to build the HTTP handler — no separate registration step.
+     *
+     * @example
+     * ```typescript
+     * if (server.hasService(GreeterService)) {
+     *   // routed in-process
+     * }
+     * ```
+     */
+    hasService(desc: DescService): boolean;
+
+    /**
+     * Unified client factory: auto-routes to the in-process transport if the
+     * service is registered on this `Server`, otherwise uses `options.fallback`
+     * transport (e.g. a `createGrpcTransport({ baseUrl })` to a remote peer).
+     * Without `fallback`, an unregistered service raises `ConnectError`
+     * (`Code.Unimplemented`) at client construction time — fail-fast.
+     *
+     * Enables polyglot deployments where the same call site (`server.client(S)`)
+     * routes locally in a modular monolith and remotely when the service is
+     * split into a separate process — without code changes.
+     *
+     * @example
+     * ```typescript
+     * // Same call works whether GreeterService is co-located or remote:
+     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * await client.sayHello({ name: 'world' });
+     * ```
+     */
+    client<T extends DescService>(service: T, options?: ServerClientOptions): Client<T>;
+}
+
+/**
+ * Options for {@link Server.client}.
+ */
+export interface ServerClientOptions {
+    /**
+     * Transport used when the requested service is NOT registered on this
+     * `Server`. Typically a remote HTTP/gRPC transport.
+     *
+     * If omitted and the service is not local, `Server.client()` throws
+     * `ConnectError` with `Code.Unimplemented`.
+     */
+    fallback?: import("@connectrpc/connect").Transport;
 }

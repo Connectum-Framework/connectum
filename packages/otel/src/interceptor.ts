@@ -14,10 +14,11 @@ import type { Interceptor } from "@connectrpc/connect";
 import type { Link, SpanOptions } from "@opentelemetry/api";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
+import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
 import { getMeter } from "./meter.ts";
 import type { RpcServerMetrics } from "./metrics.ts";
 import { createRpcServerMetrics } from "./metrics.ts";
-import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
+import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, detectConnectumTransport, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
 import { getTracer } from "./tracer.ts";
 import type { OtelInterceptorOptions } from "./types.ts";
 
@@ -84,8 +85,24 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
             serverPort,
         });
 
-        // Apply attribute filter if provided
-        const filteredAttributes = applyAttributeFilter(baseAttributes, attributeFilter);
+        // Tag with originating transport (in-process router-transport vs HTTP/2).
+        // The marker is set by `createLocalTransport` from `@connectum/core`.
+        // The span attribute uses the dotted form (`connectum.transport`) per
+        // OTel attribute conventions; the metric label uses the short form
+        // (`transport`) per OTel metric-label conventions. They are kept
+        // separate so the metric-side label set does not accidentally pick
+        // up the span-side attribute (which would make the parity diff
+        // observe two transport labels on the same metric).
+        const transportKind = detectConnectumTransport(req.header);
+
+        // Apply attribute filter if provided. The `connectum.transport`
+        // attribute is added *after* filtering so user attribute filters
+        // cannot accidentally strip it.
+        const filteredAttributes: Record<string, unknown> = { ...applyAttributeFilter(baseAttributes, attributeFilter) };
+        const spanAttributes = { ...filteredAttributes, [ATTR_CONNECTUM_TRANSPORT]: transportKind };
+
+        // Metric label uses the short key per OTel metric-label conventions.
+        const metricTransportAttrs = { [ATTR_CONNECTUM_TRANSPORT_METRIC]: transportKind };
 
         // 4. Context propagation: extract trace context from request headers
         const headers = Object.fromEntries(req.header.entries());
@@ -107,7 +124,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
             if (!rpcMetrics) {
                 rpcMetrics = createRpcServerMetrics(getMeter());
             }
-            const metricAttrs = { ...filteredAttributes, ...errorAttrs };
+            const metricAttrs = { ...filteredAttributes, ...metricTransportAttrs, ...errorAttrs };
             rpcMetrics.callDuration.record(duration, metricAttrs);
             rpcMetrics.requestSize.record(requestSize, metricAttrs);
             rpcMetrics.responseSize.record(responseSize, metricAttrs);
@@ -132,10 +149,12 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         // 9. Full instrumentation: tracing + optional metrics
         const tracer = getTracer();
 
-        // Build span options with server kind and base attributes
+        // Build span options with server kind and base attributes.
+        // Uses `spanAttributes` (includes `connectum.transport`); the metric
+        // path uses the bare `filteredAttributes` plus `metricTransportAttrs`.
         const spanOptions: SpanOptions = {
             kind: SpanKind.SERVER,
-            attributes: filteredAttributes,
+            attributes: spanAttributes,
         };
 
         // When not trusting remote context, create a root span with a link

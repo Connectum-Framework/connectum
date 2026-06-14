@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./parity": {
+      "types": "./dist/parity.d.ts",
+      "default": "./dist/parity.js"
     }
   },
   "files": [
@@ -25,7 +29,6 @@
     "dev": "node --watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "exodus-test --typescript tests/**/*.test.ts",
-    "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
     "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
     "test:bun": "exodus-test --engine bun:pure tests/**/*.test.ts",
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
@@ -51,11 +54,16 @@
   "dependencies": {
     "@bufbuild/protobuf": "catalog:",
     "@connectum/core": "workspace:^",
+    "@connectum/test-fixtures": "workspace:^",
     "@connectrpc/connect": "catalog:",
-    "@connectrpc/connect-node": "catalog:"
+    "@connectrpc/connect-node": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/sdk-metrics": "catalog:",
+    "@opentelemetry/sdk-trace-base": "catalog:"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@connectum/interceptors": "workspace:^",
     "@exodus/test": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",

@@ -20,10 +20,11 @@ import type { Interceptor } from "@connectrpc/connect";
 import type { SpanOptions } from "@opentelemetry/api";
 import { context, propagation, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 
+import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
 import { getMeter } from "./meter.ts";
 import type { RpcClientMetrics } from "./metrics.ts";
 import { createRpcClientMetrics } from "./metrics.ts";
-import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
+import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, detectConnectumTransport, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
 import { getTracer } from "./tracer.ts";
 import type { OtelClientInterceptorOptions } from "./types.ts";
 
@@ -82,8 +83,18 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
             serverPort,
         });
 
-        // Apply attribute filter if provided
-        const filteredAttributes = applyAttributeFilter(baseAttributes, attributeFilter);
+        // Tag with originating transport — distinguishes HTTP/2 calls from
+        // in-process calls travelling through `createLocalTransport`.
+        // Span attr uses `connectum.transport`; metric label uses `transport`.
+        const transportKind = detectConnectumTransport(req.header);
+
+        // Apply attribute filter if provided. `connectum.transport` is added
+        // *after* filtering so user attribute filters cannot strip it.
+        const filteredAttributes: Record<string, unknown> = { ...applyAttributeFilter(baseAttributes, attributeFilter) };
+        const spanAttributes = { ...filteredAttributes, [ATTR_CONNECTUM_TRANSPORT]: transportKind };
+
+        // Metric label uses the short key per OTel metric-label conventions.
+        const metricTransportAttrs = { [ATTR_CONNECTUM_TRANSPORT_METRIC]: transportKind };
 
         // 4. Start timing
         const startTime = performance.now();
@@ -100,7 +111,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
             if (!rpcMetrics) {
                 rpcMetrics = createRpcClientMetrics(getMeter());
             }
-            const metricAttrs = { ...filteredAttributes, ...errorAttrs };
+            const metricAttrs = { ...filteredAttributes, ...metricTransportAttrs, ...errorAttrs };
             rpcMetrics.callDuration.record(duration, metricAttrs);
             rpcMetrics.requestSize.record(requestSize, metricAttrs);
             rpcMetrics.responseSize.record(responseSize, metricAttrs);
@@ -128,7 +139,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
         // Build span options with client kind and base attributes
         const spanOptions: SpanOptions = {
             kind: SpanKind.CLIENT,
-            attributes: filteredAttributes,
+            attributes: spanAttributes,
         };
 
         return tracer.startActiveSpan(spanName, spanOptions, context.active(), async (span) => {

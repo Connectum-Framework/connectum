@@ -10,7 +10,7 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { Code } from '@connectrpc/connect';
-import { assertConnectError, createMockNextError } from '@connectum/testing';
+import { assertConnectError, createMockNextError } from '@connectum/test-fixtures';
 import { createBulkheadInterceptor } from '../../src/bulkhead.ts';
 import { createCircuitBreakerInterceptor } from '../../src/circuit-breaker.ts';
 import { createLoggerInterceptor } from '../../src/logger.ts';
