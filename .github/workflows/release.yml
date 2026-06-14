@@ -121,6 +121,12 @@ jobs:
         run: |
           set -euo pipefail
           PR="${{ steps.changesets.outputs.pullRequestNumber }}"
+          case "$PR" in
+            ''|*[!0-9]*)
+              echo "::warning::pullRequestNumber '$PR' is not numeric; skipping PR body update"
+              exit 0
+              ;;
+          esac
           git fetch origin changeset-release/main --depth=1
           VERSION=$(git show origin/changeset-release/main:packages/core/package.json | jq -r '.version')
 

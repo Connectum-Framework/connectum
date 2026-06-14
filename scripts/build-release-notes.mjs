@@ -21,15 +21,26 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
-const version = args.find((a) => !a.startsWith("--"));
-if (!version) {
-    console.error("usage: build-release-notes.mjs <version> [--packages-dir <dir>] [--highlights <file>]");
-    process.exit(2);
-}
+const OPTS_WITH_VALUE = new Set(["--packages-dir", "--highlights"]);
 const getOpt = (name, fallback) => {
     const i = args.indexOf(name);
     return i !== -1 && args[i + 1] ? args[i + 1] : fallback;
 };
+// Resolve the positional <version>, skipping option values so an invocation like
+// `--packages-dir tmp 1.0.0` does not mistake the path "tmp" for the version.
+const positionals = [];
+for (let i = 0; i < args.length; i++) {
+    if (OPTS_WITH_VALUE.has(args[i])) {
+        i++; // skip the option's value
+        continue;
+    }
+    if (!args[i].startsWith("--")) positionals.push(args[i]);
+}
+const version = positionals[0];
+if (!version) {
+    console.error("usage: build-release-notes.mjs <version> [--packages-dir <dir>] [--highlights <file>]");
+    process.exit(2);
+}
 const packagesDir = getOpt("--packages-dir", "packages");
 const highlightsFile = getOpt("--highlights", ".github/RELEASE_HIGHLIGHTS.md");
 
