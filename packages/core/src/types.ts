@@ -633,10 +633,15 @@ export interface Server extends EventEmitter {
 
     /**
      * Unified client factory: auto-routes to the in-process transport if the
-     * service is registered on this `Server`, otherwise uses `options.fallback`
-     * transport (e.g. a `createGrpcTransport({ baseUrl })` to a remote peer).
-     * Without `fallback`, an unregistered service raises `ConnectError`
-     * (`Code.Unimplemented`) at client construction time — fail-fast.
+     * service is registered on this `Server`, otherwise to the transport
+     * supplied by the configured `remoteResolver` (e.g. a
+     * `createGrpcTransport({ baseUrl })` to a remote peer). An optional
+     * `options.endpoint` hint is forwarded to the resolver.
+     *
+     * Fail-fast (split error model): a non-local service with no `remoteResolver`
+     * configured is a configuration mistake → throws {@link CatalogConfigError}
+     * at the `server.client(...)` call. A resolver that returns `null` is an
+     * operational miss → `ConnectError(Code.Unavailable)`.
      *
      * Enables polyglot deployments where the same call site (`server.client(S)`)
      * routes locally in a modular monolith and remotely when the service is
@@ -644,8 +649,10 @@ export interface Server extends EventEmitter {
      *
      * @example
      * ```typescript
-     * // Same call works whether GreeterService is co-located or remote:
-     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * // Configure the resolver once; the same call works whether GreeterService
+     * // is co-located or remote:
+     * const server = createServer({ services: [...], remoteResolver });
+     * const client = server.client(GreeterService);
      * await client.sayHello({ name: 'world' });
      * ```
      */
