@@ -12,6 +12,7 @@ import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
+import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -38,6 +39,7 @@ class ServerImpl extends EventEmitter implements Server {
     private readonly _routes: ServiceDefinition[];
     private readonly _protocols: ProtocolRegistration[];
     private readonly _interceptors: Interceptor[];
+    private readonly _outgoingInterceptors: Interceptor[];
     private readonly _registry: DescFile[] = [];
     private readonly _shutdownManager = new ShutdownManager();
     private readonly _abortController = new AbortController();
@@ -56,8 +58,18 @@ class ServerImpl extends EventEmitter implements Server {
     /** Memoized in-process transport (lazy, created on first localClient call) */
     private _localTransport: Transport | null = null;
 
+    /**
+     * Memoized in-process transport for `ctx.call` local dispatch. Distinct from
+     * {@link _localTransport} because it carries `outgoingInterceptors` on the
+     * client side (lazy, created on first local `ctx.call`).
+     */
+    private _catalogLocalTransport: Transport | null = null;
+
     /** Resolver-supplied remote transports, cached per `(typeName, endpoint)` key. */
     private readonly _remoteTransports = new Map<string, Transport>();
+
+    /** Per-server engine behind `ctx.call`; wraps handlers + routes catalog calls. */
+    private readonly _dispatcher: CatalogDispatcher;
 
     // =========================================================================
     // Constructor
@@ -69,7 +81,19 @@ class ServerImpl extends EventEmitter implements Server {
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
+        this._outgoingInterceptors = [...(options.outgoingInterceptors ?? [])];
         this._eventBus = options.eventBus ?? null;
+
+        // Engine behind ctx.call. The host closures read the live server state at
+        // call time (routes are materialized by then), so there is no
+        // construction-order coupling with route building.
+        const host: CatalogDispatchHost = {
+            catalog: options.catalog,
+            isLocal: (typeName) => this._getRegisteredServiceTypeNames().has(typeName),
+            getLocalTransport: () => this._getCatalogLocalTransport(),
+            resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),
+        };
+        this._dispatcher = new CatalogDispatcher(host);
     }
 
     // =========================================================================
@@ -376,6 +400,22 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
+     * In-process transport used by `ctx.call` to dispatch to locally-mounted
+     * services. Carries `outgoingInterceptors` on the client side (so the OTel
+     * client interceptor and any user-supplied outgoing interceptor wrap the
+     * call), distinguishing it from {@link localClient}'s plain transport.
+     * Lazily built and memoized.
+     *
+     * @internal
+     */
+    private _getCatalogLocalTransport(): Transport {
+        if (this._catalogLocalTransport === null) {
+            this._catalogLocalTransport = createLocalTransport(this, { interceptors: this._outgoingInterceptors });
+        }
+        return this._catalogLocalTransport;
+    }
+
+    /**
      * Validate the catalog configuration at startup. Currently the always-on
      * shape check: every `enabledServices` entry must be a known catalog key
      * (when a `catalog` is configured). A mismatch is a programmer error
@@ -410,6 +450,7 @@ class ServerImpl extends EventEmitter implements Server {
                 protocols: this._protocols,
                 interceptors: this._interceptors,
                 shutdownSignal: this._abortController.signal,
+                registerContext: this._dispatcher,
                 // Thread server-wide jsonOptions through the lazy path too, so
                 // in-process and HTTP transports share identical JSON
                 // serialization (otherwise jsonOptions would be silently

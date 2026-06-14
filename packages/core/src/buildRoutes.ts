@@ -10,7 +10,7 @@
 import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import type { ServiceDefinition } from "./defineService.ts";
+import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
 import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
 
@@ -51,6 +51,11 @@ export interface BuildRoutesOptions {
     protocols: ProtocolRegistration[];
     interceptors: Interceptor[];
     shutdownSignal: AbortSignal;
+    /**
+     * Framework helpers handed to each service's `register` closure (wraps user
+     * handlers so they receive the Connectum `Context` with `ctx.call`).
+     */
+    registerContext: RegisterContext;
     /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
     /**
@@ -106,7 +111,7 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal, jsonOptions, enabledServices } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions, enabledServices, registerContext } = options;
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
@@ -136,7 +141,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             if (enabledServices !== undefined && !enabledServices.includes(definition.descriptor.typeName)) {
                 continue;
             }
-            definition.register(router);
+            definition.register(router, registerContext);
         }
         // Everything registered up to here came from user services;
         // descriptors added below belong to protocols.
