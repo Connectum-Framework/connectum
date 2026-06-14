@@ -41,9 +41,15 @@ plugins:
     out: gen
     opt: [target=ts, import_extension=.js]
   - local: protoc-gen-connectum-catalog
+    strategy: all
     out: gen
     opt: [target=ts, import_extension=.js]
 ```
+
+`strategy: all` is **required**. The catalog aggregates every service into a
+single `catalog.gen.ts`, so buf must invoke the plugin once over all files. With
+the default `directory` strategy, buf runs the plugin once per proto directory
+and emits a duplicate `catalog.gen.ts` — keeping only one directory's services.
 
 The catalog plugin emits **TypeScript only** (the `declare module` augmentation
 is types-only). Generate it alongside `protoc-gen-es`, with the **same
