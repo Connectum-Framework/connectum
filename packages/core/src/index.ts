@@ -35,6 +35,7 @@ export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./
 // header — see SECURITY_REVIEW.md §4 F1.
 export type { CreateLocalTransportOptions } from "./localTransport.ts";
 export { createLocalTransport } from "./localTransport.ts";
+export { defaultPropagateHeaders } from "./propagateHeaders.ts";
 export type { DnsResolverOptions, PerServiceEnvResolverOptions, RemoteResolver, ResolverContext } from "./remoteResolver.ts";
 export { dnsResolver, mapResolver, perServiceEnvResolver, singleTransportResolver } from "./remoteResolver.ts";
 // Main createServer factory

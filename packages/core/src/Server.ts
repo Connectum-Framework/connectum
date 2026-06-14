@@ -89,6 +89,7 @@ class ServerImpl extends EventEmitter implements Server {
         // construction-order coupling with route building.
         const host: CatalogDispatchHost = {
             catalog: options.catalog,
+            propagateHeaders: options.propagateHeaders ?? [],
             isLocal: (typeName) => this._getRegisteredServiceTypeNames().has(typeName),
             getLocalTransport: () => this._getCatalogLocalTransport(),
             resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),

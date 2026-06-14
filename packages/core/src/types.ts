@@ -388,6 +388,16 @@ export interface CreateServerOptions {
      * sites stay free of boilerplate.
      */
     outgoingInterceptors?: readonly Interceptor[];
+
+    /**
+     * Inbound header names to copy onto every outgoing `ctx.call` / `ctx.stream`.
+     * Empty by default — no header is propagated implicitly. Explicit
+     * `CallOptions.headers` always win over a propagated value.
+     *
+     * Use {@link defaultPropagateHeaders} (W3C trace-context headers) as a base
+     * and add your own, e.g. `[...defaultPropagateHeaders, "x-tenant-id"]`.
+     */
+    propagateHeaders?: readonly string[];
 }
 
 /**

@@ -30,6 +30,8 @@ import type { ServiceCatalog } from "./serviceCatalog.ts";
 export interface CatalogDispatchHost {
     /** The configured service catalog, or `undefined` when none is set. */
     readonly catalog: ServiceCatalog | undefined;
+    /** Inbound header names copied onto outgoing catalog calls (empty by default). */
+    readonly propagateHeaders: readonly string[];
     /** Whether `typeName` is mounted locally on this server. */
     isLocal(typeName: string): boolean;
     /** The in-process transport carrying `outgoingInterceptors` (lazily built). */
@@ -141,7 +143,7 @@ export class CatalogDispatcher {
         // Cascade: inject the inbound signal/deadline unless explicitly overridden.
         const signal = options?.signal ?? hctx.signal;
         const timeoutMs = clampTimeout(options?.timeoutMs, hctx.timeoutMs());
-        const headers = options?.headers;
+        const headers = this._buildHeaders(hctx, options);
 
         const response = await transport.unary(
             descMethod as DescMethodUnary<DescMessage, DescMessage>,
@@ -152,6 +154,28 @@ export class CatalogDispatcher {
             hctx.values,
         );
         return response.message;
+    }
+
+    /**
+     * Compose outgoing headers: copy the allow-listed inbound headers, then
+     * apply the caller's explicit `options.headers` (which win on conflict).
+     * Returns `undefined` when nothing is set, so the transport sends no extra
+     * headers.
+     *
+     * @internal
+     */
+    private _buildHeaders(hctx: HandlerContext, options: CallOptions | undefined): Headers | undefined {
+        const out = new Headers();
+        for (const name of this.host.propagateHeaders) {
+            const value = hctx.requestHeader.get(name);
+            if (value !== null) out.set(name, value);
+        }
+        if (options?.headers !== undefined) {
+            for (const [key, value] of new Headers(options.headers)) {
+                out.set(key, value);
+            }
+        }
+        return [...out.keys()].length > 0 ? out : undefined;
     }
 
     /**

@@ -17,6 +17,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createRouterTransport, type Transport } from "@connectrpc/connect";
 import type { Context } from "../../src/context.ts";
 import { defineService } from "../../src/defineService.ts";
+import { defaultPropagateHeaders } from "../../src/propagateHeaders.ts";
 import { singleTransportResolver } from "../../src/remoteResolver.ts";
 import { createServer } from "../../src/Server.ts";
 import { defineCatalog } from "../../src/serviceCatalog.ts";
@@ -307,6 +308,61 @@ describe("ctx.call — error model (Q15 split: operational → ConnectError)", (
         assert.ok(err instanceof ConnectError, `got: ${String(err)}`);
         assert.strictEqual((err as ConnectError).code, Code.Internal);
         assert.strictEqual((err as ConnectError).cause, boom, "original cause must be preserved");
+    });
+});
+
+describe("ctx.call — header propagation", () => {
+    const HEADER = "x-trace-test";
+
+    function makeHeaderRemote(): Transport {
+        return createRouterTransport((router) => {
+            router.service(StreamingService, {
+                echo: (_req, ctx) => create(ItemSchema, { value: ctx.requestHeader.get(HEADER) ?? "none", sequence: 0 }),
+                async *server() {},
+                client: async () => create(ItemSchema, { value: "", sequence: 0 }) as never,
+                async *bidi() {},
+            });
+        });
+    }
+
+    function makeServer(propagateHeaders: readonly string[] | undefined, secure: SecureImpl) {
+        const base: Parameters<typeof createServer>[0] = {
+            services: [makeCaller(secure)],
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService, [StreamingService.typeName]: StreamingService }),
+            remoteResolver: singleTransportResolver(makeHeaderRemote()),
+        };
+        return createServer(propagateHeaders ? { ...base, propagateHeaders } : base);
+    }
+
+    const relay: SecureImpl = async (req, ctx) => {
+        const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: req.message, sequence: 0 }));
+        return create(EchoResponseSchema, { message: inner.value, timestamp: 0n });
+    };
+
+    it("propagates nothing by default", async () => {
+        const server = makeServer(undefined, relay);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [HEADER]: "abc" } });
+        assert.strictEqual(res.message, "none", "no inbound header should leak without propagateHeaders");
+    });
+
+    it("propagates allow-listed inbound headers", async () => {
+        const server = makeServer([HEADER], relay);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [HEADER]: "abc" } });
+        assert.strictEqual(res.message, "abc");
+    });
+
+    it("explicit CallOptions.headers win over propagated values", async () => {
+        const overriding: SecureImpl = async (req, ctx) => {
+            const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: req.message, sequence: 0 }), { headers: { [HEADER]: "override" } });
+            return create(EchoResponseSchema, { message: inner.value, timestamp: 0n });
+        };
+        const server = makeServer([HEADER], overriding);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [HEADER]: "abc" } });
+        assert.strictEqual(res.message, "override");
+    });
+
+    it("defaultPropagateHeaders is the W3C trace-context set", () => {
+        assert.deepStrictEqual([...defaultPropagateHeaders], ["traceparent", "tracestate"]);
     });
 });
 
