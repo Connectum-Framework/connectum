@@ -31,8 +31,8 @@ export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./
 // header — see SECURITY_REVIEW.md §4 F1.
 export type { CreateLocalTransportOptions } from "./localTransport.ts";
 export { createLocalTransport } from "./localTransport.ts";
-export type { RemoteResolver, ResolverContext } from "./remoteResolver.ts";
-export { mapResolver, singleTransportResolver } from "./remoteResolver.ts";
+export type { DnsResolverOptions, PerServiceEnvResolverOptions, RemoteResolver, ResolverContext } from "./remoteResolver.ts";
+export { dnsResolver, mapResolver, perServiceEnvResolver, singleTransportResolver } from "./remoteResolver.ts";
 // Main createServer factory
 export { createServer } from "./Server.ts";
 // Service catalog — declarative cross-service call primitives
