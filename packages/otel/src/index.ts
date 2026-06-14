@@ -19,6 +19,9 @@ export {
     ATTR_NETWORK_PROTOCOL_NAME,
     ATTR_NETWORK_TRANSPORT,
     ATTR_RPC_CONNECT_RPC_STATUS_CODE,
+    ATTR_RPC_MESSAGE_ID,
+    ATTR_RPC_MESSAGE_TYPE,
+    ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
     ATTR_RPC_METHOD,
     ATTR_RPC_SERVICE,
     ATTR_RPC_SYSTEM,
@@ -28,6 +31,7 @@ export {
     CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS,
     ConnectErrorCode,
     ConnectErrorCodeName,
+    RPC_MESSAGE_EVENT,
     RPC_SYSTEM_CONNECT_RPC,
 } from "./attributes.ts";
 // Client interceptor (outgoing RPC tracing + metrics)
