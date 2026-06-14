@@ -126,9 +126,13 @@ const sharedKeys = new Set([...groups.entries()].filter(([, g]) => g.pkgs.size >
 
 const out = [];
 
-// 1. Highlights (curated).
+// 1. Highlights (curated). HTML comments hold maintainer guidance that must not
+// leak into the published notes, so they are stripped out.
 if (existsSync(highlightsFile)) {
-    const hl = readFileSync(highlightsFile, "utf8").trim();
+    const hl = readFileSync(highlightsFile, "utf8")
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
     if (hl) {
         out.push("## Highlights", "", hl, "");
     }
