@@ -30,6 +30,10 @@ export { createLocalTransport } from "./localTransport.ts";
 // Main createServer factory
 export { createServer } from "./Server.ts";
 
+// Service catalog — declarative cross-service call primitives
+export type { ConnectumCallMap, ConnectumStreamMap, ServiceCatalog } from "./serviceCatalog.ts";
+export { defineCatalog, mergeCatalogs } from "./serviceCatalog.ts";
+
 // =============================================================================
 // UTILITIES
 // =============================================================================
