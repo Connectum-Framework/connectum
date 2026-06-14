@@ -46,6 +46,28 @@ const highlightsFile = getOpt("--highlights", ".github/RELEASE_HIGHLIGHTS.md");
 
 const CATEGORIES = ["Major Changes", "Minor Changes", "Patch Changes"];
 
+/**
+ * Remove HTML comments (maintainer guidance in the highlights file) without a
+ * regex, scanning for `<!--`/`-->` pairs. An unterminated `<!--` drops the
+ * remainder so no dangling comment marker survives into the published notes.
+ */
+function stripHtmlComments(input) {
+    let result = "";
+    let i = 0;
+    while (i < input.length) {
+        const open = input.indexOf("<!--", i);
+        if (open === -1) {
+            result += input.slice(i);
+            break;
+        }
+        result += input.slice(i, open);
+        const close = input.indexOf("-->", open + 4);
+        if (close === -1) break; // unterminated: drop the rest, leaving no `<!--`
+        i = close + 3;
+    }
+    return result;
+}
+
 /** Extract the body of the `## <version>` section from a CHANGELOG. */
 function extractVersionSection(changelog, ver) {
     const lines = changelog.split("\n");
@@ -129,8 +151,7 @@ const out = [];
 // 1. Highlights (curated). HTML comments hold maintainer guidance that must not
 // leak into the published notes, so they are stripped out.
 if (existsSync(highlightsFile)) {
-    const hl = readFileSync(highlightsFile, "utf8")
-        .replace(/<!--[\s\S]*?-->/g, "")
+    const hl = stripHtmlComments(readFileSync(highlightsFile, "utf8"))
         .replace(/\n{3,}/g, "\n\n")
         .trim();
     if (hl) {
