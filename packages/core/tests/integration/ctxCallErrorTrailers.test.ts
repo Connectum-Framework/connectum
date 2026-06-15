@@ -51,7 +51,7 @@ describe("ctx.call error → external gRPC client trailers", () => {
         });
 
         const port = server.address?.port ?? 0;
-        const client = createClient(EchoService, createGrpcTransport({ baseUrl: `http://localhost:${port}` }));
+        const client = createClient(EchoService, createGrpcTransport({ baseUrl: `http://127.0.0.1:${port}` }));
 
         await assert.rejects(
             client.secureEcho(create(EchoRequestSchema, { message: "x" })),

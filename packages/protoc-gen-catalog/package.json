@@ -59,6 +59,7 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@connectum/core": "workspace:^",
+    "@exodus/test": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"
   }

@@ -48,6 +48,11 @@ describe("mockResolver", () => {
         assert.strictEqual(mockResolver([]) ({ typeName: EchoService.typeName }), null);
     });
 
+    it("throws on duplicate mocked service typeNames", () => {
+        const dup = mockService(EchoService, { echo: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }) });
+        assert.throws(() => mockResolver([dup, dup]), /duplicate mock service "echo\.v1\.EchoService"/);
+    });
+
     it("is NOT exported from @connectum/core", () => {
         assert.strictEqual("mockResolver" in core, false, "mockResolver belongs to @connectum/testing only");
     });

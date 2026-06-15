@@ -34,9 +34,13 @@ interface CatalogOptions {
     readonly outputFile: string;
 }
 
+/** Matches Windows absolute paths: drive-letter (`C:\`, `C:/`) and UNC (`\\server\share`). */
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]|^\\\\/;
+
 /**
- * Parse `output_file=...` (the only supported option). Rejects empty, absolute,
- * and parent-traversal paths so generation cannot escape the output root.
+ * Parse `output_file=...` (the only supported option). Rejects empty, absolute
+ * (POSIX and Windows), and parent-traversal paths so generation cannot escape
+ * the output root.
  */
 function parseCatalogOptions(rawOptions: { key: string; value: string }[]): CatalogOptions {
     let outputFile = "catalog.gen.ts";
@@ -47,7 +51,7 @@ function parseCatalogOptions(rawOptions: { key: string; value: string }[]): Cata
         if (value.length === 0) {
             throw new Error("protoc-gen-connectum-catalog: output_file must not be empty.");
         }
-        if (value.startsWith("/") || value.split(/[/\\]/).includes("..")) {
+        if (value.startsWith("/") || WINDOWS_ABSOLUTE.test(value) || value.split(/[/\\]/).includes("..")) {
             throw new Error(`protoc-gen-connectum-catalog: output_file must be a relative path inside the output root (got "${value}").`);
         }
         outputFile = value;

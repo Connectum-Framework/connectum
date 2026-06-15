@@ -102,7 +102,7 @@ export function perServiceEnvResolver(map: Readonly<Record<string, string>>, opt
     return ({ typeName }) => {
         const envVar = map[typeName];
         if (!envVar) return null;
-        const baseUrl = process.env[envVar];
+        const baseUrl = process.env[envVar]?.trim();
         if (!baseUrl) return null;
         return create(baseUrl);
     };

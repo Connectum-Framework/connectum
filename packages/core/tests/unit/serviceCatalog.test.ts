@@ -29,6 +29,10 @@ describe("defineCatalog", () => {
         const catalog = defineCatalog(input);
         assert.notEqual(catalog, input, "should return a copy, not the same reference");
     });
+
+    it("throws when a key does not match its descriptor typeName", () => {
+        assert.throws(() => defineCatalog({ "wrong.key": svc("x.A") }), /key "wrong\.key" must match descriptor\.typeName "x\.A"/);
+    });
 });
 
 describe("mergeCatalogs", () => {
@@ -50,5 +54,10 @@ describe("mergeCatalogs", () => {
         const merged = mergeCatalogs();
         assert.deepEqual(Object.keys(merged), []);
         assert.equal(Object.isFrozen(merged), true);
+    });
+
+    it("throws when a key does not match its descriptor typeName", () => {
+        const bad: ServiceCatalog = { "wrong.key": svc("x.A") };
+        assert.throws(() => mergeCatalogs(bad), /key "wrong\.key" must match descriptor\.typeName "x\.A"/);
     });
 });

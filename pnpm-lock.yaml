@@ -571,6 +571,9 @@ importers:
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
+      '@exodus/test':
+        specifier: 'catalog:'
+        version: 1.0.0-rc.116
       tsup:
         specifier: 'catalog:'
         version: 8.5.1(jiti@2.6.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)

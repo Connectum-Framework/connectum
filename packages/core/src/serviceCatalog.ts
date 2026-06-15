@@ -46,6 +46,10 @@ export interface ConnectumStreamMap {}
  * key type for downstream inference. Equivalent to writing the record inline,
  * but freezes the result and documents intent.
  *
+ * Throws {@link CatalogConfigError} if any key does not equal its descriptor's
+ * `typeName` — a mis-keyed entry would bypass the duplicate-`typeName` intent
+ * and break resolution by canonical type name.
+ *
  * @example
  * ```ts
  * const catalog = defineCatalog({
@@ -55,13 +59,19 @@ export interface ConnectumStreamMap {}
  * ```
  */
 export function defineCatalog<const T extends Record<string, DescService>>(record: T): Readonly<T> {
+    for (const [key, descriptor] of Object.entries(record)) {
+        if (key !== descriptor.typeName) {
+            throw new CatalogConfigError(`defineCatalog: key "${key}" must match descriptor.typeName "${descriptor.typeName}".`);
+        }
+    }
     return Object.freeze({ ...record });
 }
 
 /**
  * Merge several catalogs into one.
  *
- * Throws `Error` on a duplicate `typeName`. TypeScript cannot catch a duplicate
+ * Throws {@link CatalogConfigError} on a duplicate `typeName`, or on a key that
+ * does not equal its descriptor's `typeName`. TypeScript cannot catch a duplicate
  * whose two descriptors have an identical shape (polyrepo finding F3), so this
  * runtime check is mandatory rather than optional — a silent collision would
  * route calls to the wrong service.
@@ -70,6 +80,9 @@ export function mergeCatalogs(...catalogs: readonly ServiceCatalog[]): ServiceCa
     const merged: Record<string, DescService> = {};
     for (const catalog of catalogs) {
         for (const [typeName, descriptor] of Object.entries(catalog)) {
+            if (typeName !== descriptor.typeName) {
+                throw new CatalogConfigError(`mergeCatalogs: key "${typeName}" must match descriptor.typeName "${descriptor.typeName}".`);
+            }
             if (Object.hasOwn(merged, typeName)) {
                 throw new CatalogConfigError(`mergeCatalogs: duplicate typeName: "${typeName}"`);
             }

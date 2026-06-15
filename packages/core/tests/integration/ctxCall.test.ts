@@ -22,7 +22,7 @@ import { singleTransportResolver } from "../../src/remoteResolver.ts";
 import { createServer } from "../../src/Server.ts";
 import { defineCatalog } from "../../src/serviceCatalog.ts";
 import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
-import { type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
+import { CountSchema, type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 // Hand-written catalog augmentation (the buf plugin — task 9 — does not exist
 // yet). Includes deliberately-bogus keys to exercise the Unimplemented guards.
@@ -53,7 +53,7 @@ function makeStreamingRemote(marker: string): Transport {
             echo: (req) => create(ItemSchema, { value: `${marker}:${req.value}`, sequence: req.sequence }),
             // Streaming methods are unused here; minimal stubs keep the impl total.
             async *server() {},
-            client: async () => create(ItemSchema, { value: "", sequence: 0 }) as never,
+            client: async () => create(CountSchema, { total: 0 }),
             async *bidi() {},
         });
     });
@@ -134,7 +134,7 @@ describe("ctx.call — signal cascade", () => {
                         ctx.signal.addEventListener("abort", () => reject(new ConnectError("aborted by inbound signal", Code.Canceled)));
                     }),
                 async *server() {},
-                client: async () => create(ItemSchema, { value: "", sequence: 0 }) as never,
+                client: async () => create(CountSchema, { total: 0 }),
                 async *bidi() {},
             });
         });
@@ -176,7 +176,7 @@ describe("ctx.call — deadline cascade", () => {
             router.service(StreamingService, {
                 echo: (_req, ctx) => create(ItemSchema, { value: String(ctx.timeoutMs() ?? -1), sequence: 0 }),
                 async *server() {},
-                client: async () => create(ItemSchema, { value: "", sequence: 0 }) as never,
+                client: async () => create(CountSchema, { total: 0 }),
                 async *bidi() {},
             });
         });
@@ -319,7 +319,7 @@ describe("ctx.call — header propagation", () => {
             router.service(StreamingService, {
                 echo: (_req, ctx) => create(ItemSchema, { value: ctx.requestHeader.get(HEADER) ?? "none", sequence: 0 }),
                 async *server() {},
-                client: async () => create(ItemSchema, { value: "", sequence: 0 }) as never,
+                client: async () => create(CountSchema, { total: 0 }),
                 async *bidi() {},
             });
         });

@@ -54,6 +54,9 @@ const tagMockResponse: Interceptor = (next) => async (req) => {
 export function mockResolver(mocks: readonly MockService[]): RemoteResolver {
     const transports = new Map<string, Transport>();
     for (const mock of mocks) {
+        if (transports.has(mock.service.typeName)) {
+            throw new Error(`mockResolver: duplicate mock service "${mock.service.typeName}"`);
+        }
         const transport = createRouterTransport(
             (router) => {
                 router.service(mock.service, mock.impl);

@@ -61,13 +61,18 @@ describe("dnsResolver", () => {
 
 describe("perServiceEnvResolver", () => {
     it("resolves a mapped service whose env var is set", () => {
-        process.env.TEST_ORDERS_URL = "http://orders:5000";
-        const cap = captureUrl();
-        const resolve = perServiceEnvResolver({ "orders.v1.OrdersService": "TEST_ORDERS_URL" }, { createTransport: cap.createTransport });
-        const t = resolve({ typeName: "orders.v1.OrdersService" });
-        assert.notEqual(t, null);
-        assert.equal(cap.url, "http://orders:5000");
-        delete process.env.TEST_ORDERS_URL;
+        const prev = process.env.TEST_ORDERS_URL;
+        try {
+            process.env.TEST_ORDERS_URL = "http://orders:5000";
+            const cap = captureUrl();
+            const resolve = perServiceEnvResolver({ "orders.v1.OrdersService": "TEST_ORDERS_URL" }, { createTransport: cap.createTransport });
+            const t = resolve({ typeName: "orders.v1.OrdersService" });
+            assert.notEqual(t, null);
+            assert.equal(cap.url, "http://orders:5000");
+        } finally {
+            if (prev === undefined) delete process.env.TEST_ORDERS_URL;
+            else process.env.TEST_ORDERS_URL = prev;
+        }
     });
     it("returns null for an unmapped service", () => {
         const resolve = perServiceEnvResolver({ "orders.v1.OrdersService": "TEST_X" });
@@ -77,5 +82,16 @@ describe("perServiceEnvResolver", () => {
         delete process.env.TEST_MISSING_URL;
         const resolve = perServiceEnvResolver({ "x.v1.A": "TEST_MISSING_URL" });
         assert.equal(resolve({ typeName: "x.v1.A" }), null);
+    });
+    it("treats a whitespace-only env var as unset (→ null)", () => {
+        const prev = process.env.TEST_BLANK_URL;
+        try {
+            process.env.TEST_BLANK_URL = "   ";
+            const resolve = perServiceEnvResolver({ "x.v1.A": "TEST_BLANK_URL" });
+            assert.equal(resolve({ typeName: "x.v1.A" }), null);
+        } finally {
+            if (prev === undefined) delete process.env.TEST_BLANK_URL;
+            else process.env.TEST_BLANK_URL = prev;
+        }
     });
 });
