@@ -15,7 +15,10 @@ New public API (additive):
   (`{ descriptor, register }`); `createServer({ services })` now takes
   `ServiceDefinition[]`. `defineLazyService` instantiates handlers only when the
   service is mounted locally. Handlers receive a Connectum `Context` (the
-  ConnectRPC `HandlerContext` plus `ctx.call` / `ctx.stream`).
+  ConnectRPC `HandlerContext` plus `ctx.call` / `ctx.stream`). An optional third
+  `options` argument (`ServiceOptions`) forwards per-service handler options —
+  e.g. service-scoped `interceptors` and `jsonOptions` — to `router.service()`,
+  preserving the capability of the removed `ServiceRoute` form.
 - **`ctx.call(method, request, options?)`** — typed cross-service unary calls
   (`"${typeName}/${Method}"` keys). The framework routes in-process when the
   target is mounted locally and via the `remoteResolver` otherwise. The inbound

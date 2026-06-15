@@ -22,7 +22,7 @@ export { CatalogConfigError } from "./catalogErrors.ts";
 // Handler context (ctx.call / ctx.stream) + handler implementation types
 export type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumMethodImpl, ConnectumServiceImpl, Context, StreamReturn } from "./context.ts";
 // Service registration
-export type { ServiceDefinition } from "./defineService.ts";
+export type { ServiceDefinition, ServiceOptions } from "./defineService.ts";
 export { defineLazyService, defineService } from "./defineService.ts";
 export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./enabledServices.ts";
 // In-process transport

@@ -20,6 +20,14 @@ import type { ConnectRouter, ServiceImpl } from "@connectrpc/connect";
 import type { ConnectumServiceImpl } from "./context.ts";
 
 /**
+ * Per-service handler options forwarded to ConnectRPC's `router.service()` —
+ * e.g. per-service `interceptors` (applied to every method of this service) and
+ * `jsonOptions`. Derived from the underlying `ConnectRouter.service` signature
+ * so it always matches the installed `@connectrpc/connect`.
+ */
+export type ServiceOptions = NonNullable<Parameters<ConnectRouter["service"]>[2]>;
+
+/**
  * Framework-supplied helpers handed to a {@link ServiceDefinition}'s `register`
  * closure at mount time. Currently exposes the handler wrapper that injects the
  * Connectum {@link Context}.
@@ -49,6 +57,9 @@ export interface ServiceDefinition {
 /**
  * Define a service from its descriptor and handler map.
  *
+ * Pass {@link ServiceOptions} to set per-service handler options, e.g.
+ * interceptors applied to every method of this service:
+ *
  * @example
  * ```ts
  * const greeter = defineService(GreeterService, {
@@ -56,15 +67,15 @@ export interface ServiceDefinition {
  *     // ctx.call(...) is available for cross-service calls
  *     return { message: `Hello, ${req.name}!` };
  *   },
- * });
+ * }, { interceptors: [requireAuth, auditLog] });
  * createServer({ services: [greeter] });
  * ```
  */
-export function defineService<S extends DescService>(descriptor: S, handlers: ConnectumServiceImpl<S>): ServiceDefinition {
+export function defineService<S extends DescService>(descriptor: S, handlers: ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
     return {
         descriptor,
         register(router, ctx) {
-            router.service(descriptor, ctx.wrapHandlers(descriptor, handlers));
+            router.service(descriptor, ctx.wrapHandlers(descriptor, handlers), options);
         },
     };
 }
@@ -77,11 +88,11 @@ export function defineService<S extends DescService>(descriptor: S, handlers: Co
  * routed to a remote process never instantiates its local dependencies. Useful
  * for DI-heavy monoliths where wiring a service is expensive.
  */
-export function defineLazyService<S extends DescService>(descriptor: S, factory: () => ConnectumServiceImpl<S>): ServiceDefinition {
+export function defineLazyService<S extends DescService>(descriptor: S, factory: () => ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
     return {
         descriptor,
         register(router, ctx) {
-            router.service(descriptor, ctx.wrapHandlers(descriptor, factory()));
+            router.service(descriptor, ctx.wrapHandlers(descriptor, factory()), options);
         },
     };
 }

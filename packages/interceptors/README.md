@@ -457,10 +457,21 @@ const server = createServer({
 });
 ```
 
-To scope interceptors to a specific service or method, use the
-declarative pattern routing in Approach 2 below
-(`createMethodFilterInterceptor`): `"Service/*"` applies to every method
-of a service, and `"Service/Method"` targets a single method.
+To scope interceptors to a single **service** (every method of it), pass them
+as the third argument to `defineService` — they are forwarded to the underlying
+`router.service()` handler options:
+
+```typescript
+const greeter = defineService(
+  GreeterService,
+  { async sayHello(req, ctx) { return { message: `Hello, ${req.name}!` }; } },
+  { interceptors: [requireAuth, auditLog] },
+);
+```
+
+To target a specific **method**, use the declarative pattern routing in
+Approach 2 below (`createMethodFilterInterceptor`): `"Service/*"` applies to
+every method of a service, and `"Service/Method"` targets a single method.
 
 ### Approach 2: createMethodFilterInterceptor (declarative routing)
 
