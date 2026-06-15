@@ -25,3 +25,7 @@
 "pkg:cli":
   - changed-files:
       - any-glob-to-any-file: "packages/cli/**"
+
+"pkg:protoc-gen-catalog":
+  - changed-files:
+      - any-glob-to-any-file: "packages/protoc-gen-catalog/**"
