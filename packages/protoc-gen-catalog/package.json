@@ -27,7 +27,6 @@
     "typecheck": "tsc --noEmit",
     "test": "exodus-test --typescript tests/**/*.test.ts",
     "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
-    "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
     "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts",
     "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts",
     "lint": "biome check src",
