@@ -7,19 +7,19 @@ settings:
 catalogs:
   default:
     '@biomejs/biome':
-      specifier: ^2.3.15
-      version: 2.4.14
+      specifier: ^2.5.0
+      version: 2.5.0
     '@bufbuild/buf':
-      specifier: ^1.65.0
-      version: 1.69.0
+      specifier: ^1.70.0
+      version: 1.70.0
     '@bufbuild/protobuf':
-      specifier: ^2.11.0
+      specifier: ^2.12.0
       version: 2.12.0
     '@bufbuild/protoc-gen-es':
-      specifier: ^2.11.0
+      specifier: ^2.12.0
       version: 2.12.0
     '@bufbuild/protoplugin':
-      specifier: ^2.11.0
+      specifier: ^2.12.0
       version: 2.12.0
     '@commitlint/cli':
       specifier: ^20.4.1
@@ -28,11 +28,11 @@ catalogs:
       specifier: ^20.4.1
       version: 20.5.3
     '@connectrpc/connect':
-      specifier: ^2.1.1
-      version: 2.1.1
+      specifier: ^2.1.2
+      version: 2.1.2
     '@connectrpc/connect-node':
-      specifier: ^2.1.1
-      version: 2.1.1
+      specifier: ^2.1.2
+      version: 2.1.2
     '@connectrpc/validate':
       specifier: ^0.2.0
       version: 0.2.0
@@ -85,8 +85,8 @@ catalogs:
       specifier: ^1.41.1
       version: 1.41.1
     '@types/node':
-      specifier: ^25.3.0
-      version: 25.6.0
+      specifier: ^25.9.3
+      version: 25.9.3
     c8:
       specifier: ^10.1.3
       version: 10.1.3
@@ -97,14 +97,14 @@ catalogs:
       specifier: ^9.1.7
       version: 9.1.7
     tsup:
-      specifier: ^8.5.0
+      specifier: ^8.5.1
       version: 8.5.1
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
     zod:
-      specifier: ^4.3.6
-      version: 4.4.2
+      specifier: ^4.4.3
+      version: 4.4.3
 
 overrides:
   '@grpc/grpc-js@<1.14.4': 1.14.4
@@ -126,7 +126,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
         version: 2.12.0(@bufbuild/protobuf@2.12.0)
@@ -135,10 +135,10 @@ importers:
         version: 0.7.0
       '@changesets/cli':
         specifier: ^2.31.0
-        version: 2.31.0(@types/node@25.6.0)
+        version: 2.31.0(@types/node@25.9.3)
       '@commitlint/cli':
         specifier: 'catalog:'
-        version: 20.5.3(@types/node@25.6.0)(conventional-commits-parser@6.4.0)(typescript@5.9.3)
+        version: 20.5.3(@types/node@25.9.3)(conventional-commits-parser@6.4.0)(typescript@5.9.3)
       '@commitlint/config-conventional':
         specifier: 'catalog:'
         version: 20.5.3
@@ -147,7 +147,7 @@ importers:
         version: 1.0.0-rc.116
       '@types/node':
         specifier: 'catalog:'
-        version: 25.6.0
+        version: 25.9.3
       c8:
         specifier: ^10.1.3
         version: 10.1.3
@@ -177,7 +177,7 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -187,10 +187,10 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/buf':
         specifier: 'catalog:'
-        version: 1.69.0
+        version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
         version: 2.12.0(@bufbuild/protobuf@2.12.0)
@@ -214,10 +214,10 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@lambdalisue/connectrpc-grpcreflect':
         specifier: ^0.5.0
         version: 0.5.0
@@ -227,10 +227,10 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/buf':
         specifier: 'catalog:'
-        version: 1.69.0
+        version: 1.70.0
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -254,20 +254,20 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       env-var:
         specifier: 'catalog:'
         version: 7.5.0
       zod:
         specifier: 'catalog:'
-        version: 4.4.2
+        version: 4.4.3
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       c8:
         specifier: 'catalog:'
         version: 10.1.3
@@ -289,10 +289,10 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/buf':
         specifier: 'catalog:'
-        version: 1.69.0
+        version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
         version: 2.12.0(@bufbuild/protobuf@2.12.0)
@@ -314,7 +314,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/events':
         specifier: workspace:^
         version: link:../events
@@ -342,7 +342,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/events':
         specifier: workspace:^
         version: link:../events
@@ -367,7 +367,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/events':
         specifier: workspace:^
         version: link:../events
@@ -392,7 +392,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/events':
         specifier: workspace:^
         version: link:../events
@@ -416,20 +416,20 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/buf':
         specifier: 'catalog:'
-        version: 1.69.0
+        version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
         version: 2.12.0(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -450,10 +450,10 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@connectrpc/validate':
         specifier: 'catalog:'
-        version: 0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -463,7 +463,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/test-fixtures':
         specifier: workspace:^
         version: link:../test-fixtures
@@ -481,7 +481,7 @@ importers:
     dependencies:
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
@@ -527,13 +527,13 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@bufbuild/protobuf':
         specifier: 'catalog:'
         version: 2.12.0
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -567,7 +567,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -585,17 +585,17 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@lambdalisue/connectrpc-grpcreflect':
         specifier: ^0.5.0
         version: 0.5.0
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -619,11 +619,11 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@exodus/test':
         specifier: 'catalog:'
         version: 1.0.0-rc.116
@@ -644,10 +644,10 @@ importers:
         version: 2.12.0
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -666,7 +666,7 @@ importers:
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
-        version: 2.4.14
+        version: 2.5.0
       '@connectum/interceptors':
         specifier: workspace:^
         version: link:../interceptors
@@ -800,107 +800,107 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@biomejs/biome@2.4.14':
-    resolution: {integrity: sha512-TmAvxOEgrpLypzVGJ8FulIZnlyA9TxrO1hyqYrCz9r+bwma9xXxuLA5IuYnj55XQneFx460KjRbx6SWGLkg3bQ==}
+  '@biomejs/biome@2.5.0':
+    resolution: {integrity: sha512-4kURkd9hAPrdDM3C9n82ycYgx8hvQcW6MjKTEejruj8rK0N8P3OPpdy8BvI8kt3KWY4ycF5XtDOrktetEfhfuw==}
     engines: {node: '>=14.21.3'}
     hasBin: true
 
-  '@biomejs/cli-darwin-arm64@2.4.14':
-    resolution: {integrity: sha512-XvgoE9XOawUOQPdmvs4J7wPhi/DLwSCGks3AlPJDmh34O0awRTqCED1HRcRDdpf1Zrp4us4MGOOdIxNpbqNF5Q==}
+  '@biomejs/cli-darwin-arm64@2.5.0':
+    resolution: {integrity: sha512-Mn3Fwi3SA5fgmfCPqmzpWF2DLZnms3BVAhM088nTnGrTZmHS3wwIjcoZPqpXeNgd3DrrLH6xp8vTLIBuJoZiXw==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [darwin]
 
-  '@biomejs/cli-darwin-x64@2.4.14':
-    resolution: {integrity: sha512-jE7hKBCFhOx3uUh+ZkWBfOHxAcILPfhFplNkuID/eZeSTLHzfZzoZxW8fbqY9xXRnPi7jGNAf1iPVR+0yWsM/Q==}
+  '@biomejs/cli-darwin-x64@2.5.0':
+    resolution: {integrity: sha512-rg3VPL5P8mYro6pqlXYXuJWph21slVp3SZtAqWSrkZs40d2gTzYmHF8E/X1iTID25btmNKltNDJ926sqVBp7DQ==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [darwin]
 
-  '@biomejs/cli-linux-arm64-musl@2.4.14':
-    resolution: {integrity: sha512-/z+6gqAqqUQTHazwStxSXKHg9b8UvqBmDFRp+c4wYbq2KXhELQDon9EoC9RpmQ8JWkqQx/lIUy/cs+MhzDZp6A==}
+  '@biomejs/cli-linux-arm64-musl@2.5.0':
+    resolution: {integrity: sha512-vQdM4oSGaf7ZNeGO9w5+Y8SBtyser9M6znxYbm7Ec8wInxJu1WiKxFYZW5Auj2d80bcVvefuGGRxoFOE0eee8g==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@biomejs/cli-linux-arm64@2.4.14':
-    resolution: {integrity: sha512-2TELhZnW5RSLL063l9rc5xLpA0ZIw0Ccwy/0q384rvNAgFw3yI76bd59547yxowdQr5MNPET/xDLrLuvgSeeWQ==}
+  '@biomejs/cli-linux-arm64@2.5.0':
+    resolution: {integrity: sha512-tl+LW8fdD96/xdeWtWwc82LIOc5CoY7N2AsogLTp5R4ECErYt+8Jl/N68ezN9vzSiqPTxw6vjcihoLPYKZHrlw==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@biomejs/cli-linux-x64-musl@2.4.14':
-    resolution: {integrity: sha512-R6BWgJdQOwW9ulJatuTVrQkjnODjqHZkKNOqb1sz++3Noe5LYd0i3PchnOBUCYAPHoPWHhjJqbdZlHEu0hpjdA==}
+  '@biomejs/cli-linux-x64-musl@2.5.0':
+    resolution: {integrity: sha512-+9hIcMngJ+yGUahXqZuZ8CoWKJE9SAZsFsM3QDvXpNsLbXZ9lqVzgBhOk/jTSYkOA0GLP9eu3teukqpLUojHMg==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@biomejs/cli-linux-x64@2.4.14':
-    resolution: {integrity: sha512-zHrlQZDBDUz4OLAraYpWKcnLS6HOewBFWYOzY91d1ZjdqZwibOyb6BEu6WuWLugyo0P3riCmsbV9UqV1cSXwQg==}
+  '@biomejs/cli-linux-x64@2.5.0':
+    resolution: {integrity: sha512-zpEGf4RQbFEh8Vt7OmavLyyOzRbtcE9osCqrS1kfvt8jDvxwhKXLSf7n0ebr/ov0RJ9ssP+lhs6C8a9WwFvrQA==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@biomejs/cli-win32-arm64@2.4.14':
-    resolution: {integrity: sha512-M3EH5hqOI/F/FUA2u4xcLoUgmxd218mvuj/6JL7Hv2toQvr2/AdOvKSpGkoRuWFCtQPVa+ZqkEV3Q5xBA9+XSA==}
+  '@biomejs/cli-win32-arm64@2.5.0':
+    resolution: {integrity: sha512-jB0wAvTLI4itx5VidqVUejPQFhRUxiZ9l9FvZ26D5fl6t3qme+ZB4PD3bTSeL1vZ8NI2Rx/zj6H9zcESuGHKGw==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [win32]
 
-  '@biomejs/cli-win32-x64@2.4.14':
-    resolution: {integrity: sha512-WL0EG5qE+EAKomGXbf2g6VnSKJhTL3tXC0QRzWRwA5VpjxNYa6H4P7ZWfymbGE4IhZZQi1KXQ2R0YjwInmz2fA==}
+  '@biomejs/cli-win32-x64@2.5.0':
+    resolution: {integrity: sha512-VT/lF+GId+67j8aDfLkxdxNoVApsPSTbyAtB3jJq0IWTrY77WXfbPfpngxq0bA6JCEv/7k8C9qWjDRKRznDlyw==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [win32]
 
-  '@bufbuild/buf-darwin-arm64@1.69.0':
-    resolution: {integrity: sha512-q7086l1PRS0fUn/IYef7WUAq5PEPIxCh3AVZZdObdOAA9C77ES7CYBSTWH3oEJHVElv1KPVVqvGmOC+G78HuXg==}
+  '@bufbuild/buf-darwin-arm64@1.70.0':
+    resolution: {integrity: sha512-c7owUswBbMmwfHPH9JRBEJu09mrXYGC33V2JQCgraWCBm74Z95AOkhDua50qiBrQnysvJkJ0p/z4MWxJqcpnIA==}
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [darwin]
 
-  '@bufbuild/buf-darwin-x64@1.69.0':
-    resolution: {integrity: sha512-ihM+lr0tahgLVbQvp5jhYS6T1cpydEX3TbJvAfePLJBCTrsXFMwKt1WIDjpSHIPHQABcqL9BuNnbs8r1+7E1MA==}
+  '@bufbuild/buf-darwin-x64@1.70.0':
+    resolution: {integrity: sha512-sucV3lQXVuOqYs3+ToulkUh2tZuMnl286DKb44imp3PnexVhAVOP7d3ybYe98HNGwysEdjNP2WIOGb0uKuRCIQ==}
     engines: {node: '>=12'}
     cpu: [x64]
     os: [darwin]
 
-  '@bufbuild/buf-linux-aarch64@1.69.0':
-    resolution: {integrity: sha512-4twJF1ehcPRBvgA2g2yIG/3ViZ3SrElqCqGjXHp+U4RfjHV249j8kzVj08mvI1t0kv8Rbm8JECYqkxcYnKyuRA==}
+  '@bufbuild/buf-linux-aarch64@1.70.0':
+    resolution: {integrity: sha512-4viSYqbhIusd6LR+JayDex8S1rLUL+hTUMYUgSPl75EC93FpJM4vkk2RhoAhyjQqWF/JQLcyWV8kjRRiIwygdg==}
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [linux]
 
-  '@bufbuild/buf-linux-armv7@1.69.0':
-    resolution: {integrity: sha512-zfbYrfPjOBp1Dxj+9avW05NWzGwLUTInfslhgWVbq61DYLegX6UW12hVk5xS/C5D0IlfIDfJUXEeTsHImigQTQ==}
+  '@bufbuild/buf-linux-armv7@1.70.0':
+    resolution: {integrity: sha512-GqujpTX4MXtYiUkxd6oI1g0JaCX3L6koT16Gl0D0HIQ/V2mptH7x4UW8nK3tAURMjrHsEEhcSJRtmfINTTKnsg==}
     engines: {node: '>=12'}
     cpu: [arm]
     os: [linux]
 
-  '@bufbuild/buf-linux-x64@1.69.0':
-    resolution: {integrity: sha512-mt/hJesHK62TlsSJPwBpRIC/OzWTlgaRmyjC8QF+T6+IbFwiwz1E3ZBCfNECEa2HW4ma8HbugpJyCBbUSA+z/Q==}
+  '@bufbuild/buf-linux-x64@1.70.0':
+    resolution: {integrity: sha512-5WHGUIb5iLFXcnqV33TDejqaPgx0CWFaYW7b4wh12wT0w3DR+ghFq6S6RmYyZLbTuhS4ZFsf+xyk5m+HViKxrA==}
     engines: {node: '>=12'}
     cpu: [x64]
     os: [linux]
 
-  '@bufbuild/buf-win32-arm64@1.69.0':
-    resolution: {integrity: sha512-IlMSIdCWvllwenbLlrWEH2YHQwCqmONKZYv4MXj56v6TvCWCTbYlaF5ZFP+xFAHToHp1OrFc+rwUqCt7ElBbHg==}
+  '@bufbuild/buf-win32-arm64@1.70.0':
+    resolution: {integrity: sha512-dU1qh7iD08/1avCHwIOoGsatQctE6uGwgOue9GOaThi8/Rdy1x9CC/eFdyFSeCMwbUg9ABQvMGUocylfUe6xDw==}
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [win32]
 
-  '@bufbuild/buf-win32-x64@1.69.0':
-    resolution: {integrity: sha512-wpKZLXUF/w85g4ZL9XqQqm33cfw2NRjiidSX5EVFMx4rDp7cnAUv3+PTwZvEPriqJEihnOJ5JCozsxjiWqSX7Q==}
+  '@bufbuild/buf-win32-x64@1.70.0':
+    resolution: {integrity: sha512-iKYbjTbEk0ppkv2SrsPFhYus93kj/aMN8aRsrpuo91ZVqXg8JcH4XXbgFpwiFAsiABjqKICFfnDomrFvv49UOA==}
     engines: {node: '>=12'}
     cpu: [x64]
     os: [win32]
 
-  '@bufbuild/buf@1.69.0':
-    resolution: {integrity: sha512-hWk7cW6Z/7g6jpybePaf15QUUFd2+s4lJCeaAkBeo3tWPGoSgNJaJdMqIUy2y99uYy4yMjq9GYmjc5dSrfIn5A==}
+  '@bufbuild/buf@1.70.0':
+    resolution: {integrity: sha512-oJWGqltlu8F7VVNHLoJ3pFXhjfiGpbh7+/mXW0y+VMPWFGxc9YDv4de1UcX7zhhjV6MbE4SiEGo5Gs5jhpVg5A==}
     engines: {node: '>=12'}
     hasBin: true
 
@@ -1068,15 +1068,20 @@ packages:
     resolution: {integrity: sha512-ZJoS8oSq2CAZEpc/YI9SulLrdiIyXeHb/OGqGrkUP6Q7YV+0ouNAa7GjqRdXeQPncHQIDz/jbCTlHScvYvO/gA==}
     engines: {node: '>=v18'}
 
-  '@connectrpc/connect-node@2.1.1':
-    resolution: {integrity: sha512-s3TfsI1XF+n+1z6MBS9rTnFsxxR4Rw5wmdEnkQINli81ESGxcsfaEet8duzq8LVuuCupmhUsgpRo0Nv9pZkufg==}
+  '@connectrpc/connect-node@2.1.2':
+    resolution: {integrity: sha512-+i/aAOpsI8sIx1mbYp6d99zvxaUSF6t/jP9Ux9maAmjsZPgmIQ3JuIeYi0zJIP9zlCnBlJjkpPosshCgdRuThQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@bufbuild/protobuf': ^2.7.0
-      '@connectrpc/connect': 2.1.1
+      '@connectrpc/connect': 2.1.2
 
   '@connectrpc/connect@2.1.1':
     resolution: {integrity: sha512-JzhkaTvM73m2K1URT6tv53k2RwngSmCXLZJgK580qNQOXRzZRR/BCMfZw3h+90JpnG6XksP5bYT+cz0rpUzUWQ==}
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.7.0
+
+  '@connectrpc/connect@2.1.2':
+    resolution: {integrity: sha512-MXkBijtcX09R10Eb6sFeIetc6w6746eio6xtfuyVOH7oQAacT1X0GzMIQFux6Qy8cq3W/T5qX5Bei8YbFtmRGA==}
     peerDependencies:
       '@bufbuild/protobuf': ^2.7.0
 
@@ -1790,9 +1795,6 @@ packages:
 
   '@types/node@18.19.130':
     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
-
-  '@types/node@25.6.0':
-    resolution: {integrity: sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==}
 
   '@types/node@25.9.3':
     resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==}
@@ -3481,9 +3483,6 @@ packages:
   undici-types@5.26.5:
     resolution: {integrity: sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==}
 
-  undici-types@7.19.2:
-    resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
-
   undici-types@7.24.6:
     resolution: {integrity: sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg==}
 
@@ -3598,8 +3597,8 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.4.2:
-    resolution: {integrity: sha512-IynmDyxsEsb9RKzO3J9+4SxXnl2FTFSzNBaKKaMV6tsSk0rw9gYw9gs+JFCq/qk2LCZ78KDwyj+Z289TijSkUw==}
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
 
@@ -3776,71 +3775,71 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@biomejs/biome@2.4.14':
+  '@biomejs/biome@2.5.0':
     optionalDependencies:
-      '@biomejs/cli-darwin-arm64': 2.4.14
-      '@biomejs/cli-darwin-x64': 2.4.14
-      '@biomejs/cli-linux-arm64': 2.4.14
-      '@biomejs/cli-linux-arm64-musl': 2.4.14
-      '@biomejs/cli-linux-x64': 2.4.14
-      '@biomejs/cli-linux-x64-musl': 2.4.14
-      '@biomejs/cli-win32-arm64': 2.4.14
-      '@biomejs/cli-win32-x64': 2.4.14
+      '@biomejs/cli-darwin-arm64': 2.5.0
+      '@biomejs/cli-darwin-x64': 2.5.0
+      '@biomejs/cli-linux-arm64': 2.5.0
+      '@biomejs/cli-linux-arm64-musl': 2.5.0
+      '@biomejs/cli-linux-x64': 2.5.0
+      '@biomejs/cli-linux-x64-musl': 2.5.0
+      '@biomejs/cli-win32-arm64': 2.5.0
+      '@biomejs/cli-win32-x64': 2.5.0
 
-  '@biomejs/cli-darwin-arm64@2.4.14':
+  '@biomejs/cli-darwin-arm64@2.5.0':
     optional: true
 
-  '@biomejs/cli-darwin-x64@2.4.14':
+  '@biomejs/cli-darwin-x64@2.5.0':
     optional: true
 
-  '@biomejs/cli-linux-arm64-musl@2.4.14':
+  '@biomejs/cli-linux-arm64-musl@2.5.0':
     optional: true
 
-  '@biomejs/cli-linux-arm64@2.4.14':
+  '@biomejs/cli-linux-arm64@2.5.0':
     optional: true
 
-  '@biomejs/cli-linux-x64-musl@2.4.14':
+  '@biomejs/cli-linux-x64-musl@2.5.0':
     optional: true
 
-  '@biomejs/cli-linux-x64@2.4.14':
+  '@biomejs/cli-linux-x64@2.5.0':
     optional: true
 
-  '@biomejs/cli-win32-arm64@2.4.14':
+  '@biomejs/cli-win32-arm64@2.5.0':
     optional: true
 
-  '@biomejs/cli-win32-x64@2.4.14':
+  '@biomejs/cli-win32-x64@2.5.0':
     optional: true
 
-  '@bufbuild/buf-darwin-arm64@1.69.0':
+  '@bufbuild/buf-darwin-arm64@1.70.0':
     optional: true
 
-  '@bufbuild/buf-darwin-x64@1.69.0':
+  '@bufbuild/buf-darwin-x64@1.70.0':
     optional: true
 
-  '@bufbuild/buf-linux-aarch64@1.69.0':
+  '@bufbuild/buf-linux-aarch64@1.70.0':
     optional: true
 
-  '@bufbuild/buf-linux-armv7@1.69.0':
+  '@bufbuild/buf-linux-armv7@1.70.0':
     optional: true
 
-  '@bufbuild/buf-linux-x64@1.69.0':
+  '@bufbuild/buf-linux-x64@1.70.0':
     optional: true
 
-  '@bufbuild/buf-win32-arm64@1.69.0':
+  '@bufbuild/buf-win32-arm64@1.70.0':
     optional: true
 
-  '@bufbuild/buf-win32-x64@1.69.0':
+  '@bufbuild/buf-win32-x64@1.70.0':
     optional: true
 
-  '@bufbuild/buf@1.69.0':
+  '@bufbuild/buf@1.70.0':
     optionalDependencies:
-      '@bufbuild/buf-darwin-arm64': 1.69.0
-      '@bufbuild/buf-darwin-x64': 1.69.0
-      '@bufbuild/buf-linux-aarch64': 1.69.0
-      '@bufbuild/buf-linux-armv7': 1.69.0
-      '@bufbuild/buf-linux-x64': 1.69.0
-      '@bufbuild/buf-win32-arm64': 1.69.0
-      '@bufbuild/buf-win32-x64': 1.69.0
+      '@bufbuild/buf-darwin-arm64': 1.70.0
+      '@bufbuild/buf-darwin-x64': 1.70.0
+      '@bufbuild/buf-linux-aarch64': 1.70.0
+      '@bufbuild/buf-linux-armv7': 1.70.0
+      '@bufbuild/buf-linux-x64': 1.70.0
+      '@bufbuild/buf-win32-arm64': 1.70.0
+      '@bufbuild/buf-win32-x64': 1.70.0
 
   '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.12.0)':
     dependencies:
@@ -3914,7 +3913,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@changesets/cli@2.31.0(@types/node@25.6.0)':
+  '@changesets/cli@2.31.0(@types/node@25.9.3)':
     dependencies:
       '@changesets/apply-release-plan': 7.1.1
       '@changesets/assemble-release-plan': 6.0.10
@@ -3930,7 +3929,7 @@ snapshots:
       '@changesets/should-skip-package': 0.1.2
       '@changesets/types': 6.1.0
       '@changesets/write': 0.4.0
-      '@inquirer/external-editor': 1.0.3(@types/node@25.6.0)
+      '@inquirer/external-editor': 1.0.3(@types/node@25.9.3)
       '@manypkg/get-packages': 1.1.3
       ansi-colors: 4.1.3
       enquirer: 2.4.1
@@ -4035,11 +4034,11 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@commitlint/cli@20.5.3(@types/node@25.6.0)(conventional-commits-parser@6.4.0)(typescript@5.9.3)':
+  '@commitlint/cli@20.5.3(@types/node@25.9.3)(conventional-commits-parser@6.4.0)(typescript@5.9.3)':
     dependencies:
       '@commitlint/format': 20.5.0
       '@commitlint/lint': 20.5.3
-      '@commitlint/load': 20.5.3(@types/node@25.6.0)(typescript@5.9.3)
+      '@commitlint/load': 20.5.3(@types/node@25.9.3)(typescript@5.9.3)
       '@commitlint/read': 20.5.0(conventional-commits-parser@6.4.0)
       '@commitlint/types': 20.5.0
       tinyexec: 1.1.2
@@ -4084,14 +4083,14 @@ snapshots:
       '@commitlint/rules': 20.5.3
       '@commitlint/types': 20.5.0
 
-  '@commitlint/load@20.5.3(@types/node@25.6.0)(typescript@5.9.3)':
+  '@commitlint/load@20.5.3(@types/node@25.9.3)(typescript@5.9.3)':
     dependencies:
       '@commitlint/config-validator': 20.5.0
       '@commitlint/execute-rule': 20.0.0
       '@commitlint/resolve-extends': 20.5.3
       '@commitlint/types': 20.5.0
       cosmiconfig: 9.0.1(typescript@5.9.3)
-      cosmiconfig-typescript-loader: 6.3.0(@types/node@25.6.0)(cosmiconfig@9.0.1(typescript@5.9.3))(typescript@5.9.3)
+      cosmiconfig-typescript-loader: 6.3.0(@types/node@25.9.3)(cosmiconfig@9.0.1(typescript@5.9.3))(typescript@5.9.3)
       es-toolkit: 1.46.1
       is-plain-obj: 4.1.0
       picocolors: 1.1.1
@@ -4145,20 +4144,24 @@ snapshots:
       conventional-commits-parser: 6.4.0
       picocolors: 1.1.1
 
-  '@connectrpc/connect-node@2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))':
+  '@connectrpc/connect-node@2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))':
     dependencies:
       '@bufbuild/protobuf': 2.12.0
-      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.12.0)
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.0)
 
   '@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0)':
     dependencies:
       '@bufbuild/protobuf': 2.12.0
 
-  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))':
+  '@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0)':
+    dependencies:
+      '@bufbuild/protobuf': 2.12.0
+
+  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))':
     dependencies:
       '@bufbuild/protobuf': 2.12.0
       '@bufbuild/protovalidate': 1.2.0(@bufbuild/protobuf@2.12.0)
-      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.12.0)
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.0)
 
   '@conventional-changelog/git-client@2.7.0(conventional-commits-parser@6.4.0)':
     dependencies:
@@ -4328,12 +4331,12 @@ snapshots:
       protobufjs: 7.5.8
       yargs: 17.7.2
 
-  '@inquirer/external-editor@1.0.3(@types/node@25.6.0)':
+  '@inquirer/external-editor@1.0.3(@types/node@25.9.3)':
     dependencies:
       chardet: 2.1.1
       iconv-lite: 0.7.2
     optionalDependencies:
-      '@types/node': 25.6.0
+      '@types/node': 25.9.3
 
   '@ioredis/commands@1.10.0': {}
 
@@ -4801,10 +4804,6 @@ snapshots:
     dependencies:
       undici-types: 5.26.5
 
-  '@types/node@25.6.0':
-    dependencies:
-      undici-types: 7.19.2
-
   '@types/node@25.9.3':
     dependencies:
       undici-types: 7.24.6
@@ -5181,9 +5180,9 @@ snapshots:
 
   core-util-is@1.0.3: {}
 
-  cosmiconfig-typescript-loader@6.3.0(@types/node@25.6.0)(cosmiconfig@9.0.1(typescript@5.9.3))(typescript@5.9.3):
+  cosmiconfig-typescript-loader@6.3.0(@types/node@25.9.3)(cosmiconfig@9.0.1(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
-      '@types/node': 25.6.0
+      '@types/node': 25.9.3
       cosmiconfig: 9.0.1(typescript@5.9.3)
       jiti: 2.6.1
       typescript: 5.9.3
@@ -5810,7 +5809,7 @@ snapshots:
   jest-mock@30.3.0:
     dependencies:
       '@jest/types': 30.3.0
-      '@types/node': 25.6.0
+      '@types/node': 25.9.3
       jest-util: 30.3.0
     optional: true
 
@@ -5820,7 +5819,7 @@ snapshots:
   jest-util@30.3.0:
     dependencies:
       '@jest/types': 30.3.0
-      '@types/node': 25.6.0
+      '@types/node': 25.9.3
       chalk: 4.1.2
       ci-info: 4.4.0
       graceful-fs: 4.2.11
@@ -6726,8 +6725,6 @@ snapshots:
 
   undici-types@5.26.5: {}
 
-  undici-types@7.19.2: {}
-
   undici-types@7.24.6: {}
 
   undici@8.4.1: {}
@@ -6847,4 +6844,4 @@ snapshots:
   zod@3.25.76:
     optional: true
 
-  zod@4.4.2: {}
+  zod@4.4.3: {}
