@@ -14,6 +14,12 @@ import { importExceptionReason } from "./allowlist.mjs";
 
 const report = JSON.parse(readFileSync("./gen-cov/report.json", "utf8"));
 
+// A subpath that hangs during module evaluation must not wedge the gate; race
+// the import against a timeout so a stuck module produces a deterministic
+// failure. (A leaked timer/handle can keep the process alive past the checks,
+// so the orchestrator force-exits on completion.)
+const withTimeout = (p, ms, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`import timed out after ${ms}ms: ${label}`)), ms).unref())]);
+
 const deltas = [];
 for (const [spec, info] of Object.entries(report.exports)) {
     if (importExceptionReason(spec) || !info.resolved) continue;
@@ -21,7 +27,7 @@ for (const [spec, info] of Object.entries(report.exports)) {
     const declaredTypes = info.types || [];
     let mod;
     try {
-        mod = await import(spec);
+        mod = await withTimeout(import(spec), 15000, spec);
     } catch (e) {
         deltas.push({ spec, kind: "IMPORT-THREW", detail: e?.message ?? String(e) });
         continue;

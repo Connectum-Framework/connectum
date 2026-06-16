@@ -80,7 +80,11 @@ if (mode === "preview") {
     }
     const tarballs = readdirSync(tarDir);
     const find = (p) => {
-        const hit = tarballs.find((f) => f.startsWith(`connectum-${p}-`));
+        // `connectum-${p}-` is a PREFIX of sibling names (connectum-events- is a
+        // prefix of connectum-events-kafka-), so anchor on the version digit that
+        // follows the package name: `connectum-events-1...` vs `connectum-events-kafka-1...`.
+        const re = new RegExp(`^connectum-${p}-\\d`);
+        const hit = tarballs.find((f) => re.test(f));
         if (!hit) die(`no tarball produced for @connectum/${p}`);
         return join(tarDir, hit);
     };

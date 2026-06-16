@@ -30,7 +30,9 @@ const fmt = (d) => {
     return `TS${d.code}: ${m}`;
 };
 
-const diags = ts.getPreEmitDiagnostics(program).filter((d) => (d.file?.fileName ?? "").endsWith("src/usage.ts"));
+// Normalize separators — TS file names use `/`, but guard against `\` so the
+// filter can't silently pass (hiding diagnostics) on Windows.
+const diags = ts.getPreEmitDiagnostics(program).filter((d) => (d.file?.fileName ?? "").replace(/\\/g, "/").endsWith("/src/usage.ts"));
 if (diags.length === 0) {
     console.log("usage-typecheck: OK — documented consumer signatures type-check against the packed .d.ts");
     process.exit(0);
