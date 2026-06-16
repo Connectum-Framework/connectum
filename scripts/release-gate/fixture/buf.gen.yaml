@@ -1,0 +1,18 @@
+version: v2
+clean: true
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-es
+    out: gen
+    opt:
+      - target=ts
+      - import_extension=.ts
+  # Published @connectum/protoc-gen-catalog buf plugin (bin: protoc-gen-connectum-catalog).
+  # strategy: all → single catalog.gen.ts aggregating every service.
+  - local: protoc-gen-connectum-catalog
+    strategy: all
+    out: gen
+    opt:
+      - target=ts
+      - import_extension=.ts

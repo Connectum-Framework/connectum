@@ -24,6 +24,8 @@
     "lint": "turbo run lint",
     "format": "turbo run format",
     "biome": "biome check --write .",
+    "release:gate": "node scripts/release-gate/run.mjs --mode pack",
+    "release:gate:preview": "node scripts/release-gate/run.mjs --mode preview",
     "dev": "turbo run dev --parallel",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "changeset": "changeset",

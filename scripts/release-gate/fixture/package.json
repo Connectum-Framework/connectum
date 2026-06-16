@@ -1,0 +1,41 @@
+{
+  "name": "connectum-release-gate-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#gen/*": "./gen/*"
+  },
+  "scripts": {
+    "buf:generate": "buf generate"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.11.0",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1",
+    "@connectum/auth": "1.0.0",
+    "@connectum/cli": "1.0.0",
+    "@connectum/core": "1.0.0",
+    "@connectum/events": "1.0.0",
+    "@connectum/events-amqp": "1.0.0",
+    "@connectum/events-kafka": "1.0.0",
+    "@connectum/events-nats": "1.0.0",
+    "@connectum/events-redis": "1.0.0",
+    "@connectum/healthcheck": "1.0.0",
+    "@connectum/interceptors": "1.0.0",
+    "@connectum/otel": "1.0.0",
+    "@connectum/protoc-gen-catalog": "1.0.0",
+    "@connectum/reflection": "1.0.0",
+    "@connectum/test-fixtures": "1.0.0",
+    "@connectum/testing": "1.0.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.65.0",
+    "@bufbuild/protoc-gen-es": "^2.11.0",
+    "@types/node": "^25.2.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
