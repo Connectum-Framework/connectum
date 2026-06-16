@@ -38,7 +38,7 @@ Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript 
 | [`@connectum/healthcheck`](packages/healthcheck) | `Healthcheck()` — gRPC Health Check protocol + HTTP `/healthz`, `healthcheckManager` |
 | [`@connectum/reflection`](packages/reflection) | `Reflection()` — gRPC Server Reflection v1/v1alpha, `collectFileProtos()` |
 | [`@connectum/otel`](packages/otel) | `initProvider()` — OpenTelemetry tracing, metrics, logging; `traced()`, `getTracer()`, `getMeter()` |
-| [`@connectum/cli`](packages/cli) | CLI tooling for code generation and project scaffolding |
+| [`@connectum/cli`](packages/cli) | `connectum proto sync` — sync proto types from a running server via reflection |
 | [`@connectum/events`](packages/events) | `createEventBus()` — proto-first pub/sub with middleware (retry, DLQ), `MemoryAdapter` |
 | [`@connectum/events-nats`](packages/events-nats) | NATS JetStream adapter for EventBus |
 | [`@connectum/events-kafka`](packages/events-kafka) | Apache Kafka / Redpanda adapter for EventBus |

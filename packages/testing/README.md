@@ -10,7 +10,7 @@ Testing utilities for the Connectum framework. Provides mock factories, assertio
 pnpm add -D @connectum/testing
 ```
 
-**Peer dependencies**: `@connectrpc/connect`, `@bufbuild/protobuf`
+**Dependencies** (installed automatically): `@connectum/core`, `@connectum/test-fixtures`, `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`, `@opentelemetry/api`
 
 ## Quick Start
 
@@ -116,7 +116,8 @@ import { Code } from '@connectrpc/connect';
 
 // Success
 const next = createMockNext();
-const result = await handler(req, next);
+const handler = interceptor(next);
+const result = await handler(req);
 assert.strictEqual(next.mock.calls.length, 1);
 
 // Custom response message
@@ -147,7 +148,7 @@ import { assertConnectError } from '@connectum/testing';
 import { Code } from '@connectrpc/connect';
 
 // In rejects callback
-await assert.rejects(() => handler(req, next), (err: unknown) => {
+await assert.rejects(() => handler(req), (err: unknown) => {
   assertConnectError(err, Code.InvalidArgument, /validation failed/i);
   return true;
 });
@@ -434,6 +435,65 @@ transportParityTest("emits matching spans", {
 });
 ```
 
+## Service-Catalog Mocks
+
+For handlers that call other services through the catalog (`ctx.call` /
+`ctx.stream`), `@connectum/testing` ships an in-memory `RemoteResolver` and a
+mock `Context` factory so you can unit-test cross-service logic without a
+network hop.
+
+### `mockResolver()` / `mockService()`
+
+`mockResolver(mocks)` builds a `RemoteResolver` (from `@connectum/core`) backed
+by in-memory router transports. It returns `null` for any service not in the
+mock set, so it composes with real resolvers. Every mock response carries the
+`MOCK_RESPONSE_HEADER` (`"x-connectum-mock"`) so tests can assert the call was
+served by a mock. `mockService(service, impl)` is a type-safe constructor that
+pairs a service descriptor with a (partial) implementation typed against it.
+
+```typescript
+import { create } from "@bufbuild/protobuf";
+import { mockResolver, mockService } from "@connectum/testing";
+
+const resolver = mockResolver([
+  mockService(InventoryService, {
+    getStock: () => create(StockSchema, { units: 7 }),
+  }),
+]);
+```
+
+### `createMockContext()`
+
+Creates a Connectum `Context` whose `ctx.call` / `ctx.stream` resolve against
+the given mocks. It drives the same dispatch path as a live request (a real
+`Server` is built with the catalog and `mockResolver`), so resolver lookup,
+header propagation, and error semantics match production. Pass it as the second
+argument to a handler under test.
+
+```typescript
+import { create } from "@bufbuild/protobuf";
+import { defineCatalog } from "@connectum/core";
+import { createMockContext, mockService } from "@connectum/testing";
+
+const ctx = createMockContext({
+  catalog: defineCatalog({ [InventoryService.typeName]: InventoryService }),
+  mocks: [mockService(InventoryService, { getStock: () => create(StockSchema, { units: 7 }) })],
+});
+
+const res = await orderHandler(create(CreateOrderSchema, { sku: "x" }), ctx);
+```
+
+**Options (`CreateMockContextOptions`):**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `catalog` | `ServiceCatalog` | — | The catalog the handler-under-test calls into (required) |
+| `mocks` | `MockService[]` | — | Mock implementations served via the resolver path (required) |
+| `outgoingInterceptors` | `Interceptor[]` | `[]` | Outgoing interceptors (applied exactly as in production) |
+| `requestHeader` | `HeadersInit` | — | Inbound headers (seen by `ctx.requestHeader` + propagation) |
+| `timeoutMs` | `number` | — | Inbound deadline in ms (drives the `ctx.timeoutMs()` cascade) |
+| `propagateHeaders` | `string[]` | — | Header names propagated onto outgoing calls |
+
 ## Running Tests
 
 ```bash
@@ -450,7 +510,7 @@ pnpm test                                 # All packages
 ## Architecture
 
 - **Layer:** 2 (Tools) — depends on Layer 0 (@connectum/core) and external packages
-- **Dependencies:** `@connectum/core`, `@connectrpc/connect`, `@bufbuild/protobuf`
+- **Dependencies:** `@connectum/core`, `@connectum/test-fixtures`, `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`, `@opentelemetry/{api,sdk-metrics,sdk-trace-base}`
 - **Rationale:** Testing is a devDependency concern — production code must not pull test utilities ([ADR-003](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/003-package-decomposition.md))
 - **Test runner:** `node:test` built-in ([ADR-007](https://github.com/Connectum-Framework/docs/blob/main/en/contributing/adr/007-testing-strategy.md))
 
