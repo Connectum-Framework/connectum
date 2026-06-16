@@ -28,9 +28,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import type { ConnectRouter, HandlerContext, Interceptor } from "@connectrpc/connect";
+import type { HandlerContext, Interceptor } from "@connectrpc/connect";
 import { createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
+import { defineService } from "../../src/defineService.ts";
 import { createLocalTransport, LOCAL_TRANSPORT_HEADER, LOCAL_TRANSPORT_VALUE } from "../../src/localTransport.ts";
 import { createServer } from "../../src/Server.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
@@ -48,14 +49,12 @@ function makeTransportHeaderProbe(box: { value: string | null }): Interceptor {
 }
 
 function makeEchoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req, _ctx: HandlerContext) =>
-                create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req, _ctx: HandlerContext) =>
+            create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 describe("F1 — Local transport header is stripped from inbound HTTP requests", () => {

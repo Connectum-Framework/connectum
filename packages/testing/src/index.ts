@@ -33,6 +33,9 @@ export {
 
 // Phase 4 (P3): In-process transport helpers & cross-transport parity driver
 export { createLocalClient } from "./createLocalClient.ts";
+// Service-catalog testing: mock resolver + mock handler context
+export { type CreateMockContextOptions, createMockContext } from "./mockContext.ts";
+export { MOCK_RESPONSE_HEADER, type MockService, mockResolver, mockService } from "./mockResolver.ts";
 export {
     InMemoryMetricCollector,
     InMemorySpanCollector,

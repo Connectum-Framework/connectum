@@ -17,6 +17,14 @@
 // SERVER API
 // =============================================================================
 
+// Service catalog — declarative cross-service call primitives
+export { CatalogConfigError } from "./catalogErrors.ts";
+// Handler context (ctx.call / ctx.stream) + handler implementation types
+export type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumMethodImpl, ConnectumServiceImpl, Context, StreamReturn } from "./context.ts";
+// Service registration
+export type { ServiceDefinition, ServiceOptions } from "./defineService.ts";
+export { defineLazyService, defineService } from "./defineService.ts";
+export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./enabledServices.ts";
 // In-process transport
 //
 // NOTE: `LOCAL_TRANSPORT_HEADER` and `LOCAL_TRANSPORT_VALUE` are intentionally
@@ -27,8 +35,13 @@
 // header — see SECURITY_REVIEW.md §4 F1.
 export type { CreateLocalTransportOptions } from "./localTransport.ts";
 export { createLocalTransport } from "./localTransport.ts";
+export { defaultPropagateHeaders } from "./propagateHeaders.ts";
+export type { DnsResolverOptions, PerServiceEnvResolverOptions, RemoteResolver, ResolverContext } from "./remoteResolver.ts";
+export { dnsResolver, mapResolver, perServiceEnvResolver, singleTransportResolver } from "./remoteResolver.ts";
 // Main createServer factory
 export { createServer } from "./Server.ts";
+export type { ConnectumCallMap, ConnectumStreamMap, ServiceCatalog } from "./serviceCatalog.ts";
+export { defineCatalog, mergeCatalogs } from "./serviceCatalog.ts";
 
 // =============================================================================
 // UTILITIES
@@ -61,8 +74,6 @@ export type {
     // Server API
     Server,
     ServerClientOptions,
-    // Common types
-    ServiceRoute,
     ShutdownHook,
     ShutdownOptions,
     TLSOptions,

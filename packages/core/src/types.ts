@@ -10,6 +10,9 @@ import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerRes
 import type { AddressInfo } from "node:net";
 import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
+import type { ServiceDefinition } from "./defineService.ts";
+import type { RemoteResolver } from "./remoteResolver.ts";
+import type { ServiceCatalog } from "./serviceCatalog.ts";
 
 // =============================================================================
 // TRANSPORT UNION TYPES
@@ -24,12 +27,10 @@ export type NodeResponse = ServerResponse | Http2ServerResponse;
 /** Underlying transport server — HTTP/1.1, HTTP/2 plaintext, or HTTP/2 TLS */
 export type TransportServer = HttpServer | Http2Server | Http2SecureServer;
 
-/**
- * Service route function
- *
- * Function that registers services on the ConnectRouter.
- */
-export type ServiceRoute = (router: ConnectRouter) => void;
+// Service registration is expressed with `ServiceDefinition` (see
+// ./defineService.ts) — a `{ descriptor, register }` pair produced by
+// `defineService` / `defineLazyService`. The legacy `ServiceRoute =
+// (router) => void` form was removed in favour of it.
 
 /**
  * Shutdown hook function type
@@ -215,7 +216,7 @@ export interface CreateServerOptions {
     /**
      * Service routes to register
      */
-    services: ServiceRoute[];
+    services: readonly ServiceDefinition[];
 
     /**
      * Server port
@@ -340,7 +341,8 @@ export interface CreateServerOptions {
      * JSON responses instead of omitting them.
      *
      * For per-service control, pass the same option as the third argument of
-     * `router.service()` inside a {@link ServiceRoute} instead.
+     * `router.service()` inside a {@link ServiceDefinition}'s `register` closure
+     * instead.
      *
      * Note: the relevant `JsonWriteOptions` field in `@bufbuild/protobuf` v2 is
      * `alwaysEmitImplicit` (named `emitDefaultValues` in v1).
@@ -354,6 +356,48 @@ export interface CreateServerOptions {
      * ```
      */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+
+    // ── Service catalog (optional; a plain monolith needs none of these) ──
+
+    /**
+     * The full set of services known to the system, `typeName → DescService`
+     * (typically the generated `serviceCatalog`). Drives startup validation and
+     * remote routing. Optional — a process that hosts everything locally and
+     * makes no cross-service calls needs no catalog.
+     */
+    catalog?: ServiceCatalog;
+
+    /**
+     * Proto `typeName`s to mount **locally** from `services`. A service in
+     * `services` whose `typeName` is not listed is treated as remote (resolved
+     * via {@link CreateServerOptions.remoteResolver}). `undefined` mounts every
+     * provided service locally.
+     */
+    enabledServices?: readonly string[];
+
+    /**
+     * Resolves a service that is not mounted locally to a `Transport`. Consulted
+     * by `server.client()` (and `ctx.call`) for remote services. Synchronous and
+     * must not perform network I/O — see {@link RemoteResolver}.
+     */
+    remoteResolver?: RemoteResolver;
+
+    /**
+     * Client-side interceptors applied to every outgoing `server.client()` /
+     * `ctx.call` call (cross-cutting concerns like auth or logging), so call
+     * sites stay free of boilerplate.
+     */
+    outgoingInterceptors?: readonly Interceptor[];
+
+    /**
+     * Inbound header names to copy onto every outgoing `ctx.call` / `ctx.stream`.
+     * Empty by default — no header is propagated implicitly. Explicit
+     * `CallOptions.headers` always win over a propagated value.
+     *
+     * Use {@link defaultPropagateHeaders} (W3C trace-context headers) as a base
+     * and add your own, e.g. `[...defaultPropagateHeaders, "x-tenant-id"]`.
+     */
+    propagateHeaders?: readonly string[];
 }
 
 /**
@@ -457,7 +501,7 @@ export interface Server extends EventEmitter {
      *
      * @throws Error if server is already running
      */
-    addService(service: ServiceRoute): void;
+    addService(service: ServiceDefinition): void;
 
     /**
      * Add an interceptor at runtime
@@ -528,7 +572,7 @@ export interface Server extends EventEmitter {
     /**
      * Registered service routes
      */
-    readonly routes: ReadonlyArray<ServiceRoute>;
+    readonly routes: ReadonlyArray<ServiceDefinition>;
 
     /**
      * Registered interceptors
@@ -589,10 +633,15 @@ export interface Server extends EventEmitter {
 
     /**
      * Unified client factory: auto-routes to the in-process transport if the
-     * service is registered on this `Server`, otherwise uses `options.fallback`
-     * transport (e.g. a `createGrpcTransport({ baseUrl })` to a remote peer).
-     * Without `fallback`, an unregistered service raises `ConnectError`
-     * (`Code.Unimplemented`) at client construction time — fail-fast.
+     * service is registered on this `Server`, otherwise to the transport
+     * supplied by the configured `remoteResolver` (e.g. a
+     * `createGrpcTransport({ baseUrl })` to a remote peer). An optional
+     * `options.endpoint` hint is forwarded to the resolver.
+     *
+     * Fail-fast (split error model): a non-local service with no `remoteResolver`
+     * configured is a configuration mistake → throws {@link CatalogConfigError}
+     * at the `server.client(...)` call. A resolver that returns `null` is an
+     * operational miss → `ConnectError(Code.Unavailable)`.
      *
      * Enables polyglot deployments where the same call site (`server.client(S)`)
      * routes locally in a modular monolith and remotely when the service is
@@ -600,8 +649,10 @@ export interface Server extends EventEmitter {
      *
      * @example
      * ```typescript
-     * // Same call works whether GreeterService is co-located or remote:
-     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * // Configure the resolver once; the same call works whether GreeterService
+     * // is co-located or remote:
+     * const server = createServer({ services: [...], remoteResolver });
+     * const client = server.client(GreeterService);
      * await client.sayHello({ name: 'world' });
      * ```
      */
@@ -613,11 +664,9 @@ export interface Server extends EventEmitter {
  */
 export interface ServerClientOptions {
     /**
-     * Transport used when the requested service is NOT registered on this
-     * `Server`. Typically a remote HTTP/gRPC transport.
-     *
-     * If omitted and the service is not local, `Server.client()` throws
-     * `ConnectError` with `Code.Unimplemented`.
+     * Opaque endpoint hint forwarded to the configured `remoteResolver` when the
+     * requested service is not mounted locally (polymorphic deployments — one
+     * proto served at several endpoints). Ignored for locally-mounted services.
      */
-    fallback?: import("@connectrpc/connect").Transport;
+    endpoint?: string;
 }

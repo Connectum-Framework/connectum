@@ -39,9 +39,9 @@
 
 import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { createLocalTransport, createServer } from "@connectum/core";
+import { createLocalTransport, createServer, defineService } from "@connectum/core";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
@@ -150,34 +150,30 @@ function createInlineValidationInterceptor(): Interceptor {
 }
 
 function echoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => create(EchoResponseSchema, { message: `ok:${req.message}`, timestamp: 0n }),
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req) => create(EchoResponseSchema, { message: `ok:${req.message}`, timestamp: 0n }),
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 function streamingRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(StreamingService, {
-            echo: (req) => create(ItemSchema, { value: `ok:${req.value}`, sequence: req.sequence }),
-            async *server(req) {
-                yield create(ItemSchema, { value: req.value, sequence: 0 });
-            },
-            async client(requests) {
-                let total = 0;
-                for await (const _ of requests) total++;
-                return { total };
-            },
-            async *bidi(requests) {
-                for await (const item of requests) {
-                    yield create(ItemSchema, { value: item.value, sequence: item.sequence });
-                }
-            },
-        });
-    };
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: `ok:${req.value}`, sequence: req.sequence }),
+        async *server(req) {
+            yield create(ItemSchema, { value: req.value, sequence: 0 });
+        },
+        async client(requests) {
+            let total = 0;
+            for await (const _ of requests) total++;
+            return { total };
+        },
+        async *bidi(requests) {
+            for await (const item of requests) {
+                yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+            }
+        },
+    });
 }
 
 function describeError(err: unknown): { code: number | string; message: string; metadata?: Record<string, string> } {

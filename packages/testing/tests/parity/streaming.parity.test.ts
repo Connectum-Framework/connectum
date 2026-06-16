@@ -10,37 +10,36 @@
  */
 
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, type ConnectRouter, createClient } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import { transportParityTest } from "../../src/transportParityTest.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 function streamingRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(StreamingService, {
-            echo: (req) => create(ItemSchema, { value: `echo:${req.value}`, sequence: req.sequence }),
-            // Server stream: yield N items based on req.sequence.
-            async *server(req) {
-                const n = req.sequence || 3;
-                for (let i = 0; i < n; i++) {
-                    yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
-                }
-            },
-            // Client stream: aggregate count of received items.
-            async client(requests) {
-                let total = 0;
-                for await (const _item of requests) {
-                    total++;
-                }
-                return { total };
-            },
-            // Bidi: echo each received message.
-            async *bidi(requests) {
-                for await (const item of requests) {
-                    yield create(ItemSchema, { value: `bidi:${item.value}`, sequence: item.sequence });
-                }
-            },
-        });
-    };
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: `echo:${req.value}`, sequence: req.sequence }),
+        // Server stream: yield N items based on req.sequence.
+        async *server(req) {
+            const n = req.sequence || 3;
+            for (let i = 0; i < n; i++) {
+                yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
+            }
+        },
+        // Client stream: aggregate count of received items.
+        async client(requests) {
+            let total = 0;
+            for await (const _item of requests) {
+                total++;
+            }
+            return { total };
+        },
+        // Bidi: echo each received message.
+        async *bidi(requests) {
+            for await (const item of requests) {
+                yield create(ItemSchema, { value: `bidi:${item.value}`, sequence: item.sequence });
+            }
+        },
+    });
 }
 
 // 4.1 Unary
@@ -101,34 +100,32 @@ transportParityTest("parity 4.4: bidi-streaming echoes each message in order", {
 
 // 4.5 Unary cancellation
 function cancellableRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(StreamingService, {
-            // Long-running unary that resolves only after signal abort.
-            echo: (_req, ctx) => {
-                return new Promise((_resolve, reject) => {
-                    ctx.signal.addEventListener("abort", () => {
-                        reject(new ConnectError("aborted", Code.Canceled));
-                    });
+    return defineService(StreamingService, {
+        // Long-running unary that resolves only after signal abort.
+        echo: (_req, ctx) => {
+            return new Promise((_resolve, reject) => {
+                ctx.signal.addEventListener("abort", () => {
+                    reject(new ConnectError("aborted", Code.Canceled));
                 });
-            },
-            async *server(req) {
-                let i = 0;
-                while (true) {
-                    yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
-                    i++;
-                    await new Promise((r) => setTimeout(r, 20));
-                }
-            },
-            async client() {
-                return { total: 0 };
-            },
-            async *bidi(requests) {
-                for await (const item of requests) {
-                    yield create(ItemSchema, { value: item.value, sequence: item.sequence });
-                }
-            },
-        });
-    };
+            });
+        },
+        async *server(req) {
+            let i = 0;
+            while (true) {
+                yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
+                i++;
+                await new Promise((r) => setTimeout(r, 20));
+            }
+        },
+        async client() {
+            return { total: 0 };
+        },
+        async *bidi(requests) {
+            for await (const item of requests) {
+                yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+            }
+        },
+    });
 }
 
 transportParityTest("parity 4.5: unary cancellation produces Code.Canceled", {

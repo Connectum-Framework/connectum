@@ -155,7 +155,7 @@ function createServer(options: CreateServerOptions): Server
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `services` | `ServiceRoute[]` | required | Array of service route functions |
+| `services` | `ServiceDefinition[]` | required | Service definitions (use `defineService()` / `defineLazyService()`) |
 | `port` | `number` | `5000` | Server port |
 | `host` | `string` | `'0.0.0.0'` | Host to bind |
 | `tls` | `TLSOptions` | - | TLS configuration |
@@ -183,7 +183,7 @@ interface Server extends EventEmitter {
 
   // Transport access
   readonly transport: Http2SecureServer | Http2Server | null;
-  readonly routes: ReadonlyArray<ServiceRoute>;
+  readonly routes: ReadonlyArray<ServiceDefinition>;
   readonly interceptors: ReadonlyArray<Interceptor>;
   readonly protocols: ReadonlyArray<ProtocolRegistration>;
 
@@ -191,7 +191,7 @@ interface Server extends EventEmitter {
   readonly shutdownSignal: AbortSignal;
 
   // Runtime operations (only before start())
-  addService(service: ServiceRoute): void;
+  addService(service: ServiceDefinition): void;
   addInterceptor(interceptor: Interceptor): void;
   addProtocol(protocol: ProtocolRegistration): void;
 
@@ -375,7 +375,7 @@ throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount:
 | `ProtocolRegistration` | type | Protocol plugin interface |
 | `ShutdownOptions` | type | Graceful shutdown options |
 | `TLSOptions` | type | TLS configuration options |
-| `ServiceRoute` | type | Service route function type |
+| `ServiceDefinition` | type | A mountable service: descriptor + register closure (from `defineService`) |
 | `ShutdownHook` | type | Shutdown hook function type |
 | `HttpHandler` | type | HTTP handler type |
 | `ProtocolContext` | type | Protocol context type |

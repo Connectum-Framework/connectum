@@ -8,18 +8,30 @@
 import assert from "node:assert";
 import { afterEach, describe, it, mock } from "node:test";
 import type { ConnectRouter } from "@connectrpc/connect";
+import type { ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
-import type { EventBusLike, ProtocolContext, ProtocolRegistration, Server, ServiceRoute } from "../../src/types.ts";
+import type { EventBusLike, ProtocolContext, ProtocolRegistration, Server } from "../../src/types.ts";
 import { ServerState } from "../../src/types.ts";
+import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 // =============================================================================
 // HELPERS
 // =============================================================================
 
-/** Create a no-op service route for testing */
-const createMockService = (): ServiceRoute => {
-    return (_router: ConnectRouter) => {
-        // no-op — sufficient for lifecycle tests
+/**
+ * Create a no-op service definition for testing.
+ *
+ * Lifecycle tests never invoke an RPC, so the definition registers NOTHING
+ * (mirrors the previous `(router) => {}` no-op route). The descriptor is
+ * required by `ServiceDefinition` but unused: `register` is a no-op, so
+ * `EchoService` is never mounted.
+ */
+const createMockService = (): ServiceDefinition => {
+    return {
+        descriptor: EchoService,
+        register: () => {
+            // no-op — sufficient for lifecycle tests
+        },
     };
 };
 

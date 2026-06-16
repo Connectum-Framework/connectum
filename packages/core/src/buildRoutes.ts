@@ -10,8 +10,9 @@
 import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
+import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
-import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration, ServiceRoute } from "./types.ts";
+import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
 
 /**
  * Server-side interceptor applied ONLY on the HTTP entry path (via
@@ -46,12 +47,22 @@ const stripLocalTransportHeaderOnHttp: Interceptor = (next) => (req) => {
  * Options for building routes
  */
 export interface BuildRoutesOptions {
-    services: ServiceRoute[];
+    services: readonly ServiceDefinition[];
     protocols: ProtocolRegistration[];
     interceptors: Interceptor[];
     shutdownSignal: AbortSignal;
+    /**
+     * Framework helpers handed to each service's `register` closure (wraps user
+     * handlers so they receive the Connectum `Context` with `ctx.call`).
+     */
+    registerContext: RegisterContext;
     /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+    /**
+     * Proto `typeName`s to mount locally. A service whose `typeName` is not in
+     * the set is skipped (treated as remote). `undefined` mounts every service.
+     */
+    enabledServices?: readonly string[];
 }
 
 /**
@@ -100,7 +111,7 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal, jsonOptions } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions, enabledServices, registerContext } = options;
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
@@ -123,9 +134,14 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             return originalService.apply(router, args);
         }) as typeof originalService;
 
-        // Register user services
-        for (const serviceRoute of services) {
-            serviceRoute(router);
+        // Register user services. With `enabledServices`, mount only the listed
+        // typeNames locally; the rest are reached remotely via the resolver (and
+        // a defineLazyService factory for an unmounted service never runs).
+        for (const definition of services) {
+            if (enabledServices !== undefined && !enabledServices.includes(definition.descriptor.typeName)) {
+                continue;
+            }
+            definition.register(router, registerContext);
         }
         // Everything registered up to here came from user services;
         // descriptors added below belong to protocols.

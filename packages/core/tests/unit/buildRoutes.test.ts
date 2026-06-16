@@ -10,7 +10,13 @@ import { describe, it, mock } from "node:test";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import type { BuildRoutesOptions } from "../../src/buildRoutes.ts";
 import { buildRoutes } from "../../src/buildRoutes.ts";
+import type { RegisterContext } from "../../src/defineService.ts";
 import type { ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
+
+/** Minimal RegisterContext: identity wrapper (these tests never invoke handlers). */
+const stubRegisterContext: RegisterContext = {
+    wrapHandlers: ((_descriptor: unknown, handlers: unknown) => handlers) as RegisterContext["wrapHandlers"],
+};
 
 /**
  * Helper: create minimal BuildRoutesOptions with defaults
@@ -21,6 +27,7 @@ function createOptions(overrides: Partial<BuildRoutesOptions> = {}): BuildRoutes
         protocols: [],
         interceptors: [],
         shutdownSignal: new AbortController().signal,
+        registerContext: stubRegisterContext,
         ...overrides,
     };
 }
@@ -57,7 +64,7 @@ describe("buildRoutes()", () => {
                 // No-op: just verifying it gets called
             });
 
-            buildRoutes(createOptions({ services: [serviceRoute] }));
+            buildRoutes(createOptions({ services: [{ descriptor: {} as never, register: serviceRoute }] }));
 
             // The routes function is deferred -- it's called by connectNodeAdapter internally.
             // buildRoutes creates a closure `routes` that gets passed to connectNodeAdapter.

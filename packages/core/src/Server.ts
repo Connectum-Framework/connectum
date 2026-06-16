@@ -9,15 +9,19 @@
 import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
-import type { Client, ConnectRouter, Interceptor, Transport } from "@connectrpc/connect";
+import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { buildRoutes } from "./buildRoutes.ts";
+import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
+import { CatalogConfigError } from "./catalogErrors.ts";
+import type { Context } from "./context.ts";
+import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
-import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ServiceRoute, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -33,9 +37,10 @@ class ServerImpl extends EventEmitter implements Server {
 
     private _state: ServerState = ServerState.CREATED;
     private readonly _options: CreateServerOptions;
-    private readonly _routes: ServiceRoute[];
+    private readonly _routes: ServiceDefinition[];
     private readonly _protocols: ProtocolRegistration[];
     private readonly _interceptors: Interceptor[];
+    private readonly _outgoingInterceptors: Interceptor[];
     private readonly _registry: DescFile[] = [];
     private readonly _shutdownManager = new ShutdownManager();
     private readonly _abortController = new AbortController();
@@ -54,6 +59,19 @@ class ServerImpl extends EventEmitter implements Server {
     /** Memoized in-process transport (lazy, created on first localClient call) */
     private _localTransport: Transport | null = null;
 
+    /**
+     * Memoized in-process transport for `ctx.call` local dispatch. Distinct from
+     * {@link _localTransport} because it carries `outgoingInterceptors` on the
+     * client side (lazy, created on first local `ctx.call`).
+     */
+    private _catalogLocalTransport: Transport | null = null;
+
+    /** Resolver-supplied remote transports, cached per `(typeName, endpoint)` key. */
+    private readonly _remoteTransports = new Map<string, Transport>();
+
+    /** Per-server engine behind `ctx.call`; wraps handlers + routes catalog calls. */
+    private readonly _dispatcher: CatalogDispatcher;
+
     // =========================================================================
     // Constructor
     // =========================================================================
@@ -64,7 +82,20 @@ class ServerImpl extends EventEmitter implements Server {
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
+        this._outgoingInterceptors = [...(options.outgoingInterceptors ?? [])];
         this._eventBus = options.eventBus ?? null;
+
+        // Engine behind ctx.call. The host closures read the live server state at
+        // call time (routes are materialized by then), so there is no
+        // construction-order coupling with route building.
+        const host: CatalogDispatchHost = {
+            catalog: options.catalog,
+            propagateHeaders: options.propagateHeaders ?? [],
+            isLocal: (typeName) => this._getRegisteredServiceTypeNames().has(typeName),
+            getLocalTransport: () => this._getCatalogLocalTransport(),
+            resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),
+        };
+        this._dispatcher = new CatalogDispatcher(host);
     }
 
     // =========================================================================
@@ -87,7 +118,7 @@ class ServerImpl extends EventEmitter implements Server {
         return this._transport.server;
     }
 
-    get routes(): ReadonlyArray<ServiceRoute> {
+    get routes(): ReadonlyArray<ServiceDefinition> {
         return this._routes;
     }
 
@@ -141,6 +172,10 @@ class ServerImpl extends EventEmitter implements Server {
         this.emit("start");
 
         try {
+            // Shape check (always runs): enabledServices must be a subset of the
+            // catalog. A typo here is a configuration mistake → CatalogConfigError.
+            this._validateCatalogConfig();
+
             // Lazy-built path: routes may already have been materialized via
             // localClient()/client() before start(). _ensureRoutesBuilt()
             // memoizes the full BuildRoutesResult (including userRegistry and
@@ -250,7 +285,7 @@ class ServerImpl extends EventEmitter implements Server {
     // Runtime operations
     // =========================================================================
 
-    addService(service: ServiceRoute): void {
+    addService(service: ServiceDefinition): void {
         if (this._state !== ServerState.CREATED) {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }
@@ -317,25 +352,90 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
-     * Unified client factory — routes to in-process transport for locally
-     * registered services, falls back to `options.fallback` for remote
-     * services, and fails fast (`ConnectError(Code.Unimplemented)`) when
-     * neither applies. Same call site works for monolith and split
-     * deployments alike.
+     * Unified client factory — routes to the in-process transport for locally
+     * mounted services and to the configured `remoteResolver` for everything
+     * else. The same call site works for monolith and split deployments.
+     *
+     * Eager checks (Q18): a non-local service with no `remoteResolver` is a
+     * configuration mistake → `CatalogConfigError`; a resolver that returns
+     * `null` is an operational miss → `ConnectError(Code.Unavailable)`.
+     * `Code.Unimplemented` is reserved for a runtime `ctx.call` dispatch miss.
      *
      * @example
      * ```typescript
-     * const client = server.client(GreeterService, { fallback: remoteTransport });
+     * const inventory = server.client(InventoryService); // local or remote — same call
      * ```
      */
     client<T extends DescService>(service: T, options?: ServerClientOptions): Client<T> {
         if (this.hasService(service)) {
             return this.localClient(service);
         }
-        if (options?.fallback) {
-            return createClient(service, options.fallback);
+        if (!this._options.remoteResolver) {
+            throw new CatalogConfigError(
+                `Cannot create a client for "${service.typeName}": it is not mounted locally and no remoteResolver is configured. ` +
+                    `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
+            );
         }
-        throw new ConnectError(`service ${service.typeName} is not registered locally and no fallback transport provided`, Code.Unimplemented);
+        const transport = this._resolveRemoteTransport(service.typeName, options?.endpoint);
+        if (!transport) {
+            const at = options?.endpoint ? ` (endpoint "${options.endpoint}")` : "";
+            throw new ConnectError(`No route for service "${service.typeName}"${at}: the resolver returned null.`, Code.Unavailable);
+        }
+        return createClient(service, transport);
+    }
+
+    /**
+     * Resolve (and cache) the `Transport` for a remote service via the configured
+     * `remoteResolver`. Cached per unique `(typeName, endpoint)` key so the
+     * resolver runs at most once per route.
+     *
+     * @internal
+     */
+    private _resolveRemoteTransport(typeName: string, endpoint?: string): Transport | null {
+        const key = `${typeName} ${endpoint ?? ""}`;
+        const cached = this._remoteTransports.get(key);
+        if (cached) return cached;
+        const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
+        const transport = this._options.remoteResolver?.(ctx) ?? null;
+        if (transport) this._remoteTransports.set(key, transport);
+        return transport;
+    }
+
+    /**
+     * In-process transport used by `ctx.call` to dispatch to locally-mounted
+     * services. Carries `outgoingInterceptors` on the client side (so the OTel
+     * client interceptor and any user-supplied outgoing interceptor wrap the
+     * call), distinguishing it from {@link localClient}'s plain transport.
+     * Lazily built and memoized.
+     *
+     * @internal
+     */
+    private _getCatalogLocalTransport(): Transport {
+        if (this._catalogLocalTransport === null) {
+            this._catalogLocalTransport = createLocalTransport(this, { interceptors: this._outgoingInterceptors });
+        }
+        return this._catalogLocalTransport;
+    }
+
+    /**
+     * Validate the catalog configuration at startup. Currently the always-on
+     * shape check: every `enabledServices` entry must be a known catalog key
+     * (when a `catalog` is configured). A mismatch is a programmer error
+     * → `CatalogConfigError`.
+     *
+     * @internal
+     */
+    private _validateCatalogConfig(): void {
+        const { catalog, enabledServices } = this._options;
+        if (!catalog || !enabledServices) return;
+        const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
+        if (missing.length > 0) {
+            const known = Object.keys(catalog);
+            throw new CatalogConfigError(
+                `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
+                    `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+            );
+        }
     }
 
     /**
@@ -352,11 +452,14 @@ class ServerImpl extends EventEmitter implements Server {
                 protocols: this._protocols,
                 interceptors: this._interceptors,
                 shutdownSignal: this._abortController.signal,
+                registerContext: this._dispatcher,
                 // Thread server-wide jsonOptions through the lazy path too, so
                 // in-process and HTTP transports share identical JSON
                 // serialization (otherwise jsonOptions would be silently
                 // dropped on the lazy-built route materialization).
                 ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
+                // Mount only the locally-enabled services; the rest are remote.
+                ...(this._options.enabledServices ? { enabledServices: this._options.enabledServices } : {}),
             });
             // Lazy-built path: populate registry now so server.routes consumers
             // see the same DescFile[] before start().
@@ -395,6 +498,18 @@ class ServerImpl extends EventEmitter implements Server {
      */
     _getRegisteredServiceTypeNames(): ReadonlySet<string> {
         return this._ensureRoutesBuilt().registeredServiceTypeNames;
+    }
+
+    /**
+     * Build a catalog {@link Context} over a (typically synthetic)
+     * `HandlerContext`, driving the same dispatcher as a live request. Used by
+     * `@connectum/testing`'s `createMockContext` to test handler `ctx.call` /
+     * `ctx.stream` logic in isolation.
+     *
+     * @internal
+     */
+    _makeCatalogContext(hctx: HandlerContext): Context {
+        return this._dispatcher.makeContext(hctx);
     }
 
     // =========================================================================

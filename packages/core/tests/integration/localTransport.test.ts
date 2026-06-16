@@ -13,29 +13,28 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import type { ConnectRouter, HandlerContext } from "@connectrpc/connect";
+import type { HandlerContext } from "@connectrpc/connect";
+import { defineService } from "../../src/defineService.ts";
 import { createLocalTransport } from "../../src/localTransport.ts";
 import { createServer } from "../../src/Server.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 function makeEchoRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req, ctx: HandlerContext) => {
-                const correlation = ctx.requestHeader.get("x-correlation-id") ?? "";
-                if (correlation) {
-                    ctx.responseHeader.set("x-correlation-echo", correlation);
-                }
-                ctx.responseHeader.set("x-trace-id", "def-456");
-                return create(EchoResponseSchema, {
-                    message: `echo:${req.message}`,
-                    timestamp: 0n,
-                });
-            },
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req, ctx: HandlerContext) => {
+            const correlation = ctx.requestHeader.get("x-correlation-id") ?? "";
+            if (correlation) {
+                ctx.responseHeader.set("x-correlation-echo", correlation);
+            }
+            ctx.responseHeader.set("x-trace-id", "def-456");
+            return create(EchoResponseSchema, {
+                message: `echo:${req.message}`,
+                timestamp: 0n,
+            });
+        },
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 describe("createLocalTransport / server.localClient (Phase 1)", () => {
@@ -92,7 +91,7 @@ describe("createLocalTransport / server.localClient (Phase 1)", () => {
         // Trigger lazy build.
         server.localClient(EchoService);
 
-        assert.throws(() => server.addService(() => {}), /materialized/);
+        assert.throws(() => server.addService({ descriptor: EchoService, register: () => {} }), /materialized/);
         assert.throws(() => server.addInterceptor((next) => next), /materialized/);
         assert.throws(
             () => server.addProtocol({ name: "x", register: () => {} }),
@@ -104,16 +103,14 @@ describe("createLocalTransport / server.localClient (Phase 1)", () => {
 describe("Headers round-trip (Phase 2.1)", () => {
     it("propagates a custom request header to the handler", async () => {
         let seen: string | null = null;
-        const routes = (router: ConnectRouter) => {
-            router.service(EchoService, {
-                echo: (req, ctx: HandlerContext) => {
-                    seen = ctx.requestHeader.get("x-correlation-id");
-                    return create(EchoResponseSchema, { message: req.message, timestamp: 0n });
-                },
-                secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-                rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            });
-        };
+        const routes = defineService(EchoService, {
+            echo: (req, ctx: HandlerContext) => {
+                seen = ctx.requestHeader.get("x-correlation-id");
+                return create(EchoResponseSchema, { message: req.message, timestamp: 0n });
+            },
+            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        });
         const server = createServer({ services: [routes] });
 
         const setHeaderInterceptor =
@@ -148,17 +145,15 @@ describe("Headers round-trip (Phase 2.1)", () => {
 
     it("Headers mutation on one side is isolated from the other side", async () => {
         const clientHeaderRef: { value: Headers | null } = { value: null };
-        const routes = (router: ConnectRouter) => {
-            router.service(EchoService, {
-                echo: (req, ctx: HandlerContext) => {
-                    // Mutate request headers on server side — must not propagate back.
-                    ctx.requestHeader.set("server-only", "leaked");
-                    return create(EchoResponseSchema, { message: req.message, timestamp: 0n });
-                },
-                secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-                rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            });
-        };
+        const routes = defineService(EchoService, {
+            echo: (req, ctx: HandlerContext) => {
+                // Mutate request headers on server side — must not propagate back.
+                ctx.requestHeader.set("server-only", "leaked");
+                return create(EchoResponseSchema, { message: req.message, timestamp: 0n });
+            },
+            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        });
         const server = createServer({ services: [routes] });
         const captureHeaderInterceptor =
             ((next) => async (req) => {

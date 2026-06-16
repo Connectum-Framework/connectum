@@ -7,14 +7,24 @@
 import assert from "node:assert";
 import { afterEach, describe, it, mock } from "node:test";
 import type { ConnectRouter } from "@connectrpc/connect";
+import type { ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
-import type { Server, ServiceRoute } from "../../src/types.ts";
+import type { Server } from "../../src/types.ts";
 import { ServerState } from "../../src/types.ts";
+import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
-// Mock service for testing
-const createMockService = (): ServiceRoute => {
-    return (_router: ConnectRouter) => {
-        // Mock service registration - no actual service needed for unit tests
+// Mock service for testing.
+//
+// These lifecycle/state unit tests never invoke an RPC, so the service must
+// register NOTHING (mirrors the previous `(router) => {}` no-op route). The
+// descriptor is required by `ServiceDefinition` but unused: `register` is a
+// no-op, so `EchoService` is never mounted and `hasService`/registry stay empty.
+const createMockService = (): ServiceDefinition => {
+    return {
+        descriptor: EchoService,
+        register: () => {
+            // Mock service registration - no actual service needed for unit tests
+        },
     };
 };
 

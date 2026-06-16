@@ -32,9 +32,9 @@ import assert from "node:assert";
 import { test } from "node:test";
 
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, type ConnectRouter, createClient, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { createLocalTransport, createServer } from "@connectum/core";
+import { createLocalTransport, createServer, defineService } from "@connectum/core";
 import { context, metrics as metricsApi, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
@@ -71,40 +71,36 @@ import { ItemSchema, StreamingService } from "../../../testing/tests/fixtures/st
 // ---------------------------------------------------------------------------
 
 function echoRoutes(opts?: { throwError?: boolean }) {
-    return (router: ConnectRouter) => {
-        router.service(EchoService, {
-            echo: (req) => {
-                if (opts?.throwError) {
-                    throw new ConnectError("forced failure", Code.FailedPrecondition);
-                }
-                return create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n });
-            },
-            secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-            rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
-        });
-    };
+    return defineService(EchoService, {
+        echo: (req) => {
+            if (opts?.throwError) {
+                throw new ConnectError("forced failure", Code.FailedPrecondition);
+            }
+            return create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n });
+        },
+        secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+        rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
 }
 
 function streamingRoutes() {
-    return (router: ConnectRouter) => {
-        router.service(StreamingService, {
-            echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
-            async *server(req) {
-                const n = req.sequence || 3;
-                for (let i = 0; i < n; i++) {
-                    yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
-                }
-            },
-            async client(requests) {
-                let total = 0;
-                for await (const _ of requests) total++;
-                return { total };
-            },
-            async *bidi(requests) {
-                for await (const item of requests) yield create(ItemSchema, { value: item.value, sequence: item.sequence });
-            },
-        });
-    };
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+        async *server(req) {
+            const n = req.sequence || 3;
+            for (let i = 0; i < n; i++) {
+                yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
+            }
+        },
+        async client(requests) {
+            let total = 0;
+            for await (const _ of requests) total++;
+            return { total };
+        },
+        async *bidi(requests) {
+            for await (const item of requests) yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+        },
+    });
 }
 
 // ---------------------------------------------------------------------------

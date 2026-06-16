@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package streaming.v1;
+
+message Item {
+  string value = 1;
+  int32 sequence = 2;
+}
+
+message Count {
+  int32 total = 1;
+}
+
+// StreamingService — fixture for in-process transport streaming parity tests.
+service StreamingService {
+  // Unary echo.
+  rpc Echo(Item) returns (Item);
+
+  // Server-streaming: yields N items derived from request.
+  rpc Server(Item) returns (stream Item);
+
+  // Client-streaming: aggregates N input items into a count.
+  rpc Client(stream Item) returns (Count);
+
+  // Bidi-streaming: echoes each received item back.
+  rpc Bidi(stream Item) returns (stream Item);
+}

@@ -438,28 +438,40 @@ const interceptor = createLoggerInterceptor({
 
 Connectum provides three approaches for applying interceptors to specific services or methods.
 
-### Approach 1: ConnectRPC native per-service/per-method (recommended)
+### Approach 1: define a service with `defineService` (recommended)
 
-ConnectRPC natively supports per-service and per-method interceptors via `router.service()` and `router.rpc()` options:
+Services are registered with `defineService` from `@connectum/core` and passed to `createServer({ services })`:
 
 ```typescript
-import type { ConnectRouter } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import { GreeterService } from "#gen/greeter_pb.js";
 
-export default (router: ConnectRouter) => {
-  // Per-service interceptors -- applied to all methods of the service
-  router.service(GreeterService, impl, {
-    interceptors: [requireAuth, auditLog],
-  });
+const greeter = defineService(GreeterService, {
+  async sayHello(req, ctx) {
+    return { message: `Hello, ${req.name}!` };
+  },
+});
 
-  // Per-method interceptors -- applied only to a specific method
-  router.rpc(GreeterService, GreeterService.methods.sayHello, helloImpl, {
-    interceptors: [rateLimiter],
-  });
-};
+const server = createServer({
+  services: [greeter],
+});
 ```
 
-Use this approach when interceptors are tied to a specific service or method at the routing level.
+To scope interceptors to a single **service** (every method of it), pass them
+as the third argument to `defineService` — they are forwarded to the underlying
+`router.service()` handler options:
+
+```typescript
+const greeter = defineService(
+  GreeterService,
+  { async sayHello(req, ctx) { return { message: `Hello, ${req.name}!` }; } },
+  { interceptors: [requireAuth, auditLog] },
+);
+```
+
+To target a specific **method**, use the declarative pattern routing in
+Approach 2 below (`createMethodFilterInterceptor`): `"Service/*"` applies to
+every method of a service, and `"Service/Method"` targets a single method.
 
 ### Approach 2: createMethodFilterInterceptor (declarative routing)
 
