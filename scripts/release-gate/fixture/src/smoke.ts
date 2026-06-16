@@ -2,15 +2,26 @@
 // Scope: gap functions NOT already exercised by example e2e — pure / in-process
 // only (no brokers). Each check is isolated; asserts real semantics where known.
 import assert from "node:assert";
+import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { GreeterService } from "../gen/greeter/v1/greeter_pb.ts";
+import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
 let pass = 0;
 const fails: string[] = [];
 function check(name: string, fn: () => void) {
     try {
         fn();
+        pass++;
+        console.log(`  ok   ${name}`);
+    } catch (e) {
+        fails.push(`${name}: ${(e as Error)?.message ?? e}`);
+        console.log(`  FAIL ${name} :: ${(e as Error)?.message ?? e}`);
+    }
+}
+async function checkAsync(name: string, fn: () => Promise<void>) {
+    try {
+        await fn();
         pass++;
         console.log(`  ok   ${name}`);
     } catch (e) {
@@ -36,6 +47,14 @@ check("core.mergeCatalogs merges two catalogs", () => {
     const a = core.defineCatalog({ "greeter.v1.GreeterService": GreeterService });
     const merged = core.mergeCatalogs(a, core.defineCatalog({}));
     assert.ok(merged);
+});
+check("core.mergeCatalogs throws CatalogConfigError on duplicate typeName", () => {
+    const a = core.defineCatalog({ "greeter.v1.GreeterService": GreeterService });
+    assert.throws(
+        () => core.mergeCatalogs(a, a),
+        (e: unknown) => e instanceof core.CatalogConfigError || (e as Error).name === "CatalogConfigError",
+        "expected CatalogConfigError on duplicate typeName",
+    );
 });
 check("core.CatalogConfigError is an Error subclass", () => {
     const e = new core.CatalogConfigError("x");
@@ -161,6 +180,14 @@ check("testing.createMockContext returns a Context for a catalog", () => {
     });
     assert.ok(ctx && typeof ctx === "object");
     assert.strictEqual(typeof ctx.call, "function");
+});
+await checkAsync("testing.createMockContext drives ctx.call against a mock (real dispatch)", async () => {
+    const ctx = testing.createMockContext({
+        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+        mocks: [testing.mockService(GreeterService, { sayHello: (req: { name: string }) => create(HelloReplySchema, { message: `mocked:${req.name}` }) })],
+    });
+    const res = await ctx.call("greeter.v1.GreeterService/SayHello", create(HelloRequestSchema, { name: "x" }));
+    assert.strictEqual((res as { message: string }).message, "mocked:x");
 });
 check("testing.mockResolver + mockService are callable", () => {
     assert.strictEqual(typeof testing.mockResolver, "function");
