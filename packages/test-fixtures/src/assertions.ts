@@ -50,9 +50,14 @@ export function assertConnectError(error: unknown, expectedCode: Code, messagePa
         assert.fail(`ConnectError message is unexpectedly long (${error.message.length} chars), refusing to match pattern`);
     }
 
+    // Match against a length-bounded slice. The guard above already fails on
+    // messages > 1000 chars, so this slice is a no-op for valid inputs; it makes
+    // the bound explicit at the match site so a pathological pattern cannot incur
+    // super-linear backtracking on a long message (defence-in-depth, ReDoS-safe).
+    const haystack = error.message.slice(0, 1000);
     if (typeof messagePattern === "string") {
-        assert.ok(error.message.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
+        assert.ok(haystack.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
     } else if (messagePattern instanceof RegExp) {
-        assert.ok(messagePattern.test(error.message), `ConnectError message "${error.message}" does not match ${messagePattern}`);
+        assert.ok(messagePattern.test(haystack), `ConnectError message "${error.message}" does not match ${messagePattern}`);
     }
 }
