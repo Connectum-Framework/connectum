@@ -214,12 +214,9 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf  # "http/protobuf" or "grpc"
 OTEL_EXPORTER_OTLP_HEADERS=x-api-key=secret
 
 # Batch span processor
-OTEL_BSP_SCHEDULE_DELAY=5000
-OTEL_BSP_MAX_QUEUE_SIZE=2048
-OTEL_BSP_MAX_EXPORT_BATCH_SIZE=512
-
-# Ignored instrumentations (comma-separated)
-OTEL_NODE_DISABLED_INSTRUMENTATIONS=fs,dns
+OTEL_BSP_SCHEDULE_DELAY=1000
+OTEL_BSP_MAX_QUEUE_SIZE=1000
+OTEL_BSP_MAX_EXPORT_BATCH_SIZE=100
 ```
 
 ## Main Exports
@@ -543,10 +540,6 @@ type BatchSpanProcessorOptions = {
 - `OTEL_BSP_MAX_QUEUE_SIZE` - Max queue size (default: 1000)
 - `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` - Max batch size (default: 100)
 - `OTEL_BSP_EXPORT_TIMEOUT` - Export timeout (ms, default: 10000)
-
-### Instrumentations
-
-- `OTEL_NODE_DISABLED_INSTRUMENTATIONS` - Comma-separated list of disabled instrumentations
 
 ## Examples
 
