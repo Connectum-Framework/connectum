@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package greeter.v1;
+
+// Minimal service exercising all four RPC cardinalities so the generated
+// catalog (protoc-gen-connectum-catalog) covers unary + server-stream +
+// client-stream + bidi typing of ctx.call / ctx.stream.
+service GreeterService {
+  // Unary.
+  rpc SayHello(HelloRequest) returns (HelloReply);
+  // Server streaming.
+  rpc SayHelloStream(HelloRequest) returns (stream HelloReply);
+  // Client streaming.
+  rpc SayHelloCollect(stream HelloRequest) returns (HelloReply);
+  // Bidirectional streaming.
+  rpc SayHelloChat(stream HelloRequest) returns (stream HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloReply {
+  string message = 1;
+}

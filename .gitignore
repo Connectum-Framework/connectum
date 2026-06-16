@@ -1,4 +1,6 @@
 dist/
+.tmp/
+.gate-work/
 .idea/
 .vscode/
 .husky/_/
