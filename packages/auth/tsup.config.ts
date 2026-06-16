@@ -11,4 +11,6 @@ export default defineConfig({
     // are emitted as separate chunks instead of being bundled into the main auth build.
     // Package consumers should expect multiple ESM output files/chunks from this config.
     splitting: true,
+    // Keep the node: prefix on builtin imports — required for node:test/sqlite and portable to Deno/Bun.
+    removeNodeProtocol: false,
 });
