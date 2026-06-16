@@ -181,13 +181,58 @@ check("testing.createMockContext returns a Context for a catalog", () => {
     assert.ok(ctx && typeof ctx === "object");
     assert.strictEqual(typeof ctx.call, "function");
 });
-await checkAsync("testing.createMockContext drives ctx.call against a mock (real dispatch)", async () => {
-    const ctx = testing.createMockContext({
-        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
-        mocks: [testing.mockService(GreeterService, { sayHello: (req: { name: string }) => create(HelloReplySchema, { message: `mocked:${req.name}` }) })],
-    });
-    const res = await ctx.call("greeter.v1.GreeterService/SayHello", create(HelloRequestSchema, { name: "x" }));
-    assert.strictEqual((res as { message: string }).message, "mocked:x");
+// Full catalog-call cardinality coverage: ctx.call (unary) + ctx.stream
+// (server/client/bidi) dispatched through createMockContext — the in-process
+// mock/local resolver path. Remote dispatch over a real gRPC transport
+// (createGrpcTransport) is exercised by the service-catalog example e2e (ctx.call)
+// and the transport-parity suite (createLocalTransport vs createGrpcTransport at
+// the service level); a full 2-server remote ctx.stream matrix is out of scope
+// for this smoke. See PR notes for the coverage map.
+const catalogCtx = testing.createMockContext({
+    catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+    mocks: [
+        testing.mockService(GreeterService, {
+            sayHello: (req: { name: string }) => create(HelloReplySchema, { message: `u:${req.name}` }),
+            async *sayHelloStream(req: { name: string }) {
+                yield create(HelloReplySchema, { message: `s:${req.name}` });
+            },
+            async sayHelloCollect(reqs: AsyncIterable<{ name: string }>) {
+                let last = "";
+                for await (const r of reqs) last = r.name;
+                return create(HelloReplySchema, { message: `c:${last}` });
+            },
+            async *sayHelloChat(reqs: AsyncIterable<{ name: string }>) {
+                for await (const r of reqs) yield create(HelloReplySchema, { message: `b:${r.name}` });
+            },
+        }),
+    ],
+});
+await checkAsync("ctx.call — unary dispatch through the catalog (mock/local)", async () => {
+    const res = await catalogCtx.call("greeter.v1.GreeterService/SayHello", create(HelloRequestSchema, { name: "x" }));
+    assert.strictEqual((res as { message: string }).message, "u:x");
+});
+await checkAsync("ctx.stream — server-stream dispatch (mock/local)", async () => {
+    const out: string[] = [];
+    for await (const r of catalogCtx.stream("greeter.v1.GreeterService/SayHelloStream")(create(HelloRequestSchema, { name: "x" }))) {
+        out.push((r as { message: string }).message);
+    }
+    assert.deepStrictEqual(out, ["s:x"]);
+});
+await checkAsync("ctx.stream — client-stream dispatch (mock/local)", async () => {
+    const h = catalogCtx.stream("greeter.v1.GreeterService/SayHelloCollect")();
+    h.send(create(HelloRequestSchema, { name: "a" }));
+    h.send(create(HelloRequestSchema, { name: "b" }));
+    const res = await h.close();
+    assert.strictEqual((res as { message: string }).message, "c:b");
+});
+await checkAsync("ctx.stream — bidi dispatch (mock/local)", async () => {
+    const h = catalogCtx.stream("greeter.v1.GreeterService/SayHelloChat")();
+    h.send(create(HelloRequestSchema, { name: "a" }));
+    h.send(create(HelloRequestSchema, { name: "b" }));
+    h.close();
+    const out: string[] = [];
+    for await (const r of h.responses) out.push((r as { message: string }).message);
+    assert.deepStrictEqual(out, ["b:a", "b:b"]);
 });
 check("testing.mockResolver + mockService are callable", () => {
     assert.strictEqual(typeof testing.mockResolver, "function");
