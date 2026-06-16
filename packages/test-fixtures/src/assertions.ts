@@ -52,8 +52,10 @@ export function assertConnectError(error: unknown, expectedCode: Code, messagePa
 
     // Match against a length-bounded slice. The guard above already fails on
     // messages > 1000 chars, so this slice is a no-op for valid inputs; it makes
-    // the bound explicit at the match site so a pathological pattern cannot incur
-    // super-linear backtracking on a long message (defence-in-depth, ReDoS-safe).
+    // the bound explicit at the match site (bounded-input mitigation — it caps
+    // the matched length, not regex complexity, so a catastrophic caller-supplied
+    // pattern can still be slow on 1000 chars; the pattern here is test-author
+    // controlled, not attacker input).
     const haystack = error.message.slice(0, 1000);
     if (typeof messagePattern === "string") {
         assert.ok(haystack.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
