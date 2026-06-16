@@ -108,8 +108,8 @@ import { UserCreatedSchema } from '#gen/events_pb.js';
 
 export default (router: EventRouter) => {
   router.service(UserService, {
-    async userCreated(ctx) {
-      const event = ctx.event; // Typed from proto schema
+    async userCreated(event, ctx) {
+      // event is typed from the proto schema (first positional arg)
       console.log(`User created: ${event.name}`);
       // Auto-ack on successful return
     },
@@ -136,7 +136,7 @@ const bus = createEventBus({
     retry: {
       maxRetries: 3,           // Max retry attempts (default: 3)
       backoff: 'exponential',  // 'exponential' | 'linear' | 'fixed'
-      initialDelay: 200,       // Initial delay in ms (default: 200)
+      initialDelay: 200,       // Initial delay in ms (default: 1000)
       maxDelay: 30000,         // Max delay in ms (default: 30000)
       retryableErrors: (err) => !(err instanceof ValidationError),
     },
@@ -154,10 +154,7 @@ const bus = createEventBus({
   middleware: {
     dlq: {
       topic: 'service.dlq',        // DLQ topic name (required)
-      errorSerializer: (err) => ({  // Custom error serialization
-        message: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack : undefined,
-      }),
+      errorSerializer: (err) => (err instanceof Error ? err.message : String(err)),
     },
   },
 });
@@ -241,16 +238,18 @@ interface EventBus {
 |-----------|------|---------|-------------|
 | `metadata` | `Record<string, string>` | `undefined` | Event metadata / headers |
 | `topic` | `string` | `undefined` | Override the schema-derived event type / topic name |
+| `group` | `string` | `undefined` | Named group tag for workflow grouping |
 | `key` | `string` | `undefined` | Partition key (Kafka) or routing key |
 
 ### EventContext
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `event` | `T` | Deserialized event payload |
 | `eventType` | `string` | Event type / topic name |
 | `eventId` | `string` | Unique event identifier |
-| `metadata` | `Map<string, string>` | Event metadata |
+| `publishedAt` | `Date` | When the event was published |
+| `attempt` | `number` | Delivery attempt number (1-based) |
+| `metadata` | `ReadonlyMap<string, string>` | Event metadata |
 | `signal` | `AbortSignal` | Abort signal (shutdown + timeout) |
 | `ack()` | `() => Promise<void>` | Acknowledge event (idempotent) |
 | `nack(requeue?)` | `(requeue?: boolean) => Promise<void>` | Negative-acknowledge event |
@@ -260,7 +259,7 @@ interface EventBus {
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `topic` | `string` | required | DLQ topic name |
-| `errorSerializer` | `(error: unknown) => Record<string, unknown>` | Default serializer | Custom error serialization |
+| `errorSerializer` | `(error: unknown) => string` | `error.name` only | Custom error serialization |
 
 ### RetryOptions
 
@@ -268,8 +267,9 @@ interface EventBus {
 |-----------|------|---------|-------------|
 | `maxRetries` | `number` | `3` | Maximum retry attempts |
 | `backoff` | `'exponential' \| 'linear' \| 'fixed'` | `'exponential'` | Backoff strategy |
-| `initialDelay` | `number` | `200` | Initial delay in ms |
+| `initialDelay` | `number` | `1000` | Initial delay in ms |
 | `maxDelay` | `number` | `30000` | Maximum delay in ms |
+| `multiplier` | `number` | `2` | Multiplier for exponential backoff |
 | `retryableErrors` | `(err: unknown) => boolean` | All errors | Filter for retryable errors |
 
 ## MemoryAdapter

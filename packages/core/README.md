@@ -96,7 +96,7 @@ await server.start();
 
 ## Internal Architecture
 
-Starting with v0.2.0-beta, the `@connectum/core` module is split into 3 independent submodules, each responsible for its own domain:
+The `@connectum/core` module is split into independent submodules, each responsible for its own domain:
 
 ```
 core/src/
@@ -295,8 +295,8 @@ const { key, cert } = readTLSCertificates({
   certPath: './keys/server.crt',
 });
 
-// Get configured TLS path
-const configuredPath = tlsPath();
+// Configured TLS path (eagerly resolved string constant — use as a value, not a call)
+const configuredPath = tlsPath;
 ```
 
 ### SanitizableError Protocol
@@ -361,7 +361,7 @@ throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount:
 | `isSanitizableError` | function | Type guard for `SanitizableError` |
 | `getTLSPath` | function | Get TLS path from environment |
 | `readTLSCertificates` | function | Read TLS key and certificate files |
-| `tlsPath` | function | Get configured TLS path |
+| `tlsPath` | const | Configured TLS path (eagerly resolved string) |
 | `parseEnvConfig` | function | Parse environment configuration (throws on invalid) |
 | `safeParseEnvConfig` | function | Parse environment configuration (returns result) |
 | `ConnectumEnvSchema` | const | Zod schema for environment variables |
@@ -380,6 +380,40 @@ throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount:
 | `HttpHandler` | type | HTTP handler type |
 | `ProtocolContext` | type | Protocol context type |
 | `ConnectumEnv` | type | Environment configuration type |
+
+### Service catalog & transport
+
+| Export | Kind | Description |
+|--------|------|-------------|
+| `defineService` | function | Define a mountable service from a descriptor + register closure |
+| `defineLazyService` | function | Define a service whose implementation is resolved lazily |
+| `defineCatalog` | function | Build a typed `ServiceCatalog` for cross-service calls |
+| `mergeCatalogs` | function | Merge multiple catalogs into one |
+| `CatalogConfigError` | class | Error thrown for invalid catalog configuration |
+| `createLocalTransport` | function | Create an in-process transport for same-process service calls |
+| `CreateLocalTransportOptions` | type | Options for `createLocalTransport()` (client-side interceptors) |
+| `defaultPropagateHeaders` | const | Ready-made opt-in allow-list of W3C trace-context headers for `createServer({ propagateHeaders })` (nothing propagates by default) |
+| `dnsResolver` | function | Remote resolver that builds per-service targets from a DNS-style URL template |
+| `DnsResolverOptions` | type | Options for `dnsResolver()` (URL template, transport factory) |
+| `mapResolver` | function | Remote resolver backed by a static service→target map |
+| `perServiceEnvResolver` | function | Remote resolver reading per-service targets from env |
+| `PerServiceEnvResolverOptions` | type | Options for `perServiceEnvResolver()` (transport factory) |
+| `singleTransportResolver` | function | Remote resolver returning one transport for all services |
+| `resolveEffectiveTransport` | function | Resolve the effective transport (`plaintext-h1` / `h2c` / `tls-h1-negotiable` / `tls-h2-only`) from `tls` + `allowHTTP1` |
+| `TransportValidationError` | class | Error for bidi-streaming methods unsupported by the effective transport |
+| `TRANSPORT_VALIDATION_ERROR_CODE` | const | Error code for `TransportValidationError` |
+| `TransportValidationMode` | const | Transport validation mode values |
+| `EffectiveTransport` | const | Effective transport values |
+| `Context` | type | Handler context exposing `ctx.call` / `ctx.stream` |
+| `CallOptions` | type | Options for a `ctx.call` cross-service call |
+| `ServiceOptions` | type | Per-service options for `defineService()` |
+| `RemoteResolver` | type | Interface for resolving remote service transports |
+| `ResolverContext` | type | Context passed to a `RemoteResolver` |
+| `ServiceCatalog` | type | Typed registry of callable services |
+| `ConnectumCallMap` | type | Augmentable map of unary cross-service calls |
+| `ConnectumStreamMap` | type | Augmentable map of streaming cross-service calls |
+| `BidiStreamHandle` | type | Handle for a bidirectional stream from `ctx.stream` |
+| `ClientStreamHandle` | type | Handle for a client stream from `ctx.stream` |
 
 ## Configuration Types
 
@@ -457,9 +491,7 @@ See `@connectum/interceptors` package for `DefaultInterceptorOptions` and full d
 |----------|-------------|---------|
 | `PORT` | Server port | `5000` |
 | `LISTEN` | Server host | `0.0.0.0` |
-| `TLS_PATH` | Path to TLS certificates directory | - |
-| `TLS_KEY_PATH` | Path to TLS key file | - |
-| `TLS_CERT_PATH` | Path to TLS certificate file | - |
+| `TLS_DIR_PATH` | Directory containing the TLS key + cert (`server.key`/`server.crt`) that `tlsPath` resolves | - |
 | `NODE_ENV` | Environment (affects logger) | - |
 
 ## Examples
@@ -597,29 +629,6 @@ await server.start();
 // Note: Cannot add services after start()
 ```
 
-## Legacy API (Deprecated)
-
-The `Runner()` function is deprecated. Use `createServer()` instead.
-
-```typescript
-// Deprecated
-import { Runner } from '@connectum/core';
-const server = await Runner(options);
-
-// New API
-import { createServer } from '@connectum/core';
-const server = createServer(options);
-await server.start();
-```
-
-Key differences:
-- `createServer()` returns an unstarted server (call `.start()` explicitly)
-- Lifecycle hooks via EventEmitter (`server.on('ready', ...)`)
-- Explicit `.stop()` method instead of `.shutdown()`
-- Health check via `@connectum/healthcheck` package
-- Reflection via `@connectum/reflection` package
-- Server state available via `server.state`
-
 ## Documentation
 
 ### Getting Started
@@ -649,6 +658,7 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 - `@connectrpc/connect-node` - Node.js adapter
 - `@bufbuild/protobuf` - Protocol Buffers runtime
 - `env-var` - Environment variables management
+- `zod` - Environment configuration schema validation
 
 ## Requirements
 
@@ -667,7 +677,7 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 
 ## License
 
-MIT
+Apache-2.0
 
 ---
 

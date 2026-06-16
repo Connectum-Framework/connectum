@@ -11,6 +11,9 @@ Authentication and authorization interceptors for Connectum.
 - **Gateway auth interceptor** -- extract pre-authenticated identity from API gateway headers (Kong, Envoy, etc.) with header-based trust verification
 - **Session auth interceptor** -- session-based authentication for frameworks like better-auth, lucia, etc.
 - **Authorization interceptor** -- declarative RBAC rules with first-match semantics and programmatic fallback
+- **Proto authorization interceptor** -- authorization driven by `connectum.auth.v1` proto custom options, with `getPublicMethods`/`resolveMethodAuth` reader utilities
+- **Client Bearer interceptor** -- client-side `Authorization: Bearer <token>` injection with static tokens or async refresh factories
+- **Client gateway interceptor** -- client-side service-to-service auth headers (gateway secret + subject + roles) for calls behind an API gateway
 - **AsyncLocalStorage context** -- zero-boilerplate access to auth context from any handler
 - **Header propagation** -- cross-service auth context forwarding (Envoy-style `x-auth-*` headers)
 - **LRU cache** -- in-memory credential verification caching with TTL expiration
@@ -20,12 +23,6 @@ Authentication and authorization interceptors for Connectum.
 
 ```bash
 pnpm add @connectum/auth
-```
-
-**Peer dependencies**:
-
-```bash
-pnpm add @connectrpc/connect
 ```
 
 ## Quick Start
@@ -532,6 +529,9 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 - `createGatewayAuthInterceptor` -- gateway-injected headers
 - `createSessionAuthInterceptor` -- session-based auth
 - `createAuthzInterceptor` -- declarative rules-based authorization
+- `createProtoAuthzInterceptor` -- proto-option-driven authorization (`connectum.auth.v1`)
+- `createClientBearerInterceptor` -- client-side Bearer token injection
+- `createClientGatewayInterceptor` -- client-side gateway service-to-service auth
 
 **Context management**:
 - `getAuthContext` -- get current AuthContext (or undefined)
@@ -550,6 +550,8 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 - `AuthzEffect` -- rule effect constants (`ALLOW`, `DENY`)
 - `AuthzDeniedError` -- authorization denied error class
 - `matchesMethodPattern` -- method pattern matching utility
+- `getPublicMethods` -- collect `skipMethods` patterns for proto-`public` methods from service descriptors
+- `resolveMethodAuth` -- resolve effective per-method auth config from proto options (cached)
 
 **Types** (TypeScript only):
 - `AuthContext`
@@ -559,6 +561,10 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 - `GatewayHeaderMapping`
 - `SessionAuthInterceptorOptions`
 - `AuthzInterceptorOptions`
+- `ProtoAuthzInterceptorOptions`
+- `ClientBearerInterceptorOptions`
+- `ClientGatewayInterceptorOptions`
+- `ResolvedMethodAuth`
 - `AuthzRule`
 - `CacheOptions`
 - `InterceptorFactory`
@@ -573,7 +579,7 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 
 ## Dependencies
 
-- `@connectrpc/connect` -- ConnectRPC core (peer dependency)
+- `@connectrpc/connect` -- ConnectRPC core (runtime dependency)
 - `jose` -- JWT/JWK/JWS verification
 
 ## Requirements

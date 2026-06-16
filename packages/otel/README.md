@@ -38,7 +38,7 @@ pnpm add @connectum/otel
 **Peer dependencies** (installed automatically):
 
 ```bash
-pnpm add @opentelemetry/api @opentelemetry/sdk-node
+pnpm add @opentelemetry/api @opentelemetry/sdk-trace-node
 ```
 
 ## Quick Start
@@ -197,8 +197,6 @@ await service.getUser("123");
 
 # Service metadata
 OTEL_SERVICE_NAME=my-service
-OTEL_SERVICE_VERSION=1.0.0
-OTEL_SERVICE_NAMESPACE=production
 
 # Trace exporter
 OTEL_TRACES_EXPORTER=otlp/http  # "otlp/http", "otlp/grpc", "console", or "none"
@@ -431,13 +429,12 @@ import {
   getOTLPSettings,
   getCollectorOptions,
   getBatchSpanProcessorOptions,
-  getIgnoredInstrumentations,
   ExporterType,
 } from "@connectum/otel";
 
 // Service metadata
 const metadata = getServiceMetadata();
-// { name: "my-service", version: "1.0.0", namespace: "production" }
+// { name: "my-service", version: "1.0.0" }
 
 // OTLP settings
 const otlpSettings = getOTLPSettings();
@@ -449,11 +446,7 @@ const collectorOptions = getCollectorOptions();
 
 // Batch span processor options
 const bspOptions = getBatchSpanProcessorOptions();
-// { scheduledDelayMillis: 5000, maxQueueSize: 2048, ... }
-
-// Ignored instrumentations
-const ignored = getIgnoredInstrumentations();
-// ["fs", "dns"]
+// { maxExportBatchSize: 100, maxQueueSize: 1000, scheduledDelayMillis: 1000, exportTimeoutMillis: 10000 }
 ```
 
 ### Provider Management
@@ -525,8 +518,6 @@ type BatchSpanProcessorOptions = {
 ### Service Metadata
 
 - `OTEL_SERVICE_NAME` - Service name (required)
-- `OTEL_SERVICE_VERSION` - Service version (optional)
-- `OTEL_SERVICE_NAMESPACE` - Service namespace (optional, e.g., "production")
 
 ### Exporters
 
@@ -548,10 +539,10 @@ type BatchSpanProcessorOptions = {
 
 ### Batch Span Processor
 
-- `OTEL_BSP_SCHEDULE_DELAY` - Schedule delay (ms, default: 5000)
-- `OTEL_BSP_MAX_QUEUE_SIZE` - Max queue size (default: 2048)
-- `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` - Max batch size (default: 512)
-- `OTEL_BSP_EXPORT_TIMEOUT` - Export timeout (ms, default: 30000)
+- `OTEL_BSP_SCHEDULE_DELAY` - Schedule delay (ms, default: 1000)
+- `OTEL_BSP_MAX_QUEUE_SIZE` - Max queue size (default: 1000)
+- `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` - Max batch size (default: 100)
+- `OTEL_BSP_EXPORT_TIMEOUT` - Export timeout (ms, default: 10000)
 
 ### Instrumentations
 
@@ -719,7 +710,7 @@ await repository.findById("123");
 
 ### Version pin rationale
 
-`@connectum/otel` pins the OpenTelemetry JS toolchain through the workspace catalog (currently `@opentelemetry/sdk-node` `^0.212.0`, which resolves `@opentelemetry/otlp-transformer` to a release predating the PR #6179 migration / PR #6225 revert cycle). The pin is intentional: it avoids the short-lived regression window and gives us a single place to coordinate a future bump once the hand-rolled serializer path stabilizes for all three signals. Monitor the upstream issues/PRs above before proposing a catalog bump.
+`@connectum/otel` pins the OpenTelemetry JS toolchain through the workspace catalog (currently `@opentelemetry/sdk-trace-node` `^2.8.0`, alongside `@opentelemetry/sdk-metrics` `^2.8.0` and `@opentelemetry/sdk-logs` `^0.219.0`, which resolves `@opentelemetry/otlp-transformer` to `0.219.0` — past the PR #6179 migration / PR #6225 revert cycle, with the hand-rolled logs serializer (PR #6390, since `0.215.0`) already in place while metrics and traces remain `protobufjs`-backed). The pin is intentional: it avoids the short-lived regression window and gives us a single place to coordinate a future bump once the hand-rolled serializer path stabilizes for all three signals. Monitor the upstream issues/PRs above before proposing a catalog bump.
 
 ### Guidance for high-volume span workloads
 
@@ -727,7 +718,7 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 
 - Prefer **batching** — the default `BatchSpanProcessor` tuned via `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, and `OTEL_BSP_EXPORT_TIMEOUT` (see [Environment Variables](#environment-variables)).
 - Consider **head or tail sampling** to reduce export volume before it reaches the serializer.
-- Watch SDK self-metrics exposed by recent `@opentelemetry/sdk-node` releases (e.g., span queue size and dropped spans) to detect exporter back-pressure.
+- Watch SDK self-metrics exposed by recent `@opentelemetry/sdk-trace-node` releases (e.g., span queue size and dropped spans) to detect exporter back-pressure.
 - Track the trace serializer migration via upstream [#6570](https://github.com/open-telemetry/opentelemetry-js/issues/6570) and the [#6221](https://github.com/open-telemetry/opentelemetry-js/issues/6221) follow-ups; a catalog bump will be coordinated through a Connectum release once the hand-rolled path covers traces.
 
 ## Known Limitations
@@ -750,10 +741,18 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 ### External Dependencies
 
 - `@opentelemetry/api` - OpenTelemetry API
-- `@opentelemetry/sdk-node` - OpenTelemetry SDK
-- `@opentelemetry/auto-instrumentations-node` - Auto-instrumentations
-- `@opentelemetry/exporter-trace-otlp-http` - OTLP HTTP exporter
-- `@opentelemetry/exporter-metrics-otlp-http` - OTLP metrics exporter
+- `@opentelemetry/api-logs` - OpenTelemetry Logs API
+- `@opentelemetry/sdk-trace-node` - Tracing SDK (Node.js)
+- `@opentelemetry/sdk-metrics` - Metrics SDK
+- `@opentelemetry/sdk-logs` - Logs SDK
+- `@opentelemetry/resources` - Resource detection
+- `@opentelemetry/semantic-conventions` - Semantic conventions
+- `@opentelemetry/exporter-trace-otlp-http` - OTLP HTTP trace exporter
+- `@opentelemetry/exporter-trace-otlp-grpc` - OTLP gRPC trace exporter
+- `@opentelemetry/exporter-metrics-otlp-http` - OTLP HTTP metrics exporter
+- `@opentelemetry/exporter-metrics-otlp-grpc` - OTLP gRPC metrics exporter
+- `@opentelemetry/exporter-logs-otlp-http` - OTLP HTTP logs exporter
+- `@opentelemetry/exporter-logs-otlp-grpc` - OTLP gRPC logs exporter
 - `env-var` - Environment variables
 
 ## Requirements
@@ -763,7 +762,7 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 
 ## License
 
-MIT
+Apache-2.0
 
 ---
 
