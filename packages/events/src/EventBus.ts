@@ -17,6 +17,7 @@ import { EventRouterImpl } from "./EventRouter.ts";
 import { dlqMiddleware } from "./middleware/dlq.ts";
 import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
+import { resolveTopicName } from "./topic.ts";
 import type { EventBus, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
 
@@ -128,15 +129,25 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     const derivedName = deriveServiceName(router.serviceNames);
                     await adapter.connect(derivedName ? { serviceName: derivedName } : undefined);
 
-                    // Build publish topic lookup: input message typeName → resolved topic
+                    // Build publish topic lookup: input message typeName → resolved topic.
+                    // Populated from BOTH subscriber routes and publish-only services
+                    // (`publishes`), so a pure publisher resolves the declared
+                    // `(event).topic` instead of silently falling back to the typeName.
                     publishTopicMap.clear();
-                    for (const entry of router.entries) {
-                        const messageType = entry.method.input.typeName;
+                    const setPublishTopic = (messageType: string, topic: string): void => {
                         const existingTopic = publishTopicMap.get(messageType);
-                        if (existingTopic !== undefined && existingTopic !== entry.topic) {
-                            throw new Error(`Ambiguous publish topic for "${messageType}": "${existingTopic}" and "${entry.topic}". Pass publishOptions.topic explicitly.`);
+                        if (existingTopic !== undefined && existingTopic !== topic) {
+                            throw new Error(`Ambiguous publish topic for "${messageType}": "${existingTopic}" and "${topic}". Pass publishOptions.topic explicitly.`);
                         }
-                        publishTopicMap.set(messageType, entry.topic);
+                        publishTopicMap.set(messageType, topic);
+                    };
+                    for (const entry of router.entries) {
+                        setPublishTopic(entry.method.input.typeName, entry.topic);
+                    }
+                    for (const service of options.publishes ?? []) {
+                        for (const method of service.methods) {
+                            setPublishTopic(method.input.typeName, resolveTopicName(method));
+                        }
                     }
 
                     // Build topic → handler map and compose middleware per topic

@@ -340,4 +340,47 @@ describe("EventBus topic auto-resolve", () => {
         assert.equal(published[1]!.eventType, "meshai.task.created");
         await bus.stop();
     });
+
+    it("publish with `publishes` (publisher-only, no routes) resolves the proto annotation topic", async () => {
+        const { adapter, published } = createTrackingAdapter();
+
+        // Pure publisher: a custom-topic event service, but NO routes (not a subscriber).
+        const method = fakeDescMethodWithTopic(
+            "taskCreated",
+            EventOptionsSchema.typeName,
+            "meshai.task.created",
+            EventOptionsSchema,
+        );
+        const service = fakeDescService("meshai.v1.TaskEventService", [method]);
+
+        const bus = createEventBus({
+            adapter,
+            publishes: [service],
+        });
+
+        await bus.start();
+        await bus.publish(EventOptionsSchema, {} as any);
+
+        assert.equal(published.length, 1);
+        assert.equal(
+            published[0]!.eventType,
+            "meshai.task.created",
+            "publisher-only bus should resolve the declared topic from `publishes`, not fall back to typeName",
+        );
+
+        await bus.stop();
+    });
+
+    it("conflicting topics for the same message across `publishes` throw on start", async () => {
+        const { adapter } = createTrackingAdapter();
+
+        const m1 = fakeDescMethodWithTopic("a", EventOptionsSchema.typeName, "topic.a", EventOptionsSchema);
+        const m2 = fakeDescMethodWithTopic("b", EventOptionsSchema.typeName, "topic.b", EventOptionsSchema);
+        const s1 = fakeDescService("svc.v1.A", [m1]);
+        const s2 = fakeDescService("svc.v1.B", [m2]);
+
+        const bus = createEventBus({ adapter, publishes: [s1, s2] });
+
+        await assert.rejects(() => bus.start(), /Ambiguous publish topic/);
+    });
 });

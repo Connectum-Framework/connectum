@@ -296,6 +296,18 @@ export interface EventBusOptions {
     adapter: EventAdapter;
     /** Event routes to register */
     routes?: EventRoute[];
+    /**
+     * Event service descriptors this bus publishes to (publish-only, no subscription).
+     *
+     * A process that only PUBLISHES events has no `routes`, so its publish-topic
+     * lookup would be empty and `publish()` would fall back to the message
+     * `typeName` — silently emitting to the wrong topic whenever the event
+     * declares a custom `(connectum.events.v1.event).topic`. List the event
+     * service descriptors here to populate the publish-topic lookup from their
+     * proto options, so the declared topic is used end-to-end without
+     * hand-maintaining raw topic strings. Subscribers still register via `routes`.
+     */
+    publishes?: DescService[];
     /** Consumer group name */
     group?: string;
     /** Middleware configuration */
