@@ -41,7 +41,7 @@ await server.start();
 // Clients can now discover services via gRPC Server Reflection
 ```
 
-## API
+## API Reference
 
 ### Reflection()
 
@@ -167,4 +167,4 @@ Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** -- Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

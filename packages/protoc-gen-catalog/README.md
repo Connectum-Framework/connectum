@@ -4,6 +4,15 @@ A Buf/protoc plugin that generates a **Connectum service catalog** from your
 proto files. The generated `catalog.gen.ts` is what makes `ctx.call` and
 `ctx.stream` (from `@connectum/core`) fully typed.
 
+## Installation
+
+```bash
+pnpm add -D @connectum/protoc-gen-catalog
+```
+
+The package installs the `protoc-gen-connectum-catalog` binary, which Buf/protoc
+invoke as a `local` plugin (see Usage below).
+
 ## What it generates
 
 One `catalog.gen.ts` per buf module, containing:
@@ -32,7 +41,7 @@ declare module "@connectum/core" {
 }
 ```
 
-## Usage (`buf.gen.yaml`)
+## Quick Start (`buf.gen.yaml`)
 
 ```yaml
 version: v2
@@ -60,11 +69,14 @@ is types-only). Generate it alongside `protoc-gen-es`, with the **same
 - `import_extension=.ts` — raw-source distribution (Bun / Node 22+ strip-types /
   Node 25.2+). Use only if you ship `.ts` and your `tsconfig` allows it.
 
-### Options
+## API Reference
+
+The plugin parameter string accepts the following option (passed via `opt:` in
+`buf.gen.yaml`):
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `output_file` | `catalog.gen.ts` | Output file name, relative to the output root. Absolute paths and `..` traversal are rejected. |
+| `output_file` | `catalog.gen.ts` | Output file name, relative to the output root. Absolute paths (POSIX and Windows) and `..` traversal are rejected. |
 
 ## Important
 
@@ -76,6 +88,19 @@ is types-only). Generate it alongside `protoc-gen-es`, with the **same
 - The plugin generates services from **files-to-generate** only, not from the
   transitive proto import graph.
 
+## Dependencies
+
+- `@bufbuild/protobuf` — proto descriptors (`DescService`).
+- `@bufbuild/protoplugin` — plugin framework (`createEcmaScriptPlugin`, `runNodeJs`).
+
+## Requirements
+
+- Node.js >=22.13.0
+
 ## License
 
-[Apache License 2.0](../../LICENSE) · Built by [Highload.Zone](https://highload.zone)
+Apache-2.0
+
+---
+
+**Part of [@connectum](../../README.md)** -- Universal framework for production-ready gRPC/ConnectRPC microservices
