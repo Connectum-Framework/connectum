@@ -165,10 +165,10 @@ const bus = createEventBus({
 ```typescript
 import type { EventMiddleware } from '@connectum/events';
 
-const loggingMiddleware: EventMiddleware = (next) => async (ctx) => {
+const loggingMiddleware: EventMiddleware = async (event, ctx, next) => {
   console.log(`Processing event: ${ctx.eventType}`);
   const start = Date.now();
-  await next(ctx);
+  await next();
   console.log(`Processed in ${Date.now() - start}ms`);
 };
 
@@ -226,9 +226,10 @@ function createEventBus(options: EventBusOptions): EventBus
 
 ```typescript
 interface EventBus {
-  start(): Promise<void>;
+  // A passed signal overrides the construction-time EventBusOptions.signal
+  start(options?: { signal?: AbortSignal }): Promise<void>;
   stop(): Promise<void>;
-  publish<T>(schema: DescMessage, data: T, options?: PublishOptions): Promise<void>;
+  publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, options?: PublishOptions): Promise<void>;
 }
 ```
 
@@ -320,6 +321,7 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 | Export | Kind | Description |
 |--------|------|-------------|
 | `createEventBus` | function | Factory for creating an EventBus |
+| `deriveServiceName` | function | Derives a consumer identity (`package@hostname`) from proto service names |
 | `NonRetryableError` | class | Error that skips retry middleware |
 | `RetryableError` | class | Error that forces retry |
 | `EventRouterImpl` | class | Event router implementation |
@@ -343,6 +345,8 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 | `RawEventHandler` | type | Raw event handler type |
 | `EventSubscription` | type | Subscription handle |
 | `MiddlewareConfig` | type | Middleware configuration |
+
+For the complete, always-current list of exported symbols and types, see the [API Reference](https://connectum.dev/en/api/).
 
 ## Dependencies
 

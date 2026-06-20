@@ -579,7 +579,9 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 
 ## Dependencies
 
+- `@connectum/core` -- Connectum server foundation (runtime dependency)
 - `@connectrpc/connect` -- ConnectRPC core (runtime dependency)
+- `@bufbuild/protobuf` -- Protobuf runtime (runtime dependency)
 - `jose` -- JWT/JWK/JWS verification
 
 ## Requirements

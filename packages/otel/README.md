@@ -9,7 +9,7 @@ OpenTelemetry instrumentation for Connectum.
 - **Server Interceptor**: `createOtelInterceptor()` -- server-side tracing + metrics for ConnectRPC
 - **Client Interceptor**: `createOtelClientInterceptor()` -- client-side tracing + metrics with context propagation
 - **Deep Tracing**: `traced()` and `traceAll()` -- business logic instrumentation
-- **Logging**: `getLogger(name, options?)` -- structured logging with convenience methods and raw OTel access
+- **Logging**: `getLogger(name?, options?)` -- structured logging with convenience methods and raw OTel access
 - **Standalone API**: `getTracer()`, `getMeter()` -- lazy singletons
 - **OTel Semantic Conventions**: Attributes following OpenTelemetry RPC standards
 - **OTLP Exporters**: Built-in OTLP HTTP/gRPC exporter support
@@ -35,11 +35,7 @@ The streaming implementation captures the span via closure rather than relying o
 pnpm add @connectum/otel
 ```
 
-**Peer dependencies** (installed automatically):
-
-```bash
-pnpm add @opentelemetry/api @opentelemetry/sdk-trace-node
-```
+The OpenTelemetry API and SDK packages are runtime dependencies of `@connectum/otel` and are installed automatically.
 
 ## Quick Start
 
@@ -47,6 +43,7 @@ pnpm add @opentelemetry/api @opentelemetry/sdk-trace-node
 
 ```typescript
 import { getTracer, getMeter, getLogger } from "@connectum/otel";
+import { SpanStatusCode } from "@opentelemetry/api";
 
 // Tracing
 const tracer = getTracer();
@@ -79,7 +76,7 @@ logger.debug("Processing details", { step: 3 });
 
 ```typescript
 import { getTracer } from "@connectum/otel";
-import { context, trace } from "@opentelemetry/api";
+import { context, trace, SpanStatusCode } from "@opentelemetry/api";
 
 const tracer = getTracer();
 
@@ -219,7 +216,9 @@ OTEL_BSP_MAX_QUEUE_SIZE=1000
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE=100
 ```
 
-## Main Exports
+## API Reference
+
+For the complete list of exported symbols (including the `createRpcClientMetrics`/`createRpcServerMetrics` metrics factories, `detectConnectumTransport`, and the full semantic-convention surface of `ATTR_*` constants), see the [API Reference](https://connectum.dev/en/api/).
 
 ### createOtelInterceptor() (Server)
 
@@ -719,12 +718,6 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 - **AsyncLocalStorage context loss in async generators**: Node.js loses `AsyncLocalStorage` context when crossing async generator boundaries. The streaming instrumentation works around this by capturing the span via closure at the point where the stream is created, so all `rpc.message` events are correctly attached to the parent RPC span regardless of ALS state.
 - **Streaming message size is per-message**: The `rpc.message.uncompressed_size` attribute reflects the estimated size of each individual message, not the cumulative size of the entire stream.
 
-## Documentation
-
-- [Quick Start](https://connectum.dev/en/guide/quickstart) - Setup observability
-- [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture) - Overall architecture
-- [Observability Guide](https://connectum.dev/en/guide/observability) - Best practices
-
 ## Dependencies
 
 ### Internal Dependencies
@@ -753,10 +746,16 @@ If you export more than ~10,000 spans/sec via OTLP/protobuf, plan around the cur
 - **Node.js**: >=22.13.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
+## Documentation
+
+- [Quick Start](https://connectum.dev/en/guide/quickstart) - Setup observability
+- [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture) - Overall architecture
+- [Observability Guide](https://connectum.dev/en/guide/observability) - Best practices
+
 ## License
 
 Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** - Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

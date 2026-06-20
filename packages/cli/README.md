@@ -2,6 +2,14 @@
 
 CLI tools for the Connectum gRPC/ConnectRPC framework.
 
+**Command-line tooling for Connectum services — synchronize proto types from a running server via gRPC Server Reflection.**
+
+## Features
+
+- `connectum proto sync` — generate TypeScript proto stubs from a live server via gRPC Server Reflection
+- Dry-run mode to inspect discovered services and files without generating code
+- Programmatic API (`fetchReflectionData`, `fetchFileDescriptorSetBinary`, `executeProtoSync`) for custom tooling
+
 ## Installation
 
 ```bash
@@ -9,6 +17,13 @@ pnpm add @connectum/cli
 ```
 
 Requires Node.js >= 22.13.0.
+
+## Quick Start
+
+```bash
+# Generate TypeScript types from a running server with reflection enabled
+connectum proto sync --from localhost:5000 --out ./gen
+```
 
 ## Commands
 
@@ -47,6 +62,7 @@ connectum proto sync --from localhost:5000 --out ./gen --dry-run
 **Dry-run output example:**
 
 ```
+Connecting to http://localhost:5000...
 Connected to http://localhost:5000
 Services:
   - grpc.health.v1.Health
@@ -57,13 +73,14 @@ Files:
 Would generate to: ./gen
 ```
 
-## Prerequisites
+## Requirements
 
+- **Node.js** >= 22.13.0
 - **Running server** with `reflection: true` enabled
 - **buf CLI** installed (`@bufbuild/buf` or system-wide)
 - **buf.gen.yaml** in the current directory (or provided via `--template`)
 
-## Programmatic API
+## API Reference
 
 The CLI also exports functions for programmatic use:
 
@@ -90,10 +107,11 @@ await executeProtoSync({
 ## Architecture
 
 ```
-@connectum/cli (Layer 3)
+@connectum/cli (Layer 2)
   depends on:
     @lambdalisue/connectrpc-grpcreflect  -- reflection client
     @bufbuild/protobuf                    -- protobuf serialization
+    @connectrpc/connect                   -- ConnectRPC core types
     @connectrpc/connect-node              -- gRPC transport (HTTP/2)
     @bufbuild/buf                         -- code generation
     citty                                 -- CLI framework
@@ -104,3 +122,11 @@ await executeProtoSync({
 - [ADR-020: Reflection-based Proto Synchronization](https://connectum.dev/en/contributing/adr/020-reflection-proto-sync)
 - [@lambdalisue/connectrpc-grpcreflect](https://www.npmjs.com/package/@lambdalisue/connectrpc-grpcreflect)
 - [Buf Inputs Reference](https://buf.build/docs/reference/inputs/)
+
+## License
+
+Apache-2.0
+
+---
+
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

@@ -23,11 +23,8 @@ ConnectRPC interceptors for Connectum.
 pnpm add @connectum/interceptors
 ```
 
-**Peer dependencies**:
-
-```bash
-pnpm add @connectrpc/connect @bufbuild/protobuf
-```
+`@connectrpc/connect` and `@bufbuild/protobuf` are direct dependencies of this
+package and are installed automatically — no separate install step is needed.
 
 ## Default interceptor chain
 
@@ -195,7 +192,9 @@ const interceptors = [
 ];
 ```
 
-## Exported Factories
+## API Reference
+
+### Exported Factories
 
 Each interceptor is available as a named export:
 
@@ -214,9 +213,11 @@ Each interceptor is available as a named export:
 
 All factories are also available via the main export `@connectum/interceptors`.
 
-## Interceptor Reference
+For the full type and signature surface, see the auto-generated [API Reference](https://connectum.dev/en/api/).
 
-### Error Handler
+### Interceptor Reference
+
+#### Error Handler
 
 Converts arbitrary errors to `ConnectError` with correct gRPC codes. Recognizes the `SanitizableError` protocol from `@connectum/core`: errors that are an `instanceof Error` and carry a `clientMessage` string, a `serverDetails` object, and a numeric `code` are automatically sanitized -- the client receives only `clientMessage`, while `serverDetails` are preserved for server-side logging.
 
@@ -233,7 +234,7 @@ const interceptor = createErrorHandlerInterceptor({
 });
 ```
 
-### Timeout
+#### Timeout
 
 Prevents request hanging by setting a maximum execution time.
 
@@ -254,7 +255,7 @@ const interceptor = createTimeoutInterceptor({
 }
 ```
 
-### Bulkhead
+#### Bulkhead
 
 Limits the number of concurrent requests to prevent resource exhaustion.
 
@@ -276,7 +277,7 @@ const interceptor = createBulkheadInterceptor({
 }
 ```
 
-### Circuit Breaker
+#### Circuit Breaker
 
 Prevents cascading failures by breaking the circuit on repeated errors.
 
@@ -306,7 +307,7 @@ const interceptor = createCircuitBreakerInterceptor({
 }
 ```
 
-### Retry
+#### Retry
 
 Retries failed unary calls with exponential backoff. Built on [cockatiel](https://github.com/connor4312/cockatiel).
 
@@ -331,7 +332,7 @@ const interceptor = createRetryInterceptor({
 - Attempt 3: delay `initialDelay * 4` (800 ms)
 - ... and so on, but no more than `maxDelay`
 
-### Fallback
+#### Fallback
 
 Provides graceful degradation on service failure. **Disabled by default** -- requires a `handler` function to work.
 
@@ -357,7 +358,7 @@ const interceptors = createDefaultInterceptors({
 });
 ```
 
-### Validation
+#### Validation
 
 Input data validation using the official `@connectrpc/validate` package (`createValidateInterceptor()`). Checks proto constraints before passing the request to business logic.
 
@@ -384,7 +385,7 @@ message CreateUserRequest {
 }
 ```
 
-### Serializer
+#### Serializer
 
 Automatic JSON serialization of protobuf messages via `@bufbuild/protobuf`. **Disabled by default** (opt-in) since most gRPC services use binary protobuf and don't need JSON serialization.
 
@@ -420,7 +421,7 @@ const interceptor = createSerializerInterceptor({
 });
 ```
 
-### Logger
+#### Logger
 
 Request and response logging.
 
@@ -852,6 +853,7 @@ The circuit breaker additionally classifies errors (infrastructure codes only by
 
 ### Internal
 
+- `@connectum/core` -- Server foundation / `SanitizableError` protocol
 - `@connectrpc/connect` -- ConnectRPC core
 - `@connectrpc/validate` -- Official validation interceptor
 - `@bufbuild/protobuf` -- Protocol Buffers runtime
@@ -873,4 +875,4 @@ Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** -- Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

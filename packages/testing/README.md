@@ -10,7 +10,7 @@ Testing utilities for the Connectum framework. Provides mock factories, assertio
 pnpm add -D @connectum/testing
 ```
 
-**Dependencies** (installed automatically): `@connectum/core`, `@connectum/test-fixtures`, `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`, `@opentelemetry/api`
+**Dependencies** (installed automatically): `@connectum/core`, `@connectum/test-fixtures`, `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`, `@opentelemetry/api`, `@opentelemetry/sdk-metrics`, `@opentelemetry/sdk-trace-base`
 
 ## Quick Start
 
@@ -392,6 +392,8 @@ const res = await client.sayHello({ name: "world" });
 
 ### `transportParityTest(name, opts)`
 
+> Exported from the `@connectum/testing/parity` subpath (not the main entry), so it can be imported in tests that bring up an HTTP/2 server without that surface being pulled into every consumer of `@connectum/testing`.
+
 Registers a `node:test` test that runs the scenario twice — once over
 `createGrpcTransport({ baseUrl })` and once over `createLocalTransport(server)` —
 with identical services / server-side interceptors / protocols. Any
@@ -400,7 +402,7 @@ test.
 
 ```typescript
 import { createClient } from "@connectrpc/connect";
-import { transportParityTest } from "@connectum/testing";
+import { transportParityTest } from "@connectum/testing/parity";
 
 transportParityTest("Greeter.sayHello is identical across transports", {
   services: [greeterRoutes],
@@ -517,3 +519,7 @@ pnpm test                                 # All packages
 ## License
 
 Apache-2.0
+
+---
+
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

@@ -25,3 +25,11 @@ cross-transport parity driver) see `@connectum/testing`.
 
 `@connectum/testing` re-exports every symbol from this package, so existing
 imports from `@connectum/testing` continue to work unchanged.
+
+## License
+
+Apache-2.0
+
+---
+
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

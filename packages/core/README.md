@@ -139,7 +139,7 @@ Orchestration of graceful shutdown through a sequence of phases:
 
 Errors in `Promise.race` are properly caught, timer is cleared via `clearTimeout` in `finally`.
 
-## Main Exports
+## API Reference
 
 ### createServer()
 
@@ -182,7 +182,7 @@ interface Server extends EventEmitter {
   readonly state: ServerState;
 
   // Transport access
-  readonly transport: Http2SecureServer | Http2Server | null;
+  readonly transport: HttpServer | Http2Server | Http2SecureServer | null;
   readonly routes: ReadonlyArray<ServiceDefinition>;
   readonly interceptors: ReadonlyArray<Interceptor>;
   readonly protocols: ReadonlyArray<ProtocolRegistration>;
@@ -629,23 +629,6 @@ await server.start();
 // Note: Cannot add services after start()
 ```
 
-## Documentation
-
-### Getting Started
-
-- [Quick Start](https://connectum.dev/en/guide/quickstart) - Create your first service
-
-### Architecture
-
-- [Architecture Overview](https://connectum.dev/en/guide/advanced/architecture) - Overall architecture
-- [Package Decomposition](https://connectum.dev/en/contributing/adr/003-package-decomposition) - ADR on package structure
-
-### Guides
-
-- [Interceptors Guide](https://connectum.dev/en/guide/interceptors) - Working with interceptors
-- [Observability Guide](https://connectum.dev/en/guide/observability) - Setting up OpenTelemetry
-- [TLS Configuration](https://connectum.dev/en/guide/tls) - Production TLS setup
-
 ## Dependencies
 
 ### Internal Dependencies
@@ -675,10 +658,27 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 - **Bun** -- built-in TypeScript support. Run `bun src/index.ts`.
 - **[tsx](https://tsx.is)** -- esbuild-powered TypeScript execution, works on Node.js 22+. Run `npx tsx src/index.ts`.
 
+## Documentation
+
+### Getting Started
+
+- [Quick Start](https://connectum.dev/en/guide/quickstart) - Create your first service
+
+### Architecture
+
+- [Architecture Overview](https://connectum.dev/en/guide/production/architecture) - Overall architecture
+- [Package Decomposition](https://connectum.dev/en/contributing/adr/003-package-decomposition) - ADR on package structure
+
+### Guides
+
+- [Interceptors Guide](https://connectum.dev/en/guide/interceptors) - Working with interceptors
+- [Observability Guide](https://connectum.dev/en/guide/observability) - Setting up OpenTelemetry
+- [TLS Configuration](https://connectum.dev/en/guide/security/tls) - Production TLS setup
+
 ## License
 
 Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** - Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

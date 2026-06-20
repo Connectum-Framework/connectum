@@ -39,13 +39,16 @@ const server = createServer({
 });
 
 server.on('ready', () => {
+  // Marks every registered RPC service SERVING. For apps that also track
+  // independent components (e.g. `amqp`), update those addressably via
+  // `set(component, status)` instead — see "Services vs components" below.
   healthcheckManager.update(ServingStatus.SERVING);
 });
 
 await server.start();
 ```
 
-## API
+## API Reference
 
 ### Healthcheck(options?)
 
@@ -119,7 +122,7 @@ Class for managing service health statuses.
 | `register(component, initialStatus?)` | Register an application health component (default `UNKNOWN`). Re-registering preserves the current status. |
 | `set(component, status)` | Set a component's status (upsert: registers the component if absent). |
 | `unregister(component)` | Remove a registered component. |
-| `getStatus(service)` | Get the status of a specific service or component |
+| `getStatus(service)` | Get the status of a specific service or component. Returns `ServiceStatus \| undefined` (`undefined` for an unknown name -- it does not throw, unlike `update()`). |
 | `getAllStatuses()` | Get a Map of all statuses |
 | `areAllHealthy()` | Check if all services and components are in SERVING status |
 | `initialize(serviceNames)` | Initialize RPC service tracking (called by the protocol) |
@@ -252,7 +255,7 @@ grpcurl -plaintext -d '{"service": "my.service.v1.MyService"}' \
 
 ### Health.Watch
 
-Stream status changes (Server-Sent Events):
+Stream status changes (gRPC server streaming):
 
 ```bash
 grpcurl -plaintext localhost:5000 grpc.health.v1.Health/Watch
@@ -337,6 +340,12 @@ describe('health check', () => {
 
 - **Node.js**: >=22.13.0
 - **pnpm**: >=10.0.0
+
+## Documentation
+
+- [Package Documentation](https://connectum-framework.github.io/docs/en/packages/healthcheck)
+- [Health Checks Guide](https://connectum-framework.github.io/docs/en/guide/health-checks/protocol)
+- [API Reference](https://connectum-framework.github.io/docs/en/api/)
 
 ## License
 
