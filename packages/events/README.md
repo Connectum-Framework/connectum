@@ -215,12 +215,23 @@ function createEventBus(options: EventBusOptions): EventBus
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `adapter` | `EventAdapter` | required | Broker adapter (NATS, Kafka, Redis, Memory) |
-| `routes` | `EventRoute[]` | `[]` | Event route handlers |
+| `routes` | `EventRoute[]` | `[]` | Event route handlers (subscriber side) |
+| `publishes` | `DescService[]` | `[]` | Event service descriptors this process publishes to (publisher side, no subscription) |
 | `middleware` | `MiddlewareConfig` | `{}` | Middleware configuration |
 | `group` | `string` | `undefined` | Consumer group name |
 | `signal` | `AbortSignal` | `undefined` | External abort signal |
 | `handlerTimeout` | `number` | `30000` | Per-handler timeout in ms |
 | `drainTimeout` | `number` | `30000` | Max ms to wait for in-flight handlers during shutdown |
+
+> **Publisher-only processes:** when a service publishes an event but does not subscribe to it (the usual split-microservices shape), it has no `routes`, so `publish()` would fall back to the message `typeName` — silently emitting to the wrong topic whenever the event declares a custom `(connectum.events.v1.event).topic`. List the event service descriptors in `publishes` so the declared topic is resolved from the proto option end-to-end, instead of hand-maintaining raw topic strings:
+>
+> ```typescript
+> import { OrderEventService } from '#gen/order/v1/order_pb.js';
+>
+> const bus = createEventBus({ adapter, publishes: [OrderEventService] });
+> await bus.start();
+> await bus.publish(OrderPlacedSchema, order); // → declared topic, not "order.v1.OrderPlaced"
+> ```
 
 ### EventBus Interface
 
