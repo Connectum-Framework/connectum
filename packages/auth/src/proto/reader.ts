@@ -20,6 +20,12 @@ import { MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "
 export interface ResolvedMethodAuth {
     /** Whether the method is public (skip authn + authz). */
     readonly public: boolean;
+    /**
+     * Whether the method is internal (service-to-service): skip end-user (JWT)
+     * authentication, but require an internal trust marker established by
+     * {@link createInternalAuthInterceptor}. Distinct from `public`. See ADR-029.
+     */
+    readonly internal: boolean;
     /** Authorization policy: "allow", "deny", or undefined (use interceptor default). */
     readonly policy: "allow" | "deny" | undefined;
     /** Required roles and scopes, or undefined if none specified. */
@@ -39,6 +45,7 @@ const resolvedCache = new WeakMap<DescMethod, ResolvedMethodAuth>();
  */
 const DEFAULT_RESOLVED: ResolvedMethodAuth = {
     public: false,
+    internal: false,
     policy: undefined,
     requires: undefined,
 };
@@ -54,7 +61,8 @@ const DEFAULT_RESOLVED: ResolvedMethodAuth = {
  *
  * Priority (method overrides service):
  * ```
- * method.public       -> service.public        -> false
+ * method.public       -> service.public           -> false
+ * method.internal     -> service.internal         -> false
  * method.requires     -> service.default_requires -> undefined
  * method.policy       -> service.default_policy    -> undefined
  * ```
@@ -99,6 +107,11 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     const servicePublicSet = svcAuth !== undefined && isFieldSet(svcAuth, ServiceAuthSchema.field.public);
     const isPublic = methodPublicSet ? mtdAuth?.public === true : servicePublicSet ? svcAuth?.public === true : false;
 
+    // Resolve `internal` field with the same presence-aware override logic as `public`.
+    const methodInternalSet = mtdAuth !== undefined && isFieldSet(mtdAuth, MethodAuthSchema.field.internal);
+    const serviceInternalSet = svcAuth !== undefined && isFieldSet(svcAuth, ServiceAuthSchema.field.internal);
+    const isInternal = methodInternalSet ? mtdAuth?.internal === true : serviceInternalSet ? svcAuth?.internal === true : false;
+
     // Resolve `requires` field.
     // Method-level requires overrides service-level default_requires.
     // A submessage field is undefined when not set in proto2.
@@ -125,7 +138,7 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
         policy = normalizePolicy(svcAuth.defaultPolicy);
     }
 
-    return { public: isPublic, policy, requires };
+    return { public: isPublic, internal: isInternal, policy, requires };
 }
 
 /**
@@ -169,6 +182,50 @@ export function getPublicMethods(services: readonly DescService[]): string[] {
         for (const method of service.methods) {
             const resolved = resolveMethodAuth(method);
             if (resolved.public) {
+                patterns.push(`${service.typeName}/${method.name}`);
+            }
+        }
+    }
+
+    return patterns;
+}
+
+/**
+ * Get the list of internal method patterns from a set of service descriptors.
+ *
+ * Iterates over all methods in the given services, resolves their auth
+ * configuration, and returns patterns for methods marked as `internal`.
+ *
+ * Mirrors {@link getPublicMethods}. Internal methods skip end-user (JWT)
+ * authentication — feed these into the JWT auth interceptor's `skipMethods`
+ * exactly like public methods — but, unlike public methods, they still require
+ * an internal trust marker established by {@link createInternalAuthInterceptor}.
+ *
+ * The returned patterns follow the `"service.typeName/method.name"` format
+ * used by `skipMethods` in auth interceptors.
+ *
+ * @param services - Service descriptors to scan
+ * @returns Array of method patterns in `"ServiceTypeName/MethodName"` format
+ *
+ * @example
+ * ```typescript
+ * import { getInternalMethods, getPublicMethods } from '@connectum/auth/proto';
+ *
+ * // JWT auth skips both public and internal methods;
+ * // the internal interceptor then enforces the trust marker on internal ones.
+ * const jwtAuth = createJwtAuthInterceptor({
+ *   jwksUri: '...',
+ *   skipMethods: [...getPublicMethods(services), ...getInternalMethods(services)],
+ * });
+ * ```
+ */
+export function getInternalMethods(services: readonly DescService[]): string[] {
+    const patterns: string[] = [];
+
+    for (const service of services) {
+        for (const method of service.methods) {
+            const resolved = resolveMethodAuth(method);
+            if (resolved.internal) {
                 patterns.push(`${service.typeName}/${method.name}`);
             }
         }

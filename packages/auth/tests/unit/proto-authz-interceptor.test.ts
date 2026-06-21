@@ -13,7 +13,7 @@ import { assertConnectError, createMockNext } from "@connectum/testing";
 import { authContextStorage } from "../../src/context.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import type { AuthContext, AuthzRule } from "../../src/types.ts";
-import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest } from "../helpers/proto-test-helpers.ts";
+import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest, createServiceOptions } from "../helpers/proto-test-helpers.ts";
 
 const defaultContext: AuthContext = {
     subject: "user-1",
@@ -302,6 +302,103 @@ describe("proto-authz-interceptor", () => {
                     return true;
                 },
             );
+        });
+    });
+
+    // ADR-029: internal (service-to-service) methods compose inclusively with
+    // the existing authz model. The internal identity is populated upstream by
+    // createInternalAuthInterceptor; here we simulate it via authContextStorage.run.
+    describe("internal methods (ADR-029)", () => {
+        const internalContext: AuthContext = {
+            subject: "trips-service",
+            roles: ["worker"],
+            scopes: [],
+            claims: {},
+            type: "service",
+        };
+
+        it("allows an internal method with no requires when identity is present", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createProtoMockRequest(service, method);
+
+            await authContextStorage.run(internalContext, () => handler(req));
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it("rejects an internal method with no identity as Unauthenticated", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createProtoMockRequest(service, method);
+
+            // No authContextStorage.run -> no identity.
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("inclusive roles: internal + requires{roles} ALLOWS a caller with the role (existing requires path)", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true, requires: { roles: ["worker"] } }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createProtoMockRequest(service, method);
+
+            await authContextStorage.run(internalContext, () => handler(req));
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it("inclusive roles: internal + requires{roles} DENIES a caller without the role (PermissionDenied)", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true, requires: { roles: ["admin"] } }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createProtoMockRequest(service, method);
+
+            // internalContext has role "worker", not "admin".
+            await assert.rejects(
+                () => authContextStorage.run(internalContext, () => handler(req)),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.strictEqual((err as Error).name, "AuthzDeniedError");
+                    assert.strictEqual((err as any).code, Code.PermissionDenied);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("internal resolved from service-level default (method inherits service internal)", async () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ internal: true }) });
+            const method = createFakeMethod(service, "RecordTrip");
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createProtoMockRequest(service, method);
+
+            await authContextStorage.run(internalContext, () => handler(req));
+
+            assert.strictEqual(next.mock.calls.length, 1);
         });
     });
 });
