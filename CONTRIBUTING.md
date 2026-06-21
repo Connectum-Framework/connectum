@@ -55,7 +55,7 @@ Enhancement ideas are welcome:
 ### Prerequisites
 
 - **Node.js**: ≥25.2.0 (for stable type stripping)
-- **pnpm**: ≥10.0.0
+- **pnpm**: ≥11.0.0
 - **Git**: Latest version
 - **protoc**: Latest version (for proto generation)
 

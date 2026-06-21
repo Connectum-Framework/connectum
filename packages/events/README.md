@@ -454,7 +454,7 @@ For the complete, always-current list of exported symbols and types, see the [AP
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **pnpm**: >=10.0.0
+- **pnpm**: >=11.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## Documentation

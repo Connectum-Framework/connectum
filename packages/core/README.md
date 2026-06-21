@@ -693,7 +693,7 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **pnpm**: >=10.0.0
+- **pnpm**: >=11.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ### Alternative Runtimes
