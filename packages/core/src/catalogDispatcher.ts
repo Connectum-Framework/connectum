@@ -16,9 +16,10 @@
  */
 
 import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
-import type { HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
+import type { ContextValues, HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
+import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
 import { createInputQueue, singleInput } from "./streamBridge.ts";
 
@@ -92,6 +93,196 @@ function sanitizeCallError(error: unknown): unknown {
 }
 
 /**
+ * The per-call dispatch frame: everything the underlying ConnectRPC
+ * `Transport.unary`/`Transport.stream` needs beyond the method + request.
+ *
+ * The handler {@link Context} fills it from the inbound `HandlerContext`
+ * (signal/deadline cascade, propagated headers, `hctx.values`); the standalone
+ * `CatalogClient` fills it from the caller's {@link CallOptions} (no inbound
+ * request to cascade from, so `contextValues` is omitted).
+ *
+ * @internal
+ */
+export interface CallFrame {
+    readonly signal: AbortSignal | undefined;
+    readonly timeoutMs: number | undefined;
+    readonly headers: HeadersInit | undefined;
+    readonly contextValues: ContextValues | undefined;
+}
+
+/**
+ * A lazy resolution thunk for a streaming call: produces the target
+ * `Transport` together with the per-call {@link CallFrame}. Streaming openers
+ * call it INSIDE their iterator/IIFE/generator body, never eagerly, so a
+ * resolver/transport failure and the deadline snapshot surface on
+ * iteration/`close()` — preserving the documented `ctx.stream` timing.
+ *
+ * @internal
+ */
+export type ResolveStream = () => { transport: Transport; frame: CallFrame };
+
+/**
+ * Resolve a catalog method key `"${typeName}/${Method}"` to its
+ * `(typeName, DescMethod)` against a concrete {@link ServiceCatalog}. Throws the
+ * operational `ConnectError` for a missing catalog / unknown service / unknown
+ * method (the unary-vs-stream kind check is left to the caller).
+ *
+ * Shared verbatim by the handler {@link Context} dispatcher and the standalone
+ * `CatalogClient`, so both surface identical error codes.
+ *
+ * @internal
+ */
+export function lookupCatalogMethod(catalog: ServiceCatalog | undefined, method: string, caller = "ctx"): { typeName: string; descMethod: DescMethod } {
+    const parts = splitMethodKey(method);
+    if (parts === null) {
+        throw new ConnectError(`${caller}: malformed method key "${method}" (expected "\${typeName}/\${Method}").`, Code.Unimplemented);
+    }
+    const { typeName, methodName } = parts;
+
+    if (catalog === undefined) {
+        throw new ConnectError(`${caller}: no catalog is configured; pass createServer({ catalog }) to enable cross-service calls.`, Code.FailedPrecondition);
+    }
+
+    const descriptor = catalog[typeName];
+    if (descriptor === undefined) {
+        throw new ConnectError(`${caller}: unknown service "${typeName}" (no such key in the catalog).`, Code.Unimplemented);
+    }
+
+    const descMethod = descriptor.methods.find((m) => m.name === methodName);
+    if (descMethod === undefined) {
+        throw new ConnectError(`${caller}: "${typeName}" has no method "${methodName}".`, Code.Unimplemented);
+    }
+    return { typeName, descMethod };
+}
+
+/**
+ * Resolve a remote service to a `Transport` via a {@link RemoteResolver},
+ * mapping the two failure modes to the same `ConnectError` codes `ctx.call`
+ * uses: a resolver that throws → `Code.Internal` (cause preserved), a resolver
+ * that returns `null` → `Code.Unavailable`.
+ *
+ * Used by the standalone `CatalogClient` (which has no in-process/local path);
+ * the server-side dispatcher applies the same mapping inline in
+ * {@link CatalogDispatcher._resolveTransport} after first trying the local
+ * transport.
+ *
+ * @internal
+ */
+export function resolveRemoteTransportOrThrow(resolver: RemoteResolver, typeName: string, endpoint: string | undefined, caller = "ctx.call"): Transport {
+    let transport: Transport | null;
+    try {
+        transport = resolver(endpoint !== undefined ? { typeName, endpoint } : { typeName });
+    } catch (cause) {
+        throw new ConnectError(`${caller}: the resolver threw while resolving "${typeName}".`, Code.Internal, undefined, undefined, cause);
+    }
+    if (transport === null) {
+        const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
+        throw new ConnectError(`${caller}: no route for "${typeName}"${at}: the resolver returned null.`, Code.Unavailable);
+    }
+    return transport;
+}
+
+/**
+ * The shared unary tail: invoke an already-resolved `transport.unary` with the
+ * computed {@link CallFrame}, returning the response message and sanitizing any
+ * propagated `ConnectError` (see {@link sanitizeCallError}). Both the handler
+ * `ctx.call` and the standalone `CatalogClient.call` end here.
+ *
+ * @internal
+ */
+export async function dispatchUnaryCall(transport: Transport, descMethod: DescMethodUnary<DescMessage, DescMessage>, request: unknown, frame: CallFrame): Promise<unknown> {
+    try {
+        const response = await transport.unary(descMethod, frame.signal, frame.timeoutMs, frame.headers, request as MessageInitShape<DescMessage>, frame.contextValues);
+        return response.message;
+    } catch (error) {
+        throw sanitizeCallError(error);
+    }
+}
+
+/**
+ * The shared server-streaming tail: one request in, an `AsyncIterable` of
+ * responses out, over an already-resolved `transport` with the computed
+ * {@link CallFrame}.
+ *
+ * @internal
+ */
+export function openServerStream(resolve: ResolveStream, descMethod: DescMethodStreaming<DescMessage, DescMessage>, request: unknown): AsyncIterable<unknown> {
+    return {
+        async *[Symbol.asyncIterator]() {
+            try {
+                // Resolution is LAZY (on first iteration), so a resolver/transport
+                // failure — and the deadline snapshot taken inside the frame —
+                // surface here, not when the factory was invoked.
+                const { transport, frame } = resolve();
+                const input = singleInput(request as MessageInitShape<DescMessage>);
+                const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, input, frame.contextValues);
+                yield* response.message;
+            } catch (error) {
+                throw sanitizeCallError(error);
+            }
+        },
+    };
+}
+
+/**
+ * The shared client-streaming tail: push N requests, `close()` resolves the
+ * single response. Resolution is lazy — a resolver/transport failure surfaces
+ * on `await close()` (the response IIFE), never on factory invocation.
+ *
+ * @internal
+ */
+export function openClientStream(resolve: ResolveStream, descMethod: DescMethodStreaming<DescMessage, DescMessage>): ClientStreamHandle<unknown, unknown> {
+    const queue = createInputQueue<MessageInitShape<DescMessage>>();
+    const responsePromise = (async (): Promise<unknown> => {
+        try {
+            const { transport, frame } = resolve();
+            const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, queue.iterable, frame.contextValues);
+            for await (const message of response.message) {
+                return message;
+            }
+            throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
+        } catch (error) {
+            throw sanitizeCallError(error);
+        }
+    })();
+    // Avoid an unhandled rejection before the caller awaits close().
+    responsePromise.catch(() => {});
+    return {
+        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+        close: () => {
+            queue.close();
+            return responsePromise;
+        },
+    };
+}
+
+/**
+ * The shared bidi-streaming tail: push requests while iterating `responses`;
+ * `close()` ends the send half. Resolution is lazy — a resolver/transport
+ * failure surfaces when `responses` is first iterated, never on factory
+ * invocation.
+ *
+ * @internal
+ */
+export function openBidiStream(resolve: ResolveStream, descMethod: DescMethodStreaming<DescMessage, DescMessage>): BidiStreamHandle<unknown, unknown> {
+    const queue = createInputQueue<MessageInitShape<DescMessage>>();
+    async function* responses(): AsyncIterable<unknown> {
+        try {
+            const { transport, frame } = resolve();
+            const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, queue.iterable, frame.contextValues);
+            yield* response.message;
+        } catch (error) {
+            throw sanitizeCallError(error);
+        }
+    }
+    return {
+        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+        close: () => queue.close(),
+        responses: responses(),
+    };
+}
+
+/**
  * Per-server engine that materializes `ctx.call` and wraps user handlers so
  * they receive a Connectum {@link Context}.
  *
@@ -151,56 +342,19 @@ export class CatalogDispatcher {
         }
 
         const transport = this._resolveTransport(typeName, options?.endpoint);
-
-        // Cascade: inject the inbound signal/deadline unless explicitly overridden.
-        const signal = options?.signal ?? hctx.signal;
-        const timeoutMs = clampTimeout(options?.timeoutMs, hctx.timeoutMs());
-        const headers = this._buildHeaders(hctx, options);
-
-        try {
-            const response = await transport.unary(
-                descMethod as DescMethodUnary<DescMessage, DescMessage>,
-                signal,
-                timeoutMs,
-                headers,
-                request as MessageInitShape<DescMessage>,
-                hctx.values,
-            );
-            return response.message;
-        } catch (error) {
-            throw sanitizeCallError(error);
-        }
+        const frame = this._buildFrame(hctx, options);
+        return dispatchUnaryCall(transport, descMethod as DescMethodUnary<DescMessage, DescMessage>, request, frame);
     }
 
     /**
-     * Resolve a catalog method key to its `(typeName, DescMethod)`. Throws the
-     * operational `ConnectError` for a missing catalog / unknown service /
-     * unknown method (the kind check is left to the caller).
+     * Resolve a catalog method key to its `(typeName, DescMethod)`. Delegates to
+     * the shared {@link lookupCatalogMethod} against this host's catalog (kind
+     * check left to the caller).
      *
      * @internal
      */
     private _lookupCatalogMethod(method: string): { typeName: string; descMethod: DescMethod } {
-        const parts = splitMethodKey(method);
-        if (parts === null) {
-            throw new ConnectError(`ctx: malformed method key "${method}" (expected "\${typeName}/\${Method}").`, Code.Unimplemented);
-        }
-        const { typeName, methodName } = parts;
-
-        const catalog = this.host.catalog;
-        if (catalog === undefined) {
-            throw new ConnectError("ctx: no catalog is configured; pass createServer({ catalog }) to enable cross-service calls.", Code.FailedPrecondition);
-        }
-
-        const descriptor = catalog[typeName];
-        if (descriptor === undefined) {
-            throw new ConnectError(`ctx: unknown service "${typeName}" (no such key in the catalog).`, Code.Unimplemented);
-        }
-
-        const descMethod = descriptor.methods.find((m) => m.name === methodName);
-        if (descMethod === undefined) {
-            throw new ConnectError(`ctx: "${typeName}" has no method "${methodName}".`, Code.Unimplemented);
-        }
-        return { typeName, descMethod };
+        return lookupCatalogMethod(this.host.catalog, method);
     }
 
     /**
@@ -225,91 +379,52 @@ export class CatalogDispatcher {
         }
     }
 
+    /**
+     * The lazy resolution thunk for a server-side streaming call: resolve the
+     * transport (local or remote) and snapshot the cascade frame. Deferred into
+     * the opener body so timing matches the documented `ctx.stream` contract —
+     * operational failures + the deadline snapshot surface on iteration/`close()`.
+     *
+     * @internal
+     */
+    private _streamResolver(typeName: string, options: CallOptions | undefined, hctx: HandlerContext): ResolveStream {
+        return () => ({
+            transport: this._resolveTransport(typeName, options?.endpoint),
+            frame: this._buildFrame(hctx, options),
+        });
+    }
+
     /** Server-streaming: one request in, an `AsyncIterable` of responses out. @internal */
     private _serverStream(typeName: string, descMethod: DescMethod, request: unknown, options: CallOptions | undefined, hctx: HandlerContext): AsyncIterable<unknown> {
-        const dispatcher = this;
-        return {
-            async *[Symbol.asyncIterator]() {
-                try {
-                    const { transport, signal, timeoutMs, headers } = dispatcher._prepareStream(typeName, options, hctx);
-                    const input = singleInput(request as MessageInitShape<DescMessage>);
-                    const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
-                    yield* response.message;
-                } catch (error) {
-                    throw sanitizeCallError(error);
-                }
-            },
-        };
+        return openServerStream(this._streamResolver(typeName, options, hctx), descMethod as DescMethodStreaming<DescMessage, DescMessage>, request);
     }
 
     /** Client-streaming: push N requests, `close()` resolves the single response. @internal */
     private _clientStream(typeName: string, descMethod: DescMethod, options: CallOptions | undefined, hctx: HandlerContext): ClientStreamHandle<unknown, unknown> {
-        const queue = createInputQueue<MessageInitShape<DescMessage>>();
-        const responsePromise = (async (): Promise<unknown> => {
-            try {
-                const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
-                const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, queue.iterable, hctx.values);
-                for await (const message of response.message) {
-                    return message;
-                }
-                throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
-            } catch (error) {
-                throw sanitizeCallError(error);
-            }
-        })();
-        // Avoid an unhandled rejection before the caller awaits close().
-        responsePromise.catch(() => {});
-        return {
-            send: (request) => queue.push(request as MessageInitShape<DescMessage>),
-            close: () => {
-                queue.close();
-                return responsePromise;
-            },
-        };
+        return openClientStream(this._streamResolver(typeName, options, hctx), descMethod as DescMethodStreaming<DescMessage, DescMessage>);
     }
 
     /** Bidi-streaming: push requests while iterating `responses`; `close()` ends the send half. @internal */
     private _bidiStream(typeName: string, descMethod: DescMethod, options: CallOptions | undefined, hctx: HandlerContext): BidiStreamHandle<unknown, unknown> {
-        const queue = createInputQueue<MessageInitShape<DescMessage>>();
-        return {
-            send: (request) => queue.push(request as MessageInitShape<DescMessage>),
-            close: () => queue.close(),
-            responses: this._bidiResponses(typeName, descMethod, options, hctx, queue.iterable),
-        };
-    }
-
-    /** @internal */
-    private async *_bidiResponses(
-        typeName: string,
-        descMethod: DescMethod,
-        options: CallOptions | undefined,
-        hctx: HandlerContext,
-        input: AsyncIterable<MessageInitShape<DescMessage>>,
-    ): AsyncIterable<unknown> {
-        try {
-            const { transport, signal, timeoutMs, headers } = this._prepareStream(typeName, options, hctx);
-            const response = await transport.stream(descMethod as DescMethodStreaming<DescMessage, DescMessage>, signal, timeoutMs, headers, input, hctx.values);
-            yield* response.message;
-        } catch (error) {
-            throw sanitizeCallError(error);
-        }
+        return openBidiStream(this._streamResolver(typeName, options, hctx), descMethod as DescMethodStreaming<DescMessage, DescMessage>);
     }
 
     /**
-     * Resolve transport + cascade for a streaming call (shared by all kinds).
+     * Compose the {@link CallFrame} for a server-side catalog call from the
+     * inbound `HandlerContext`: cascade the signal/deadline (unless overridden),
+     * build the propagated + explicit headers, and forward `hctx.values`. This
+     * is the cascade behavior that `ctx.call`/`ctx.stream` have always applied —
+     * computed identically for unary and every streaming kind.
      *
      * @internal
      */
-    private _prepareStream(
-        typeName: string,
-        options: CallOptions | undefined,
-        hctx: HandlerContext,
-    ): { transport: Transport; signal: AbortSignal; timeoutMs: number | undefined; headers: Headers | undefined } {
-        const transport = this._resolveTransport(typeName, options?.endpoint);
-        const signal = options?.signal ?? hctx.signal;
-        const timeoutMs = clampTimeout(options?.timeoutMs, hctx.timeoutMs());
-        const headers = this._buildHeaders(hctx, options);
-        return { transport, signal, timeoutMs, headers };
+    private _buildFrame(hctx: HandlerContext, options: CallOptions | undefined): CallFrame {
+        return {
+            signal: options?.signal ?? hctx.signal,
+            timeoutMs: clampTimeout(options?.timeoutMs, hctx.timeoutMs()),
+            headers: this._buildHeaders(hctx, options),
+            contextValues: hctx.values,
+        };
     }
 
     /**

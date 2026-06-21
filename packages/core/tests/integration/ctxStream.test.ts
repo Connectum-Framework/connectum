@@ -173,6 +173,43 @@ describe("ctx.stream — validation", () => {
         await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
         assert.ok(captured instanceof ConnectError && captured.code === Code.Unimplemented, `expected Unimplemented, got: ${String(captured)}`);
     });
+
+    it("resolves a remote stream target LAZILY — the resolver runs on iteration, not on factory invocation", async () => {
+        // Regression lock: ctx.stream's transport resolution must stay lazy
+        // (documented on _makeStreamHandle). The stream target is NOT mounted
+        // locally, so it goes through the resolver; the factory call must not
+        // trigger it — only iterating the returned AsyncIterable must.
+        let resolverCalls = 0;
+        let observedCallsAtFactoryTime = -1;
+        let captured: unknown;
+        const server = createServer({
+            services: [
+                makeCaller(async (_req, ctx) => {
+                    const stream = ctx.stream("streaming.v1.StreamingService/Server")(create(ItemSchema, { value: "x", sequence: 0 }));
+                    observedCallsAtFactoryTime = resolverCalls; // must still be 0
+                    try {
+                        for await (const _ of stream) {
+                            // unreachable: resolver returns null → Unavailable on first .next()
+                        }
+                    } catch (err) {
+                        captured = err;
+                    }
+                    return create(EchoResponseSchema, { message: "done", timestamp: 0n });
+                }),
+            ],
+            // Only EchoService is local; StreamingService is reached remotely.
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService, [StreamingService.typeName]: StreamingService }),
+            remoteResolver: ({ typeName }) => {
+                resolverCalls += typeName === StreamingService.typeName ? 1 : 0;
+                return null;
+            },
+        });
+
+        await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(observedCallsAtFactoryTime, 0, "resolver must NOT run when the stream factory is invoked");
+        assert.strictEqual(resolverCalls, 1, "resolver must run exactly once, on iteration");
+        assert.ok(captured instanceof ConnectError && captured.code === Code.Unavailable, `expected Unavailable on iteration, got: ${String(captured)}`);
+    });
 });
 
 describe("ctx.stream — open items (escalated, not yet locked)", () => {

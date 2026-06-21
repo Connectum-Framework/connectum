@@ -17,10 +17,14 @@
 // SERVER API
 // =============================================================================
 
+// Standalone catalog client — the catalog-typed call/stream surface usable
+// OUTSIDE a Server (workers, schedulers, CLIs).
+export type { CatalogClient, CreateCatalogClientOptions } from "./catalogClient.ts";
+export { createCatalogClient } from "./catalogClient.ts";
 // Service catalog — declarative cross-service call primitives
 export { CatalogConfigError } from "./catalogErrors.ts";
 // Handler context (ctx.call / ctx.stream) + handler implementation types
-export type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumMethodImpl, ConnectumServiceImpl, Context, StreamReturn } from "./context.ts";
+export type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle, ConnectumMethodImpl, ConnectumServiceImpl, Context, StreamReturn } from "./context.ts";
 // Service registration
 export type { ServiceDefinition, ServiceOptions } from "./defineService.ts";
 export { defineLazyService, defineService } from "./defineService.ts";
