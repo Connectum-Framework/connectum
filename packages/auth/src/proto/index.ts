@@ -15,4 +15,4 @@ export { AuthRequirementsSchema, MethodAuthSchema, method_auth, ServiceAuthSchem
 export { createProtoAuthzInterceptor } from "./proto-authz-interceptor.ts";
 export type { ResolvedMethodAuth } from "./reader.ts";
 // Re-export reader utilities
-export { getPublicMethods, resolveMethodAuth } from "./reader.ts";
+export { getInternalMethods, getPublicMethods, resolveMethodAuth } from "./reader.ts";

@@ -68,7 +68,7 @@ export function createFakeMethod(service: DescService, name: string, methodOptio
  * @param authConfig - Auth configuration for the method.
  * @returns Protobuf MethodOptions with the method_auth extension.
  */
-export function createMethodOptions(authConfig: { public?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
+export function createMethodOptions(authConfig: { public?: boolean; internal?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
     const opts = create(MethodOptionsSchema);
     const init: Record<string, unknown> = {
         policy: authConfig.policy ?? "",
@@ -76,6 +76,10 @@ export function createMethodOptions(authConfig: { public?: boolean; policy?: str
     // Only set public when explicitly provided to preserve proto2 field presence semantics
     if (authConfig.public !== undefined) {
         init.public = authConfig.public;
+    }
+    // Only set internal when explicitly provided (proto2 field presence semantics)
+    if (authConfig.internal !== undefined) {
+        init.internal = authConfig.internal;
     }
     if (authConfig.requires) {
         init.requires = create(AuthRequirementsSchema, {
@@ -98,7 +102,7 @@ export function createMethodOptions(authConfig: { public?: boolean; policy?: str
  * @param authConfig - Auth configuration for the service.
  * @returns Protobuf ServiceOptions with the service_auth extension.
  */
-export function createServiceOptions(authConfig: { defaultPolicy?: string; public?: boolean; defaultRequires?: { roles?: string[]; scopes?: string[] } }) {
+export function createServiceOptions(authConfig: { defaultPolicy?: string; public?: boolean; internal?: boolean; defaultRequires?: { roles?: string[]; scopes?: string[] } }) {
     const opts = create(ServiceOptionsSchema);
     const init: Record<string, unknown> = {
         defaultPolicy: authConfig.defaultPolicy ?? "",
@@ -106,6 +110,10 @@ export function createServiceOptions(authConfig: { defaultPolicy?: string; publi
     // Only set public when explicitly provided to preserve proto2 field presence semantics
     if (authConfig.public !== undefined) {
         init.public = authConfig.public;
+    }
+    // Only set internal when explicitly provided (proto2 field presence semantics)
+    if (authConfig.internal !== undefined) {
+        init.internal = authConfig.internal;
     }
     if (authConfig.defaultRequires) {
         init.defaultRequires = create(AuthRequirementsSchema, {

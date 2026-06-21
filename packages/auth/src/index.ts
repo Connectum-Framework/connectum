@@ -3,10 +3,11 @@
  *
  * Authentication and authorization interceptors for Connectum.
  *
- * Provides eight interceptor factories:
+ * Provides nine interceptor factories:
  * - createAuthInterceptor() — generic, pluggable authentication
  * - createJwtAuthInterceptor() — JWT convenience with jose
  * - createGatewayAuthInterceptor() — gateway-injected headers
+ * - createInternalAuthInterceptor() — internal (service-to-service) trust marker
  * - createSessionAuthInterceptor() — session-based auth (better-auth, etc.)
  * - createAuthzInterceptor() — declarative rules-based authorization
  * - createProtoAuthzInterceptor() — proto-option-driven authorization
@@ -34,13 +35,15 @@ export { AuthzDeniedError } from "./errors.ts";
 export { createGatewayAuthInterceptor } from "./gateway-auth-interceptor.ts";
 // Header utilities
 export { parseAuthHeaders, setAuthHeaders } from "./headers.ts";
+// Internal (service-to-service) auth
+export { createInternalAuthInterceptor, meshIdentityTrust, sharedSecretTrust, signedTokenTrust } from "./internal-auth-interceptor.ts";
 export { createJwtAuthInterceptor } from "./jwt-auth-interceptor.ts";
 // Method pattern matching
 export { matchesMethodPattern } from "./method-match.ts";
 // Proto-based authorization
 export { createProtoAuthzInterceptor } from "./proto/proto-authz-interceptor.ts";
 export type { ResolvedMethodAuth } from "./proto/reader.ts";
-export { getPublicMethods, resolveMethodAuth } from "./proto/reader.ts";
+export { getInternalMethods, getPublicMethods, resolveMethodAuth } from "./proto/reader.ts";
 export { createSessionAuthInterceptor } from "./session-auth-interceptor.ts";
 
 // Types and constants
@@ -55,9 +58,16 @@ export type {
     GatewayAuthInterceptorOptions,
     GatewayHeaderMapping,
     InterceptorFactory,
+    InternalAuthInterceptorOptions,
+    InternalTrustSource,
     JwtAuthInterceptorOptions,
+    MeshIdentityEntry,
+    MeshIdentityTrustOptions,
     ProtoAuthzInterceptorOptions,
     SessionAuthInterceptorOptions,
+    SharedSecretTrustOptions,
+    SignedTokenIssuer,
+    SignedTokenTrustOptions,
 } from "./types.ts";
 
 export { AUTH_HEADERS, AuthzEffect } from "./types.ts";

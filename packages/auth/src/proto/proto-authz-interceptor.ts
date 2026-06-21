@@ -82,21 +82,28 @@ function evaluateRules(
  *
  * Authorization decision flow:
  * ```
- * 1. resolveMethodAuth(req.method)  -- read proto options
- * 2. public = true                  --> skip (allow without authn)
- * 3. Get auth context               -- lazy: don't throw yet
- * 4. requires defined, no context   --> throw Unauthenticated
- * 4b. requires defined, has context --> satisfiesRequirements? allow : deny
- * 5. policy = "allow"              --> allow
- * 6. policy = "deny"               --> deny
- * 7. Evaluate programmatic rules   -- unconditional rules work without context
- * 8. Fallback: authorize callback  --> requires auth context
- * 9. Apply defaultPolicy           --> deny without context = Unauthenticated
+ * 1.  resolveMethodAuth(req.method)  -- read proto options
+ * 2.  public = true                  --> skip (allow without authn)
+ * 3.  Get auth context               -- lazy: don't throw yet
+ * 3b. internal = true:               -- service-to-service (ADR-029)
+ *       no context                   --> throw Unauthenticated
+ *       no requires                  --> allow (any trusted internal caller)
+ *       has requires                 --> fall through to step 4 (inclusive roles)
+ * 4.  requires defined, no context   --> throw Unauthenticated
+ * 4b. requires defined, has context  --> satisfiesRequirements? allow : deny
+ * 5.  policy = "allow"              --> allow
+ * 6.  policy = "deny"               --> deny
+ * 7.  Evaluate programmatic rules   -- unconditional rules work without context
+ * 8.  Fallback: authorize callback  --> requires auth context
+ * 9.  Apply defaultPolicy           --> deny without context = Unauthenticated
  * ```
  *
  * IMPORTANT: This interceptor MUST run AFTER an authentication interceptor
  * in the chain (except for methods marked as `public` in proto options
- * or matched by unconditional programmatic rules).
+ * or matched by unconditional programmatic rules). For `internal` methods the
+ * upstream interceptor is {@link createInternalAuthInterceptor}; the chain order
+ * is `errorHandler -> (jwtAuth | internalAuth) -> protoAuthz` — the auth
+ * interceptors populate the `AuthContext` that this interceptor consumes.
  *
  * @param options - Proto authorization interceptor options
  * @returns ConnectRPC interceptor
@@ -139,6 +146,22 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
 
         // Step 3: Get auth context (lazy -- don't throw yet, only when actually needed)
         const authContext = getAuthContext();
+
+        // Step 3b: Internal (service-to-service) methods (ADR-029).
+        // The internal identity is populated upstream by createInternalAuthInterceptor.
+        // Compose inclusively with the existing model: an internal method with no
+        // `requires` is reachable by any trusted internal caller; an internal method
+        // WITH `requires` falls through to the existing step-4 roles/scopes check
+        // against the same AuthContext (one model, no parallel requires_identity).
+        if (resolved.internal) {
+            if (!authContext) {
+                throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
+            }
+            if (resolved.requires === undefined) {
+                return await next(req);
+            }
+            // else: fall through to step 4 requires check (inclusive role composition)
+        }
 
         // Step 4: Check proto requirements (roles/scopes)
         if (resolved.requires !== undefined) {

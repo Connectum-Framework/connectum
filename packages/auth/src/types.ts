@@ -319,6 +319,163 @@ export interface GatewayAuthInterceptorOptions {
 }
 
 /**
+ * A pluggable internal trust source (ADR-029).
+ *
+ * Given the incoming request, returns an {@link AuthContext} for the calling
+ * service when the internal trust marker is present and valid, or `null` when
+ * it is missing/invalid. {@link createInternalAuthInterceptor} converts `null`
+ * (and any thrown error from the trust source) into `Code.Unauthenticated`.
+ *
+ * The returned `AuthContext.subject` is the service identity; `roles`/`scopes`
+ * come from the trust source (allow-list entry or verified token claims) so the
+ * call composes with the existing `requires {roles,scopes}` authz model.
+ *
+ * @param req - The request (read-only access to headers).
+ * @returns AuthContext for a trusted internal caller, or null to reject.
+ */
+export type InternalTrustSource = (req: { header: Headers }) => AuthContext | null | Promise<AuthContext | null>;
+
+/**
+ * Options for {@link createInternalAuthInterceptor}.
+ */
+export interface InternalAuthInterceptorOptions {
+    /**
+     * The trust source that authorizes an internal call.
+     *
+     * Use one of the provided factories — {@link meshIdentityTrust} (production
+     * default, per-service via the mesh), {@link signedTokenTrust} (non-mesh,
+     * per-service JWT/JWKS with mandatory issuer-bound key selection), or
+     * {@link sharedSecretTrust} (dev-only fallback) — or supply a custom one.
+     */
+    readonly trustSource: InternalTrustSource;
+    /**
+     * Method patterns that are internal (service-to-service). Typically the
+     * output of `getInternalMethods(services)`. The interceptor enforces the
+     * trust marker only on these methods; all other methods pass through
+     * unchanged (no-op).
+     *
+     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`.
+     */
+    readonly internalMethods: readonly string[];
+}
+
+/**
+ * An allow-list entry for {@link meshIdentityTrust}, mapping a verified mesh
+ * identity (the forwarded peer principal) to its authorization context.
+ */
+export interface MeshIdentityEntry {
+    /**
+     * The mesh-forwarded peer identity to match, e.g. an Istio short-form
+     * ServiceAccount principal `cluster.local/ns/<ns>/sa/<name>` or a SPIFFE id.
+     */
+    readonly principal: string;
+    /** Roles granted to this caller (compose via `requires {roles}`). */
+    readonly roles?: readonly string[] | undefined;
+    /** Scopes granted to this caller (compose via `requires {scopes}`). */
+    readonly scopes?: readonly string[] | undefined;
+    /** Optional human-readable name for the calling service. */
+    readonly name?: string | undefined;
+}
+
+/**
+ * Options for {@link meshIdentityTrust}.
+ */
+export interface MeshIdentityTrustOptions {
+    /**
+     * Allow-list of permitted mesh identities. Each entry maps a forwarded peer
+     * principal to its roles/scopes. A request whose identity is not on the
+     * list is rejected.
+     */
+    readonly allowlist: readonly MeshIdentityEntry[];
+    /**
+     * Header carrying the mesh-forwarded peer identity.
+     * @default "x-forwarded-client-principal"
+     */
+    readonly header?: string | undefined;
+    /** Credential type set on the resulting AuthContext. @default "mesh" */
+    readonly type?: string | undefined;
+}
+
+/**
+ * Per-issuer JWKS configuration for {@link signedTokenTrust}.
+ *
+ * The JWKS lookup is issuer-bound: the keyset is selected by the token's `iss`
+ * claim and verification is pinned to that same issuer. This is a hard security
+ * requirement — a single shared JWKS holding multiple services' keys does NOT
+ * contain compromise (jose resolves the key by `kid` independently of `iss`).
+ */
+export interface SignedTokenIssuer {
+    /** The issuer's JWKS endpoint URL (its own keyset only). */
+    readonly jwksUri: string;
+    /** Expected audience(s) for tokens from this issuer. */
+    readonly audience?: string | string[] | undefined;
+    /** Allowed signing algorithms. @default ["RS256"] */
+    readonly algorithms?: string[] | undefined;
+    /** Maximum token age (seconds or string like "2h"). */
+    readonly maxTokenAge?: number | string | undefined;
+    /**
+     * Mapping from token claims to AuthContext fields (dot-notation paths).
+     * `subject` defaults to `sub ?? iss`; `roles`/`scopes` to none unless mapped.
+     */
+    readonly claimsMapping?:
+        | {
+              readonly subject?: string | undefined;
+              readonly name?: string | undefined;
+              readonly roles?: string | undefined;
+              readonly scopes?: string | undefined;
+          }
+        | undefined;
+}
+
+/**
+ * Options for {@link signedTokenTrust}.
+ */
+export interface SignedTokenTrustOptions {
+    /**
+     * Per-issuer configuration keyed by the issuer (`iss`) value. The keyset is
+     * selected by the token's claimed issuer and verification is pinned to that
+     * same issuer — never a single shared keyset across issuers.
+     */
+    readonly issuers: Readonly<Record<string, SignedTokenIssuer>>;
+    /**
+     * Header carrying the service token. The value may be a bare token or a
+     * `Bearer <token>` value.
+     * @default "x-internal-token"
+     */
+    readonly header?: string | undefined;
+    /** Credential type set on the resulting AuthContext. @default "service" */
+    readonly type?: string | undefined;
+}
+
+/**
+ * Options for {@link sharedSecretTrust}.
+ *
+ * DEV-ONLY: a single shared secret is NOT per-service — one compromise forges
+ * all callers. Use {@link meshIdentityTrust} or {@link signedTokenTrust} in
+ * production. See ADR-029.
+ */
+export interface SharedSecretTrustOptions {
+    /** The shared secret, constant-time compared against the header value. */
+    readonly secret: string;
+    /**
+     * Header carrying the shared secret.
+     * @default "x-internal-secret"
+     */
+    readonly header?: string | undefined;
+    /**
+     * Subject identity assigned to a trusted call.
+     * @default "internal"
+     */
+    readonly subject?: string | undefined;
+    /** Roles granted to a trusted caller. */
+    readonly roles?: readonly string[] | undefined;
+    /** Scopes granted to a trusted caller. */
+    readonly scopes?: readonly string[] | undefined;
+    /** Credential type set on the resulting AuthContext. @default "internal" */
+    readonly type?: string | undefined;
+}
+
+/**
  * Session-based auth interceptor options.
  *
  * Two-step authentication: verify session token, then map session data to AuthContext.

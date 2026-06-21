@@ -50,6 +50,14 @@ message MethodAuth {
   // Override the service-level default_policy for this method.
   // Valid values: "allow", "deny".
   optional string policy = 3;
+
+  // Mark the method as internal (service-to-service). Skips end-user (JWT)
+  // authentication, but requires an internal trust marker established by
+  // createInternalAuthInterceptor (a per-service trust source). Distinct from
+  // `public`: `public` is world-open (no auth at all); `internal` is reachable
+  // only by a trusted internal caller. A method is at most one of
+  // `public` / `internal` / gated. See ADR-029.
+  optional bool internal = 4;
 }
 
 // Default authorization configuration for all methods in a service.
@@ -65,6 +73,12 @@ message ServiceAuth {
   // Mark all methods in the service as public
   // (skip authentication and authorization).
   optional bool public = 3;
+
+  // Mark all methods in the service as internal (service-to-service).
+  // Skips end-user (JWT) authentication, but requires an internal trust
+  // marker established by createInternalAuthInterceptor. Method-level
+  // `internal` overrides this. See ADR-029.
+  optional bool internal = 4;
 }
 
 // Custom option for RPC methods.

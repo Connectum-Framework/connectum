@@ -7,7 +7,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { getPublicMethods, resolveMethodAuth } from "../../src/proto/reader.ts";
+import { getInternalMethods, getPublicMethods, resolveMethodAuth } from "../../src/proto/reader.ts";
 import { createFakeMethod, createFakeService, createMethodOptions, createServiceOptions } from "../helpers/proto-test-helpers.ts";
 
 describe("proto-reader", () => {
@@ -19,8 +19,39 @@ describe("proto-reader", () => {
             const resolved = resolveMethodAuth(method);
 
             assert.strictEqual(resolved.public, false);
+            assert.strictEqual(resolved.internal, false);
             assert.strictEqual(resolved.policy, undefined);
             assert.strictEqual(resolved.requires, undefined);
+        });
+
+        it("should resolve method with internal: true (ADR-029)", () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }), { register: true });
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.internal, true);
+            assert.strictEqual(resolved.public, false);
+        });
+
+        it("should inherit service-level internal: true", () => {
+            const svcOpts = createServiceOptions({ internal: true });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "AnyMethod", undefined, { register: true });
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.internal, true);
+        });
+
+        it("should respect method internal: false override on service internal: true", () => {
+            const svcOpts = createServiceOptions({ internal: true });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "PublicProbe", createMethodOptions({ internal: false }), { register: true });
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.internal, false, "method-level internal=false should override service-level internal=true");
         });
 
         it("should resolve method with public: true", () => {
@@ -216,6 +247,47 @@ describe("proto-reader", () => {
             const result = getPublicMethods([svc1, svc2]);
 
             assert.deepStrictEqual(result, ["svc1.v1.Svc1/Public1", "svc2.v1.Svc2/AllPublic"]);
+        });
+    });
+
+    describe("getInternalMethods() (ADR-029)", () => {
+        it("should return patterns for internal methods only", () => {
+            const service = createFakeService({ typeName: "trips.v1.TripService" });
+            createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }), { register: true });
+            createFakeMethod(service, "EndTrip", createMethodOptions({ internal: true }), { register: true });
+            createFakeMethod(service, "PublicProbe", createMethodOptions({ public: true }), { register: true });
+            createFakeMethod(service, "GatedMethod", createMethodOptions({ requires: { roles: ["admin"] } }), { register: true });
+
+            const result = getInternalMethods([service]);
+
+            assert.deepStrictEqual(result, ["trips.v1.TripService/RecordTrip", "trips.v1.TripService/EndTrip"]);
+        });
+
+        it("should not overlap with getPublicMethods for the same services", () => {
+            const service = createFakeService({ typeName: "mix.v1.MixService" });
+            createFakeMethod(service, "Internal1", createMethodOptions({ internal: true }), { register: true });
+            createFakeMethod(service, "Public1", createMethodOptions({ public: true }), { register: true });
+
+            assert.deepStrictEqual(getInternalMethods([service]), ["mix.v1.MixService/Internal1"]);
+            assert.deepStrictEqual(getPublicMethods([service]), ["mix.v1.MixService/Public1"]);
+        });
+
+        it("should handle service-level internal flag", () => {
+            const svcOpts = createServiceOptions({ internal: true });
+            const service = createFakeService({ typeName: "int.v1.IntService", serviceOptions: svcOpts });
+            createFakeMethod(service, "MethodA", undefined, { register: true });
+            createFakeMethod(service, "MethodB", undefined, { register: true });
+
+            const result = getInternalMethods([service]);
+
+            assert.deepStrictEqual(result, ["int.v1.IntService/MethodA", "int.v1.IntService/MethodB"]);
+        });
+
+        it("should return empty array when no internal methods exist", () => {
+            const service = createFakeService();
+            createFakeMethod(service, "PublicMethod", createMethodOptions({ public: true }), { register: true });
+
+            assert.deepStrictEqual(getInternalMethods([service]), []);
         });
     });
 });
