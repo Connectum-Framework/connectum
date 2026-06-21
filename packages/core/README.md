@@ -12,6 +12,7 @@ Main Server factory with protocol plugin system for Connectum.
 - **TLS Configuration**: Utilities for configuring TLS certificates
 - **Graceful Shutdown**: Built-in graceful shutdown support with automatic signal handling
 - **Explicit Interceptors**: User passes interceptors explicitly (zero internal deps)
+- **Standalone Catalog Client** _(since 1.1.0)_: `createCatalogClient()` — the catalog-typed `call`/`stream` surface usable OUTSIDE a `Server` (a Temporal worker, scheduler, or CLI)
 
 ### Protocol Packages (installed separately)
 
@@ -350,6 +351,49 @@ class PaymentError extends Error implements SanitizableError {
 throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount: 4999 });
 ```
 
+### createCatalogClient()
+
+_Available since 1.1.0._
+
+A standalone, catalog-typed client that exposes the **same** typed `call` (unary) and `stream` (server/client/bidi) surface as the in-handler `ctx.call` / `ctx.stream`, but usable **outside** a `Server` — in a Temporal worker, a scheduler, or a CLI — without constructing a server:
+
+```typescript
+import { createCatalogClient, type CreateCatalogClientOptions } from '@connectum/core';
+
+function createCatalogClient(options: CreateCatalogClientOptions): CatalogClient
+```
+
+**Parameters (`CreateCatalogClientOptions`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `catalog` | `ServiceCatalog` | required | The service catalog backing typed dispatch — the same object passed to `createServer({ catalog })` |
+| `resolver` | `RemoteResolver` | required | Resolves every target's transport (`singleTransportResolver` / `mapResolver` / `dnsResolver` / `perServiceEnvResolver`) |
+
+**Returns:** `CatalogClient` — `{ call, stream }`, keyed off the generated `ConnectumCallMap` / `ConnectumStreamMap`.
+
+The dispatch is typed off the generated catalog, so calls are statically checked exactly as on the handler `ctx`:
+
+```typescript
+import { createCatalogClient, mapResolver } from '@connectum/core';
+import { createGrpcTransport } from '@connectrpc/connect-node';
+import { serviceCatalog } from '#gen/catalog.js'; // from @connectum/protoc-gen-catalog
+
+const client = createCatalogClient({
+  catalog: serviceCatalog,
+  resolver: mapResolver({
+    'trip.v1.TripService': createGrpcTransport({ baseUrl: process.env.TRIP_ADDR ?? 'http://localhost:8080' }),
+  }),
+});
+
+// Fully typed off the generated catalog — same surface as ctx.call:
+const trip = await client.call('trip.v1.TripService/StartTrip', { vehicleId: 'veh-42' });
+```
+
+**Resolution & caching:** every target is routed through the supplied `RemoteResolver`, and the resolved transport is cached per `(typeName, endpoint)`. There is **no** in-process/local path: a service the resolver cannot resolve fails with `Code.Unavailable`. The rest of the error model mirrors `ctx.call` — unknown service/method (or wrong method kind) fails with `Code.Unimplemented`, and a resolver that throws surfaces as `Code.Internal` (cause preserved).
+
+**Difference from `ctx.call`:** there is no inbound request to cascade from, so `CallOptions` are applied **verbatim** — the `signal` / `timeoutMs` are **not** cascaded or clamped, no inbound headers are propagated, and no `ContextValues` are forwarded.
+
 ## Exports Summary
 
 | Export | Kind | Description |
@@ -390,6 +434,9 @@ throw new PaymentError('Stripe declined', { stripeCode: 'card_declined', amount:
 | `defineCatalog` | function | Build a typed `ServiceCatalog` for cross-service calls |
 | `mergeCatalogs` | function | Merge multiple catalogs into one |
 | `CatalogConfigError` | class | Error thrown for invalid catalog configuration |
+| `createCatalogClient` | function | Standalone, catalog-typed `call` / `stream` client usable outside a `Server` (since 1.1.0) |
+| `CreateCatalogClientOptions` | type | Options for `createCatalogClient()` (`catalog` + `resolver`) |
+| `CatalogClient` | type | The standalone catalog client returned by `createCatalogClient()` (`call` + `stream`) |
 | `createLocalTransport` | function | Create an in-process transport for same-process service calls |
 | `CreateLocalTransportOptions` | type | Options for `createLocalTransport()` (client-side interceptors) |
 | `defaultPropagateHeaders` | const | Ready-made opt-in allow-list of W3C trace-context headers for `createServer({ propagateHeaders })` (nothing propagates by default) |
