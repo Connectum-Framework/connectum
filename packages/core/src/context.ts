@@ -103,6 +103,25 @@ export type StreamReturn<E> = E extends { kind: "server-stream"; request: infer 
         : never;
 
 /**
+ * The typed **unary** catalog-call surface: `call(method, request, options?)`
+ * keyed off {@link ConnectumCallMap}. Shared by the handler {@link Context} and
+ * the standalone `CatalogClient` (`createCatalogClient`) so both expose an
+ * identical, fully-typed `call`.
+ *
+ * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumCallMap}.
+ */
+export type CatalogCall = <K extends keyof ConnectumCallMap>(method: K, request: ConnectumCallMap[K]["request"], options?: CallOptions) => Promise<ConnectumCallMap[K]["response"]>;
+
+/**
+ * The typed **streaming** catalog-call surface: `stream(method)` returns a
+ * kind-specific factory keyed off {@link ConnectumStreamMap}. Shared by the
+ * handler {@link Context} and the standalone `CatalogClient`.
+ *
+ * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumStreamMap}.
+ */
+export type CatalogStream = <K extends keyof ConnectumStreamMap>(method: K) => StreamReturn<ConnectumStreamMap[K]>;
+
+/**
  * The context object passed to every Connectum service handler.
  *
  * Extends ConnectRPC's `HandlerContext` (all of its fields remain available)
@@ -120,7 +139,7 @@ export interface Context extends HandlerContext {
      *
      * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumCallMap}.
      */
-    call<K extends keyof ConnectumCallMap>(method: K, request: ConnectumCallMap[K]["request"], options?: CallOptions): Promise<ConnectumCallMap[K]["response"]>;
+    call: CatalogCall;
 
     /**
      * Open a streaming call to a service in the catalog. Returns a kind-specific
@@ -133,7 +152,7 @@ export interface Context extends HandlerContext {
      *
      * @typeParam K - A `"${typeName}/${Method}"` key of {@link ConnectumStreamMap}.
      */
-    stream<K extends keyof ConnectumStreamMap>(method: K): StreamReturn<ConnectumStreamMap[K]>;
+    stream: CatalogStream;
 }
 
 /**
