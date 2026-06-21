@@ -335,6 +335,20 @@ export interface EventBusOptions {
      * Default: 30000 (30 seconds). Set to 0 for immediate abort.
      */
     drainTimeout?: number;
+    /**
+     * Reject a `publish()` whose topic cannot be resolved instead of silently
+     * falling back to the message `typeName`.
+     *
+     * By default, when no explicit `publishOptions.topic` is given and the event
+     * type is covered by neither `routes` nor `publishes`, `publish()` emits to
+     * the raw `schema.typeName` — a silent misconfiguration (the event may never
+     * reach subscribers expecting the proto-declared `(event).topic`). With
+     * `strictTopics: true`, that case throws so the misconfiguration surfaces at
+     * the call site.
+     *
+     * Default: `false` (backward-compatible silent fallback).
+     */
+    strictTopics?: boolean;
 }
 
 /**

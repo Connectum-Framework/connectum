@@ -72,6 +72,7 @@ export function deriveServiceName(serviceNames: readonly string[]): string | und
 export function createEventBus(options: EventBusOptions): EventBus & EventBusLike {
     const { adapter, routes = [], group, middleware: mwConfig } = options;
     const handlerTimeout = options.handlerTimeout ?? 30_000;
+    const strictTopics = options.strictTopics ?? false;
     const subscriptions: EventSubscription[] = [];
     let started = false;
     let starting = false;
@@ -330,7 +331,14 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             // Create message instance and serialize
             const message = create(schema, data);
             const payload = toBinary(schema, message);
-            const eventType = publishOptions?.topic ?? publishTopicMap.get(schema.typeName) ?? schema.typeName;
+            const declaredTopic = publishOptions?.topic ?? publishTopicMap.get(schema.typeName);
+            if (strictTopics && declaredTopic === undefined) {
+                throw new Error(
+                    `Cannot resolve a topic for "${schema.typeName}" (strictTopics is enabled): it is covered by neither a subscriber route nor the publishes option, and no publishOptions.topic was given. ` +
+                        `Register the event service in routes/publishes so its (connectum.events.v1.event).topic is used, or pass publishOptions.topic explicitly.`,
+                );
+            }
+            const eventType = declaredTopic ?? schema.typeName;
 
             await adapter.publish(eventType, payload, publishOptions);
         },
