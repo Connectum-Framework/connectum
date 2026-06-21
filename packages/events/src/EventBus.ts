@@ -155,7 +155,11 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
                     for (const entry of router.entries) {
                         if (topicHandlerMap.has(entry.topic)) {
-                            throw new Error(`Duplicate event topic "${entry.topic}". Use (connectum.events.v1.event).topic option to disambiguate.`);
+                            throw new Error(
+                                `Duplicate event topic "${entry.topic}" on one EventBus — a topic can have at most one handler per bus. ` +
+                                    `For INDEPENDENT broadcast reactors on the same topic, give each its OWN EventBus with a distinct consumer group (see createBroadcastSubscribers). ` +
+                                    `To route DISTINCT events, give them distinct (connectum.events.v1.event).topic options.`,
+                            );
                         }
                         // Per-handler middleware overrides global when present
                         const effectiveMiddleware = entry.middleware !== undefined ? entry.middleware : middlewares;

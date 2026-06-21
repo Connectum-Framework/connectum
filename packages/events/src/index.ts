@@ -13,6 +13,8 @@
  * @mergeModuleWith <project>
  */
 
+// Broadcast / fan-out
+export { type BroadcastReactor, type BroadcastSubscribersOptions, createBroadcastSubscribers } from "./broadcast.ts";
 // EventBus factory
 export { createEventBus, deriveServiceName } from "./EventBus.ts";
 
