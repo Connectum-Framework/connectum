@@ -234,7 +234,7 @@ function createEventBus(options: EventBusOptions): EventBus
 > await bus.start();
 > await bus.publish(OrderPlacedSchema, order); // → declared topic, not "order.v1.OrderPlaced"
 > ```
-
+>
 > **`strictTopics` (opt-in, default `false`):** the same silent fallback also happens for any event covered by neither `routes` nor `publishes` and published without an explicit `PublishOptions.topic` — `publish()` emits to the raw `schema.typeName`. Set `strictTopics: true` to make that unresolved-topic case **throw** at the call site instead of silently misconfiguring. Backward-compatible; available since 1.1.0.
 
 ### createBroadcastSubscribers()
