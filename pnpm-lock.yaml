@@ -12,15 +12,12 @@ catalogs:
     '@bufbuild/buf':
       specifier: ^1.70.0
       version: 1.70.0
-    '@bufbuild/protobuf':
-      specifier: ^2.12.0
-      version: 2.12.0
     '@bufbuild/protoc-gen-es':
-      specifier: ^2.12.0
-      version: 2.12.0
+      specifier: ^2.12.1
+      version: 2.12.1
     '@bufbuild/protoplugin':
-      specifier: ^2.12.0
-      version: 2.12.0
+      specifier: ^2.12.1
+      version: 2.12.1
     '@commitlint/cli':
       specifier: ^20.4.1
       version: 20.5.3
@@ -107,6 +104,7 @@ catalogs:
       version: 4.4.3
 
 overrides:
+  '@bufbuild/protobuf': ^2.12.1
   '@babel/core@<7.29.6': 7.29.6
   '@grpc/grpc-js@<1.14.4': 1.14.4
   ajv@<8.18.0: 8.18.0
@@ -133,7 +131,7 @@ importers:
         version: 2.5.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
-        version: 2.12.0(@bufbuild/protobuf@2.12.0)
+        version: 2.12.1(@bufbuild/protobuf@2.12.1)
       '@changesets/changelog-github':
         specifier: ^0.7.0
         version: 0.7.0
@@ -177,11 +175,11 @@ importers:
   packages/auth:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -197,7 +195,7 @@ importers:
         version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
-        version: 2.12.0(@bufbuild/protobuf@2.12.0)
+        version: 2.12.1(@bufbuild/protobuf@2.12.1)
       '@connectum/testing':
         specifier: workspace:^
         version: link:../testing
@@ -214,14 +212,14 @@ importers:
   packages/cli:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@lambdalisue/connectrpc-grpcreflect':
         specifier: ^0.5.0
         version: 0.5.0
@@ -254,14 +252,14 @@ importers:
   packages/core:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       env-var:
         specifier: 'catalog:'
         version: 7.5.0
@@ -285,8 +283,8 @@ importers:
   packages/events:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -299,7 +297,7 @@ importers:
         version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
-        version: 2.12.0(@bufbuild/protobuf@2.12.0)
+        version: 2.12.1(@bufbuild/protobuf@2.12.1)
       c8:
         specifier: 'catalog:'
         version: 10.1.3
@@ -416,11 +414,11 @@ importers:
   packages/healthcheck:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -430,10 +428,10 @@ importers:
         version: 1.70.0
       '@bufbuild/protoc-gen-es':
         specifier: 'catalog:'
-        version: 2.12.0(@bufbuild/protobuf@2.12.0)
+        version: 2.12.1(@bufbuild/protobuf@2.12.1)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -450,14 +448,14 @@ importers:
   packages/interceptors:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@connectrpc/validate':
         specifier: 'catalog:'
-        version: 0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 0.2.0(@bufbuild/protobuf@2.12.1)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.1))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -485,7 +483,7 @@ importers:
     dependencies:
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
@@ -533,11 +531,11 @@ importers:
         specifier: 'catalog:'
         version: 2.5.0
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -563,11 +561,11 @@ importers:
   packages/protoc-gen-catalog:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@bufbuild/protoplugin':
         specifier: 'catalog:'
-        version: 2.12.0
+        version: 2.12.1
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -588,11 +586,11 @@ importers:
   packages/reflection:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@lambdalisue/connectrpc-grpcreflect':
         specifier: ^0.5.0
         version: 0.5.0
@@ -602,7 +600,7 @@ importers:
         version: 2.5.0
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -622,11 +620,11 @@ importers:
   packages/test-fixtures:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -647,14 +645,14 @@ importers:
   packages/testing:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: 'catalog:'
-        version: 2.12.0
+        specifier: ^2.12.1
+        version: 2.12.1
       '@connectrpc/connect':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
-        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+        version: 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -704,10 +702,6 @@ packages:
     resolution: {integrity: sha512-QdxmAo/ikZqqRGA8s43ww8lcql6naWRvEz0FFrl6MIlc7Gi6TroXnSdWa5U/kq6fzcpqpHesicQxFZIieZbyIA==}
     engines: {node: '>=6.9.0'}
 
-  '@babel/generator@7.29.1':
-    resolution: {integrity: sha512-qsaF+9Qcm2Qv8SRIMMscAvG4O3lJ0F1GuMo5HR/Bp02LopNgnZBC/EkbevHFeGs4ls/oPz9v+Bsmzbkbe+0dUw==}
-    engines: {node: '>=6.9.0'}
-
   '@babel/generator@7.29.7':
     resolution: {integrity: sha512-DkXD5OJQaAQIdZ1bt3UZdEnHAn9Imd3IVBdX03UFe+ony9Ojw5pzr9YVKGDY1jt+Gcn/FnGkNf8r+Vj5NOJWtQ==}
     engines: {node: '>=6.9.0'}
@@ -752,16 +746,8 @@ packages:
     peerDependencies:
       '@babel/core': 7.29.6
 
-  '@babel/helper-string-parser@7.27.1':
-    resolution: {integrity: sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==}
-    engines: {node: '>=6.9.0'}
-
   '@babel/helper-string-parser@7.29.7':
     resolution: {integrity: sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==}
-    engines: {node: '>=6.9.0'}
-
-  '@babel/helper-validator-identifier@7.28.5':
-    resolution: {integrity: sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==}
     engines: {node: '>=6.9.0'}
 
   '@babel/helper-validator-identifier@7.29.7':
@@ -775,11 +761,6 @@ packages:
   '@babel/helpers@7.29.2':
     resolution: {integrity: sha512-HoGuUs4sCZNezVEKdVcwqmZN8GoHirLUcLaYVNBK2J0DadGtdcqgr3BCbvH8+XUo4NGjNl3VOtSjEKNzqfFgKw==}
     engines: {node: '>=6.9.0'}
-
-  '@babel/parser@7.29.3':
-    resolution: {integrity: sha512-b3ctpQwp+PROvU/cttc4OYl4MzfJUWy6FZg+PMXfzmt/+39iHVF0sDfqay8TQM3JA2EUOyKcFZt75jWriQijsA==}
-    engines: {node: '>=6.0.0'}
-    hasBin: true
 
   '@babel/parser@7.29.7':
     resolution: {integrity: sha512-hnORnjP/1P/zFEndoeX+n+t1RwWRJiJpM/jO7FW32Kn9r5+sJB2JWOdYo4L6k78j15eCwY3Gm/7364B1EMwtNg==}
@@ -808,10 +789,6 @@ packages:
 
   '@babel/traverse@7.29.0':
     resolution: {integrity: sha512-4HPiQr0X7+waHfyXPZpWPfWL/J7dcN1mx9gL6WdQVMbPnF3+ZhSMs8tCxN7oHddJE9fhNE7+lxdnlyemKfJRuA==}
-    engines: {node: '>=6.9.0'}
-
-  '@babel/types@7.29.0':
-    resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
   '@babel/types@7.29.7':
@@ -935,33 +912,33 @@ packages:
   '@bufbuild/cel-spec@0.4.0':
     resolution: {integrity: sha512-dUS6f2fNt6KEumsYGE7YFxERZE5ZuyME1hQmGjtO8tkZhR6ow6/ne3v4Gik9cfdb9lSLK3AJ+vDxCdGWmDbWvA==}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.6.2
+      '@bufbuild/protobuf': ^2.12.1
 
   '@bufbuild/cel@0.4.0':
     resolution: {integrity: sha512-CdW/JgiTJCYXqnwuaJRo7NcoYhR37AaF58MMiog0/t8nudn86ZyLXYaA1f2yGhm2U17h8pKGZNksTHVSTcpmAw==}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.6.2
+      '@bufbuild/protobuf': ^2.12.1
 
-  '@bufbuild/protobuf@2.12.0':
-    resolution: {integrity: sha512-B/XlCaFIP8LOwzo+bz5uFzATYokcwCKQcghqnlfwSmM5eX/qTkvDBnDPs+gXtX/RyjxJ4DRikECcPJbyALA8FA==}
+  '@bufbuild/protobuf@2.12.1':
+    resolution: {integrity: sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg==}
 
-  '@bufbuild/protoc-gen-es@2.12.0':
-    resolution: {integrity: sha512-d9htF6jEkSwPbp9d/vSmZOBF7eeG18AvTMKmVg4I23afnrQOxL2w3WOXa9TaufMCyu24QakEUb4vux8apI5e7A==}
+  '@bufbuild/protoc-gen-es@2.12.1':
+    resolution: {integrity: sha512-SWa7XvRYRouMo+vBQmpNFZ+ZEqQ8AC0LpL4QWAo1gvstLhFh/Y7Nf/a+MK7ZxDq5LZSThwfk974L1sFxO3OaGw==}
     engines: {node: '>=20'}
     hasBin: true
     peerDependencies:
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/protobuf': ^2.12.1
     peerDependenciesMeta:
       '@bufbuild/protobuf':
         optional: true
 
-  '@bufbuild/protoplugin@2.12.0':
-    resolution: {integrity: sha512-ORlDITp8AFUXzIhLRoMCG+ud+D3MPKWb5HQXBoskMMnjeyEjE1H1qLonVNPyOr8lkx3xSfYUo8a0dvOZJVAzow==}
+  '@bufbuild/protoplugin@2.12.1':
+    resolution: {integrity: sha512-PY58KxQVAD1BnnKtStOctsMoegEVGfBnY5AOqVQOIu711nA13oYtTqJM8df5lUQg2J1DR3XxUXptE+fWX5oLdA==}
 
   '@bufbuild/protovalidate@1.2.0':
     resolution: {integrity: sha512-tD08DwGrHIV88khLz1Kdz9DYUwEo1TsoepaIg7/B/zd//AymaTx67kvCS1jlkcG/+vgQaSOl6f0HCE3sL8vI7w==}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.8.0
+      '@bufbuild/protobuf': ^2.12.1
 
   '@chalker/queue@1.0.1':
     resolution: {integrity: sha512-j8iu20wUUgTnW3V5r5UKuUab3hT2odAGBlB7G2qxu+BFw9GFO8se2B/Su9SAtLj/CcKZzMFrwHREIG9hDIFo2Q==}
@@ -1100,23 +1077,18 @@ packages:
     resolution: {integrity: sha512-+i/aAOpsI8sIx1mbYp6d99zvxaUSF6t/jP9Ux9maAmjsZPgmIQ3JuIeYi0zJIP9zlCnBlJjkpPosshCgdRuThQ==}
     engines: {node: '>=20'}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.7.0
+      '@bufbuild/protobuf': ^2.12.1
       '@connectrpc/connect': 2.1.2
-
-  '@connectrpc/connect@2.1.1':
-    resolution: {integrity: sha512-JzhkaTvM73m2K1URT6tv53k2RwngSmCXLZJgK580qNQOXRzZRR/BCMfZw3h+90JpnG6XksP5bYT+cz0rpUzUWQ==}
-    peerDependencies:
-      '@bufbuild/protobuf': ^2.7.0
 
   '@connectrpc/connect@2.1.2':
     resolution: {integrity: sha512-MXkBijtcX09R10Eb6sFeIetc6w6746eio6xtfuyVOH7oQAacT1X0GzMIQFux6Qy8cq3W/T5qX5Bei8YbFtmRGA==}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.7.0
+      '@bufbuild/protobuf': ^2.12.1
 
   '@connectrpc/validate@0.2.0':
     resolution: {integrity: sha512-u1hdyt1WaFkKpuT/3J2wYlCjYLkYHMZamoatgxTIsV5Q8H9fO2px3zecmb0Q47YDjkZqnX6z0PAEstK+dNYiEQ==}
     peerDependencies:
-      '@bufbuild/protobuf': ^2.9.0
+      '@bufbuild/protobuf': ^2.12.1
       '@bufbuild/protovalidate': ^1.0.0
       '@connectrpc/connect': ^2.0.3
 
@@ -1552,10 +1524,6 @@ packages:
     engines: {node: ^18.19.0 || >=20.6.0}
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
-
-  '@opentelemetry/semantic-conventions@1.40.0':
-    resolution: {integrity: sha512-cifvXDhcqMwwTlTK04GBNeIe7yyo28Mfby85QXFe1Yk8nmi36Ab/5UQwptOx84SsoGNRg+EVSjwzfSZMy6pmlw==}
-    engines: {node: '>=14'}
 
   '@opentelemetry/semantic-conventions@1.41.1':
     resolution: {integrity: sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA==}
@@ -3605,11 +3573,6 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  yaml@2.8.4:
-    resolution: {integrity: sha512-ml/JPOj9fOQK8RNnWojA67GbZ0ApXAUlN2UQclwv2eVgTgn7O9gg9o7paZWKMp4g0H3nTLtS9LVzhkpOFIKzog==}
-    engines: {node: '>= 14.6'}
-    hasBin: true
-
   yaml@2.9.0:
     resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
     engines: {node: '>= 14.6'}
@@ -3617,10 +3580,6 @@ packages:
 
   yargs-parser@21.1.1:
     resolution: {integrity: sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw==}
-    engines: {node: '>=12'}
-
-  yargs@17.7.2:
-    resolution: {integrity: sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w==}
     engines: {node: '>=12'}
 
   yargs@17.7.3:
@@ -3648,7 +3607,7 @@ snapshots:
 
   '@babel/code-frame@7.29.0':
     dependencies:
-      '@babel/helper-validator-identifier': 7.28.5
+      '@babel/helper-validator-identifier': 7.29.7
       js-tokens: 4.0.0
       picocolors: 1.1.1
 
@@ -3662,10 +3621,10 @@ snapshots:
       '@babel/helper-compilation-targets': 7.28.6
       '@babel/helper-module-transforms': 7.28.6(@babel/core@7.29.6)
       '@babel/helpers': 7.29.2
-      '@babel/parser': 7.29.3
+      '@babel/parser': 7.29.7
       '@babel/template': 7.28.6
       '@babel/traverse': 7.29.0
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
       '@jridgewell/remapping': 2.3.5
       convert-source-map: 2.0.0
       debug: 4.4.3
@@ -3674,15 +3633,6 @@ snapshots:
       semver: 6.3.1
     transitivePeerDependencies:
       - supports-color
-    optional: true
-
-  '@babel/generator@7.29.1':
-    dependencies:
-      '@babel/parser': 7.29.3
-      '@babel/types': 7.29.0
-      '@jridgewell/gen-mapping': 0.3.13
-      '@jridgewell/trace-mapping': 0.3.31
-      jsesc: 3.1.0
     optional: true
 
   '@babel/generator@7.29.7':
@@ -3696,7 +3646,7 @@ snapshots:
 
   '@babel/helper-annotate-as-pure@7.27.3':
     dependencies:
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
     optional: true
 
   '@babel/helper-compilation-targets@7.28.6':
@@ -3714,7 +3664,7 @@ snapshots:
   '@babel/helper-member-expression-to-functions@7.28.5':
     dependencies:
       '@babel/traverse': 7.29.0
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
     transitivePeerDependencies:
       - supports-color
     optional: true
@@ -3722,7 +3672,7 @@ snapshots:
   '@babel/helper-module-imports@7.28.6':
     dependencies:
       '@babel/traverse': 7.29.0
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
     transitivePeerDependencies:
       - supports-color
     optional: true
@@ -3731,7 +3681,7 @@ snapshots:
     dependencies:
       '@babel/core': 7.29.6
       '@babel/helper-module-imports': 7.28.6
-      '@babel/helper-validator-identifier': 7.28.5
+      '@babel/helper-validator-identifier': 7.29.7
       '@babel/traverse': 7.29.0
     transitivePeerDependencies:
       - supports-color
@@ -3739,7 +3689,7 @@ snapshots:
 
   '@babel/helper-optimise-call-expression@7.27.1':
     dependencies:
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
     optional: true
 
   '@babel/helper-plugin-utils@7.28.6':
@@ -3755,16 +3705,10 @@ snapshots:
       - supports-color
     optional: true
 
-  '@babel/helper-string-parser@7.27.1':
-    optional: true
-
   '@babel/helper-string-parser@7.29.7':
     optional: true
 
-  '@babel/helper-validator-identifier@7.28.5': {}
-
-  '@babel/helper-validator-identifier@7.29.7':
-    optional: true
+  '@babel/helper-validator-identifier@7.29.7': {}
 
   '@babel/helper-validator-option@7.27.1':
     optional: true
@@ -3772,12 +3716,7 @@ snapshots:
   '@babel/helpers@7.29.2':
     dependencies:
       '@babel/template': 7.28.6
-      '@babel/types': 7.29.0
-    optional: true
-
-  '@babel/parser@7.29.3':
-    dependencies:
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
     optional: true
 
   '@babel/parser@7.29.7':
@@ -3809,27 +3748,21 @@ snapshots:
   '@babel/template@7.28.6':
     dependencies:
       '@babel/code-frame': 7.29.0
-      '@babel/parser': 7.29.3
-      '@babel/types': 7.29.0
+      '@babel/parser': 7.29.7
+      '@babel/types': 7.29.7
     optional: true
 
   '@babel/traverse@7.29.0':
     dependencies:
       '@babel/code-frame': 7.29.0
-      '@babel/generator': 7.29.1
+      '@babel/generator': 7.29.7
       '@babel/helper-globals': 7.28.0
-      '@babel/parser': 7.29.3
+      '@babel/parser': 7.29.7
       '@babel/template': 7.28.6
-      '@babel/types': 7.29.0
+      '@babel/types': 7.29.7
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
-    optional: true
-
-  '@babel/types@7.29.0':
-    dependencies:
-      '@babel/helper-string-parser': 7.27.1
-      '@babel/helper-validator-identifier': 7.28.5
     optional: true
 
   '@babel/types@7.29.7':
@@ -3911,37 +3844,37 @@ snapshots:
       '@bufbuild/buf-win32-arm64': 1.70.0
       '@bufbuild/buf-win32-x64': 1.70.0
 
-  '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.12.0)':
+  '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.12.1)':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/protobuf': 2.12.1
 
-  '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.12.0)':
+  '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.12.1)':
     dependencies:
-      '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.12.0)
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.12.1)
+      '@bufbuild/protobuf': 2.12.1
 
-  '@bufbuild/protobuf@2.12.0': {}
+  '@bufbuild/protobuf@2.12.1': {}
 
-  '@bufbuild/protoc-gen-es@2.12.0(@bufbuild/protobuf@2.12.0)':
+  '@bufbuild/protoc-gen-es@2.12.1(@bufbuild/protobuf@2.12.1)':
     dependencies:
-      '@bufbuild/protoplugin': 2.12.0
+      '@bufbuild/protoplugin': 2.12.1
     optionalDependencies:
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/protobuf': 2.12.1
     transitivePeerDependencies:
       - supports-color
 
-  '@bufbuild/protoplugin@2.12.0':
+  '@bufbuild/protoplugin@2.12.1':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/protobuf': 2.12.1
       '@typescript/vfs': 1.6.4(typescript@5.4.5)
       typescript: 5.4.5
     transitivePeerDependencies:
       - supports-color
 
-  '@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0)':
+  '@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.1)':
     dependencies:
-      '@bufbuild/cel': 0.4.0(@bufbuild/protobuf@2.12.0)
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/cel': 0.4.0(@bufbuild/protobuf@2.12.1)
+      '@bufbuild/protobuf': 2.12.1
 
   '@chalker/queue@1.0.1':
     optional: true
@@ -4112,7 +4045,7 @@ snapshots:
       '@commitlint/read': 20.5.0(conventional-commits-parser@6.4.0)
       '@commitlint/types': 20.5.0
       tinyexec: 1.1.2
-      yargs: 17.7.2
+      yargs: 17.7.3
     transitivePeerDependencies:
       - '@types/node'
       - conventional-commits-filter
@@ -4214,24 +4147,20 @@ snapshots:
       conventional-commits-parser: 6.4.0
       picocolors: 1.1.1
 
-  '@connectrpc/connect-node@2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))':
+  '@connectrpc/connect-node@2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
-      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.0)
+      '@bufbuild/protobuf': 2.12.1
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.1)
 
-  '@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0)':
+  '@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1)':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
+      '@bufbuild/protobuf': 2.12.1
 
-  '@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0)':
+  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.1)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.1))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
-
-  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))':
-    dependencies:
-      '@bufbuild/protobuf': 2.12.0
-      '@bufbuild/protovalidate': 1.2.0(@bufbuild/protobuf@2.12.0)
-      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.0)
+      '@bufbuild/protobuf': 2.12.1
+      '@bufbuild/protovalidate': 1.2.0(@bufbuild/protobuf@2.12.1)
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.1)
 
   '@conventional-changelog/git-client@2.7.0(conventional-commits-parser@6.4.0)':
     dependencies:
@@ -4399,7 +4328,7 @@ snapshots:
       lodash.camelcase: 4.3.0
       long: 5.3.2
       protobufjs: 7.6.3
-      yargs: 17.7.2
+      yargs: 17.7.3
 
   '@inquirer/external-editor@1.0.3(@types/node@25.9.3)':
     dependencies:
@@ -4484,8 +4413,8 @@ snapshots:
 
   '@lambdalisue/connectrpc-grpcreflect@0.5.0':
     dependencies:
-      '@bufbuild/protobuf': 2.12.0
-      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.12.0)
+      '@bufbuild/protobuf': 2.12.1
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.1)
 
   '@manypkg/find-root@1.1.0':
     dependencies:
@@ -4639,7 +4568,7 @@ snapshots:
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.8.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/semantic-conventions': 1.40.0
+      '@opentelemetry/semantic-conventions': 1.41.1
 
   '@opentelemetry/sdk-logs@0.219.0(@opentelemetry/api@1.9.1)':
     dependencies:
@@ -4647,7 +4576,7 @@ snapshots:
       '@opentelemetry/api-logs': 0.219.0
       '@opentelemetry/core': 2.8.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/resources': 2.8.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/semantic-conventions': 1.40.0
+      '@opentelemetry/semantic-conventions': 1.41.1
 
   '@opentelemetry/sdk-metrics@2.8.0(@opentelemetry/api@1.9.1)':
     dependencies:
@@ -4668,8 +4597,6 @@ snapshots:
       '@opentelemetry/context-async-hooks': 2.8.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/core': 2.8.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base': 2.8.0(@opentelemetry/api@1.9.1)
-
-  '@opentelemetry/semantic-conventions@1.40.0': {}
 
   '@opentelemetry/semantic-conventions@1.41.1': {}
 
@@ -4706,7 +4633,7 @@ snapshots:
       proxy-agent: 6.5.0
       semver: 7.7.4
       tar-fs: 3.1.2
-      yargs: 17.7.2
+      yargs: 17.7.3
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -5136,7 +5063,7 @@ snapshots:
       istanbul-reports: 3.2.0
       test-exclude: 7.0.2
       v8-to-istanbul: 9.3.0
-      yargs: 17.7.2
+      yargs: 17.7.3
       yargs-parser: 21.1.1
 
   c8@9.1.0:
@@ -5150,7 +5077,7 @@ snapshots:
       istanbul-reports: 3.2.0
       test-exclude: 6.0.0
       v8-to-istanbul: 9.3.0
-      yargs: 17.7.2
+      yargs: 17.7.3
       yargs-parser: 21.1.1
     optional: true
 
@@ -5891,7 +5818,7 @@ snapshots:
   jest-mock@30.3.0:
     dependencies:
       '@jest/types': 30.3.0
-      '@types/node': 25.9.3
+      '@types/node': 26.0.0
       jest-util: 30.3.0
     optional: true
 
@@ -5901,7 +5828,7 @@ snapshots:
   jest-util@30.3.0:
     dependencies:
       '@jest/types': 30.3.0
-      '@types/node': 25.9.3
+      '@types/node': 26.0.0
       chalk: 4.1.2
       ci-info: 4.4.0
       graceful-fs: 4.2.11
@@ -6797,7 +6724,7 @@ snapshots:
       markdown-it: 14.2.0
       minimatch: 10.2.5
       typescript: 5.9.3
-      yaml: 2.8.4
+      yaml: 2.9.0
 
   typescript@5.4.5: {}
 
@@ -6897,21 +6824,9 @@ snapshots:
   yallist@3.1.1:
     optional: true
 
-  yaml@2.8.4: {}
-
   yaml@2.9.0: {}
 
   yargs-parser@21.1.1: {}
-
-  yargs@17.7.2:
-    dependencies:
-      cliui: 8.0.1
-      escalade: 3.2.0
-      get-caller-file: 2.0.5
-      require-directory: 2.1.1
-      string-width: 4.2.3
-      y18n: 5.0.8
-      yargs-parser: 21.1.1
 
   yargs@17.7.3:
     dependencies:
