@@ -352,9 +352,10 @@ export interface AmqpPublisherOptions {
      * taxonomy, and connection recovery are unchanged.
      *
      * Leave unset (default) for normal EventBus use, where the envelope is
-     * stamped on publish and stripped on delivery. Setting a caller-controlled
-     * `messageId` / `timestamp` is not yet supported (it needs a cross-package
-     * `PublishOptions` field — tracked as a follow-up).
+     * stamped on publish and stripped on delivery. When the contract requires a
+     * specific `messageId` / `timestamp`, set them per-publish via
+     * `PublishOptions.messageId` / `PublishOptions.timestamp` (a caller-supplied
+     * value is used as-is; in external-contract mode nothing is auto-generated).
      *
      * @default false
      */

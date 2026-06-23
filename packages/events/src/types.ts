@@ -65,6 +65,21 @@ export interface PublishOptions {
     metadata?: Record<string, string>;
     /** Message key for partitioning (Kafka: partition key, others: ignored) */
     key?: string;
+    /**
+     * Caller-supplied message identifier the adapter sets on the wire where
+     * supported (AMQP: the `messageId` property; other adapters ignore it).
+     * Primarily for external-contract publishing — in `@connectum/events-amqp`
+     * `externalContract` mode the adapter does not auto-generate a `messageId`,
+     * so set this when the contract requires one.
+     */
+    messageId?: string;
+    /**
+     * Caller-supplied message timestamp in **Unix epoch seconds**, set on the
+     * wire where supported (AMQP: the `timestamp` property; other adapters
+     * ignore it). Like {@link messageId}, mainly for external-contract
+     * publishing where the adapter does not auto-populate it.
+     */
+    timestamp?: number;
 }
 
 /**

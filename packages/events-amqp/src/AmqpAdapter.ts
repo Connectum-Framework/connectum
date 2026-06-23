@@ -145,7 +145,8 @@ interface PendingReturn {
  *         bindings: [{ queue: "partner.inbound.v1", source: "partner.direct", routingKey: "inbound" }],
  *     },
  *     queueOverrides: { partner: { queue: "partner.inbound.v1" } },
- *     publisherOptions: { persistent: true, mandatory: true },
+ *     // externalContract: emit only contract-specified properties (no envelope).
+ *     publisherOptions: { persistent: true, mandatory: true, externalContract: true },
  * });
  * ```
  */
@@ -646,6 +647,21 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 headers[PUBLISH_ID_HEADER] = eventId;
             }
 
+            // messageId / timestamp: a caller-supplied value (PublishOptions)
+            // always wins; otherwise auto-populate in normal mode and OMIT in
+            // external-contract mode (the contract owns them). Keys are omitted
+            // entirely when undefined (exactOptionalPropertyTypes).
+            const resolvedMessageId = publishOptions?.messageId ?? (externalContract ? undefined : eventId);
+            const resolvedTimestamp = publishOptions?.timestamp ?? (externalContract ? undefined : Math.trunc(Date.now() / 1000));
+            const publishProps: amqp.Options.Publish = {
+                persistent,
+                mandatory,
+                headers,
+                contentType,
+                ...(resolvedMessageId !== undefined ? { messageId: resolvedMessageId } : {}),
+                ...(resolvedTimestamp !== undefined ? { timestamp: resolvedTimestamp } : {}),
+            };
+
             const doPublish = async (): Promise<void> => {
                 const pending: PendingReturn = { returned: false };
                 if (publishId !== null) {
@@ -671,38 +687,27 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
                         let written: boolean;
                         try {
-                            written = ch.publish(
-                                exchange,
-                                routingKey,
-                                body,
-                                // External-contract mode auto-populates neither messageId
-                                // nor timestamp (the contract owns them); the keys are
-                                // omitted entirely, not set to undefined.
-                                externalContract
-                                    ? { persistent, mandatory, headers, contentType }
-                                    : { persistent, mandatory, headers, contentType, messageId: eventId, timestamp: Math.trunc(Date.now() / 1000) },
-                                (err) => {
-                                    // Per-message confirm callback (ack/nack). The broker
-                                    // guarantees basic.return arrives BEFORE the confirm of
-                                    // the same message — check the return flag first.
-                                    settle(() => {
-                                        if (err) {
-                                            // A dropped channel/connection (recovery may not yet
-                                            // have swapped publishChannel) is a connection loss,
-                                            // not a broker nack — classify by the close signal.
-                                            reject(
-                                                closing || publishChannel !== ch || isConnectionLostError(err)
-                                                    ? new AmqpConnectionError("Connection lost while awaiting publish confirm", { cause: err })
-                                                    : new AmqpPublishNackError(`Broker nacked message for routing key '${routingKey}'`, { cause: err }),
-                                            );
-                                        } else if (pending.returned) {
-                                            reject(new AmqpUnroutableError(`Message unroutable (mandatory): no queue bound for routing key '${routingKey}'`, routingKey));
-                                        } else {
-                                            resolve();
-                                        }
-                                    });
-                                },
-                            );
+                            written = ch.publish(exchange, routingKey, body, publishProps, (err) => {
+                                // Per-message confirm callback (ack/nack). The broker
+                                // guarantees basic.return arrives BEFORE the confirm of
+                                // the same message — check the return flag first.
+                                settle(() => {
+                                    if (err) {
+                                        // A dropped channel/connection (recovery may not yet
+                                        // have swapped publishChannel) is a connection loss,
+                                        // not a broker nack — classify by the close signal.
+                                        reject(
+                                            closing || publishChannel !== ch || isConnectionLostError(err)
+                                                ? new AmqpConnectionError("Connection lost while awaiting publish confirm", { cause: err })
+                                                : new AmqpPublishNackError(`Broker nacked message for routing key '${routingKey}'`, { cause: err }),
+                                        );
+                                    } else if (pending.returned) {
+                                        reject(new AmqpUnroutableError(`Message unroutable (mandatory): no queue bound for routing key '${routingKey}'`, routingKey));
+                                    } else {
+                                        resolve();
+                                    }
+                                });
+                            });
                         } catch (err) {
                             settle(() => reject(new AmqpConnectionError(`Publish failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })));
                             return;
