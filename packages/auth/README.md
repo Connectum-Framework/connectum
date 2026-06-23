@@ -381,7 +381,7 @@ const internalAuth = createInternalAuthInterceptor({
 ### sharedSecretTrust(options)
 
 > Available since 1.1.0.
-
+>
 > **DEV-ONLY.** A single shared secret is **not** per-service: every legitimate caller holds the same secret, so one compromise forges **all** internal identities. Use `meshIdentityTrust` (mesh) or `signedTokenTrust` (non-mesh per-service JWT) in production. This factory exists only for local development and single-tenant low-trust-boundary setups.
 
 Constant-time compares a single shared secret against the trust header. The header is stripped after extraction (anti-spoofing).
