@@ -9,6 +9,7 @@ Universal event adapter layer for Connectum: proto-first pub/sub with pluggable 
 ## Features
 
 - **createEventBus()** -- factory with explicit lifecycle (`start()` / `stop()`)
+- **createBroadcastSubscribers()** -- 1->N fan-out wiring: one event delivered to N independent reactors, each on its own bus + consumer group
 - **Proto-first** -- publish and subscribe using `@bufbuild/protobuf` message schemas
 - **Pluggable Adapters** -- swap NATS, Kafka, Redis Streams, or in-memory without code changes
 - **EventRouter** -- type-safe handler registration mirroring ConnectRouter pattern
@@ -217,6 +218,7 @@ function createEventBus(options: EventBusOptions): EventBus
 | `adapter` | `EventAdapter` | required | Broker adapter (NATS, Kafka, Redis, Memory) |
 | `routes` | `EventRoute[]` | `[]` | Event route handlers (subscriber side) |
 | `publishes` | `DescService[]` | `[]` | Event service descriptors this process publishes to (publisher side, no subscription) |
+| `strictTopics` | `boolean` | `false` | Throw on an unresolved publish topic instead of silently falling back to the message `typeName` |
 | `middleware` | `MiddlewareConfig` | `{}` | Middleware configuration |
 | `group` | `string` | `undefined` | Consumer group name |
 | `signal` | `AbortSignal` | `undefined` | External abort signal |
@@ -232,6 +234,83 @@ function createEventBus(options: EventBusOptions): EventBus
 > await bus.start();
 > await bus.publish(OrderPlacedSchema, order); // → declared topic, not "order.v1.OrderPlaced"
 > ```
+>
+> **`strictTopics` (opt-in, default `false`):** the same silent fallback also happens for any event covered by neither `routes` nor `publishes` and published without an explicit `PublishOptions.topic` — `publish()` emits to the raw `schema.typeName`. Set `strictTopics: true` to make that unresolved-topic case **throw** at the call site instead of silently misconfiguring. Backward-compatible; available since 1.1.0.
+
+### createBroadcastSubscribers()
+
+```typescript
+import { createBroadcastSubscribers } from '@connectum/events';
+
+function createBroadcastSubscribers(
+  options: BroadcastSubscribersOptions,
+): Array<EventBus & EventBusLike>
+```
+
+Available since 1.1.0.
+
+First-class 1->N fan-out wiring. Delivering ONE published event to N **independent** reactors (each reacting on its own) requires one `EventBus` **per reactor**, each with its own consumer group:
+
+- the per-bus duplicate-topic guard rejects two routes resolving to the same topic on one bus (it throws `Duplicate event topic "..." on one EventBus`), and
+- on a real broker, a **shared** group load-balances (one reactor "steals" each event) while **distinct** groups give each reactor its own durable consumer.
+
+`createBroadcastSubscribers()` builds that one-bus-per-reactor wiring from a list of reactors, so callers do not hand-roll N `createEventBus` calls. It **throws** if two reactors share a consumer group.
+
+The returned buses are **not started** -- start (and later stop) them yourself.
+
+```typescript
+import { createBroadcastSubscribers } from '@connectum/events';
+import { NatsAdapter } from '@connectum/events-nats';
+
+// Per-bus adapter factory: each reactor bus gets its own connection / durable consumer
+const buses = createBroadcastSubscribers({
+  adapter: () => NatsAdapter({ servers: 'nats://localhost:4222' }),
+  reactors: [
+    { group: 'pricing', routes: [pricingRoutes] },
+    { group: 'audit', routes: [auditRoutes] },
+    { group: 'notify', routes: [notifyRoutes] },
+  ],
+});
+
+await Promise.all(buses.map((bus) => bus.start()));
+
+// On shutdown:
+await Promise.all(buses.map((bus) => bus.stop()));
+```
+
+For in-process tests, pass a single shared `MemoryAdapter()` instance instead of a factory (all buses share the in-memory registry):
+
+```typescript
+import { createBroadcastSubscribers, MemoryAdapter } from '@connectum/events';
+
+const buses = createBroadcastSubscribers({
+  adapter: MemoryAdapter(), // one shared instance
+  reactors: [
+    { group: 'pricing', routes: [pricingRoutes] },
+    { group: 'audit', routes: [auditRoutes] },
+  ],
+});
+
+await Promise.all(buses.map((bus) => bus.start()));
+```
+
+**Parameters (`BroadcastSubscribersOptions`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adapter` | `EventAdapter \| (() => EventAdapter)` | required | One shared adapter instance (fine for `MemoryAdapter` in tests) OR a factory invoked once per reactor (use for real brokers so each bus gets its own connection / durable consumer) |
+| `reactors` | `BroadcastReactor[]` | required | The independent reactors -- each becomes its own EventBus with its own group |
+| `handlerTimeout` | `number` | `30000` | Shared per-bus handler timeout in ms |
+| `drainTimeout` | `number` | `30000` | Shared per-bus drain timeout in ms |
+| `signal` | `AbortSignal` | `undefined` | Shared abort signal for graceful shutdown |
+
+**`BroadcastReactor`:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `group` | `string` | required | Consumer group -- MUST be distinct per reactor for true fan-out (a shared group load-balances) |
+| `routes` | `EventRoute[]` | required | The event routes (handlers) this reactor subscribes with |
+| `middleware` | `MiddlewareConfig` | `undefined` | Optional per-reactor middleware (retry / DLQ / custom) |
 
 ### EventBus Interface
 
@@ -332,6 +411,7 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 | Export | Kind | Description |
 |--------|------|-------------|
 | `createEventBus` | function | Factory for creating an EventBus |
+| `createBroadcastSubscribers` | function | Builds one-bus-per-reactor 1->N fan-out wiring from a list of reactors |
 | `deriveServiceName` | function | Derives a consumer identity (`package@hostname`) from proto service names |
 | `NonRetryableError` | class | Error that skips retry middleware |
 | `RetryableError` | class | Error that forces retry |
@@ -346,6 +426,8 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 | `EventAdapter` | type | Adapter interface |
 | `EventBus` | type | EventBus interface |
 | `EventBusOptions` | type | Options for `createEventBus()` |
+| `BroadcastSubscribersOptions` | type | Options for `createBroadcastSubscribers()` |
+| `BroadcastReactor` | type | One independent broadcast reactor (group + routes + optional middleware) |
 | `EventContext` | type | Handler context interface |
 | `EventRouter` | type | Router interface |
 | `PublishOptions` | type | Publish options |
@@ -372,7 +454,7 @@ For the complete, always-current list of exported symbols and types, see the [AP
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **pnpm**: >=10.0.0
+- **pnpm**: >=11.0.0
 - **TypeScript**: >=5.7.2 (for type checking)
 
 ## Documentation

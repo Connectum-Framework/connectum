@@ -32,7 +32,7 @@
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish",
     "generate:keys": "mkdir -p keys && openssl req -nodes -x509 -newkey rsa:2048 -days 3650 -subj \"/CN=localhost\" -keyout keys/server.key -out keys/server.crt -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"",
-    "docs:api": "typedoc",
+    "docs:api": "typedoc && node scripts/stabilize-api-source-links.mjs",
     "prepare": "husky"
   },
   "keywords": [
