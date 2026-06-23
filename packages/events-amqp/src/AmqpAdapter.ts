@@ -155,7 +155,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
     const contentType = options.serialization?.contentType ?? DEFAULT_CONTENT_TYPE;
     const publishTimeoutMs = options.publishTimeoutMs ?? DEFAULT_PUBLISH_TIMEOUT_MS;
-    const correlationHeader = options.publisherOptions?.correlationHeader ?? true;
+    // External-contract publishing suppresses the EventBus envelope (see
+    // AmqpPublisherOptions.externalContract). It also forces single-flight
+    // mandatory correlation so no `x-connectum-publish-id` header reaches the
+    // wire — `correlationHeader` is ignored in this mode.
+    const externalContract = options.publisherOptions?.externalContract ?? false;
+    const correlationHeader = externalContract ? false : (options.publisherOptions?.correlationHeader ?? true);
     const lifecycle = options.lifecycle;
 
     /** The recovering connection wrapper (amqplib opt-in recovery) or a plain connection. */
@@ -612,8 +617,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 }
             }
 
-            headers["x-event-id"] = eventId;
-            headers["x-published-at"] = new Date().toISOString();
+            // External-contract mode emits no EventBus envelope: the wire carries
+            // only the caller's contract-specified headers. Otherwise stamp the
+            // envelope (stripped again on delivery in subscribe()).
+            if (!externalContract) {
+                headers["x-event-id"] = eventId;
+                headers["x-published-at"] = new Date().toISOString();
+            }
 
             const persistent = options.publisherOptions?.persistent ?? true;
             const mandatory = options.publisherOptions?.mandatory ?? false;
@@ -665,14 +675,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                 exchange,
                                 routingKey,
                                 body,
-                                {
-                                    persistent,
-                                    mandatory,
-                                    headers,
-                                    contentType,
-                                    messageId: eventId,
-                                    timestamp: Math.trunc(Date.now() / 1000),
-                                },
+                                // External-contract mode auto-populates neither messageId
+                                // nor timestamp (the contract owns them); the keys are
+                                // omitted entirely, not set to undefined.
+                                externalContract
+                                    ? { persistent, mandatory, headers, contentType }
+                                    : { persistent, mandatory, headers, contentType, messageId: eventId, timestamp: Math.trunc(Date.now() / 1000) },
                                 (err) => {
                                     // Per-message confirm callback (ack/nack). The broker
                                     // guarantees basic.return arrives BEFORE the confirm of

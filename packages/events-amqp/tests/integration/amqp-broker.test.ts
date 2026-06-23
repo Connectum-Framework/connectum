@@ -17,6 +17,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type amqp from "amqplib";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpTopologyError, AmqpUnroutableError } from "../../src/errors.ts";
 
@@ -306,6 +307,103 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             () => missing.connect(),
             (err: unknown) => err instanceof AmqpTopologyError,
         );
+    });
+
+    // ── External-contract publish mode (#161) ──────────────────────────────
+    // The oracle here is the RAW wire frame consumed via a plain amqplib channel
+    // — NOT adapter.subscribe(), which strips the envelope on delivery and would
+    // hide a dirty wire (tautological). We assert msg.properties directly.
+
+    it("external contract: the wire frame carries ONLY contract headers, no EventBus envelope (raw amqplib oracle)", async () => {
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "it.external",
+            exchangeType: "topic",
+            recovery: false,
+            serialization: { contentType: "application/json" },
+            publisherOptions: { externalContract: true },
+        });
+        await adapter.connect(); // asserts the exchange so the raw consumer can bind
+        const amqplib = await import("amqplib");
+        const conn = await amqplib.connect(url);
+        try {
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.external", "ext.clean");
+            const received: amqp.ConsumeMessage[] = [];
+            await ch.consume(q.queue, (m) => { if (m) received.push(m); }, { noAck: true });
+
+            await adapter.publish("ext.clean", new Uint8Array([1, 2, 3]), { metadata: { "x-trace-id": "trace-1" } });
+            await waitFor(() => received.length > 0);
+
+            const msg = received[0];
+            assert.ok(msg);
+            const headers = (msg.properties.headers ?? {}) as Record<string, unknown>;
+            // The caller's contract header passes through unchanged...
+            assert.equal(headers["x-trace-id"], "trace-1");
+            // ...and NONE of the EventBus envelope reaches the wire.
+            assert.equal(headers["x-event-id"], undefined, "x-event-id must not be on the wire");
+            assert.equal(headers["x-published-at"], undefined, "x-published-at must not be on the wire");
+            assert.equal(headers["x-connectum-publish-id"], undefined, "publish-id header must not be on the wire");
+            assert.equal(msg.properties.messageId, undefined, "messageId must not be auto-populated");
+            assert.equal(msg.properties.timestamp, undefined, "timestamp must not be auto-populated");
+            // Only contract-specified properties remain.
+            assert.equal(msg.properties.contentType, "application/json");
+            assert.deepEqual(new Uint8Array(msg.content), new Uint8Array([1, 2, 3]));
+        } finally {
+            await conn.close();
+            await adapter.disconnect();
+        }
+    });
+
+    it("default mode still stamps the EventBus envelope on the wire (raw amqplib oracle, regression)", async () => {
+        const adapter = AmqpAdapter({ url, exchange: "it.envelope", exchangeType: "topic", recovery: false });
+        await adapter.connect();
+        const amqplib = await import("amqplib");
+        const conn = await amqplib.connect(url);
+        try {
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.envelope", "env.rk");
+            const received: amqp.ConsumeMessage[] = [];
+            await ch.consume(q.queue, (m) => { if (m) received.push(m); }, { noAck: true });
+
+            await adapter.publish("env.rk", new Uint8Array([9]));
+            await waitFor(() => received.length > 0);
+
+            const msg = received[0];
+            assert.ok(msg);
+            const headers = (msg.properties.headers ?? {}) as Record<string, unknown>;
+            assert.equal(typeof headers["x-event-id"], "string", "x-event-id stamped by default");
+            assert.equal(typeof headers["x-published-at"], "string", "x-published-at stamped by default");
+            assert.equal(typeof msg.properties.messageId, "string", "messageId auto-populated by default");
+            assert.equal(typeof msg.properties.timestamp, "number", "timestamp auto-populated by default");
+        } finally {
+            await conn.close();
+            await adapter.disconnect();
+        }
+    });
+
+    it("external contract + mandatory: unroutable rejects via single-flight, no publish-id header on the wire", async () => {
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "it.external.mandatory",
+            exchangeType: "topic",
+            recovery: false,
+            publisherOptions: { externalContract: true, mandatory: true },
+        });
+        await adapter.connect();
+        try {
+            // No queue bound for this key → the mandatory publish is returned and,
+            // even though no x-connectum-publish-id header is on the wire, the
+            // forced single-flight correlation still detects it as unroutable.
+            await assert.rejects(
+                adapter.publish("ext.unbound", new Uint8Array([1])),
+                (err: unknown) => err instanceof AmqpUnroutableError,
+            );
+        } finally {
+            await adapter.disconnect();
+        }
     });
 
     // Connection-recovery scenarios (broker drop/restart mid-test) are in
