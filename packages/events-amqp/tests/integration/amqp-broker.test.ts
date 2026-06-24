@@ -356,6 +356,43 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
         }
     });
 
+    it("external contract: caller-supplied messageId/timestamp are used as-is (raw amqplib oracle)", async () => {
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "it.external.id",
+            exchangeType: "topic",
+            recovery: false,
+            publisherOptions: { externalContract: true },
+        });
+        await adapter.connect();
+        const amqplib = await import("amqplib");
+        const conn = await amqplib.connect(url);
+        try {
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.external.id", "ext.id");
+            const received: amqp.ConsumeMessage[] = [];
+            await ch.consume(q.queue, (m) => { if (m) received.push(m); }, { noAck: true });
+
+            // The contract requires a specific id/timestamp — supplied per publish.
+            await adapter.publish("ext.id", new Uint8Array([7]), { messageId: "contract-msg-1", timestamp: 1_700_000_000 });
+            await waitFor(() => received.length > 0);
+
+            const msg = received[0];
+            assert.ok(msg);
+            // The caller's values reach the wire verbatim (not auto-generated)...
+            assert.equal(msg.properties.messageId, "contract-msg-1");
+            assert.equal(msg.properties.timestamp, 1_700_000_000);
+            // ...and the EventBus envelope is still absent.
+            const headers = (msg.properties.headers ?? {}) as Record<string, unknown>;
+            assert.equal(headers["x-event-id"], undefined);
+            assert.equal(headers["x-published-at"], undefined);
+        } finally {
+            await conn.close();
+            await adapter.disconnect();
+        }
+    });
+
     it("default mode still stamps the EventBus envelope on the wire (raw amqplib oracle, regression)", async () => {
         const adapter = AmqpAdapter({ url, exchange: "it.envelope", exchangeType: "topic", recovery: false });
         await adapter.connect();
