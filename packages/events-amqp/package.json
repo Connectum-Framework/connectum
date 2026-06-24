@@ -63,6 +63,7 @@
     "@biomejs/biome": "catalog:",
     "@connectum/events": "workspace:^",
     "@exodus/test": "catalog:",
+    "@testcontainers/toxiproxy": "^12.0.3",
     "c8": "catalog:",
     "testcontainers": "^12.0.3",
     "tsup": "catalog:",

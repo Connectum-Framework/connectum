@@ -23,8 +23,9 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import { promisify } from "node:util";
+import { type CreatedProxy, type StartedToxiProxyContainer, ToxiProxyContainer } from "@testcontainers/toxiproxy";
 import { connect } from "amqplib";
-import { GenericContainer, type StartedTestContainer } from "testcontainers";
+import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
 
@@ -254,6 +255,144 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
+    it("node restart: rabbitmqctl stop_app/start_app (broker app restart in place) → reconnect + topology re-assert + resume", async () => {
+        const lifecycle: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.nodekill",
+            exchangeType: "topic",
+            recovery: { initialDelay: 200, maxDelay: 1000 },
+            lifecycle: {
+                onConnected: () => lifecycle.push("connected"),
+                onDisconnected: () => lifecycle.push("disconnected"),
+            },
+        });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            await adapter.subscribe(
+                ["rec.nodekill.evt"],
+                async (event, ack) => {
+                    received.push(new TextDecoder().decode(event.payload));
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("rec.nodekill.evt", new TextEncoder().encode("before"));
+            await waitFor(() => received.length === 1);
+
+            // Restart the RabbitMQ APP in place (stop_app → start_app): all
+            // listeners close and every connection drops — a harder failure than
+            // close_all_connections, which keeps the app running — yet the
+            // container and its mapped port stay stable, so the adapter's fixed
+            // URL still points at the broker when it returns. (A full
+            // `container.restart()` would re-map the host port and break the URL.)
+            const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+            assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+            await waitFor(() => lifecycle.includes("disconnected"), 30_000);
+            const start = await container.exec(["rabbitmqctl", "start_app"]);
+            assert.equal(start.exitCode, 0, `start_app failed (${start.exitCode}): ${start.output}`);
+            await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 2, 60_000);
+
+            // After the app restart, topology was re-asserted and the consumer
+            // replayed → publish + consume resume. Retry publish until the app is
+            // fully back.
+            let publishedAfter = false;
+            for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
+                try {
+                    await adapter.publish("rec.nodekill.evt", new TextEncoder().encode("after"));
+                    publishedAfter = true;
+                } catch {
+                    await sleep(300);
+                }
+            }
+            assert.ok(publishedAfter, "adapter must publish after the broker app restarts");
+            await waitFor(() => received.includes("after"), 30_000);
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("heartbeat timeout: a frozen broker (short heartbeat) is detected and the adapter reconnects", async () => {
+        const lifecycle: string[] = [];
+        // Heartbeat is a CONNECTION param (URL query), not a socket option. A
+        // short heartbeat makes amqplib's client-side monitor declare the peer
+        // dead quickly when no bytes arrive — which is how a silent connection
+        // death (frozen broker / network partition) is detected.
+        const adapter = AmqpAdapter({
+            url: `${url}?heartbeat=2`,
+            exchange: "rec.heartbeat",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onConnected: () => lifecycle.push("connected"),
+                onDisconnected: () => lifecycle.push("disconnected"),
+            },
+        });
+        await adapter.connect();
+        const id = container.getId();
+        try {
+            await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 1);
+
+            // Freeze the broker process: the TCP socket stays open but no bytes
+            // (incl. heartbeats) flow, so the client's heartbeat monitor fires.
+            // Pause for > 2× heartbeat (4s) so detection happens during the freeze.
+            await execFileAsync("docker", ["pause", id]);
+            await sleep(7000);
+            await execFileAsync("docker", ["unpause", id]);
+
+            // Detected as a disconnect, then recovery reconnects to the (unpaused) broker.
+            await waitFor(() => lifecycle.includes("disconnected"), 30_000);
+            await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 2, 30_000);
+
+            let publishedAfter = false;
+            for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
+                try {
+                    await adapter.publish("rec.heartbeat.evt", new Uint8Array([1]));
+                    publishedAfter = true;
+                } catch {
+                    await sleep(200);
+                }
+            }
+            assert.ok(publishedAfter, "adapter must publish again after heartbeat-driven reconnect");
+        } finally {
+            await execFileAsync("docker", ["unpause", id]).catch(() => undefined);
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("handler crash during redelivery: a throwing handler nacks→requeues, succeeds on redelivery (no loss)", async () => {
+        const adapter = AmqpAdapter({ url, exchange: "rec.redeliver", exchangeType: "topic", recovery: false });
+        await adapter.connect();
+        try {
+            const attempts: number[] = [];
+            let processed: string | undefined;
+            await adapter.subscribe(
+                ["rec.redeliver.evt"],
+                async (event, ack) => {
+                    attempts.push(event.attempt);
+                    if (event.attempt === 1) {
+                        // Crash on first delivery → the adapter nacks with requeue.
+                        throw new Error("simulated handler crash on first delivery");
+                    }
+                    processed = new TextDecoder().decode(event.payload);
+                    await ack();
+                },
+                { group: "g" },
+            );
+
+            await adapter.publish("rec.redeliver.evt", new TextEncoder().encode("payload-1"));
+            await waitFor(() => processed !== undefined);
+
+            // First delivery (attempt 1) crashed → requeued → redelivered as
+            // attempt 2 (AMQP `redelivered` flag) → succeeded. The message is not lost.
+            assert.deepEqual(attempts, [1, 2]);
+            assert.equal(processed, "payload-1");
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
     it("publishTimeoutMs: frozen broker (no confirm) rejects with AmqpPublishTimeoutError", async () => {
         // Freeze the broker process (docker pause): the TCP connection stays
         // up but no confirm is ever delivered, so publishTimeoutMs fires
@@ -271,6 +410,89 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             } finally {
                 await execFileAsync("docker", ["unpause", id]);
             }
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+});
+
+/**
+ * Network-partition recovery via Toxiproxy. The adapter connects to the broker
+ * THROUGH a Toxiproxy proxy on a shared network; disabling the proxy severs the
+ * network path (the broker stays up) and re-enabling it heals the partition.
+ * This is a distinct fault from the in-process suite above: the broker never
+ * goes down — only the link between the adapter and the broker is cut.
+ */
+describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVERY_TESTS != 1", concurrency: 1 }, () => {
+    let network: StartedNetwork;
+    let rabbit: StartedTestContainer;
+    let toxiproxy: StartedToxiProxyContainer;
+    let proxy: CreatedProxy;
+    let url: string;
+
+    before(async () => {
+        network = await new Network().start();
+        rabbit = await new GenericContainer("rabbitmq:4-alpine").withNetwork(network).withNetworkAliases("rabbitmq").withExposedPorts(5672).start();
+        toxiproxy = await new ToxiProxyContainer("ghcr.io/shopify/toxiproxy:2.5.0").withNetwork(network).start();
+        // The proxy forwards to the broker over the shared network; the adapter
+        // dials the proxy's host-mapped endpoint, so toggling the proxy controls
+        // the adapter↔broker link without touching the broker.
+        proxy = await toxiproxy.createProxy({ name: "rabbit", upstream: "rabbitmq:5672" });
+        url = `amqp://guest:guest@${proxy.host}:${proxy.port}`;
+    });
+
+    after(async () => {
+        await toxiproxy?.stop().catch(() => undefined);
+        await rabbit?.stop().catch(() => undefined);
+        await network?.stop().catch(() => undefined);
+    });
+
+    it("network cut (Toxiproxy proxy disabled) → reconnect when the network heals", async () => {
+        const lifecycle: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.partition",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onConnected: () => lifecycle.push("connected"),
+                onDisconnected: () => lifecycle.push("disconnected"),
+            },
+        });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            await adapter.subscribe(
+                ["rec.partition.evt"],
+                async (event, ack) => {
+                    received.push(new TextDecoder().decode(event.payload));
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("rec.partition.evt", new TextEncoder().encode("before"));
+            await waitFor(() => received.length === 1);
+
+            // Sever the adapter↔broker network path (broker stays up).
+            await proxy.setEnabled(false);
+            await waitFor(() => lifecycle.includes("disconnected"), 30_000);
+
+            // Heal the partition — recovery reconnects, re-asserts topology, and
+            // replays the consumer.
+            await proxy.setEnabled(true);
+            await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 2, 30_000);
+
+            let publishedAfter = false;
+            for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
+                try {
+                    await adapter.publish("rec.partition.evt", new TextEncoder().encode("after"));
+                    publishedAfter = true;
+                } catch {
+                    await sleep(200);
+                }
+            }
+            assert.ok(publishedAfter, "adapter must publish again after the partition heals");
+            await waitFor(() => received.includes("after"), 20_000);
         } finally {
             await adapter.disconnect().catch(() => undefined);
         }
