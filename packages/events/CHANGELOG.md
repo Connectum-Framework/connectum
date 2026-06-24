@@ -1,5 +1,28 @@
 # @connectum/events
 
+## 1.1.0
+
+### Minor Changes
+
+- [#176](https://github.com/Connectum-Framework/connectum/pull/176) [`b5b3185`](https://github.com/Connectum-Framework/connectum/commit/b5b3185a3f745dc53686707fcabe069867df145a) Thanks [@intech](https://github.com/intech)! - Add `createBroadcastSubscribers` for first-class fan-out wiring, and make the duplicate-topic error actionable.
+
+  Delivering one event to N independent reactors (each its own consumer group) requires one EventBus per reactor — the per-bus duplicate-topic guard forbids two routes on the same topic on one bus, and a shared group load-balances on a real broker instead of broadcasting. `createBroadcastSubscribers({ adapter, reactors })` builds that one-bus-per-reactor wiring (accepting a shared adapter or a per-bus factory) and rejects duplicate groups. The `Duplicate event topic` error now explains the fix (separate buses + distinct groups for independent reactors) instead of only suggesting a proto-option change.
+
+- [#166](https://github.com/Connectum-Framework/connectum/pull/166) [`7876dcb`](https://github.com/Connectum-Framework/connectum/commit/7876dcb4e2c16c5988d50a58b7090b1bb6fd8b19) Thanks [@intech](https://github.com/intech)! - Add `EventBusOptions.publishes` for publisher-only processes. A process that publishes an event without subscribing to it had no `routes`, so `publish()` fell back to the message `typeName` and silently emitted to the wrong topic whenever the event declared a custom `(connectum.events.v1.event).topic`. List the event service descriptors in `publishes` to resolve the declared topic from the proto option end-to-end, instead of hand-maintaining raw topic strings.
+
+- [#177](https://github.com/Connectum-Framework/connectum/pull/177) [`6e217df`](https://github.com/Connectum-Framework/connectum/commit/6e217dfb0c2080f8d306770dbd987827122633e1) Thanks [@intech](https://github.com/intech)! - Add an opt-in `EventBusOptions.strictTopics`. By default, when `publish()` finds no explicit `publishOptions.topic` and the event type is covered by neither `routes` nor `publishes`, it silently falls back to the raw message `typeName` — a silent misconfiguration that can emit to a topic no subscriber expects. With `strictTopics: true`, that unresolved-topic case throws at the call site instead. Default stays `false` (backward-compatible).
+
+- [#186](https://github.com/Connectum-Framework/connectum/pull/186) [`ac41deb`](https://github.com/Connectum-Framework/connectum/commit/ac41deb0641ed4027b53fa7bc82a23312cfccdaa) Thanks [@intech](https://github.com/intech)! - Add `PublishOptions.messageId` and `PublishOptions.timestamp` (Unix epoch seconds) so a caller can set the message identity an external contract requires. Adapters honor them where supported and ignore them otherwise; `@connectum/events-amqp` maps them to the AMQP `messageId` / `timestamp` properties.
+
+  This completes the external-contract publish path ([#161](https://github.com/Connectum-Framework/connectum/issues/161)): in `externalContract` mode the adapter auto-generates nothing, so a caller-supplied `messageId` / `timestamp` is the way to populate those wire properties when the contract demands them. A supplied value is used as-is in any mode; auto-generation still applies only in non-external mode when the caller omits them.
+
+### Patch Changes
+
+- [#184](https://github.com/Connectum-Framework/connectum/pull/184) [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae) Thanks [@intech](https://github.com/intech)! - Bump protobuf-es (`@bufbuild/protobuf`, `@bufbuild/protoc-gen-es`, `@bufbuild/protoplugin`) to 2.12.1. A workspace `overrides` entry pins `@bufbuild/protobuf` to a single version so transitive consumers (`@lambdalisue/connectrpc-grpcreflect`, `@bufbuild/protovalidate`) don't split `@connectrpc/connect`'s protobuf peer into two incompatible instances. Generated code is unchanged; published packages now declare `@bufbuild/protobuf` `^2.12.1`.
+
+- Updated dependencies [[`4b0dccc`](https://github.com/Connectum-Framework/connectum/commit/4b0dccc5463220b1ee0ddf7983fb7a64108ebd39), [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae)]:
+  - @connectum/core@1.1.0
+
 ## 1.0.0
 
 ### Major Changes

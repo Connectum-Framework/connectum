@@ -1,5 +1,30 @@
 # @connectum/auth
 
+## 1.1.0
+
+### Minor Changes
+
+- [#179](https://github.com/Connectum-Framework/connectum/pull/179) [`3ecb55f`](https://github.com/Connectum-Framework/connectum/commit/3ecb55f2969e55224f0b47338da8237d1b82c48a) Thanks [@intech](https://github.com/intech)! - Add a first-class `internal` (service-to-service) auth marker and interceptor (ADR-029), distinct from `public`. An `internal` method skips end-user (JWT) authentication but **requires an internal trust marker** — so promoting a method `public → internal` removes world-open exposure instead of merely renaming it, and the contract now audits as "internal" rather than "public".
+
+  - **Proto:** `optional bool internal` added to `ServiceAuth` and `MethodAuth` (`connectum/auth/v1/options.proto`, additive). `resolveMethodAuth` surfaces `internal` with the same method-overrides-service precedence as `public`.
+  - **`createInternalAuthInterceptor`** — for `internal` methods, authorizes via a pluggable per-service **trust source** (`(req) => AuthContext | null`) and rejects a missing/invalid marker as `Code.Unauthenticated`; non-`internal` methods are a no-op pass-through. Three trust-source factories ship:
+    - **`meshIdentityTrust({ allowlist, header? })`** — production default; verify a mesh-forwarded peer principal (Istio short-form ServiceAccount / SPIFFE id) against an allow-list carrying roles/scopes. Per-service by construction (the mesh issues each workload its own identity). The identity header is stripped after extraction (anti-spoofing).
+    - **`signedTokenTrust({ issuers, header? })`** — non-mesh per-service containment via per-service JWT/JWKS. **The JWKS lookup is issuer-bound**: the keyset is selected by the token's `iss` claim (`issuers[iss].jwksUri`, one `createRemoteJWKSet` per issuer) and verification is pinned to that same issuer. A single shared JWKS across issuers does NOT contain compromise (jose resolves the signing key by `kid` independently of `iss`), so a token claiming `iss: B` signed with A's key is rejected.
+    - **`sharedSecretTrust({ secret, header? })`** — **dev-only** fallback (single shared secret, constant-time compared). NOT per-service — one compromise forges all callers — and documented as such.
+  - **`getInternalMethods(services)`** — mirrors `getPublicMethods`; feed both into the JWT interceptor's `skipMethods`.
+  - **`createProtoAuthzInterceptor`** composes `internal` inclusively within its existing flow (one model, no parallel `requires_identity`): `internal` + identity + no `requires` → allow; `internal` + `requires {roles/scopes}` → the existing roles/scopes check against the internal identity; `internal` + no identity → `Unauthenticated`. The internal/JWT interceptors MUST run before `createProtoAuthzInterceptor` (they populate the `AuthContext` it consumes): `errorHandler → (jwtAuth | internalAuth) → protoAuthz`.
+
+  Purely additive — existing `public` and gated behavior are unchanged.
+
+- [#175](https://github.com/Connectum-Framework/connectum/pull/175) [`c51bc7e`](https://github.com/Connectum-Framework/connectum/commit/c51bc7ef6391bb908435eb933e98d4b3a94b9eff) Thanks [@intech](https://github.com/intech)! - Add RS256 + JWKS test helpers to `@connectum/auth/testing`. The existing `createTestJwt` is HS256-only, but the production-realistic path with an external IdP is RS256 validated through a JWKS endpoint (`createJwtAuthInterceptor({ jwksUri })`). The new `generateRsaTestKeypair()`, `startTestJwksServer()`, and `createTestJwtRS256()` let you test that path without hand-rolling a keypair + JWKS server + minter — the minted token is verified through the same `createRemoteJWKSet` branch production uses.
+
+### Patch Changes
+
+- [#184](https://github.com/Connectum-Framework/connectum/pull/184) [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae) Thanks [@intech](https://github.com/intech)! - Bump protobuf-es (`@bufbuild/protobuf`, `@bufbuild/protoc-gen-es`, `@bufbuild/protoplugin`) to 2.12.1. A workspace `overrides` entry pins `@bufbuild/protobuf` to a single version so transitive consumers (`@lambdalisue/connectrpc-grpcreflect`, `@bufbuild/protovalidate`) don't split `@connectrpc/connect`'s protobuf peer into two incompatible instances. Generated code is unchanged; published packages now declare `@bufbuild/protobuf` `^2.12.1`.
+
+- Updated dependencies [[`4b0dccc`](https://github.com/Connectum-Framework/connectum/commit/4b0dccc5463220b1ee0ddf7983fb7a64108ebd39), [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae)]:
+  - @connectum/core@1.1.0
+
 ## 1.0.0
 
 ### Major Changes

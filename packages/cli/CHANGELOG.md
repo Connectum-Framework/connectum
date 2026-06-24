@@ -1,5 +1,13 @@
 # @connectum/cli
 
+## 1.1.0
+
+### Patch Changes
+
+- [#164](https://github.com/Connectum-Framework/connectum/pull/164) [`c7d299e`](https://github.com/Connectum-Framework/connectum/commit/c7d299ea3d229a5c05e5f9ad9e51e75a21818d62) Thanks [@intech](https://github.com/intech)! - Read the CLI version from `package.json` so `connectum --version` always reports the real published release. It previously printed a hand-maintained string (`0.2.0-alpha.2`) that had drifted from the actual package version.
+
+- [#184](https://github.com/Connectum-Framework/connectum/pull/184) [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae) Thanks [@intech](https://github.com/intech)! - Bump protobuf-es (`@bufbuild/protobuf`, `@bufbuild/protoc-gen-es`, `@bufbuild/protoplugin`) to 2.12.1. A workspace `overrides` entry pins `@bufbuild/protobuf` to a single version so transitive consumers (`@lambdalisue/connectrpc-grpcreflect`, `@bufbuild/protovalidate`) don't split `@connectrpc/connect`'s protobuf peer into two incompatible instances. Generated code is unchanged; published packages now declare `@bufbuild/protobuf` `^2.12.1`.
+
 ## 1.0.0
 
 ### Major Changes
