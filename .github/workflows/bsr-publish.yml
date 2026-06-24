@@ -1,5 +1,12 @@
 name: Publish Proto to BSR
 
+# Manual BACKFILL / FALLBACK for BSR contract publishing.
+#
+# The normal path is automatic: release.yml pushes the contracts to BSR on every
+# release that changed `proto/connectum/...`, labelling them with both `main` and
+# the released version (`vX.Y.Z`). Use this workflow only to re-publish or
+# backfill a label out-of-band (e.g. a missed/older version, or a dry-run check).
+
 on:
   workflow_dispatch:
     inputs:

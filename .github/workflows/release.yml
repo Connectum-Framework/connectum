@@ -215,3 +215,13 @@ jobs:
             --label "${{ github.ref_name }}" \
             --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
 
+          # Also publish the immutable versioned label (vX.Y.Z) for this release,
+          # so consumers can pin the exact contract that ships with the npm
+          # version. The version comes from a fixed-group package's package.json
+          # (already bumped on main by the merged Version Packages PR). This
+          # removes the previously-manual bsr-publish.yml step for version labels.
+          VERSION=$(node -p "require('./packages/core/package.json').version")
+          buf push .bsr \
+            --label "v${VERSION}" \
+            --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
+
