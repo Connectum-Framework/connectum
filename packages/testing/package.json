@@ -1,6 +1,6 @@
 {
   "name": "@connectum/testing",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Testing utilities for Connectum",
   "private": false,
   "type": "module",

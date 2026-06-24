@@ -1,5 +1,19 @@
 # @connectum/core
 
+## 1.1.0
+
+### Minor Changes
+
+- [#178](https://github.com/Connectum-Framework/connectum/pull/178) [`4b0dccc`](https://github.com/Connectum-Framework/connectum/commit/4b0dccc5463220b1ee0ddf7983fb7a64108ebd39) Thanks [@intech](https://github.com/intech)! - Add `createCatalogClient({ catalog, resolver })` — a standalone, catalog-typed client usable OUTSIDE a `Server`. Out-of-process callers (a Temporal worker, a scheduler, a CLI) now get the same typed, resolver-routed `call` (unary) and `stream` (server/client/bidi) ergonomics as the in-handler `ctx.call`/`ctx.stream`, keyed off the generated `ConnectumCallMap`/`ConnectumStreamMap`, without constructing a `Server`.
+
+  It resolves every target through the supplied `RemoteResolver` (`singleTransportResolver`/`mapResolver`/`dnsResolver`/`perServiceEnvResolver`) and dispatches over the returned `Transport`, caching the transport per `(typeName, endpoint)`. Because there is no in-process/local path, a service the resolver cannot resolve fails with `Code.Unavailable`; the rest of the error model mirrors `ctx.call` (`Unimplemented` for an unknown service/method, `Internal` when the resolver throws). Unlike `ctx.call`, `CallOptions` are applied verbatim — there is no inbound request, so the signal/deadline are not cascaded or clamped, no inbound headers are propagated, and no `ContextValues` are forwarded.
+
+  Additive only: `ctx.call`/`ctx.stream`/`createServer` behavior and public types are unchanged.
+
+### Patch Changes
+
+- [#184](https://github.com/Connectum-Framework/connectum/pull/184) [`2e22eca`](https://github.com/Connectum-Framework/connectum/commit/2e22eca2425050a2eff4c9b741e3f7d3bbe176ae) Thanks [@intech](https://github.com/intech)! - Bump protobuf-es (`@bufbuild/protobuf`, `@bufbuild/protoc-gen-es`, `@bufbuild/protoplugin`) to 2.12.1. A workspace `overrides` entry pins `@bufbuild/protobuf` to a single version so transitive consumers (`@lambdalisue/connectrpc-grpcreflect`, `@bufbuild/protovalidate`) don't split `@connectrpc/connect`'s protobuf peer into two incompatible instances. Generated code is unchanged; published packages now declare `@bufbuild/protobuf` `^2.12.1`.
+
 ## 1.0.0
 
 ### Major Changes

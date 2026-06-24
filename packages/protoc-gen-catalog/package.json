@@ -1,6 +1,6 @@
 {
   "name": "@connectum/protoc-gen-catalog",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Buf/protoc plugin that generates a Connectum service catalog (ctx.call / ctx.stream typing) from proto files.",
   "type": "module",
   "main": "./dist/plugin.js",
