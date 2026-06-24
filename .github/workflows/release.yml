@@ -183,6 +183,11 @@ jobs:
 
       - name: Push proto to BSR
         if: steps.proto-changes.outputs.changed == 'true'
+        env:
+          # buf push reads the token from env; the buf-action `setup_only` login
+          # does NOT reliably persist auth into this run step (it failed on the
+          # 1.1.0 release with "not authenticated for buf.build").
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
         run: |
           mkdir -p .bsr/connectum
           for proto_root in packages/*/proto/connectum/*/; do
