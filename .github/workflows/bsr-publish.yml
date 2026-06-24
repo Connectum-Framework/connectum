@@ -80,6 +80,10 @@ jobs:
 
       - name: Push to BSR
         if: inputs.dry_run == false
+        env:
+          # buf push reads the token from env; the buf-action `setup_only` login
+          # does not reliably persist auth into this run step.
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
         run: |
           buf push .bsr \
             --label "${{ inputs.label }}" \
