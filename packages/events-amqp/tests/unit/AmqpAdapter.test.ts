@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { AmqpAdapter, isConnectionLostError, toAmqpPattern } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, classifyConfirmError, isConnectionLostError, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
+import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
+import type { AmqpLifecycleCallbacks } from "../../src/types.ts";
 
 describe("isConnectionLostError", () => {
     it("classifies amqplib channel/connection-close errors as connection loss", () => {
@@ -239,5 +242,153 @@ describe("toAmqpPattern", () => {
 
     it("should handle pattern with only >", () => {
         assert.equal(toAmqpPattern(">"), "#");
+    });
+});
+
+describe("classifyConfirmError", () => {
+    const base = { closing: false, channelClosed: false, channelSwapped: false, routingKey: "rk" };
+
+    it("classifies a genuine broker nack on a live channel as AmqpPublishNackError", () => {
+        const out = classifyConfirmError({ ...base, err: new Error("message nacked") });
+        assert.ok(out instanceof AmqpPublishNackError);
+    });
+
+    it("classifies via the structural close flag even when the error text does NOT match the regex", () => {
+        // This is the discriminating case: a regex-only classifier would call
+        // this a nack; the structural channelClosed flag correctly says connection loss.
+        const out = classifyConfirmError({ ...base, channelClosed: true, err: new Error("some-future-amqplib-close-phrasing") });
+        assert.ok(out instanceof AmqpConnectionError);
+    });
+
+    it("classifies via closing and channelSwapped structurally", () => {
+        assert.ok(classifyConfirmError({ ...base, closing: true, err: new Error("message nacked") }) instanceof AmqpConnectionError);
+        assert.ok(classifyConfirmError({ ...base, channelSwapped: true, err: new Error("message nacked") }) instanceof AmqpConnectionError);
+    });
+
+    it("still classifies the legacy text fallback as connection loss", () => {
+        assert.ok(classifyConfirmError({ ...base, err: new Error("channel closed") }) instanceof AmqpConnectionError);
+    });
+});
+
+describe("trackChannelClose", () => {
+    it("sets the closed flag BEFORE amqplib's own close drain runs (prependListener)", () => {
+        const ee = new EventEmitter();
+        const closed = new WeakSet<EventEmitter>();
+
+        // Simulate amqplib's constructor-registered close drain: registered FIRST,
+        // it records what the flag looked like when it ran.
+        let flagWhenDrainRan: boolean | undefined;
+        ee.on("close", () => {
+            flagWhenDrainRan = closed.has(ee);
+        });
+
+        // trackChannelClose registers AFTER the drain but must prepend, so its
+        // flag-setter runs first.
+        trackChannelClose(ee, closed);
+
+        ee.emit("close");
+
+        assert.equal(flagWhenDrainRan, true, "the close flag must be set before the drain listener runs (use prependListener, not on)");
+        assert.equal(closed.has(ee), true);
+    });
+});
+
+describe("wireRecoveryLifecycle", () => {
+    function setup(lifecycle: AmqpLifecycleCallbacks) {
+        const ee = new EventEmitter();
+        let attempt = 0;
+        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0 };
+        wireRecoveryLifecycle(ee, lifecycle, {
+            clearPublishChannel: () => {
+                calls.clearPublishChannel += 1;
+            },
+            failPendingReturns: () => {
+                calls.failPendingReturns += 1;
+            },
+            nextReconnectAttempt: () => {
+                attempt += 1;
+                return attempt;
+            },
+            resetReconnectAttempt: () => {
+                calls.reset += 1;
+                attempt = 0;
+            },
+        });
+        return { ee, calls };
+    }
+
+    it("fires onReconnecting exactly once per failed attempt (connect-failed + reconnect-scheduled pair)", () => {
+        const reconnecting: Array<{ attempt: number; delay: number }> = [];
+        const { ee } = setup({ onReconnecting: (info) => reconnecting.push({ attempt: info.attempt, delay: info.delay }) });
+
+        // amqplib emits BOTH connect-failed and reconnect-scheduled for one failed attempt.
+        ee.emit("connect-failed", new Error("attempt failed"));
+        ee.emit("reconnect-scheduled", { attempt: 1, delay: 100, error: new Error("attempt failed") });
+
+        assert.equal(reconnecting.length, 1, "onReconnecting must fire once per scheduled retry, not also on connect-failed");
+        assert.deepEqual(reconnecting[0], { attempt: 1, delay: 100 });
+    });
+
+    it("reports the terminal exhausted case via onReconnectFailed, not onReconnecting", () => {
+        let reconnecting = 0;
+        let reconnectFailed = 0;
+        const { ee, calls } = setup({
+            onReconnecting: () => {
+                reconnecting += 1;
+            },
+            onReconnectFailed: () => {
+                reconnectFailed += 1;
+            },
+        });
+
+        ee.emit("connect-failed", new Error("attempt failed"));
+        ee.emit("reconnect-failed", new Error("recovery exhausted"));
+
+        assert.equal(reconnecting, 0);
+        assert.equal(reconnectFailed, 1);
+        assert.equal(calls.clearPublishChannel, 2, "both connect-failed and reconnect-failed clear the publish channel");
+    });
+
+    it("reports a topology setup failure on a reconnect via onSetupFailed with attempt context", () => {
+        const setupFailures: Array<{ initial: boolean; attempt: number }> = [];
+        const { ee } = setup({ onSetupFailed: (_err, ctx) => setupFailures.push({ ...ctx }) });
+
+        ee.emit("connect-failed", new AmqpTopologyError("Topology declaration failed: 406"));
+        ee.emit("connect-failed", new AmqpTopologyError("Topology declaration failed: 406"));
+
+        assert.deepEqual(setupFailures, [
+            { initial: false, attempt: 1 },
+            { initial: false, attempt: 2 },
+        ]);
+    });
+
+    it("does NOT call onSetupFailed for a non-topology connect-failed", () => {
+        let setupFailed = 0;
+        const { ee } = setup({ onSetupFailed: () => {
+            setupFailed += 1;
+        } });
+
+        ee.emit("connect-failed", new Error("ECONNRESET"));
+        assert.equal(setupFailed, 0);
+    });
+
+    it("resets the attempt counter and fires onConnected on connect; drains pending on disconnect", () => {
+        let connected = 0;
+        const disconnects: Error[] = [];
+        const { ee, calls } = setup({
+            onConnected: () => {
+                connected += 1;
+            },
+            onDisconnected: (cause) => disconnects.push(cause),
+        });
+
+        ee.emit("connect-failed", new Error("x")); // attempt -> 1
+        ee.emit("connect"); // resets attempt
+        ee.emit("disconnect", new Error("dropped"));
+
+        assert.equal(connected, 1);
+        assert.equal(calls.reset, 1);
+        assert.equal(calls.failPendingReturns, 1);
+        assert.deepEqual(disconnects.map((e) => e.message), ["dropped"]);
     });
 });

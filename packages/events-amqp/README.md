@@ -124,6 +124,7 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | `topologyMode` | `'assert' \| 'check' \| 'skip'` | `'assert'` | How topology is established |
 | `queueOverrides` | `Record<string, AmqpQueueOverride>` | `undefined` | Map a consumer group to an externally named queue |
 | `recovery` | `boolean \| AmqpRecoveryOptions` | `true` | Automatic connection recovery (amqplib native); `false` disables |
+| `failFastOnInitialSetupError` | `boolean` | `false` | Reject `connect()` with the typed `AmqpTopologyError` on a deterministic setup/topology error at the **first** connect, instead of hanging in infinite recovery. Transient broker-unreachable still blocks-and-retries. |
 | `lifecycle` | `AmqpLifecycleCallbacks` | `undefined` | Connection lifecycle callbacks |
 | `publishTimeoutMs` | `number` | `30000` | Per-publish broker-outcome deadline |
 
@@ -185,10 +186,12 @@ Queues declared in `topology.queues` are asserted once (with their full argument
 | Mode | Behavior |
 |------|----------|
 | `'assert'` (default) | Declare topology idempotently (`assertExchange` / `assertQueue` / bind) |
-| `'check'` | Existence-only verification (`checkExchange` / `checkQueue`); fails fast with `AmqpTopologyError` on missing objects |
+| `'check'` | Existence-only verification (`checkExchange` / `checkQueue`); a missing object raises `AmqpTopologyError` |
 | `'skip'` | No topology operations; the application owns topology |
 
 > **`check` limitations**: AMQP has no passive introspection. `check` mode verifies only that exchanges and queues *exist* -- argument equivalence and binding presence are NOT verifiable. A conflicting redeclare elsewhere still fails with `PRECONDITION_FAILED` (406).
+>
+> **Fail-fast vs. recovery**: a topology `AmqpTopologyError` rejects `connect()` immediately **only** with `recovery: false` or `failFastOnInitialSetupError: true`. Under the default recovery (`maxRetries: Infinity`), a permanent topology error on the first connect otherwise enters the infinite recovery loop -- `connect()` does not reject; the failure is surfaced via `onSetupFailed` / `onReconnecting`. Set `failFastOnInitialSetupError: true` to reject a deterministic startup misconfiguration instead. See [Connection Recovery](#connection-recovery).
 
 ### AmqpQueueOverride
 
@@ -222,8 +225,9 @@ queueOverrides: {
 |----------|-----------|------------|
 | `onConnected` | `() => void` | Connection established (initial and after recovery) |
 | `onDisconnected` | `(cause: Error) => void` | Connection lost |
-| `onReconnecting` | `(info: { attempt, delay, error }) => void` | A reconnect attempt is scheduled |
+| `onReconnecting` | `(info: { attempt, delay, error }) => void` | A reconnect attempt is scheduled (fires exactly once per scheduled retry) |
 | `onReconnectFailed` | `(cause: Error) => void` | Recovery exhausted (`maxRetries` reached) |
+| `onSetupFailed` | `(error, { initial, attempt }) => void` | Topology/setup failed on the initial validation probe (`initial: true`) or a reconnect re-assert (`initial: false`). Surfaces deterministic config drift distinctly from a broker outage; the initial-connect call requires the startup probe (runs when this callback or `failFastOnInitialSetupError` is set). |
 
 Connection errors are surfaced through these callbacks -- never console-only.
 
@@ -289,8 +293,8 @@ Recovery is delegated to amqplib v2 native opt-in recovery and is **enabled by d
 
 Connection behavior:
 
-- **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering.
-- **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable, and a lost connection is not restored.
+- **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering. Under the default `maxRetries: Infinity`, `connect()` blocks rather than failing fast, and a **permanent** setup/topology error on the first connect would otherwise loop indefinitely. Set `failFastOnInitialSetupError: true` to reject `connect()` with the typed `AmqpTopologyError` on such a deterministic startup misconfiguration while still recovering from transient broker outages; use `onSetupFailed` for observability without changing behavior.
+- **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable or topology setup fails, and a lost connection is not restored.
 
 ### Error Taxonomy
 
