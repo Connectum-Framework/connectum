@@ -76,8 +76,12 @@ export interface AmqpAdapterOptions {
     /**
      * How topology is established:
      * - `"assert"` (default) — declare idempotently (assertExchange/assertQueue/bind);
-     * - `"check"` — existence-only verification (checkExchange/checkQueue), fail
-     *   fast with AmqpTopologyError on missing objects. AMQP offers no passive
+     * - `"check"` — existence-only verification (checkExchange/checkQueue). A
+     *   missing object raises AmqpTopologyError, which fails `connect()` fast
+     *   ONLY with `recovery: false` or `failFastOnInitialSetupError: true`; under
+     *   the default recovery a first-connect check failure otherwise enters the
+     *   (infinite) recovery loop and is surfaced via `onSetupFailed` /
+     *   `onReconnecting` rather than rejecting `connect()`. AMQP offers no passive
      *   introspection: argument equivalence and binding presence are NOT
      *   verifiable in this mode (a conflicting redeclare elsewhere is
      *   PRECONDITION_FAILED 406);
@@ -109,6 +113,33 @@ export interface AmqpAdapterOptions {
      * @default true (amqplib defaults: 100ms initial, ×2, 30s cap, jitter 0.2, infinite retries)
      */
     readonly recovery?: boolean | AmqpRecoveryOptions;
+
+    /**
+     * Fail fast on a DETERMINISTIC setup/topology error on the FIRST connect,
+     * instead of entering amqplib's infinite recovery loop.
+     *
+     * amqplib's opt-in recovery resolves `connect()` only after its setup hook
+     * succeeds, and rejects only once `maxRetries` is exhausted (default
+     * `Infinity`). A permanent topology error on the first connect under the
+     * default recovery therefore HANGS `connect()` forever, with no thrown error
+     * and — because the lifecycle listeners attach only after that never-returning
+     * await — no callback. When this flag is `true` (and recovery is enabled), the
+     * adapter first validates topology against a throwaway non-recovering
+     * connection; a topology error rejects `connect()` with the typed
+     * `AmqpTopologyError` / `AmqpConnectionError`.
+     *
+     * Only deterministic setup/topology errors fail fast. A transient
+     * broker-unreachable at startup is NOT a fail-fast condition — it falls
+     * through to normal recovery (block-until-broker). SUBSEQUENT reconnects
+     * always keep infinite-recovery behavior.
+     *
+     * No-op with `recovery: false` (that path already fails fast on setup).
+     * Enabling this (or supplying {@link AmqpLifecycleCallbacks.onSetupFailed})
+     * adds one extra short-lived connection at startup for the validation probe.
+     *
+     * @default false
+     */
+    readonly failFastOnInitialSetupError?: boolean;
 
     /**
      * Connection lifecycle callbacks. Connection errors are surfaced here —
@@ -223,8 +254,27 @@ export interface AmqpRecoveryOptions {
 export interface AmqpLifecycleCallbacks {
     readonly onConnected?: () => void;
     readonly onDisconnected?: (cause: Error) => void;
+    /**
+     * A reconnect attempt has been scheduled. Fires exactly ONCE per scheduled
+     * retry (amqplib's `reconnect-scheduled`). A failed attempt that also emits
+     * `connect-failed` does NOT double-invoke this; the terminal, retries-exhausted
+     * case is reported via {@link onReconnectFailed}, not here.
+     */
     readonly onReconnecting?: (info: { attempt: number; delay: number; error: Error }) => void;
     readonly onReconnectFailed?: (cause: Error) => void;
+    /**
+     * A setup/topology failure occurred while (re)applying the declarative
+     * topology — on the initial connect's validation probe (`ctx.initial: true`,
+     * `ctx.attempt: 0`) and/or on a reconnect whose topology re-assert fails
+     * (`ctx.initial: false`, `ctx.attempt` ≥ 1).
+     *
+     * This surfaces deterministic configuration drift (e.g. a missing queue in
+     * `check` mode, or a `PRECONDITION_FAILED` redeclare) distinctly from a mere
+     * broker outage, even when fail-fast is off. The initial-connect invocation
+     * requires a startup validation probe, which runs when either this callback or
+     * {@link AmqpAdapterOptions.failFastOnInitialSetupError} is set.
+     */
+    readonly onSetupFailed?: (error: Error, ctx: { readonly initial: boolean; readonly attempt: number }) => void;
 }
 
 /**

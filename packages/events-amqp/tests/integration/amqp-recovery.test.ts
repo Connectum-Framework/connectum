@@ -21,12 +21,13 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { after, before, describe, it } from "node:test";
 import { promisify } from "node:util";
 import { type CreatedProxy, type StartedToxiProxyContainer, ToxiProxyContainer } from "@testcontainers/toxiproxy";
 import { connect } from "amqplib";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
-import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, isConnectionLostError } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
 
 const execFileAsync = promisify(execFile);
@@ -412,6 +413,114 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             }
         } finally {
             await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("failFastOnInitialSetupError: a permanent topology error rejects connect() instead of hanging", { timeout: 20_000 }, async () => {
+        // Pre-declare a queue with one argument via a throwaway connection.
+        const pre = await connect(url);
+        const pch = await pre.createChannel();
+        await pch.assertQueue("rec.ff.q", { durable: true, arguments: { "x-max-length": 100 } });
+        await pch.close();
+        await pre.close();
+
+        const setupFailures: Array<{ initial: boolean; attempt: number }> = [];
+        // recovery ENABLED (default) + flag: must reject FAST via the typed error,
+        // not hang forever in amqplib's infinite recovery loop.
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.ff",
+            exchangeType: "direct",
+            failFastOnInitialSetupError: true,
+            topology: { queues: [{ name: "rec.ff.q", durable: true, arguments: { "x-max-length": 999 } }] },
+            lifecycle: { onSetupFailed: (_e, ctx) => setupFailures.push({ ...ctx }) },
+        });
+
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: unknown) => err instanceof AmqpTopologyError,
+        );
+        assert.deepEqual(setupFailures, [{ initial: true, attempt: 0 }]);
+        await adapter.disconnect().catch(() => undefined);
+    });
+
+    it("failFastOnInitialSetupError: valid topology still connects and publishes (probe does not break the happy path)", { timeout: 20_000 }, async () => {
+        const setupFailures: unknown[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.ff.ok",
+            exchangeType: "topic",
+            failFastOnInitialSetupError: true,
+            lifecycle: { onSetupFailed: (e) => setupFailures.push(e) },
+        });
+        await adapter.connect();
+        try {
+            // The probe nulled publishChannel; the real recovering connect must
+            // have re-created it, so publish works end-to-end.
+            await adapter.publish("rec.ff.ok.evt", new TextEncoder().encode("hello"));
+            assert.equal(setupFailures.length, 0);
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("amqplib pin: an outstanding confirm is rejected with 'channel closed' on connection loss", { timeout: 20_000 }, async () => {
+        // A5: the classifier's text fallback depends on this exact amqplib wording.
+        const raw = await connect(url);
+        // Swallow the socket-loss error we deliberately induce (raw + underlying connection).
+        (raw as unknown as EventEmitter).on("error", () => undefined);
+        const conn = (raw as unknown as { connection: EventEmitter & { stream: { destroy: (err?: Error) => void } } }).connection;
+        conn.on("error", () => undefined);
+        try {
+            const ch = await raw.createConfirmChannel();
+            ch.on("error", () => undefined);
+            await ch.assertQueue("rec.pin.drop", { durable: true });
+
+            const confirmErr = new Promise<Error | null>((resolve) => {
+                ch.sendToQueue("rec.pin.drop", Buffer.from("x"), { persistent: true }, (err) => resolve(err ?? null));
+            });
+            // Destroy the socket in the SAME tick as the publish: the broker confirm
+            // cannot have round-tripped yet, so the confirm is outstanding and amqplib
+            // drains it with Error("channel closed") — deterministic, with no race
+            // against a fast localhost broker. (wrapStream returns the raw Duplex
+            // socket; destroy(err) emits 'error', which amqplib's onSocketError
+            // handler — stream.on('error') at connection.js:214 — reacts to, unlike a
+            // bare destroy() that only emits 'close'.)
+            conn.stream.destroy(new Error("test: forced socket loss"));
+
+            const err = await confirmErr;
+            assert.ok(err instanceof Error, "the outstanding confirm must be rejected on socket loss");
+            assert.ok(isConnectionLostError(err), `amqplib drop wording changed (classifier fallback would miss it): ${err.message}`);
+        } finally {
+            await raw.close().catch(() => undefined);
+        }
+    });
+
+    it("amqplib pin: an over-capacity queue nacks the publish with 'message nacked' (NOT a connection loss)", { timeout: 20_000 }, async () => {
+        // A5: a genuine nack must NOT match the connection-lost fallback regex.
+        const raw = await connect(url);
+        (raw as unknown as EventEmitter).on("error", () => undefined);
+        try {
+            const ch = await raw.createConfirmChannel();
+            // Exclusive (not transient non-exclusive, which RabbitMQ 4 deprecates →
+            // 541 INTERNAL_ERROR): auto-removed when this connection closes.
+            const q = "rec.pin.nack";
+            await ch.assertQueue(q, { exclusive: true, arguments: { "x-max-length": 1, "x-overflow": "reject-publish" } });
+
+            // First message fills the queue (length 1, no consumer).
+            await new Promise<void>((resolve, reject) => {
+                ch.sendToQueue(q, Buffer.from("1"), {}, (err) => (err ? reject(err) : resolve()));
+            });
+            // Second exceeds max-length with reject-publish → broker nacks it.
+            const nackErr = await new Promise<Error | null>((resolve) => {
+                ch.sendToQueue(q, Buffer.from("2"), {}, (err) => resolve(err ?? null));
+            });
+
+            assert.ok(nackErr instanceof Error, "over-capacity publish must be nacked");
+            assert.match(nackErr.message, /message nacked/i, "amqplib nack wording changed");
+            assert.equal(isConnectionLostError(nackErr), false, "a nack must not be misclassified as a connection loss");
+        } finally {
+            await raw.close().catch(() => undefined);
         }
     });
 });

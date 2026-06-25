@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type amqp from "amqplib";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
-import type { AmqpAdapterOptions, AmqpQueueOverride } from "./types.ts";
+import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpQueueOverride } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
 
 /** Default exchange name when none is provided. */
@@ -65,9 +65,110 @@ export function toAmqpPattern(pattern: string): string {
  * must reject the publish with `AmqpConnectionError`, matching the documented
  * contract ("in-flight publishes reject with AmqpConnectionError on
  * connection loss").
+ *
+ * NOTE: this is a text-based FALLBACK. amqplib provides no `.code` at the
+ * confirm callback to distinguish a nacked from a closed channel, so the
+ * primary signal is the structural per-channel close flag tracked by
+ * {@link trackChannelClose} and consumed by {@link classifyConfirmError}; this
+ * regex only catches the residual case where the channel reference still
+ * matches but the error text indicates a close.
  */
 export function isConnectionLostError(err: unknown): boolean {
     return err instanceof Error && /channel closed|connection closed|closed unexpectedly/i.test(err.message);
+}
+
+/**
+ * Classify a publisher-confirm failure into a typed error.
+ *
+ * A connection/channel loss MUST reject with {@link AmqpConnectionError} (the
+ * message state is unknown → republish-safe); a genuine broker nack is
+ * {@link AmqpPublishNackError}. The decision is driven by STRUCTURAL signals the
+ * adapter owns — the publish is closing, the confirm channel emitted `close`, or
+ * it was swapped by recovery — with {@link isConnectionLostError} kept only as a
+ * defense-in-depth fallback for the error text.
+ */
+export function classifyConfirmError(params: {
+    readonly err: unknown;
+    readonly closing: boolean;
+    readonly channelClosed: boolean;
+    readonly channelSwapped: boolean;
+    readonly routingKey: string;
+}): AmqpConnectionError | AmqpPublishNackError {
+    const { err, closing, channelClosed, channelSwapped, routingKey } = params;
+    if (closing || channelClosed || channelSwapped || isConnectionLostError(err)) {
+        return new AmqpConnectionError("Connection lost while awaiting publish confirm", { cause: err });
+    }
+    return new AmqpPublishNackError(`Broker nacked message for routing key '${routingKey}'`, { cause: err });
+}
+
+/** Minimal channel surface needed to record a `close` before amqplib's drain. */
+interface AmqpChannelCloseSource {
+    prependListener(event: "close", listener: () => void): unknown;
+}
+
+/**
+ * Record a confirm channel as closed BEFORE amqplib drains its unconfirmed
+ * publishes.
+ *
+ * amqplib registers a `close` listener in the `Channel` constructor that fails
+ * every outstanding confirm with `Error("channel closed")` (amqplib
+ * `lib/channel.js`). Listeners run in registration order, so we MUST
+ * `prependListener` to set the flag first — otherwise the confirm callback would
+ * observe it unset. Consumed by {@link classifyConfirmError}.
+ */
+export function trackChannelClose<C extends AmqpChannelCloseSource>(ch: C, closed: WeakSet<C>): void {
+    ch.prependListener("close", () => {
+        closed.add(ch);
+    });
+}
+
+/** Side effects the recovery-lifecycle wiring needs from the adapter closure. */
+interface RecoveryLifecycleHooks {
+    readonly clearPublishChannel: () => void;
+    readonly failPendingReturns: () => void;
+    readonly nextReconnectAttempt: () => number;
+    readonly resetReconnectAttempt: () => void;
+}
+
+/** Structural subset of an amqplib recovering connection (or a Node EventEmitter). */
+interface AmqpRecoveryEmitter {
+    // biome-ignore lint/suspicious/noExplicitAny: matches Node's EventEmitter.on listener signature
+    on(event: string, listener: (...args: any[]) => void): unknown;
+}
+
+/**
+ * Wire the amqplib recovery lifecycle events to the public lifecycle callbacks.
+ *
+ * `onReconnecting` is driven SOLELY by `reconnect-scheduled` (it fires once per
+ * scheduled retry). amqplib emits `connect-failed` AND `reconnect-scheduled` for
+ * the same failed attempt, so also mapping `connect-failed` to `onReconnecting`
+ * would double-count; `connect-failed` only clears the half-open publish channel
+ * and (for a topology error) reports `onSetupFailed`. The terminal,
+ * retries-exhausted case is `reconnect-failed` → `onReconnectFailed`.
+ */
+export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: AmqpLifecycleCallbacks | undefined, hooks: RecoveryLifecycleHooks): void {
+    conn.on("connect", () => {
+        hooks.resetReconnectAttempt();
+        lifecycle?.onConnected?.();
+    });
+    conn.on("disconnect", (err: Error) => {
+        hooks.failPendingReturns();
+        lifecycle?.onDisconnected?.(err);
+    });
+    conn.on("reconnect-scheduled", (info: { attempt: number; delay: number; error: Error }) => {
+        lifecycle?.onReconnecting?.(info);
+    });
+    conn.on("connect-failed", (err: Error) => {
+        hooks.clearPublishChannel();
+        const attempt = hooks.nextReconnectAttempt();
+        if (err instanceof AmqpTopologyError) {
+            lifecycle?.onSetupFailed?.(err, { initial: false, attempt });
+        }
+    });
+    conn.on("reconnect-failed", (err: Error) => {
+        hooks.clearPublishChannel();
+        lifecycle?.onReconnectFailed?.(err);
+    });
 }
 
 /**
@@ -169,6 +270,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     let publishChannel: amqp.ConfirmChannel | null = null;
     let closing = false;
 
+    /** Reconnect attempt counter (own; never read from amqplib internals). */
+    let reconnectAttempt = 0;
+
+    /**
+     * Confirm channels observed closed, recorded BEFORE amqplib drains their
+     * unconfirmed publishes — the structural signal {@link classifyConfirmError}
+     * uses to tell a connection loss from a broker nack.
+     */
+    const closedPublishChannels = new WeakSet<amqp.ConfirmChannel>();
+
     /** Pending mandatory publishes awaiting confirm (publish-id → return flag). */
     const pendingReturns = new Map<string, PendingReturn>();
 
@@ -269,6 +380,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      */
     async function setupPublishChannel(model: amqp.ChannelModel): Promise<void> {
         const ch = await model.createConfirmChannel();
+
+        // Mark the channel closed BEFORE amqplib drains outstanding confirms, so
+        // a connection loss is classified structurally (see classifyConfirmError).
+        trackChannelClose(ch, closedPublishChannels);
 
         ch.on("return", (msg: amqp.ConsumeMessage) => {
             const id = (msg.properties.headers as Record<string, unknown> | undefined)?.[PUBLISH_ID_HEADER];
@@ -508,6 +623,54 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 };
             }
 
+            // Optional fail-fast / observability probe: validate topology against
+            // a throwaway NON-recovering connection BEFORE entering amqplib's
+            // recovery loop, which never rejects connect() under the default
+            // maxRetries=Infinity (so a permanent topology error would otherwise
+            // hang connect() forever, silently). Runs only when opted in. A broker
+            // that is merely unreachable here is transient (fall through to
+            // recovery); only a deterministic AmqpTopologyError fails fast.
+            if (recoveryEnabled && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed)) {
+                const probeOptions: Record<string, unknown> = { ...options.socketOptions };
+                if (Object.keys(clientProperties).length > 0) {
+                    probeOptions.clientProperties = clientProperties;
+                }
+
+                let probe: amqp.ChannelModel | null = null;
+                try {
+                    probe = (await amqplib.connect(options.url, probeOptions)) as amqp.ChannelModel;
+                } catch {
+                    // Broker unreachable at startup — not a deterministic setup error.
+                    probe = null;
+                }
+
+                if (probe) {
+                    try {
+                        await onSetup(probe);
+                    } catch (err) {
+                        await probe.close().catch(() => undefined);
+                        publishChannel = null;
+                        if (err instanceof AmqpTopologyError) {
+                            lifecycle?.onSetupFailed?.(err, { initial: true, attempt: 0 });
+                            if (options.failFastOnInitialSetupError) {
+                                throw err;
+                            }
+                        }
+                        // Non-topology error, or fail-fast disabled: fall through
+                        // to the real recovering connect below.
+                        probe = null;
+                    }
+
+                    if (probe) {
+                        // Topology validated; discard the probe. The real recovering
+                        // connection re-runs onSetup (re-creating publishChannel)
+                        // before connect() returns.
+                        await probe.close().catch(() => undefined);
+                        publishChannel = null;
+                    }
+                }
+            }
+
             const conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
 
             // Surface connection lifecycle; never console-only.
@@ -516,28 +679,18 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             });
 
             if (recoveryEnabled) {
-                conn.on("connect", () => {
-                    lifecycle?.onConnected?.();
-                });
-                conn.on("disconnect", (err: Error) => {
-                    failPendingReturns();
-                    lifecycle?.onDisconnected?.(err);
-                });
-                conn.on("reconnect-scheduled", (info: { attempt: number; delay: number; error: Error }) => {
-                    lifecycle?.onReconnecting?.(info);
-                });
-                // A failed reconnect attempt (e.g. onSetup throws on a 406 topology
-                // re-assert) emits "connect-failed", NOT "reconnect-failed".
-                // Without this, a recurring setup failure under the default
-                // maxRetries=Infinity would loop silently. Surface it as a
-                // reconnecting signal carrying the failure so it is observable.
-                conn.on("connect-failed", (err: Error) => {
-                    publishChannel = null;
-                    lifecycle?.onReconnecting?.({ attempt: -1, delay: 0, error: err });
-                });
-                conn.on("reconnect-failed", (err: Error) => {
-                    publishChannel = null;
-                    lifecycle?.onReconnectFailed?.(err);
+                wireRecoveryLifecycle(conn, lifecycle, {
+                    clearPublishChannel: () => {
+                        publishChannel = null;
+                    },
+                    failPendingReturns,
+                    nextReconnectAttempt: () => {
+                        reconnectAttempt += 1;
+                        return reconnectAttempt;
+                    },
+                    resetReconnectAttempt: () => {
+                        reconnectAttempt = 0;
+                    },
                 });
 
                 // With recovery, the wrapper already ran onSetup before resolving.
@@ -695,11 +848,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                     if (err) {
                                         // A dropped channel/connection (recovery may not yet
                                         // have swapped publishChannel) is a connection loss,
-                                        // not a broker nack — classify by the close signal.
+                                        // not a broker nack — classify by the structural
+                                        // close signal, with the text regex as a fallback.
                                         reject(
-                                            closing || publishChannel !== ch || isConnectionLostError(err)
-                                                ? new AmqpConnectionError("Connection lost while awaiting publish confirm", { cause: err })
-                                                : new AmqpPublishNackError(`Broker nacked message for routing key '${routingKey}'`, { cause: err }),
+                                            classifyConfirmError({
+                                                err,
+                                                closing,
+                                                channelClosed: closedPublishChannels.has(ch),
+                                                channelSwapped: publishChannel !== ch,
+                                                routingKey,
+                                            }),
                                         );
                                     } else if (pending.returned) {
                                         reject(new AmqpUnroutableError(`Message unroutable (mandatory): no queue bound for routing key '${routingKey}'`, routingKey));
