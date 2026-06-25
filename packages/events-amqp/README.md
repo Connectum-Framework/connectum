@@ -190,7 +190,7 @@ Queues declared in `topology.queues` are asserted once (with their full argument
 | `'skip'` | No topology operations; the application owns topology |
 
 > **`check` limitations**: AMQP has no passive introspection. `check` mode verifies only that exchanges and queues *exist* -- argument equivalence and binding presence are NOT verifiable. A conflicting redeclare elsewhere still fails with `PRECONDITION_FAILED` (406).
-
+>
 > **Fail-fast vs. recovery**: a topology `AmqpTopologyError` rejects `connect()` immediately **only** with `recovery: false` or `failFastOnInitialSetupError: true`. Under the default recovery (`maxRetries: Infinity`), a permanent topology error on the first connect otherwise enters the infinite recovery loop -- `connect()` does not reject; the failure is surfaced via `onSetupFailed` / `onReconnecting`. Set `failFastOnInitialSetupError: true` to reject a deterministic startup misconfiguration instead. See [Connection Recovery](#connection-recovery).
 
 ### AmqpQueueOverride
