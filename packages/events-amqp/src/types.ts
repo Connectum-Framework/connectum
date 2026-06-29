@@ -110,6 +110,13 @@ export interface AmqpAdapterOptions {
      * In-flight publishes at the moment of a connection loss reject with
      * `AmqpConnectionError`.
      *
+     * `maxRetries` governs BOTH the initial connect and steady-state recovery
+     * (counter reset on success); under the default `Infinity`, `connect()`
+     * blocks until the broker is reachable rather than failing fast (see
+     * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
+     * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
+     * for the retry-budget scope and jitter/`maxDelay` overshoot.
+     *
      * @default true (amqplib defaults: 100ms initial, ×2, 30s cap, jitter 0.2, infinite retries)
      */
     readonly recovery?: boolean | AmqpRecoveryOptions;
@@ -236,17 +243,33 @@ export interface AmqpQueueOverride {
     readonly durable?: boolean;
 }
 
-/** Recovery knobs (passed through to amqplib's opt-in recovery). */
+/**
+ * Recovery knobs (passed through to amqplib's opt-in recovery).
+ *
+ * `maxRetries` governs BOTH the initial connect and every subsequent recovery
+ * series, with the counter reset on each success — so a finite value chosen only
+ * to bound startup also caps steady-state recovery and makes the adapter brittle
+ * (N consecutive transient failures in any single series stop it permanently).
+ * The effective reconnect delay is amqplib equal-jitter around the exponential
+ * base and is NOT clamped to `maxDelay` from above, so it can overshoot (~20% at
+ * the default jitter, up to ~2x at `jitter: 1`).
+ *
+ * Bounding the initial connect independently from steady-state recovery, and a
+ * backoff hook that owns (and can clamp) the final delay, are tracked as future
+ * options — see
+ * {@link https://github.com/Connectum-Framework/connectum/issues/198} and
+ * {@link https://github.com/Connectum-Framework/connectum/issues/199}.
+ */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
     readonly initialDelay?: number;
-    /** @default 30000 */
+    /** Base delay cap in ms; jitter is added on top, so the effective wait can exceed it. @default 30000 */
     readonly maxDelay?: number;
     /** @default 2 */
     readonly factor?: number;
-    /** 0..1 @default 0.2 */
+    /** Equal-jitter factor (0..1) around the base delay. @default 0.2 */
     readonly jitter?: number;
-    /** @default Infinity */
+    /** Attempts per series (initial connect and each recovery series); resets on success. @default Infinity */
     readonly maxRetries?: number;
 }
 

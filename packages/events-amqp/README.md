@@ -214,10 +214,10 @@ queueOverrides: {
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `initialDelay` | `number` | `100` | First reconnect delay in ms |
-| `maxDelay` | `number` | `30000` | Delay cap in ms |
+| `maxDelay` | `number` | `30000` | Base delay cap in ms. The effective wait adds equal-jitter on top, so it can exceed this (~20% at the default jitter, up to ~2x at `jitter: 1`) |
 | `factor` | `number` | `2` | Exponential backoff factor |
-| `jitter` | `number` | `0.2` | Randomization factor (0..1) |
-| `maxRetries` | `number` | `Infinity` | Give up after this many attempts |
+| `jitter` | `number` | `0.2` | Equal-jitter randomization factor (0..1) applied around the base delay |
+| `maxRetries` | `number` | `Infinity` | Attempts per series before giving up. Governs **both** the initial connect and each later recovery series; the counter resets on every success |
 
 ### AmqpLifecycleCallbacks
 
@@ -294,21 +294,27 @@ Recovery is delegated to amqplib v2 native opt-in recovery and is **enabled by d
 Connection behavior:
 
 - **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering. Under the default `maxRetries: Infinity`, `connect()` blocks rather than failing fast, and a **permanent** setup/topology error on the first connect would otherwise loop indefinitely. Set `failFastOnInitialSetupError: true` to reject `connect()` with the typed `AmqpTopologyError` on such a deterministic startup misconfiguration while still recovering from transient broker outages; use `onSetupFailed` for observability without changing behavior.
+- **`maxRetries` scope.** The retry budget governs **both** the initial connect and every later recovery series, with the counter reset on each success. A finite value chosen only to bound startup therefore makes the adapter brittle in steady state: a normal transient blip of that many consecutive failures in any single series permanently stops recovery. The default `Infinity` blocks at startup but never self-destructs on a transient outage.
+- **Reconnect delay.** The effective delay is amqplib equal-jitter around the exponential base (`initialDelay` × `factor`ⁿ, capped at `maxDelay`) and is **not** clamped from above by `maxDelay`, so it can overshoot (~20% at the default `jitter: 0.2`, up to ~2x at `jitter: 1`).
 - **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable or topology setup fails, and a lost connection is not restored.
 
 ### Error Taxonomy
 
-Every terminal publish/topology outcome is distinguishable by error class -- what an at-least-once producer needs for an "advance cursor after confirm" pattern:
+Every terminal publish/topology outcome is distinguishable by error class -- what an at-least-once producer needs for an "advance cursor after confirm" pattern. The **Message state** and **Republish** columns are the published, authoritative retry-safety policy:
 
-| Error | Meaning |
-|-------|---------|
-| `AmqpAdapterError` | Base class for all adapter errors |
-| `AmqpConnectionError` | Connection absent, lost, or recovery in progress / exhausted |
-| `AmqpUnroutableError` | Broker returned a `mandatory` message as unroutable (`basic.return`); has `.routingKey` |
-| `AmqpPublishNackError` | Broker negatively acknowledged (nacked) a published message |
-| `AmqpPublishTimeoutError` | No broker outcome within `publishTimeoutMs`; message state UNKNOWN |
-| `AmqpTopologyError` | Topology declaration or verification failed (missing object in `check` mode, conflicting redeclare in `assert` mode) |
-| `AmqpSerializationError` | Payload encoding failed in a custom `serialization.encode` hook |
+| Error | Meaning | Message state | Republish (at-least-once) |
+|-------|---------|---------------|---------------------------|
+| `AmqpAdapterError` | Base class for all adapter errors | -- | -- |
+| `AmqpConnectionError` | Connection absent, lost, or recovery in progress / exhausted | Not sent (pre-send) or UNKNOWN (in-flight)\* | **Yes** |
+| `AmqpPublishTimeoutError` | No broker outcome within `publishTimeoutMs` | UNKNOWN | **Yes** |
+| `AmqpPublishNackError` | Broker negatively acknowledged (nacked) a published message | Sent, refused | **Yes** -- policy: treated as retriable |
+| `AmqpUnroutableError` | Broker returned a `mandatory` message as unroutable (`basic.return`); has `.routingKey` | Sent, dropped | **No** -- deterministic; fix topology/routing |
+| `AmqpSerializationError` | Payload encoding failed in a custom `serialization.encode` hook | Never sent | **No** -- deterministic |
+| `AmqpTopologyError` | Topology declaration or verification failed (missing object in `check` mode, conflicting redeclare in `assert` mode) | N/A (not a publish) | **No** -- fix config/topology |
+
+> **Do not infer republish-safety from class names -- this matrix is the policy.** In particular the **Nack** row is a maintainer decision: a `basic.nack` is treated as a retriable, deliverable-on-retry outcome (e.g. a queue at capacity with `x-overflow: reject-publish`), so an at-least-once producer should republish. Connection loss is classified *structurally* (the confirm channel emitted `close`, was swapped by recovery, or the publish is closing) rather than by amqplib's error text, so an in-flight connection drop is never misreported as a nack.
+>
+> \* `AmqpConnectionError` covers both a **pre-send** failure (publishing while disconnected, or a synchronous publish failure -- the message is never sent) and an **in-flight** loss (the connection drops while awaiting the confirm -- state genuinely UNKNOWN). Both are republish-safe; UNKNOWN is the conservative label.
 
 ## External AMQP Contract
 
