@@ -1,5 +1,25 @@
 # @connectum/events-amqp
 
+## 1.2.0
+
+### Minor Changes
+
+- [#205](https://github.com/Connectum-Framework/connectum/pull/205) [`694fda0`](https://github.com/Connectum-Framework/connectum/commit/694fda0dc99d7668dbb3147aa4ada742e17c7c0d) Thanks [@intech](https://github.com/intech)! - Add opt-in `failFastOnInitialSetupError` and an `onSetupFailed` lifecycle callback.
+
+  When recovery is enabled, a deterministic setup/topology error on the **first** connect can now reject `connect()` with the typed `AmqpTopologyError` instead of hanging forever in amqplib's infinite recovery loop (under the default `maxRetries: Infinity`, amqplib never rejects the initial connect, so a permanent topology error previously hung `connect()`/`bus.start()` silently). A transient broker-unreachable at startup still blocks-and-retries. `onSetupFailed(error, { initial, attempt })` surfaces setup/topology failures on the initial validation probe and on every reconnect — distinct from a mere broker outage. Default behavior is unchanged (both are opt-in). Also corrects the `topologyMode: "check"` documentation, which previously promised unconditional "fail fast".
+
+### Patch Changes
+
+- [#205](https://github.com/Connectum-Framework/connectum/pull/205) [`694fda0`](https://github.com/Connectum-Framework/connectum/commit/694fda0dc99d7668dbb3147aa4ada742e17c7c0d) Thanks [@intech](https://github.com/intech)! - Harden the connection-loss-vs-nack classification of in-flight publishes. A per-confirm-channel `close` flag (set via `prependListener`, before amqplib drains outstanding confirms) is now the primary structural signal for classifying a failed publish confirm as `AmqpConnectionError` vs `AmqpPublishNackError`; the amqplib error-text match is retained only as a defense-in-depth fallback. This makes the at-least-once republish decision robust to upstream error-text drift. No public API change, and genuine broker nacks on a live channel still classify as `AmqpPublishNackError`.
+
+- [#205](https://github.com/Connectum-Framework/connectum/pull/205) [`694fda0`](https://github.com/Connectum-Framework/connectum/commit/694fda0dc99d7668dbb3147aa4ada742e17c7c0d) Thanks [@intech](https://github.com/intech)! - Fix `onReconnecting` firing twice per failed reconnect cycle. amqplib emits both `connect-failed` and `reconnect-scheduled` for a single failed attempt; the adapter now derives `onReconnecting` solely from `reconnect-scheduled`, so it fires exactly once per scheduled retry. The terminal, retries-exhausted case remains `onReconnectFailed`. Removes the undocumented `{ attempt: -1 }` sentinel that double-counted reconnect metrics.
+
+- [#208](https://github.com/Connectum-Framework/connectum/pull/208) [`3a846c4`](https://github.com/Connectum-Framework/connectum/commit/3a846c487517313cf015472b5a4b2de764bd41fc) Thanks [@intech](https://github.com/intech)! - docs(events-amqp): document republish-safety and recovery semantics
+
+  - The Error Taxonomy now publishes an authoritative **Message state** / **Republish (at-least-once)** matrix (README + the errors `@module` JSDoc) so at-least-once producers no longer infer retry-safety from class names. Connection loss is classified structurally and is never misreported as a nack; `AmqpSerializationError`/`AmqpUnroutableError`/`AmqpTopologyError` are documented as deterministic (do-not-republish).
+  - Recovery docs clarify that `maxRetries` governs **both** the initial connect and every steady-state recovery series (counter reset on success), with the brittleness of a finite value, and that the effective reconnect delay can overshoot `maxDelay` because of equal-jitter.
+  - `topologyMode: "check"` and the recovery JSDoc are finalized: fail-fast applies only with `recovery: false` or `failFastOnInitialSetupError: true`; under the default recovery a permanent setup error is surfaced via `onSetupFailed` / `onReconnecting`.
+
 ## 1.1.0
 
 ### Minor Changes
