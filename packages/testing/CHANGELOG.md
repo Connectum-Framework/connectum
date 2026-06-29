@@ -1,5 +1,13 @@
 # @connectum/testing
 
+## 1.2.0
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.2.0
+  - @connectum/test-fixtures@1.2.0
+
 ## 1.1.0
 
 ### Patch Changes

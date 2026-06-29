@@ -1,5 +1,12 @@
 # @connectum/interceptors
 
+## 1.2.0
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @connectum/core@1.2.0
+
 ## 1.1.0
 
 ### Patch Changes
