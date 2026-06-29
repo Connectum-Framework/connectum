@@ -6,6 +6,23 @@
  * "advance cursor after confirm" pattern: a non-advanced message corresponds
  * to exactly one typed error explaining why.
  *
+ * Authoritative republish policy (do not infer it from class names):
+ *
+ * | Error                     | Message state      | Republish (at-least-once) |
+ * | ------------------------- | ------------------ | ------------------------- |
+ * | `AmqpConnectionError`     | not sent / UNKNOWN | Yes                       |
+ * | `AmqpPublishTimeoutError` | UNKNOWN            | Yes                       |
+ * | `AmqpPublishNackError`    | sent, refused      | Yes (policy: retriable)   |
+ * | `AmqpUnroutableError`     | sent, dropped      | No (deterministic)        |
+ * | `AmqpSerializationError`  | never sent         | No (deterministic)        |
+ * | `AmqpTopologyError`       | N/A                | No (fix config)           |
+ *
+ * `AmqpConnectionError` is thrown pre-send (never sent) or on an in-flight
+ * confirm loss (UNKNOWN); both are republish-safe. The `AmqpSerializationError`
+ * row is the publish-side encode failure; the same class is also thrown on the
+ * consumer side for a decode failure (nack without requeue), which is outside
+ * republish semantics.
+ *
  * @module errors
  */
 
