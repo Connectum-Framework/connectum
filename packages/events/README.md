@@ -406,6 +406,28 @@ await bus.stop();
 
 Set `drainTimeout: 0` for immediate abort (skip drain).
 
+### Publishers and Shutdown
+
+`stop()` drains **consumer handlers** only — in-flight `publish()` promises are not tracked by the bus, and `drainTimeout` does not cover them. An at-least-once producer must settle its publishes **before** stopping:
+
+```typescript
+// Track publishes you must not lose:
+const pending = new Set<Promise<void>>();
+
+const p = bus.publish(OrderCreatedSchema, order);
+pending.add(p);
+p.catch(() => {}).finally(() => pending.delete(p));
+
+// On shutdown — settle them BEFORE stop():
+await Promise.allSettled([...pending]);
+await bus.stop();
+```
+
+Two related boundaries:
+
+- **Publishing from a draining handler is rejected.** Once `stop()` begins, `publish()` throws — including from handlers that are still draining. Relay topologies (consume → transform → publish) therefore lose the in-flight tail at shutdown; the design discussion is tracked in [#212](https://github.com/Connectum-Framework/connectum/issues/212).
+- **An opt-in symmetric publish drain** (`drainPublishTimeout`) is planned — tracked in [#196](https://github.com/Connectum-Framework/connectum/issues/196).
+
 ## Exports Summary
 
 | Export | Kind | Description |

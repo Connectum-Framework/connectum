@@ -250,24 +250,31 @@ export interface AmqpQueueOverride {
  * series, with the counter reset on each success — so a finite value chosen only
  * to bound startup also caps steady-state recovery and makes the adapter brittle
  * (N consecutive transient failures in any single series stop it permanently).
- * The effective reconnect delay is amqplib equal-jitter around the exponential
- * base and is NOT clamped to `maxDelay` from above, so it can overshoot (~20% at
- * the default jitter, up to ~2x at `jitter: 1`).
+ * The effective reconnect delay is symmetric jitter around the exponential
+ * base — uniform in `[base × (1 − jitter), base × (1 + jitter)]` with
+ * `base = min(maxDelay, initialDelay × factor^(attempt − 1))`. The cap applies
+ * BEFORE jitter, so the wait can overshoot `maxDelay` (~20% at the default
+ * jitter, up to ~2x at `jitter: 1`).
+ *
+ * Full jitter with a hard cap is expressible today: set `jitter: 1` and halve
+ * `initialDelay`/`maxDelay` — the delay becomes uniform in `[0, intended cap]`
+ * (verified against amqplib 2.0.1's internal formula; re-verify on upgrades).
  *
  * Bounding the initial connect independently from steady-state recovery, and a
- * backoff hook that owns (and can clamp) the final delay, are tracked as future
- * options — see
+ * pluggable backoff hook, are tracked as future options — see
  * {@link https://github.com/Connectum-Framework/connectum/issues/198} and
- * {@link https://github.com/Connectum-Framework/connectum/issues/199}.
+ * {@link https://github.com/Connectum-Framework/connectum/issues/199}
+ * (upstream: {@link https://github.com/amqp-node/amqplib/issues/856} and
+ * {@link https://github.com/amqp-node/amqplib/issues/855}).
  */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
     readonly initialDelay?: number;
-    /** Base delay cap in ms; jitter is added on top, so the effective wait can exceed it. @default 30000 */
+    /** Base delay cap in ms; jitter is applied on top of the capped base, so the effective wait can exceed it. @default 30000 */
     readonly maxDelay?: number;
     /** @default 2 */
     readonly factor?: number;
-    /** Equal-jitter factor (0..1) around the base delay. @default 0.2 */
+    /** Symmetric jitter factor (0..1): the delay is uniform in `[base × (1 − jitter), base × (1 + jitter)]`. @default 0.2 */
     readonly jitter?: number;
     /** Attempts per series (initial connect and each recovery series); resets on success. @default Infinity */
     readonly maxRetries?: number;
