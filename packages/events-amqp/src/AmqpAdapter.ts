@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type amqp from "amqplib";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
-import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpQueueOverride } from "./types.ts";
+import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpLifecycleEvent, AmqpQueueOverride } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
 
 /** Default exchange name when none is provided. */
@@ -128,6 +128,14 @@ interface RecoveryLifecycleHooks {
     readonly failPendingReturns: () => void;
     readonly nextReconnectAttempt: () => number;
     readonly resetReconnectAttempt: () => void;
+    /**
+     * Deliver a `connected` event exactly once per successful (re)connect.
+     * Owned by the adapter so the initial-vs-reconnect flag does not depend on
+     * amqplib's emit-before-resolve ordering: the first delivery (from either
+     * the wrapper's `connect` event or the post-resolve fallback) is
+     * `reconnected: false`, every later one is `reconnected: true`.
+     */
+    readonly deliverConnected: () => void;
 }
 
 /** Structural subset of an amqplib recovering connection (or a Node EventEmitter). */
@@ -137,38 +145,111 @@ interface AmqpRecoveryEmitter {
 }
 
 /**
- * Wire the amqplib recovery lifecycle events to the public lifecycle callbacks.
+ * Deliver one lifecycle event to the union callback and its legacy flat shim.
  *
- * `onReconnecting` is driven SOLELY by `reconnect-scheduled` (it fires once per
+ * `onLifecycle` is the primary surface and receives every event; the flat
+ * callbacks are a compatibility shim over the same stream (deprecated since
+ * 1.3.0). `blocked`/`unblocked` have no flat equivalent. Exported (not via the
+ * package barrel) for direct cross-runtime unit testing.
+ *
+ * User callbacks MUST NOT throw; a thrown exception is isolated here. This is
+ * a hard requirement, not politeness: dispatch runs inside amqplib's recovery
+ * emitter handlers, where a synchronous throw would be caught by
+ * `_connect()`'s try block (closing a just-established healthy connection and
+ * scheduling a pointless reconnect — endless connect/close churn), or would
+ * escape from the model `close` handler BEFORE `_scheduleReconnect` runs
+ * (killing recovery entirely). Isolation also keeps the shim contract: a
+ * throwing `onLifecycle` does not starve the flat callbacks, and vice versa.
+ */
+export function dispatchLifecycle(lifecycle: AmqpLifecycleCallbacks | undefined, event: AmqpLifecycleEvent): void {
+    if (!lifecycle) {
+        return;
+    }
+    try {
+        lifecycle.onLifecycle?.(event);
+    } catch {
+        // Isolated — see the JSDoc contract above.
+    }
+    try {
+        switch (event.type) {
+            case "connected":
+                lifecycle.onConnected?.();
+                break;
+            case "disconnected":
+                lifecycle.onDisconnected?.(event.error);
+                break;
+            case "reconnecting":
+                lifecycle.onReconnecting?.({ attempt: event.attempt, delay: event.delay, error: event.error });
+                break;
+            case "reconnect-failed":
+                lifecycle.onReconnectFailed?.(event.error);
+                break;
+            case "setup-failed":
+                lifecycle.onSetupFailed?.(event.error, { initial: event.initial, attempt: event.attempt });
+                break;
+            default:
+                // blocked / unblocked: union-only observability.
+                break;
+        }
+    } catch {
+        // Isolated — see the JSDoc contract above.
+    }
+}
+
+/** Wire broker flow-control events (`connection.blocked`/`unblocked`) to the lifecycle surface. */
+function wireFlowControlEvents(conn: AmqpRecoveryEmitter, lifecycle: AmqpLifecycleCallbacks | undefined): void {
+    conn.on("blocked", (reason: unknown) => {
+        dispatchLifecycle(lifecycle, { type: "blocked", reason: String(reason ?? "") });
+    });
+    conn.on("unblocked", () => {
+        dispatchLifecycle(lifecycle, { type: "unblocked" });
+    });
+}
+
+/**
+ * Wire the amqplib recovery lifecycle events to the public lifecycle surface.
+ *
+ * `reconnecting` is driven SOLELY by `reconnect-scheduled` (it fires once per
  * scheduled retry). amqplib emits `connect-failed` AND `reconnect-scheduled` for
- * the same failed attempt, so also mapping `connect-failed` to `onReconnecting`
+ * the same failed attempt, so also mapping `connect-failed` to `reconnecting`
  * would double-count; `connect-failed` only clears the half-open publish channel
- * and (for a topology error) reports `onSetupFailed`. The terminal,
- * retries-exhausted case is `reconnect-failed` → `onReconnectFailed`.
+ * and (for a topology error) reports `setup-failed`. The terminal,
+ * retries-exhausted case is `reconnect-failed`.
+ *
+ * `disconnected` is driven SOLELY by the wrapper's `disconnect` event. The raw
+ * connection `error` re-emit is deliberately NOT mapped: a socket-level cut
+ * emits `error` AND `close` (→ `disconnect`), so mapping both would double-fire
+ * (fixed in 1.3.0; pinned by the exactly-once integration tests).
+ *
+ * `connected` delivery goes through {@link RecoveryLifecycleHooks.deliverConnected},
+ * which owns the initial-vs-reconnect flag — exactly-once regardless of
+ * whether amqplib emits the initial `connect` before or after this wiring is
+ * attached (today it is before; pinned by the exactly-once integration test).
  */
 export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: AmqpLifecycleCallbacks | undefined, hooks: RecoveryLifecycleHooks): void {
     conn.on("connect", () => {
         hooks.resetReconnectAttempt();
-        lifecycle?.onConnected?.();
+        hooks.deliverConnected();
     });
     conn.on("disconnect", (err: Error) => {
         hooks.failPendingReturns();
-        lifecycle?.onDisconnected?.(err);
+        dispatchLifecycle(lifecycle, { type: "disconnected", error: err });
     });
     conn.on("reconnect-scheduled", (info: { attempt: number; delay: number; error: Error }) => {
-        lifecycle?.onReconnecting?.(info);
+        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: info.error });
     });
     conn.on("connect-failed", (err: Error) => {
         hooks.clearPublishChannel();
         const attempt = hooks.nextReconnectAttempt();
         if (err instanceof AmqpTopologyError) {
-            lifecycle?.onSetupFailed?.(err, { initial: false, attempt });
+            dispatchLifecycle(lifecycle, { type: "setup-failed", initial: false, attempt, error: err });
         }
     });
     conn.on("reconnect-failed", (err: Error) => {
         hooks.clearPublishChannel();
-        lifecycle?.onReconnectFailed?.(err);
+        dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: err });
     });
+    wireFlowControlEvents(conn, lifecycle);
 }
 
 /**
@@ -592,6 +673,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 throw new AmqpConnectionError("AmqpAdapter: already connected");
             }
             closing = false;
+            // A fresh connect() starts a fresh attempt series — a stale counter
+            // from a previous exhausted-recovery incarnation must not leak into
+            // this incarnation's setup-failed attempt numbers.
+            reconnectAttempt = 0;
 
             // Dynamic import to avoid top-level require issues with ESM
             const amqplib = await import("amqplib");
@@ -630,7 +715,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             // hang connect() forever, silently). Runs only when opted in. A broker
             // that is merely unreachable here is transient (fall through to
             // recovery); only a deterministic AmqpTopologyError fails fast.
-            if (recoveryEnabled && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed)) {
+            if (recoveryEnabled && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed || lifecycle?.onLifecycle)) {
                 const probeOptions: Record<string, unknown> = { ...options.socketOptions };
                 if (Object.keys(clientProperties).length > 0) {
                     probeOptions.clientProperties = clientProperties;
@@ -639,6 +724,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 let probe: amqp.ChannelModel | null = null;
                 try {
                     probe = (await amqplib.connect(options.url, probeOptions)) as amqp.ChannelModel;
+                    // A broker drop while the probe runs its setup pass must
+                    // not crash the process via an unhandled 'error' event —
+                    // the drop surfaces as an onSetup rejection instead.
+                    probe.on("error", () => undefined);
                 } catch {
                     // Broker unreachable at startup — not a deterministic setup error.
                     probe = null;
@@ -651,7 +740,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         await probe.close().catch(() => undefined);
                         publishChannel = null;
                         if (err instanceof AmqpTopologyError) {
-                            lifecycle?.onSetupFailed?.(err, { initial: true, attempt: 0 });
+                            dispatchLifecycle(lifecycle, { type: "setup-failed", initial: true, attempt: 0, error: err });
                             if (options.failFastOnInitialSetupError) {
                                 throw err;
                             }
@@ -673,12 +762,28 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
             const conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
 
-            // Surface connection lifecycle; never console-only.
-            conn.on("error", (err: Error) => {
-                lifecycle?.onDisconnected?.(err);
-            });
-
             if (recoveryEnabled) {
+                // A lost connection is reported SOLELY via the wrapper's
+                // `disconnect` event (see wireRecoveryLifecycle) — mapping the
+                // re-emitted raw `error` too double-fired `disconnected` on a
+                // socket-level cut (fixed in 1.3.0). The no-op listener must
+                // stay: an unhandled EventEmitter `error` crashes the process.
+                conn.on("error", () => undefined);
+
+                // Exactly-once `connected`, ordering-independent: the first
+                // delivery (wherever it comes from) is the initial connect.
+                // Today amqplib emits the initial `connect` before connect()
+                // resolves — i.e. before the wiring below attaches — so the
+                // post-wiring fallback delivers it; if a future amqplib emits
+                // it after attach, the wrapper listener delivers it instead
+                // and the fallback no-ops.
+                let connectedDelivered = false;
+                const deliverConnected = (): void => {
+                    const reconnected = connectedDelivered;
+                    connectedDelivered = true;
+                    dispatchLifecycle(lifecycle, { type: "connected", reconnected });
+                };
+
                 wireRecoveryLifecycle(conn, lifecycle, {
                     clearPublishChannel: () => {
                         publishChannel = null;
@@ -691,26 +796,49 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     resetReconnectAttempt: () => {
                         reconnectAttempt = 0;
                     },
+                    deliverConnected,
                 });
 
                 // With recovery, the wrapper already ran onSetup before resolving.
                 connection = conn;
-                lifecycle?.onConnected?.();
+                if (!connectedDelivered) {
+                    deliverConnected();
+                }
                 return;
             }
 
-            // recovery: false — legacy single-shot connection.
+            // recovery: false — legacy single-shot connection. Surface
+            // connection lifecycle; never console-only. Without a recovery
+            // wrapper there is no `disconnect` event; `close` is the single
+            // disconnect signal. An `error`, when the loss is abnormal, always
+            // precedes `close` in amqplib and is kept as the cause — while a
+            // server-forced graceful close (e.g. 320 connection-forced) emits
+            // only `close` and must still surface as `disconnected`
+            // (1.3.0 contract fix: exactly once per drop in this mode too).
+            let lastConnError: Error | null = null;
+            let setupFailedClose = false;
+            conn.on("error", (err: Error) => {
+                lastConnError = err;
+            });
+            wireFlowControlEvents(conn, lifecycle);
             conn.on("close", () => {
                 connection = null;
                 publishChannel = null;
                 failPendingReturns();
+                // Not a "loss" when the adapter itself is closing (disconnect())
+                // or discarding a connection whose setup failed (the caller
+                // gets the thrown error instead).
+                if (!closing && !setupFailedClose) {
+                    dispatchLifecycle(lifecycle, { type: "disconnected", error: lastConnError ?? new Error("Connection closed") });
+                }
             });
 
             try {
                 await onSetup(conn);
                 connection = conn;
-                lifecycle?.onConnected?.();
+                dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
             } catch (err) {
+                setupFailedClose = true;
                 await conn.close().catch(() => undefined);
                 publishChannel = null;
                 throw err;

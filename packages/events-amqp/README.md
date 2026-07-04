@@ -221,13 +221,35 @@ queueOverrides: {
 
 ### AmqpLifecycleCallbacks
 
-| Callback | Signature | Fires when |
-|----------|-----------|------------|
-| `onConnected` | `() => void` | Connection established (initial and after recovery) |
-| `onDisconnected` | `(cause: Error) => void` | Connection lost |
-| `onReconnecting` | `(info: { attempt, delay, error }) => void` | A reconnect attempt is scheduled (fires exactly once per scheduled retry) |
-| `onReconnectFailed` | `(cause: Error) => void` | Recovery exhausted (`maxRetries` reached) |
-| `onSetupFailed` | `(error, { initial, attempt }) => void` | Topology/setup failed on the initial validation probe (`initial: true`) or a reconnect re-assert (`initial: false`). Surfaces deterministic config drift distinctly from a broker outage; the initial-connect call requires the startup probe (runs when this callback or `failFastOnInitialSetupError` is set). |
+The preferred surface is the single discriminated **`onLifecycle`** callback (since 1.3.0); the flat callbacks below are a compatibility shim over the same event stream, `@deprecated` since 1.3.0 (removal not before 2.0). When both are set, flat callbacks fire after `onLifecycle` for the same underlying event.
+
+Callbacks **must not throw** — dispatch runs inside the connection driver's event handlers, so exceptions are isolated (swallowed) to protect the connection. Note: setting `onLifecycle` (like `onSetupFailed` / `failFastOnInitialSetupError`) enables the startup validation probe — one extra short-lived connection plus a topology validation pass at `connect()` (requires recovery enabled).
+
+```typescript
+lifecycle: {
+  onLifecycle: (event) => {
+    if (event.type === 'disconnected') metrics.increment('amqp.disconnects');
+    if (event.type === 'setup-failed' && event.initial) log.fatal(event.error);
+    if (event.type === 'blocked') log.warn(`broker flow control: ${event.reason}`);
+  },
+},
+```
+
+| Event `type` | Payload | Fires when |
+|--------------|---------|------------|
+| `connected` | `reconnected: boolean` | Connection established — exactly once per (re)connect; `false` for the initial connect, `true` after a recovery |
+| `disconnected` | `error: Error` | Connection lost — exactly once per drop |
+| `reconnecting` | `attempt, delay, error` | A reconnect attempt is scheduled (exactly once per scheduled retry) |
+| `reconnect-failed` | `error: Error` | Recovery exhausted (`maxRetries` reached) |
+| `setup-failed` | `initial, attempt, error` | Topology/setup failed on the initial validation probe (`initial: true`) or a reconnect re-assert (`initial: false`). The startup probe runs when `onLifecycle`, `onSetupFailed`, or `failFastOnInitialSetupError` is set — and only with recovery enabled |
+| `blocked` | `reason: string` | Broker flow control (`connection.blocked`, e.g. a memory/disk alarm). Union-only — no flat equivalent |
+| `unblocked` | — | Broker resumed after flow control. Union-only — no flat equivalent |
+
+Deprecated flat callbacks (compatibility shim): `onConnected()`, `onDisconnected(cause)`, `onReconnecting({ attempt, delay, error })`, `onReconnectFailed(cause)`, `onSetupFailed(error, { initial, attempt })`.
+
+**Scope**: the retry loop of the **initial** connect (broker unreachable when `connect()` is called) runs before the lifecycle wiring can attach, so its per-retry events are not surfaced; the startup probe covers the deterministic-misconfiguration case. Full initial-window observability lands with the adapter-owned bounded initial phase ([#198](https://github.com/Connectum-Framework/connectum/issues/198)).
+
+> **Fixed in 1.3.0**: a socket-level connection cut used to fire `onDisconnected` twice (once via the raw connection `error` re-emit, once via the recovery `disconnect` event); it now fires exactly once per drop on both surfaces. If you count disconnects in metrics, expect the count to roughly halve. A graceful server close (e.g. `rabbitmqctl close_all_connections`) was and remains single-fire.
 
 Connection errors are surfaced through these callbacks -- never console-only.
 
@@ -296,7 +318,7 @@ Connection behavior:
 - **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering. Under the default `maxRetries: Infinity`, `connect()` blocks rather than failing fast, and a **permanent** setup/topology error on the first connect would otherwise loop indefinitely. Set `failFastOnInitialSetupError: true` to reject `connect()` with the typed `AmqpTopologyError` on such a deterministic startup misconfiguration while still recovering from transient broker outages; use `onSetupFailed` for observability without changing behavior.
 - **`maxRetries` scope.** The retry budget governs **both** the initial connect and every later recovery series, with the counter reset on each success. A finite value chosen only to bound startup therefore makes the adapter brittle in steady state: a normal transient blip of that many consecutive failures in any single series permanently stops recovery. The default `Infinity` blocks at startup but never self-destructs on a transient outage.
 - **Reconnect delay.** The effective delay is symmetric jitter around the exponential base — uniform in `[base × (1 − jitter), base × (1 + jitter)]` with `base = min(maxDelay, initialDelay × factor^(attempt − 1))`. The cap applies to the base **before** jitter, so the wait can overshoot `maxDelay` (~20% at the default `jitter: 0.2`, up to ~2x at `jitter: 1`). See [Tuning the reconnect backoff](#tuning-the-reconnect-backoff).
-- **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable or topology setup fails, and a lost connection is not restored.
+- **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable or topology setup fails, and a lost connection is not restored. A lost connection surfaces as a single `disconnected` on the connection `close` (an abnormal loss keeps its `error` as the cause; since 1.3.0 a server-forced graceful close also counts, matching the exactly-once contract). The startup probe never runs in this mode — setup errors reject `connect()` directly.
 
 #### Tuning the reconnect backoff
 

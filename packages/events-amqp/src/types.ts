@@ -141,8 +141,11 @@ export interface AmqpAdapterOptions {
      * always keep infinite-recovery behavior.
      *
      * No-op with `recovery: false` (that path already fails fast on setup).
-     * Enabling this (or supplying {@link AmqpLifecycleCallbacks.onSetupFailed})
-     * adds one extra short-lived connection at startup for the validation probe.
+     * Enabling this — or supplying {@link AmqpLifecycleCallbacks.onLifecycle}
+     * or {@link AmqpLifecycleCallbacks.onSetupFailed} — adds one extra
+     * short-lived connection plus a topology validation pass at startup for
+     * the probe (recovery must be enabled; with `recovery: false` no probe
+     * runs and no `setup-failed` event is delivered).
      *
      * @default false
      */
@@ -280,17 +283,84 @@ export interface AmqpRecoveryOptions {
     readonly maxRetries?: number;
 }
 
-/** Connection lifecycle callbacks. */
+/**
+ * Discriminated connection lifecycle event, delivered to
+ * {@link AmqpLifecycleCallbacks.onLifecycle}.
+ *
+ * Exactly-once guarantees (pinned by integration tests):
+ * - `connected` fires once per successful (re)connect; `reconnected` is `false`
+ *   for the initial connect and `true` after a recovery.
+ * - `disconnected` fires once per connection loss (a socket-level cut no longer
+ *   double-fires via the raw `error` event — fixed in 1.3.0).
+ * - `reconnecting` fires once per scheduled retry AFTER the connection has been
+ *   established once; the terminal retries-exhausted case is `reconnect-failed`.
+ * - `setup-failed` reports a topology/setup failure on the initial validation
+ *   probe (`initial: true`, `attempt: 0`) or a reconnect re-assert
+ *   (`initial: false`, `attempt` >= 1).
+ * - `blocked`/`unblocked` surface broker flow control (RabbitMQ
+ *   `connection.blocked`, e.g. under a memory/disk alarm); they have no flat
+ *   callback equivalent.
+ *
+ * Scope: the retry loop of the INITIAL connect (broker unreachable when
+ * `connect()` is called) happens before the lifecycle wiring can attach, so
+ * its per-retry events are not surfaced; the startup probe covers the
+ * deterministic-misconfiguration case (`setup-failed { initial: true }`).
+ * Full initial-window observability lands with the adapter-owned bounded
+ * initial phase — see
+ * {@link https://github.com/Connectum-Framework/connectum/issues/198}.
+ *
+ * The `type` values are deliberately broker-agnostic so a future
+ * cross-adapter generalization stays non-breaking.
+ */
+export type AmqpLifecycleEvent =
+    | { readonly type: "connected"; readonly reconnected: boolean }
+    | { readonly type: "disconnected"; readonly error: Error }
+    | { readonly type: "reconnecting"; readonly attempt: number; readonly delay: number; readonly error: Error }
+    | { readonly type: "reconnect-failed"; readonly error: Error }
+    | { readonly type: "setup-failed"; readonly initial: boolean; readonly attempt: number; readonly error: Error }
+    | { readonly type: "blocked"; readonly reason: string }
+    | { readonly type: "unblocked" };
+
+/**
+ * Connection lifecycle callbacks.
+ *
+ * Prefer the single discriminated {@link onLifecycle} callback; the flat
+ * callbacks are a compatibility shim over the same event stream and are
+ * deprecated since 1.3.0 (removal not before 2.0).
+ */
 export interface AmqpLifecycleCallbacks {
+    /**
+     * Single discriminated-union lifecycle callback — the preferred surface.
+     * Receives every {@link AmqpLifecycleEvent}, including `blocked`/`unblocked`,
+     * which have no flat-callback equivalent. Flat callbacks (if also set) are
+     * invoked after `onLifecycle` for the same underlying event.
+     *
+     * MUST NOT throw: dispatch runs inside the connection driver's event
+     * handlers, so exceptions are isolated (swallowed) to protect the
+     * connection — a throwing callback neither disturbs recovery nor starves
+     * the flat shim.
+     *
+     * Setting this (like `onSetupFailed` / `failFastOnInitialSetupError`)
+     * enables the startup validation probe: one extra short-lived connection
+     * plus a topology validation pass at `connect()` (requires recovery
+     * enabled), so `setup-failed { initial: true }` can be delivered for a
+     * deterministic misconfiguration at boot.
+     */
+    readonly onLifecycle?: (event: AmqpLifecycleEvent) => void;
+    /** @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "connected"`). Kept until at least 2.0. */
     readonly onConnected?: () => void;
+    /** @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "disconnected"`). Kept until at least 2.0. */
     readonly onDisconnected?: (cause: Error) => void;
     /**
      * A reconnect attempt has been scheduled. Fires exactly ONCE per scheduled
      * retry (amqplib's `reconnect-scheduled`). A failed attempt that also emits
      * `connect-failed` does NOT double-invoke this; the terminal, retries-exhausted
      * case is reported via {@link onReconnectFailed}, not here.
+     *
+     * @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "reconnecting"`). Kept until at least 2.0.
      */
     readonly onReconnecting?: (info: { attempt: number; delay: number; error: Error }) => void;
+    /** @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "reconnect-failed"`). Kept until at least 2.0. */
     readonly onReconnectFailed?: (cause: Error) => void;
     /**
      * A setup/topology failure occurred while (re)applying the declarative
@@ -301,8 +371,10 @@ export interface AmqpLifecycleCallbacks {
      * This surfaces deterministic configuration drift (e.g. a missing queue in
      * `check` mode, or a `PRECONDITION_FAILED` redeclare) distinctly from a mere
      * broker outage, even when fail-fast is off. The initial-connect invocation
-     * requires a startup validation probe, which runs when either this callback or
-     * {@link AmqpAdapterOptions.failFastOnInitialSetupError} is set.
+     * requires a startup validation probe, which runs when either this callback,
+     * {@link onLifecycle}, or {@link AmqpAdapterOptions.failFastOnInitialSetupError} is set.
+     *
+     * @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "setup-failed"`). Kept until at least 2.0.
      */
     readonly onSetupFailed?: (error: Error, ctx: { readonly initial: boolean; readonly attempt: number }) => void;
 }

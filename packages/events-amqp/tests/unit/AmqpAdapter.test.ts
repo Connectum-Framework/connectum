@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { AmqpAdapter, classifyConfirmError, isConnectionLostError, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, classifyConfirmError, dispatchLifecycle, isConnectionLostError, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
-import type { AmqpLifecycleCallbacks } from "../../src/types.ts";
+import type { AmqpLifecycleCallbacks, AmqpLifecycleEvent } from "../../src/types.ts";
 
 describe("isConnectionLostError", () => {
     it("classifies amqplib channel/connection-close errors as connection loss", () => {
@@ -297,6 +297,7 @@ describe("wireRecoveryLifecycle", () => {
     function setup(lifecycle: AmqpLifecycleCallbacks) {
         const ee = new EventEmitter();
         let attempt = 0;
+        let connectedDelivered = false;
         const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0 };
         wireRecoveryLifecycle(ee, lifecycle, {
             clearPublishChannel: () => {
@@ -312,6 +313,13 @@ describe("wireRecoveryLifecycle", () => {
             resetReconnectAttempt: () => {
                 calls.reset += 1;
                 attempt = 0;
+            },
+            // Mirrors the adapter's ordering-independent exactly-once scheme:
+            // the first delivery is the initial connect, later ones reconnects.
+            deliverConnected: () => {
+                const reconnected = connectedDelivered;
+                connectedDelivered = true;
+                dispatchLifecycle(lifecycle, { type: "connected", reconnected });
             },
         });
         return { ee, calls };
@@ -390,5 +398,125 @@ describe("wireRecoveryLifecycle", () => {
         assert.equal(calls.reset, 1);
         assert.equal(calls.failPendingReturns, 1);
         assert.deepEqual(disconnects.map((e) => e.message), ["dropped"]);
+    });
+
+    it("delivers the full discriminated union to onLifecycle (first connected is initial, later ones reconnected)", () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const { ee } = setup({ onLifecycle: (event) => events.push(event) });
+
+        const topoErr = new AmqpTopologyError("Topology declaration failed: 406");
+        const dropErr = new Error("dropped");
+        const exhaustedErr = new Error("recovery exhausted");
+
+        ee.emit("connect-failed", topoErr); // attempt -> 1
+        ee.emit("reconnect-scheduled", { attempt: 1, delay: 100, error: topoErr });
+        ee.emit("connect"); // first delivery in this harness → initial
+        ee.emit("blocked", "memory alarm");
+        ee.emit("unblocked");
+        ee.emit("disconnect", dropErr);
+        ee.emit("connect"); // second delivery → a recovery re-connect
+        ee.emit("reconnect-failed", exhaustedErr);
+
+        assert.deepEqual(events, [
+            { type: "setup-failed", initial: false, attempt: 1, error: topoErr },
+            { type: "reconnecting", attempt: 1, delay: 100, error: topoErr },
+            { type: "connected", reconnected: false },
+            { type: "blocked", reason: "memory alarm" },
+            { type: "unblocked" },
+            { type: "disconnected", error: dropErr },
+            { type: "connected", reconnected: true },
+            { type: "reconnect-failed", error: exhaustedErr },
+        ]);
+    });
+});
+
+describe("dispatchLifecycle", () => {
+    it("invokes onLifecycle first, then the matching flat shim", () => {
+        const order: string[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => order.push(`union:${event.type}`),
+            onConnected: () => order.push("flat:connected"),
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+        assert.deepEqual(order, ["union:connected", "flat:connected"]);
+    });
+
+    it("maps every event type to its flat callback with the legacy payload shape", () => {
+        const flat: Array<[string, unknown]> = [];
+        const err = new Error("boom");
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onConnected: () => flat.push(["connected", undefined]),
+            onDisconnected: (cause) => flat.push(["disconnected", cause]),
+            onReconnecting: (info) => flat.push(["reconnecting", info]),
+            onReconnectFailed: (cause) => flat.push(["reconnect-failed", cause]),
+            onSetupFailed: (error, ctx) => flat.push(["setup-failed", { error, ctx }]),
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: true });
+        dispatchLifecycle(lifecycle, { type: "disconnected", error: err });
+        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: 3, delay: 250, error: err });
+        dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: err });
+        dispatchLifecycle(lifecycle, { type: "setup-failed", initial: true, attempt: 0, error: err });
+
+        assert.deepEqual(flat, [
+            ["connected", undefined],
+            ["disconnected", err],
+            ["reconnecting", { attempt: 3, delay: 250, error: err }],
+            ["reconnect-failed", err],
+            ["setup-failed", { error: err, ctx: { initial: true, attempt: 0 } }],
+        ]);
+    });
+
+    it("blocked/unblocked are union-only: no flat callback fires", () => {
+        const union: string[] = [];
+        let flatCalls = 0;
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => union.push(event.type),
+            onConnected: () => {
+                flatCalls += 1;
+            },
+            onDisconnected: () => {
+                flatCalls += 1;
+            },
+        };
+
+        dispatchLifecycle(lifecycle, { type: "blocked", reason: "disk alarm" });
+        dispatchLifecycle(lifecycle, { type: "unblocked" });
+
+        assert.deepEqual(union, ["blocked", "unblocked"]);
+        assert.equal(flatCalls, 0);
+    });
+
+    it("is a no-op without a lifecycle object", () => {
+        assert.doesNotThrow(() => dispatchLifecycle(undefined, { type: "unblocked" }));
+    });
+
+    it("isolates a throwing onLifecycle: no propagation, flat shim still fires", () => {
+        let flatFired = 0;
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: () => {
+                throw new Error("user metrics bug");
+            },
+            onConnected: () => {
+                flatFired += 1;
+            },
+        };
+
+        assert.doesNotThrow(() => dispatchLifecycle(lifecycle, { type: "connected", reconnected: true }));
+        assert.equal(flatFired, 1, "a throwing onLifecycle must not starve the flat shim");
+    });
+
+    it("isolates a throwing flat callback: no propagation, onLifecycle already delivered", () => {
+        const union: string[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => union.push(event.type),
+            onDisconnected: () => {
+                throw new Error("user handler bug");
+            },
+        };
+
+        assert.doesNotThrow(() => dispatchLifecycle(lifecycle, { type: "disconnected", error: new Error("drop") }));
+        assert.deepEqual(union, ["disconnected"]);
     });
 });
