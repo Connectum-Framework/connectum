@@ -118,6 +118,106 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
+    it("lifecycle exactly-once: connected once per (re)connect, disconnected once per drop (#197)", { timeout: 60_000 }, async () => {
+        const events: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.lifecycle197",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onConnected: () => events.push("connected"),
+                onDisconnected: () => events.push("disconnected"),
+            },
+        });
+        await adapter.connect();
+        try {
+            assert.equal(events.filter((e) => e === "connected").length, 1, "initial connect fires onConnected exactly once");
+            assert.equal(events.filter((e) => e === "disconnected").length, 0, "no disconnected before any drop");
+
+            await dropConnections();
+            await waitFor(() => events.filter((e) => e === "connected").length >= 2);
+            // Settle window: let any late duplicate disconnected land before counting.
+            await sleep(500);
+
+            assert.equal(events.filter((e) => e === "connected").length, 2, "reconnect fires onConnected exactly once");
+            assert.equal(
+                events.filter((e) => e === "disconnected").length,
+                1,
+                "a single drop fires onDisconnected exactly once (no error+disconnect double-fire)",
+            );
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("onLifecycle union: initial connected{reconnected:false}, then disconnected → reconnecting → connected{reconnected:true} (#197)", { timeout: 60_000 }, async () => {
+        const events: Array<{ type: string; reconnected?: boolean }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.union197",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+        await adapter.connect();
+        try {
+            assert.deepEqual(
+                events.filter((e) => e.type === "connected"),
+                [{ type: "connected", reconnected: false }],
+                "initial connect delivers exactly one connected{reconnected:false}",
+            );
+
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "connected" && e.reconnected === true));
+            await sleep(500);
+
+            const types = events.map((e) => e.type);
+            assert.equal(types.filter((t) => t === "disconnected").length, 1, "one disconnected per drop");
+            assert.ok(types.includes("reconnecting"), "a reconnecting event is delivered before the re-connect");
+            assert.ok(
+                types.indexOf("disconnected") < types.indexOf("reconnecting") && types.indexOf("reconnecting") < types.lastIndexOf("connected"),
+                `order must be disconnected → reconnecting → connected, got: ${types.join(", ")}`,
+            );
+            assert.deepEqual(
+                events.filter((e) => e.type === "connected"),
+                [
+                    { type: "connected", reconnected: false },
+                    { type: "connected", reconnected: true },
+                ],
+                "the recovery re-connect is flagged reconnected:true",
+            );
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("non-recovery mode: a server-forced graceful close surfaces exactly one disconnected; own disconnect() surfaces none (#197)", { timeout: 60_000 }, async () => {
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.norec197",
+            recovery: false,
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+        await adapter.connect();
+        try {
+            // A graceful server close (replyCode 320) emits only 'close' — it
+            // must still surface as a single disconnected (1.3.0 contract fix).
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "disconnected"));
+            await sleep(500);
+            assert.equal(events.filter((e) => e.type === "disconnected").length, 1, "a graceful server close fires disconnected exactly once");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+        // The adapter's own disconnect() is not a "loss" — no extra event.
+        await sleep(300);
+        assert.equal(events.filter((e) => e.type === "disconnected").length, 1, "own disconnect() must not emit disconnected");
+    });
+
     it("publish while disconnected fails fast with AmqpConnectionError (recovery disabled)", async () => {
         const adapter = AmqpAdapter({ url, exchange: "rec.failfast", recovery: false });
         await adapter.connect();
@@ -554,6 +654,44 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
         await toxiproxy?.stop().catch(() => undefined);
         await rabbit?.stop().catch(() => undefined);
         await network?.stop().catch(() => undefined);
+    });
+
+    it("lifecycle exactly-once under a socket-level cut: disconnected once per partition (#197)", { timeout: 90_000 }, async () => {
+        const events: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.partition197",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onConnected: () => events.push("connected"),
+                onDisconnected: () => events.push("disconnected"),
+            },
+        });
+        await adapter.connect();
+        try {
+            assert.equal(events.filter((e) => e === "connected").length, 1, "initial connect fires onConnected exactly once");
+
+            // Sever the link at the socket level: unlike a graceful server
+            // close (close_all_connections → clean connection.close), a killed
+            // socket makes the model emit 'error' AND 'close' — the path where
+            // a double onDisconnected can hide.
+            await proxy.setEnabled(false);
+            await waitFor(() => events.includes("disconnected"), 30_000);
+            await proxy.setEnabled(true);
+            await waitFor(() => events.filter((e) => e === "connected").length >= 2, 30_000);
+            // Settle window: let any late duplicate disconnected land before counting.
+            await sleep(500);
+
+            assert.equal(events.filter((e) => e === "connected").length, 2, "reconnect fires onConnected exactly once");
+            assert.equal(
+                events.filter((e) => e === "disconnected").length,
+                1,
+                "a socket-level cut fires onDisconnected exactly once (no error+disconnect double-fire)",
+            );
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
     });
 
     it("network cut (Toxiproxy proxy disabled) → reconnect when the network heals", async () => {

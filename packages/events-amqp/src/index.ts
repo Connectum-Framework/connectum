@@ -33,6 +33,7 @@ export type {
     AmqpExchangeDeclaration,
     AmqpExchangeOptions,
     AmqpLifecycleCallbacks,
+    AmqpLifecycleEvent,
     AmqpPublisherOptions,
     AmqpQueueDeclaration,
     AmqpQueueOptions,
