@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type amqp from "amqplib";
+import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
 import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpLifecycleEvent, AmqpQueueOverride } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
@@ -371,8 +372,25 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     const subscriptionRecords: SubscriptionRecord[] = [];
 
     /** Wrap a broker/channel error into AmqpTopologyError with context. */
-    function topologyError(message: string, cause: unknown): AmqpTopologyError {
-        return new AmqpTopologyError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    function topologyError(message: string, cause: unknown, object?: AmqpTopologyObject): AmqpTopologyError {
+        const text = `${message}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        return object !== undefined ? new AmqpTopologyError(text, { cause, object }) : new AmqpTopologyError(text, { cause });
+    }
+
+    /**
+     * Run one topology operation; a failure is wrapped into AmqpTopologyError
+     * carrying the identity of the object being declared/verified — known
+     * structurally at the call site, so consumers never parse broker-reply text.
+     */
+    async function topologyOp<T>(message: string, object: AmqpTopologyObject, op: () => Promise<T>): Promise<T> {
+        try {
+            return await op();
+        } catch (err) {
+            if (err instanceof AmqpTopologyError) {
+                throw err;
+            }
+            throw topologyError(message, err, object);
+        }
     }
 
     /**
@@ -390,56 +408,84 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         const topo = options.topology;
 
         if (topologyMode === AmqpTopologyMode.CHECK) {
+            const CHECK_MSG = "Topology check failed (missing broker object)";
+            // Outer catch preserves the pre-1.3.0 guarantee that ANY throw in
+            // this block (incl. loop headers / property reads on a pathological
+            // topology object) surfaces as AmqpTopologyError; the per-op
+            // wrappers add the failing object's identity on top.
             try {
-                await ch.checkExchange(exchange);
+                await topologyOp(CHECK_MSG, { kind: "exchange", name: exchange }, () => ch.checkExchange(exchange));
                 for (const ex of topo?.exchanges ?? []) {
-                    await ch.checkExchange(ex.name);
+                    await topologyOp(CHECK_MSG, { kind: "exchange", name: ex.name }, () => ch.checkExchange(ex.name));
                 }
                 for (const q of topo?.queues ?? []) {
-                    await ch.checkQueue(q.name);
+                    await topologyOp(CHECK_MSG, { kind: "queue", name: q.name }, () => ch.checkQueue(q.name));
                 }
             } catch (err) {
-                throw topologyError("Topology check failed (missing broker object)", err);
+                if (err instanceof AmqpTopologyError) {
+                    throw err;
+                }
+                throw topologyError(CHECK_MSG, err);
             }
             return;
         }
 
-        // assert mode
+        // assert mode — one topologyOp per declared object, so a failure
+        // carries the failing object's identity (#202). The outer catch
+        // preserves the pre-1.3.0 guarantee that ANY throw in this block
+        // surfaces as AmqpTopologyError.
+        const ASSERT_MSG = "Topology declaration failed";
         try {
-            await ch.assertExchange(exchange, exchangeType, {
-                durable: options.exchangeOptions?.durable ?? true,
-                autoDelete: options.exchangeOptions?.autoDelete ?? false,
-            });
+            await topologyOp(ASSERT_MSG, { kind: "exchange", name: exchange }, () =>
+                ch.assertExchange(exchange, exchangeType, {
+                    durable: options.exchangeOptions?.durable ?? true,
+                    autoDelete: options.exchangeOptions?.autoDelete ?? false,
+                }),
+            );
 
             for (const ex of topo?.exchanges ?? []) {
-                await ch.assertExchange(ex.name, ex.type, {
-                    durable: ex.durable ?? true,
-                    autoDelete: ex.autoDelete ?? false,
-                    arguments: ex.arguments,
-                });
+                await topologyOp(ASSERT_MSG, { kind: "exchange", name: ex.name }, () =>
+                    ch.assertExchange(ex.name, ex.type, {
+                        durable: ex.durable ?? true,
+                        autoDelete: ex.autoDelete ?? false,
+                        arguments: ex.arguments,
+                    }),
+                );
             }
             for (const q of topo?.queues ?? []) {
-                await ch.assertQueue(q.name, {
-                    durable: q.durable ?? true,
-                    autoDelete: q.autoDelete ?? false,
-                    exclusive: q.exclusive ?? false,
-                    arguments: q.arguments,
-                });
+                await topologyOp(ASSERT_MSG, { kind: "queue", name: q.name }, () =>
+                    ch.assertQueue(q.name, {
+                        durable: q.durable ?? true,
+                        autoDelete: q.autoDelete ?? false,
+                        exclusive: q.exclusive ?? false,
+                        arguments: q.arguments,
+                    }),
+                );
             }
             for (const b of topo?.bindings ?? []) {
-                if (b.queue !== undefined) {
-                    await ch.bindQueue(b.queue, b.source, b.routingKey, b.arguments);
-                } else if (b.exchange !== undefined) {
-                    await ch.bindExchange(b.exchange, b.source, b.routingKey, b.arguments);
+                const queueDest = b.queue;
+                const exchangeDest = b.exchange;
+                if (queueDest !== undefined) {
+                    await topologyOp(ASSERT_MSG, { kind: "binding", source: b.source, destination: queueDest, destinationType: "queue", routingKey: b.routingKey }, () =>
+                        ch.bindQueue(queueDest, b.source, b.routingKey, b.arguments),
+                    );
+                } else if (exchangeDest !== undefined) {
+                    await topologyOp(ASSERT_MSG, { kind: "binding", source: b.source, destination: exchangeDest, destinationType: "exchange", routingKey: b.routingKey }, () =>
+                        ch.bindExchange(exchangeDest, b.source, b.routingKey, b.arguments),
+                    );
                 } else {
-                    throw new Error(`Binding for source '${b.source}' must declare either 'queue' or 'exchange'`);
+                    // Config-validation error: the binding's destination is the
+                    // missing piece, so no AmqpTopologyObject identity is
+                    // representable — this is the one adapter-thrown
+                    // AmqpTopologyError without `object` (documented).
+                    throw topologyError(ASSERT_MSG, new Error(`Binding for source '${b.source}' must declare either 'queue' or 'exchange'`));
                 }
             }
         } catch (err) {
             if (err instanceof AmqpTopologyError) {
                 throw err;
             }
-            throw topologyError("Topology declaration failed", err);
+            throw topologyError(ASSERT_MSG, err);
         }
     }
 
@@ -518,11 +564,17 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         if (topologyMode === AmqpTopologyMode.ASSERT && declaredInTopology) {
             try {
                 for (const amqpPattern of record.patterns.map(toAmqpPattern)) {
-                    await ch.bindQueue(queueName, exchange, amqpPattern);
+                    await topologyOp(
+                        `Failed to bind topology-declared queue '${queueName}'`,
+                        { kind: "binding", source: exchange, destination: queueName, destinationType: "queue", routingKey: amqpPattern },
+                        () => ch.bindQueue(queueName, exchange, amqpPattern),
+                    );
                 }
             } catch (err) {
                 await ch.close().catch(() => undefined);
-                throw topologyError(`Failed to bind topology-declared queue '${queueName}'`, err);
+                // Pre-1.3.0, ANY throw here (incl. pattern mapping) was wrapped;
+                // preserve that error-class contract.
+                throw err instanceof AmqpTopologyError ? err : topologyError(`Failed to bind topology-declared queue '${queueName}'`, err, { kind: "queue", name: queueName });
             }
         } else if (topologyMode === AmqpTopologyMode.ASSERT) {
             // Build queue arguments: global defaults + per-override arguments
@@ -547,26 +599,34 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             const exclusive = options.consumerOptions?.exclusive ?? false;
 
             try {
-                await ch.assertQueue(queueName, {
-                    durable: group ? queueDurable : false,
-                    autoDelete: isAutoGroup,
-                    exclusive: isAutoGroup ? exclusive : false,
-                    arguments: Object.keys(queueArgs).length > 0 ? queueArgs : undefined,
-                });
+                await topologyOp(`Failed to declare queue '${queueName}'`, { kind: "queue", name: queueName }, () =>
+                    ch.assertQueue(queueName, {
+                        durable: group ? queueDurable : false,
+                        autoDelete: isAutoGroup,
+                        exclusive: isAutoGroup ? exclusive : false,
+                        arguments: Object.keys(queueArgs).length > 0 ? queueArgs : undefined,
+                    }),
+                );
 
                 for (const amqpPattern of record.patterns.map(toAmqpPattern)) {
-                    await ch.bindQueue(queueName, exchange, amqpPattern);
+                    await topologyOp(
+                        `Failed to declare queue '${queueName}'`,
+                        { kind: "binding", source: exchange, destination: queueName, destinationType: "queue", routingKey: amqpPattern },
+                        () => ch.bindQueue(queueName, exchange, amqpPattern),
+                    );
                 }
             } catch (err) {
                 await ch.close().catch(() => undefined);
-                throw topologyError(`Failed to declare queue '${queueName}'`, err);
+                // Pre-1.3.0, ANY throw here (incl. pattern mapping) was wrapped;
+                // preserve that error-class contract.
+                throw err instanceof AmqpTopologyError ? err : topologyError(`Failed to declare queue '${queueName}'`, err, { kind: "queue", name: queueName });
             }
         } else if (topologyMode === AmqpTopologyMode.CHECK) {
             try {
-                await ch.checkQueue(queueName);
+                await topologyOp(`Queue '${queueName}' does not exist (topologyMode: "check")`, { kind: "queue", name: queueName }, () => ch.checkQueue(queueName));
             } catch (err) {
                 await ch.close().catch(() => undefined);
-                throw topologyError(`Queue '${queueName}' does not exist (topologyMode: "check")`, err);
+                throw err;
             }
         }
         // skip mode: no checks — a missing queue fails on consume below.
@@ -639,7 +699,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             );
         } catch (err) {
             await ch.close().catch(() => undefined);
-            throw topologyError(`Failed to consume from queue '${queueName}'`, err);
+            throw topologyError(`Failed to consume from queue '${queueName}'`, err, { kind: "queue", name: queueName });
         }
 
         record.channel = ch;

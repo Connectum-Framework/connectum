@@ -313,7 +313,13 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
 
         await assert.rejects(
             () => adapter.connect(),
-            (err: unknown) => err instanceof AmqpTopologyError,
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpTopologyError);
+                // #202: the failing object is identified structurally, not by
+                // parsing the broker reply text.
+                assert.deepEqual(err.object, { kind: "queue", name: "rec.contract.q" });
+                return true;
+            },
         );
         await adapter.disconnect().catch(() => undefined);
     });

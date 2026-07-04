@@ -492,6 +492,37 @@ describe("dispatchLifecycle", () => {
         assert.doesNotThrow(() => dispatchLifecycle(undefined, { type: "unblocked" }));
     });
 
+    it("AmqpTopologyError carries the failing object's identity and the cause (#202)", () => {
+        const cause = new Error("PRECONDITION_FAILED");
+        const err = new AmqpTopologyError("Topology declaration failed", { cause, object: { kind: "queue", name: "orders.q" } });
+        assert.deepEqual(err.object, { kind: "queue", name: "orders.q" });
+        assert.equal(err.cause, cause);
+        assert.equal(err.name, "AmqpTopologyError");
+    });
+
+    it("AmqpTopologyError binding identity uses endpoints, not a name (#202)", () => {
+        const err = new AmqpTopologyError("Topology declaration failed", {
+            object: { kind: "binding", source: "orders", destination: "orders.q", destinationType: "queue", routingKey: "order.*" },
+        });
+        assert.deepEqual(err.object, { kind: "binding", source: "orders", destination: "orders.q", destinationType: "queue", routingKey: "order.*" });
+    });
+
+    it("AmqpTopologyError stays backward-compatible with message-only and cause-only construction (#202)", () => {
+        assert.equal(new AmqpTopologyError("x").object, undefined);
+        const withCause = new AmqpTopologyError("x", { cause: new Error("y") });
+        assert.equal(withCause.object, undefined);
+        assert.ok(withCause.cause instanceof Error);
+    });
+
+    it("AmqpTopologyError message-only construction installs NO own cause/object keys (#202 — bit-for-bit compat)", () => {
+        const bare = new AmqpTopologyError("x");
+        assert.equal(Object.hasOwn(bare, "cause"), false, "no own 'cause' key without a supplied cause (InstallErrorCause checks key presence)");
+        assert.equal(Object.hasOwn(bare, "object"), false, "no own 'object' key without a supplied object (declare field must not emit)");
+        const withObject = new AmqpTopologyError("x", { object: { kind: "queue", name: "q" } });
+        assert.equal(Object.hasOwn(withObject, "object"), true);
+        assert.equal(Object.hasOwn(withObject, "cause"), false, "supplying only 'object' must not install an own 'cause'");
+    });
+
     it("isolates a throwing onLifecycle: no propagation, flat shim still fires", () => {
         let flatFired = 0;
         const lifecycle: AmqpLifecycleCallbacks = {

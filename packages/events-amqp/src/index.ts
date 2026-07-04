@@ -25,6 +25,7 @@
  */
 
 export { AmqpAdapter, toAmqpPattern } from "./AmqpAdapter.ts";
+export type { AmqpTopologyObject } from "./errors.ts";
 export { AmqpAdapterError, AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
 export type {
     AmqpAdapterOptions,

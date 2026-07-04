@@ -357,6 +357,18 @@ Every terminal publish/topology outcome is distinguishable by error class -- wha
 >
 > \* `AmqpConnectionError` covers both a **pre-send** failure (publishing while disconnected, or a synchronous publish failure -- the message is never sent) and an **in-flight** loss (the connection drops while awaiting the confirm -- state genuinely UNKNOWN). Both are republish-safe; UNKNOWN is the conservative label.
 
+Since 1.3.0, `AmqpTopologyError` also carries a machine-readable **`object`** identifying the failing topology object -- `{ kind: 'exchange' | 'queue', name }` or `{ kind: 'binding', source, destination, destinationType, routingKey }` (a binding has no name of its own). It is populated structurally at the declare/check/consume site, so CI drift checks and observability never parse broker-reply text. `object.kind` says *what* was being declared; *why* it failed stays with the error class and `cause`.
+
+```typescript
+try {
+  await bus.start();
+} catch (err) {
+  if (err instanceof AmqpTopologyError && err.object?.kind === 'queue') {
+    console.error(`Topology drift: queue '${err.object.name}' rejected by the broker`, err.cause);
+  }
+}
+```
+
 ## External AMQP Contract
 
 A complete recipe for integrating with an externally defined AMQP contract (AsyncAPI-style): direct exchange, named durable queue with DLQ arguments, JSON `contentType`, mandatory routing, and per-message confirms. The application serializes JSON itself and publishes through the adapter directly:
