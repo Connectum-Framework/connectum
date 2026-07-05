@@ -299,10 +299,11 @@ await Promise.all(buses.map((bus) => bus.start()));
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `adapter` | `EventAdapter \| (() => EventAdapter)` | required | One shared adapter instance (fine for `MemoryAdapter` in tests) OR a factory invoked once per reactor (use for real brokers so each bus gets its own connection / durable consumer) |
+| `adapter` | `EventAdapter \| EventAdapterFactory` | required | One shared adapter instance (fine for `MemoryAdapter` in tests) OR an `EventAdapterFactory` invoked once per reactor (use for real brokers so each bus gets its own connection / durable consumer) |
 | `reactors` | `BroadcastReactor[]` | required | The independent reactors -- each becomes its own EventBus with its own group |
 | `handlerTimeout` | `number` | `30000` | Shared per-bus handler timeout in ms |
 | `drainTimeout` | `number` | `30000` | Shared per-bus drain timeout in ms |
+| `drainPublishTimeout` | `number` | `undefined` | Shared per-bus opt-in publish drain budget at `stop()` (ms). Since 1.3.0 |
 | `signal` | `AbortSignal` | `undefined` | Shared abort signal for graceful shutdown |
 
 **`BroadcastReactor`:**
@@ -437,6 +438,29 @@ const bus = createEventBus({
 });
 ```
 
+## Dependency Injection and Testing
+
+**Primary pattern — inject an `EventAdapter` instance.** Construct the adapter at your composition root and pass it in; a test swaps it for a double without touching the wiring:
+
+```typescript
+// Composition root (production):
+const adapter = NatsAdapter({ servers: process.env.NATS_URL! });
+const bus = createEventBus({ adapter, routes: [eventRoutes] });
+```
+
+```typescript
+// Test: the same wiring, a different instance.
+const bus = createEventBus({ adapter: MemoryAdapter(), routes: [eventRoutes] });
+```
+
+**Secondary pattern — `EventAdapterFactory`** (`() => EventAdapter`, exported since 1.3.0): a zero-argument factory for the places where each consumer needs its OWN broker connection — `createBroadcastSubscribers` invokes it once per reactor. Prefer the instance elsewhere: a test double with its own configuration does not fit a zero-argument factory signature without a wrapper closure.
+
+**Test doubles:**
+
+- `MemoryAdapter` (exported here) — in-process pub/sub for the generic happy path: routing, handlers, middleware, DLQ flows.
+- Broker-specific failure semantics (typed AMQP error taxonomy, recovery/lifecycle behavior) cannot be modeled generically — a programmable `FakeAmqpAdapter` will ship via the `@connectum/events-amqp/testing` subpath (tracked in [#203](https://github.com/Connectum-Framework/connectum/issues/203)).
+- For real-broker integration semantics, see each adapter package's testing notes.
+
 ## Exports Summary
 
 | Export | Kind | Description |
@@ -455,6 +479,7 @@ const bus = createEventBus({
 | `resolveTopicName` | function | Topic name resolution from proto |
 | `matchPattern` | function | NATS-style wildcard matching |
 | `EventAdapter` | type | Adapter interface |
+| `EventAdapterFactory` | type | Zero-arg factory producing a fresh adapter (per-reactor connections; since 1.3.0) |
 | `EventBus` | type | EventBus interface |
 | `EventBusOptions` | type | Options for `createEventBus()` |
 | `BroadcastSubscribersOptions` | type | Options for `createBroadcastSubscribers()` |
