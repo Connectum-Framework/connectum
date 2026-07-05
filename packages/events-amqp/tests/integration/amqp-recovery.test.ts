@@ -324,6 +324,144 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         await adapter.disconnect().catch(() => undefined);
     });
 
+    it("treatTopologyErrorAsFatal: topology drift during recovery stops the cycle (setup-failed → reconnect-failed, no further retries) (#201)", { timeout: 60_000 }, async () => {
+        // Pre-declare ALL check-mode objects (check mode verifies existence
+        // and never asserts): the adapter's default exchange, the checked
+        // queue, and the consumer-group queue used below.
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.fatal201", "topic", { durable: true });
+        await preCh.assertQueue("rec.fatal201.q", { durable: true });
+        await preCh.assertQueue("rec.fatal201.grp", { durable: true });
+        await preCh.close();
+        await pre.close();
+
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.fatal201",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            topology: { queues: [{ name: "rec.fatal201.q", durable: true }] },
+            topologyMode: "check",
+            treatTopologyErrorAsFatal: true,
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+        await adapter.connect();
+        try {
+            // A live consumer before the drift — the fatal stop must tear it
+            // down for good (no resurrection on a later connect()).
+            await adapter.subscribe(["rec.fatal201.evt"], async (_event, ack) => {
+                await ack();
+            }, { group: "grp" });
+
+            // Create the drift: the checked queue disappears while connected.
+            const admin = await connect(url);
+            const adminCh = await admin.createChannel();
+            await adminCh.deleteQueue("rec.fatal201.q");
+            await adminCh.close();
+            await admin.close();
+
+            // Drop connections → recovery re-runs setup → checkQueue fails 404
+            // deterministically → fatal stop.
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "reconnect-failed"), 30_000);
+            const countsAtStop = {
+                setupFailed: events.filter((e) => e.type === "setup-failed").length,
+                reconnecting: events.filter((e) => e.type === "reconnecting").length,
+            };
+            // Settle window: any further retry would emit reconnecting/setup-failed.
+            await sleep(1500);
+
+            assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 1, "terminal reconnect-failed fires exactly once");
+            assert.equal(
+                events.filter((e) => e.type === "setup-failed").length,
+                countsAtStop.setupFailed,
+                "no further setup-failed after the fatal stop — the cycle is dead",
+            );
+            assert.equal(
+                events.filter((e) => e.type === "reconnecting").length,
+                countsAtStop.reconnecting,
+                "no reconnect is scheduled after the fatal stop (close() beats _scheduleReconnect)",
+            );
+            await assert.rejects(
+                () => adapter.publish("rec.fatal201.evt", new Uint8Array([1])),
+                (err: unknown) => err instanceof AmqpConnectionError,
+                "publishes fail fast after the fatal stop",
+            );
+
+            // disconnect() after a fatal stop must resolve cleanly — no catch.
+            await adapter.disconnect();
+
+            // Reconnect-after-fatal: heal the drift, connect again — clean
+            // slate, the old consumer must NOT be resurrected.
+            const healer = await connect(url);
+            const healCh = await healer.createChannel();
+            await healCh.assertQueue("rec.fatal201.q", { durable: true });
+            const before = await healCh.checkQueue("rec.fatal201.grp");
+            assert.equal(before.consumerCount, 0, "the fatal stop killed the consumer");
+            await healCh.close();
+            await healer.close();
+
+            await adapter.connect();
+            await sleep(500); // any resurrection would re-attach the consumer here
+            const admin2 = await connect(url);
+            const adminCh2 = await admin2.createChannel();
+            const after = await adminCh2.checkQueue("rec.fatal201.grp");
+            assert.equal(after.consumerCount, 0, "connect() after fatal starts from a clean slate — no subscription resurrection");
+            await adminCh2.close();
+            await admin2.close();
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("default (no treatTopologyErrorAsFatal): topology drift during recovery keeps retrying and heals (#201 control)", { timeout: 60_000 }, async () => {
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.heal201", "topic", { durable: true });
+        await preCh.assertQueue("rec.heal201.q", { durable: true });
+        await preCh.close();
+        await pre.close();
+
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.heal201",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            topology: { queues: [{ name: "rec.heal201.q", durable: true }] },
+            topologyMode: "check",
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+        await adapter.connect();
+        try {
+            const admin = await connect(url);
+            const adminCh = await admin.createChannel();
+            await adminCh.deleteQueue("rec.heal201.q");
+            await adminCh.close();
+            await admin.close();
+
+            await dropConnections();
+            // Default behavior: the cycle keeps retrying (setup-failed per attempt).
+            await waitFor(() => events.filter((e) => e.type === "setup-failed").length >= 2, 30_000);
+            assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 0, "no terminal event under default policy");
+
+            // Heal the drift → the next retry succeeds and the adapter reconnects.
+            const healer = await connect(url);
+            const healCh = await healer.createChannel();
+            await healCh.assertQueue("rec.heal201.q", { durable: true });
+            await healCh.close();
+            await healer.close();
+
+            await waitFor(() => events.some((e) => e.type === "connected" && (e as { reconnected?: boolean }).reconnected === true), 30_000);
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
     it("reconnect during subscribe: consumer is replayed and resumes delivery", async () => {
         const lifecycle: string[] = [];
         const adapter = AmqpAdapter({

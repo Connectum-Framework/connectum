@@ -123,12 +123,65 @@ export function trackChannelClose<C extends AmqpChannelCloseSource>(ch: C, close
     });
 }
 
+/** AMQP reply codes that identify DETERMINISTIC topology drift (vs a transient failure). */
+const FATAL_TOPOLOGY_REPLY_CODES: ReadonlySet<number> = new Set([404, 406]);
+
+/**
+ * Decide whether a setup failure is deterministic topology drift.
+ *
+ * The gate reads the AMQP reply code of the CAUSE (amqplib sets `error.code`
+ * to the reply code on channel/connection errors): `404` NOT_FOUND / `406`
+ * PRECONDITION_FAILED are deterministic — retrying cannot succeed until the
+ * config or broker topology changes. `instanceof AmqpTopologyError` alone is
+ * NOT a valid gate: the adapter wraps ANY setup-pass cause into it, including
+ * transient ones (320 connection-forced, 541 internal-error, 405 resource
+ * locked, a mid-setup connection drop). Exported (not via the package barrel)
+ * for direct cross-runtime unit testing.
+ */
+export function isDeterministicTopologyDrift(err: unknown): boolean {
+    if (!(err instanceof AmqpTopologyError)) {
+        return false;
+    }
+    const cause = err.cause as { code?: unknown; message?: unknown } | null | undefined;
+    if (typeof cause?.code !== "number" || !FATAL_TOPOLOGY_REPLY_CODES.has(cause.code)) {
+        return false;
+    }
+    // RabbitMQ cluster caveat: a classic queue whose home node is down rejects
+    // declare/check with 404 whose reply text names the condition ("home node
+    // ... is down or inaccessible"). That outage is TRANSIENT (the node can
+    // come back) — not config drift; it must stay in recovery. Text fallback,
+    // mirroring isConnectionLostError's defense-in-depth role.
+    if (cause.code === 404 && typeof cause.message === "string" && /down or inaccessible/i.test(cause.message)) {
+        return false;
+    }
+    return true;
+}
+
 /** Side effects the recovery-lifecycle wiring needs from the adapter closure. */
 interface RecoveryLifecycleHooks {
     readonly clearPublishChannel: () => void;
     readonly failPendingReturns: () => void;
     readonly nextReconnectAttempt: () => number;
     readonly resetReconnectAttempt: () => void;
+    /**
+     * Policy gate for `connect-failed`: `true` = this failure is fatal — stop
+     * the recovery cycle now. The wiring then calls {@link enterFatalState}
+     * and reports the terminal `reconnect-failed` event.
+     */
+    readonly fatalTopologyGate: (err: Error) => boolean;
+    /**
+     * Deterministically stop the recovery cycle and tear down adapter state.
+     * MUST run synchronously enough that the wrapper's `_scheduleReconnect`
+     * (which amqplib calls right after emitting `connect-failed`) observes the
+     * stopped state and schedules nothing.
+     */
+    readonly enterFatalState: (err: Error) => void;
+    /**
+     * `true` while the adapter's own `disconnect()` is in progress — a fatal
+     * classification racing a graceful shutdown must not fire terminal events
+     * after the caller already asked to stop.
+     */
+    readonly isClosing: () => boolean;
     /**
      * Deliver a `connected` event exactly once per successful (re)connect.
      * Owned by the adapter so the initial-vs-reconnect flag does not depend on
@@ -244,6 +297,18 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         const attempt = hooks.nextReconnectAttempt();
         if (err instanceof AmqpTopologyError) {
             dispatchLifecycle(lifecycle, { type: "setup-failed", initial: false, attempt, error: err });
+        }
+        if (!hooks.isClosing() && hooks.fatalTopologyGate(err)) {
+            // Deterministic drift + opt-in policy: stop the cycle NOW. amqplib
+            // calls _scheduleReconnect right after emitting connect-failed, so
+            // the teardown (wrapper close()) must flip its stopped flag
+            // synchronously within this handler — then no further retry is
+            // scheduled and no reconnect-scheduled event follows (pinned by
+            // the fatal-drift integration test). Skipped while the adapter's
+            // own disconnect() runs: a racing failure must not fire terminal
+            // events after the caller already asked to stop.
+            hooks.enterFatalState(err);
+            dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: err });
         }
     });
     conn.on("reconnect-failed", (err: Error) => {
@@ -543,7 +608,19 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         const isAutoGroup = !group;
         const override: AmqpQueueOverride | undefined = group ? options.queueOverrides?.[group] : undefined;
 
-        const ch = await model.createChannel();
+        let ch: amqp.Channel;
+        try {
+            ch = await model.createChannel();
+        } catch (err) {
+            // A subscribe() parked in the recovering wrapper's waiter queue is
+            // rejected with amqplib's plain Error("Connection closed") when the
+            // cycle dies (fatal topology stop, disconnect, budget exhaustion).
+            // Keep the documented typed-error taxonomy at this public boundary.
+            if (isConnectionLostError(err)) {
+                throw new AmqpConnectionError("Connection lost while establishing consumer channel", { cause: err });
+            }
+            throw err;
+        }
         ch.on("error", () => {
             // Prevent unhandled 'error' events on consumer channels; failures
             // surface through recovery or through nacked deliveries.
@@ -857,6 +934,29 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         reconnectAttempt = 0;
                     },
                     deliverConnected,
+                    fatalTopologyGate: (err) => options.treatTopologyErrorAsFatal === true && isDeterministicTopologyDrift(err),
+                    enterFatalState: () => {
+                        // Wrapper close() sets its stopped flag synchronously
+                        // (before the first await in RecoveringCore.close), so
+                        // amqplib's _scheduleReconnect — called right after
+                        // this handler — schedules nothing.
+                        void conn.close().catch(() => undefined);
+                        connection = null;
+                        publishChannel = null;
+                        // The cycle is dead — so are its consumers. Mirror
+                        // disconnect()'s bookkeeping (no network calls: the
+                        // channels died with the model) so a later connect()
+                        // starts from a clean slate instead of silently
+                        // resurrecting stale subscriptions.
+                        for (const record of subscriptionRecords) {
+                            record.active = false;
+                            record.channel = null;
+                            record.consumerTag = null;
+                        }
+                        subscriptionRecords.length = 0;
+                        failPendingReturns();
+                    },
+                    isClosing: () => closing,
                 });
 
                 // With recovery, the wrapper already ran onSetup before resolving.
