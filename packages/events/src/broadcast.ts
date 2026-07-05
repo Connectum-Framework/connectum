@@ -17,7 +17,7 @@
 
 import type { EventBusLike } from "@connectum/core";
 import { createEventBus } from "./EventBus.ts";
-import type { EventAdapter, EventBus, EventRoute, MiddlewareConfig } from "./types.ts";
+import type { EventAdapter, EventAdapterFactory, EventBus, EventRoute, MiddlewareConfig } from "./types.ts";
 
 /** One independent broadcast reactor: its consumer group + routes. */
 export interface BroadcastReactor {
@@ -37,7 +37,7 @@ export interface BroadcastSubscribersOptions {
      * once per reactor (use this for real brokers so each reactor bus gets its
      * own connection / durable consumer).
      */
-    readonly adapter: EventAdapter | (() => EventAdapter);
+    readonly adapter: EventAdapter | EventAdapterFactory;
     /** The independent reactors — each becomes its own EventBus with its own group. */
     readonly reactors: BroadcastReactor[];
     /** Shared per-bus handler timeout (ms). */
@@ -63,7 +63,7 @@ export interface BroadcastSubscribersOptions {
  * @example
  * ```typescript
  * const buses = createBroadcastSubscribers({
- *   adapter: () => new NatsAdapter({ servers, stream: 'orders' }),
+ *   adapter: () => NatsAdapter({ servers, stream: 'orders' }),
  *   reactors: [
  *     { group: 'pricing', routes: [pricingRoutes] },
  *     { group: 'audit',   routes: [auditRoutes] },

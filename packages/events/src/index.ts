@@ -41,6 +41,7 @@ export type {
     AdapterContext,
     DlqOptions,
     EventAdapter,
+    EventAdapterFactory,
     EventBus,
     EventBusOptions,
     EventContext,
