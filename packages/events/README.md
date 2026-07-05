@@ -224,6 +224,7 @@ function createEventBus(options: EventBusOptions): EventBus
 | `signal` | `AbortSignal` | `undefined` | External abort signal |
 | `handlerTimeout` | `number` | `30000` | Per-handler timeout in ms |
 | `drainTimeout` | `number` | `30000` | Max ms to wait for in-flight handlers during shutdown |
+| `drainPublishTimeout` | `number` | `undefined` | Opt-in: max ms to wait for in-flight `publish()` promises during `stop()`, before the adapter disconnects. Runs concurrently with the handler drain. `undefined`/`0` = disabled (unchanged behavior). Since 1.3.0 |
 
 > **Publisher-only processes:** when a service publishes an event but does not subscribe to it (the usual split-microservices shape), it has no `routes`, so `publish()` would fall back to the message `typeName` — silently emitting to the wrong topic whenever the event declares a custom `(connectum.events.v1.event).topic`. List the event service descriptors in `publishes` so the declared topic is resolved from the proto option end-to-end, instead of hand-maintaining raw topic strings:
 >
@@ -408,7 +409,7 @@ Set `drainTimeout: 0` for immediate abort (skip drain).
 
 ### Publishers and Shutdown
 
-`stop()` drains **consumer handlers** only — in-flight `publish()` promises are not tracked by the bus, and `drainTimeout` does not cover them. An at-least-once producer must settle its publishes **before** stopping:
+`stop()` drains **consumer handlers**; in-flight `publish()` promises are not tracked by default (`drainTimeout` does not cover them — opt in via `drainPublishTimeout`, see below). An at-least-once producer must settle its publishes **before** stopping:
 
 ```typescript
 // Track publishes you must not lose:
@@ -426,7 +427,15 @@ await bus.stop();
 Two related boundaries:
 
 - **Publishing from a draining handler is rejected.** Once `stop()` begins, `publish()` throws — including from handlers that are still draining. Relay topologies (consume → transform → publish) therefore lose the in-flight tail at shutdown; the design discussion is tracked in [#212](https://github.com/Connectum-Framework/connectum/issues/212).
-- **An opt-in symmetric publish drain** (`drainPublishTimeout`) is planned — tracked in [#196](https://github.com/Connectum-Framework/connectum/issues/196).
+- **An opt-in symmetric publish drain** ships since 1.3.0: set `drainPublishTimeout` and `stop()` waits (up to that budget, concurrently with the handler drain — the slower of the two, never the sum) for publishes started before `stop()` to settle, before the adapter disconnects and would fail their confirms. Tracked promises carry a no-op observer, so a post-deadline settlement never becomes an `unhandledRejection`; the caller's own `publish()` promise still rejects/resolves as usual. The manual await-before-stop recipe above remains valid and is still the only option for publishes you must not lose past the drain budget.
+
+```typescript
+const bus = createEventBus({
+  adapter,
+  routes: [eventRoutes],
+  drainPublishTimeout: 10_000, // wait up to 10s for in-flight publishes at stop()
+});
+```
 
 ## Exports Summary
 
