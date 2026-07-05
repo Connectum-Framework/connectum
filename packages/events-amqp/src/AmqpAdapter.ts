@@ -151,6 +151,19 @@ export function computeRecoveryDelay(
     return Math.max(0, Math.round(base + offset));
 }
 
+/**
+ * Assemble amqplib connect options from socket options + client properties.
+ * Single builder for all three connect sites (real recovering connect, startup
+ * probe, bounded initial phase) so they cannot silently diverge.
+ */
+function buildConnectOptions(socketOptions: Record<string, unknown> | undefined, clientProperties: Record<string, string>): Record<string, unknown> {
+    const opts: Record<string, unknown> = { ...socketOptions };
+    if (Object.keys(clientProperties).length > 0) {
+        opts.clientProperties = clientProperties;
+    }
+    return opts;
+}
+
 /** AMQP reply codes that identify DETERMINISTIC topology drift (vs a transient failure). */
 const FATAL_TOPOLOGY_REPLY_CODES: ReadonlySet<number> = new Set([404, 406]);
 
@@ -854,12 +867,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             const recoveryEnabled = options.recovery !== false;
             const recoveryOpts = typeof options.recovery === "object" ? options.recovery : {};
 
-            const connectOptions: Record<string, unknown> = {
-                ...options.socketOptions,
-            };
-            if (Object.keys(clientProperties).length > 0) {
-                connectOptions.clientProperties = clientProperties;
-            }
+            const connectOptions = buildConnectOptions(options.socketOptions, clientProperties);
             if (recoveryEnabled) {
                 // amqplib opt-in recovery: reconnect with backoff+jitter; our
                 // setup hook re-creates channels/topology/subscriptions.
@@ -890,10 +898,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // pass with per-attempt lifecycle events; budget exhaustion
                 // rejects connect() typed instead of blocking forever.
                 // N retries = N+1 attempts, mirroring maxRetries semantics.
-                const phaseOptions: Record<string, unknown> = { ...options.socketOptions };
-                if (Object.keys(clientProperties).length > 0) {
-                    phaseOptions.clientProperties = clientProperties;
-                }
+                const phaseOptions = buildConnectOptions(options.socketOptions, clientProperties);
 
                 for (let attempt = 0; ; attempt += 1) {
                     let candidate: amqp.ChannelModel | null = null;
@@ -966,10 +971,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             // Skipped when the bounded initial phase above ran — validation
             // already happened as part of its attempts.
             if (recoveryEnabled && initialBudget === null && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed || lifecycle?.onLifecycle)) {
-                const probeOptions: Record<string, unknown> = { ...options.socketOptions };
-                if (Object.keys(clientProperties).length > 0) {
-                    probeOptions.clientProperties = clientProperties;
-                }
+                const probeOptions = buildConnectOptions(options.socketOptions, clientProperties);
 
                 let probe: amqp.ChannelModel | null = null;
                 try {
@@ -1019,6 +1021,15 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
 
             const conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
+
+            // Re-check after the await: a disconnect() that landed while THIS
+            // connect was in flight saw connection === null and closed nothing —
+            // proceeding here would wire and leak an orphaned live connection
+            // (and dispatch `connected` after the caller tore the adapter down).
+            if (closing) {
+                await conn.close().catch(() => undefined);
+                throw new AmqpConnectionError("Adapter closed while connect() was in progress");
+            }
 
             if (recoveryEnabled) {
                 // A lost connection is reported SOLELY via the wrapper's
