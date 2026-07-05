@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "files": [
@@ -61,6 +65,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
     "@connectum/events": "workspace:^",
     "@exodus/test": "catalog:",
     "@testcontainers/toxiproxy": "^12.0.4",

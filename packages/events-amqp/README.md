@@ -453,6 +453,40 @@ await adapter.publish('inbound', body);
 
 > **Clean wire for external contracts.** By default the adapter stamps EventBus *envelope* metadata on every frame: the `x-event-id` and `x-published-at` headers, an auto-generated `messageId`, an auto `timestamp`, and — on mandatory publishes with the default `correlationHeader: true` — a private `x-connectum-publish-id` header. A consumer validating an external contract would see fields it never defined. Set **`publisherOptions.externalContract: true`** (as above) to suppress the whole envelope: the frame then carries only `contentType`, `persistent`/deliveryMode, `mandatory`, and exactly the headers you pass via `PublishOptions.metadata`. In this mode mandatory publishes use single-flight correlation, so no `x-connectum-publish-id` reaches the wire (`correlationHeader` is ignored). Note: `correlationHeader: false` alone removes only the publish-id header — the rest of the envelope still ships, so it is **not** a clean wire on its own. When the contract requires a specific `messageId`/`timestamp`, set them per publish via `PublishOptions.messageId` / `PublishOptions.timestamp` (a caller-supplied value is used as-is; the AMQP `timestamp` property is Unix epoch seconds).
 
+## Testing
+
+A programmable test double ships via the **`@connectum/events-amqp/testing`** subpath (since 1.3.0) — model AMQP failure semantics in unit tests without a broker and without `amqplib` in the runtime graph:
+
+```typescript
+import { FakeAmqpAdapter } from '@connectum/events-amqp/testing';
+import { AmqpPublishNackError, AmqpPublishTimeoutError } from '@connectum/events-amqp';
+
+const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (e) => log.push(e) } });
+const bus = createEventBus({ adapter: fake, routes: [eventRoutes] });
+await bus.start();
+
+// Inject publish outcomes (FIFO; empty queue = ack). This includes
+// AmqpPublishTimeoutError — the state-UNKNOWN outcome that no real broker
+// (or even Toxiproxy) reproduces deterministically:
+fake.control.nextPublish(new AmqpPublishNackError('nacked'), new AmqpPublishTimeoutError('no outcome'));
+await assert.rejects(() => bus.publish(OrderSchema, order), AmqpPublishNackError);
+await assert.rejects(() => bus.publish(OrderSchema, order), AmqpPublishTimeoutError);
+
+// Drive the connection lifecycle deterministically:
+fake.control.dropConnection();     // disconnected → reconnecting (publishes fail fast; subscribes PARK)
+fake.control.failSetup();          // the next recovery re-assert fails (setup-failed for topology errors)
+fake.control.completeRecovery();   // …consume it, then heal on the next call
+fake.control.completeRecovery();   // connected { reconnected: true }, parked subscribes complete
+
+// Deliver events (wildcards + competing-consumer groups) and assert settlement:
+const result = await fake.control.deliver('order.created', payload);
+// result: { delivered, acked, nacked, requeued, failed }
+```
+
+Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering/retries-exhausted adapter throws `already connected`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
+
+Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`); handler `ack`/`nack` calls are recorded in the `deliver()` result but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
+
 ## Dependencies
 
 ### External

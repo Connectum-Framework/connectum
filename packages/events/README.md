@@ -458,7 +458,7 @@ const bus = createEventBus({ adapter: MemoryAdapter(), routes: [eventRoutes] });
 **Test doubles:**
 
 - `MemoryAdapter` (exported here) — in-process pub/sub for the generic happy path: routing, handlers, middleware, DLQ flows.
-- Broker-specific failure semantics (typed AMQP error taxonomy, recovery/lifecycle behavior) cannot be modeled generically — a programmable `FakeAmqpAdapter` will ship via the `@connectum/events-amqp/testing` subpath (tracked in [#203](https://github.com/Connectum-Framework/connectum/issues/203)).
+- Broker-specific failure semantics (typed AMQP error taxonomy, recovery/lifecycle behavior) cannot be modeled generically — use the programmable `FakeAmqpAdapter` from the `@connectum/events-amqp/testing` subpath (since 1.3.0; see the [events-amqp Testing section](../events-amqp/README.md#testing)).
 - For real-broker integration semantics, see each adapter package's testing notes.
 
 ## Exports Summary
