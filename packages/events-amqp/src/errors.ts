@@ -65,11 +65,48 @@ export class AmqpPublishNackError extends AmqpAdapterError {}
 export class AmqpPublishTimeoutError extends AmqpAdapterError {}
 
 /**
+ * Machine-readable identity of the topology object a declaration or
+ * verification failed on. A binding has no name of its own — it is identified
+ * by its endpoints and routing key — hence the discriminated shape.
+ */
+export type AmqpTopologyObject =
+    | { readonly kind: "exchange" | "queue"; readonly name: string }
+    | {
+          readonly kind: "binding";
+          readonly source: string;
+          readonly destination: string;
+          readonly destinationType: "queue" | "exchange";
+          readonly routingKey: string;
+      };
+
+/**
  * Topology declaration or verification failed: missing exchange/queue in
  * `check`/`skip` mode, or a conflicting redeclare (PRECONDITION_FAILED) in
  * `assert` mode.
+ *
+ * `object` identifies the failing topology object structurally (known at the
+ * declare/check site — no broker-reply text parsing needed for CI drift
+ * checks or observability). `object.kind` says WHAT was being declared;
+ * failure classification (WHY it failed) stays with the error class and
+ * `cause`.
  */
-export class AmqpTopologyError extends AmqpAdapterError {}
+export class AmqpTopologyError extends AmqpAdapterError {
+    // `declare` keeps the field type-only: a real class field would install an
+    // enumerable own `object: undefined` on EVERY instance (visible to spread
+    // clones and own-props log serializers) before the constructor body runs.
+    declare readonly object?: AmqpTopologyObject;
+
+    constructor(message: string, options?: { cause?: unknown; object?: AmqpTopologyObject }) {
+        // Forward options as-is: Error's InstallErrorCause installs an own
+        // `cause` only when the key is PRESENT, so message-only construction
+        // stays bit-for-bit identical to the pre-1.3.0 class (no own `cause`).
+        super(message, options);
+        if (options?.object !== undefined) {
+            // Own property appears only when an object is actually supplied.
+            (this as { object?: AmqpTopologyObject }).object = options.object;
+        }
+    }
+}
 
 /** Payload encoding/decoding failed in a custom serialization hook. */
 export class AmqpSerializationError extends AmqpAdapterError {}
