@@ -28,7 +28,7 @@ import { type CreatedProxy, type StartedToxiProxyContainer, ToxiProxyContainer }
 import { connect } from "amqplib";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter, isConnectionLostError } from "../../src/AmqpAdapter.ts";
-import { AmqpConnectionError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
+import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -322,6 +322,265 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             },
         );
         await adapter.disconnect().catch(() => undefined);
+    });
+
+    it("publishRetry: a publish during the recovery window retries and succeeds once recovery completes (#195)", { timeout: 60_000 }, async () => {
+        const retries: Array<{ attempt: number; delay: number }> = [];
+        const received: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.pubretry195",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            publishRetry: { initialDelay: 50, maxDelay: 200, maxRetries: 30, onRetry: (info) => retries.push({ attempt: info.attempt, delay: info.delay }) },
+        });
+        await adapter.connect();
+        try {
+            await adapter.subscribe(
+                ["rec.pubretry195.evt"],
+                async (event, ack) => {
+                    received.push(event.eventId);
+                    await ack();
+                },
+                { group: "g" },
+            );
+
+            await dropConnections();
+            // Publish IMMEDIATELY into the recovery window: pre-#195 this threw
+            // AmqpConnectionError instantly; now it retries until recovery
+            // completes and the message lands.
+            await adapter.publish("rec.pubretry195.evt", new TextEncoder().encode("through-the-blip"));
+
+            assert.ok(retries.length >= 1, "at least one retry was scheduled during the recovery window");
+            assert.equal(retries[0]?.attempt, 1, "onRetry attempts are 1-based");
+            await waitFor(() => received.length === 1);
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("publishRetry: budget exhaustion during a live recovery cycle rethrows the LAST typed connection error (#195)", { timeout: 60_000 }, async () => {
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.pubretry195x",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            publishRetry: { initialDelay: 20, maxDelay: 40, jitter: 0, maxRetries: 2, onRetry: (info) => retries.push(info.attempt) },
+        });
+        await adapter.connect();
+        try {
+            // Broker app down: the recovery cycle stays ALIVE (wrapper keeps
+            // retrying), but every publish attempt fails — the bounded budget
+            // exhausts long before the broker returns.
+            await container.exec(["rabbitmqctl", "stop_app"]);
+            await sleep(1000); // let the drop propagate
+
+            await assert.rejects(
+                () => adapter.publish("rec.pubretry195x.evt", new Uint8Array([1])),
+                (err: unknown) => err instanceof AmqpConnectionError,
+                "after the budget the last typed error surfaces",
+            );
+            assert.deepEqual(retries, [1, 2], "exactly maxRetries retries were attempted");
+        } finally {
+            await container.exec(["rabbitmqctl", "start_app"]).catch(() => undefined);
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry: recovery:false fails fast — no cycle exists to heal, zero retries (#195)", { timeout: 30_000 }, async () => {
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.pubretry195nf",
+            recovery: false,
+            publishRetry: { initialDelay: 20, maxRetries: 5, onRetry: (info) => retries.push(info.attempt) },
+        });
+        await adapter.connect();
+        try {
+            await dropConnections();
+            await sleep(1000);
+
+            const startedAt = Date.now();
+            await assert.rejects(
+                () => adapter.publish("rec.pubretry195nf.evt", new Uint8Array([1])),
+                (err: unknown) => err instanceof AmqpConnectionError,
+            );
+            assert.ok(Date.now() - startedAt < 1_000, "fail-fast: nothing will heal a non-recovering adapter");
+            assert.deepEqual(retries, [], "no budget burned when no recovery cycle exists");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry: a broker nack is NOT auto-retried (boundary pin) (#195)", { timeout: 30_000 }, async () => {
+        // Over-capacity queue with reject-publish → deterministic nack.
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.nack195", "direct", { durable: true });
+        await preCh.assertQueue("rec.nack195.q", { durable: true, arguments: { "x-max-length": 1, "x-overflow": "reject-publish" } });
+        await preCh.bindQueue("rec.nack195.q", "rec.nack195", "k");
+        await preCh.close();
+        await pre.close();
+
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.nack195",
+            exchangeType: "direct",
+            topologyMode: "skip",
+            publishRetry: { initialDelay: 20, maxRetries: 5, onRetry: (info) => retries.push(info.attempt) },
+        });
+        await adapter.connect();
+        try {
+            // Fill the queue to capacity, then overflow → nack.
+            await adapter.publish("k", new Uint8Array([1]));
+            await assert.rejects(
+                () => adapter.publish("k", new Uint8Array([2])),
+                (err: unknown) => err instanceof AmqpPublishNackError,
+                "the nack surfaces immediately",
+            );
+            assert.deepEqual(retries, [], "a nack never enters the retry loop");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry + single-flight: retries hold the chain — ordering preserved (#195)", { timeout: 60_000 }, async () => {
+        const received: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.chain195",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            publisherOptions: { mandatory: true, correlationHeader: false },
+            publishRetry: { initialDelay: 50, maxDelay: 200, maxRetries: 30 },
+        });
+        await adapter.connect();
+        try {
+            await adapter.subscribe(
+                ["rec.chain195.evt"],
+                async (event, ack) => {
+                    received.push(new TextDecoder().decode(event.payload));
+                    await ack();
+                },
+                { group: "g" },
+            );
+
+            await dropConnections();
+            // A enters the retry loop inside its single-flight slot; B queues
+            // behind it. Hold-the-chain: B must not start (or land) before A.
+            const a = adapter.publish("rec.chain195.evt", new TextEncoder().encode("A"));
+            const b = adapter.publish("rec.chain195.evt", new TextEncoder().encode("B"));
+            await Promise.all([a, b]);
+
+            await waitFor(() => received.length === 2);
+            assert.deepEqual(received, ["A", "B"], "ordering across the retrying slot is preserved");
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("publishRetry: a deterministic channel-close (404) is NOT retried and surfaces the broker reply as cause (#195)", { timeout: 30_000 }, async () => {
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            // Never declared anywhere; skip mode publishes into the void and
+            // the broker kills the CHANNEL with reply 404.
+            exchange: "rec.nochannel195",
+            topologyMode: "skip",
+            publishRetry: { initialDelay: 200, maxDelay: 400, jitter: 0, maxRetries: 10, onRetry: (info) => retries.push(info.attempt) },
+        });
+        await adapter.connect();
+        try {
+            const startedAt = Date.now();
+            await assert.rejects(
+                () => adapter.publish("rec.nochannel195.evt", new Uint8Array([1])),
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError, "surfaces as a connection-class error");
+                    const cause = (err as Error).cause as { code?: number } | undefined;
+                    assert.equal(cause?.code, 404, "the broker reply (404) is preserved as the root cause, not amqplib's generic 'channel closed'");
+                    return true;
+                },
+            );
+            const took = Date.now() - startedAt;
+            assert.ok(took < 2_000, `a deterministic channel-close must not burn the retry budget (took ${took}ms)`);
+            assert.deepEqual(retries, [], "zero retries for a deterministic channel-close");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry does not burn budget against a fatal topology stop (#195 × #201)", { timeout: 60_000 }, async () => {
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.fatalretry", "topic", { durable: true });
+        await preCh.assertQueue("rec.fatalretry.q", { durable: true });
+        await preCh.close();
+        await pre.close();
+
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.fatalretry",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            topology: { queues: [{ name: "rec.fatalretry.q", durable: true }] },
+            topologyMode: "check",
+            treatTopologyErrorAsFatal: true,
+            publishRetry: { initialDelay: 200, maxDelay: 400, maxRetries: 30 },
+            lifecycle: { onLifecycle: (event) => events.push(event) },
+        });
+        await adapter.connect();
+        try {
+            const admin = await connect(url);
+            const adminCh = await admin.createChannel();
+            await adminCh.deleteQueue("rec.fatalretry.q");
+            await adminCh.close();
+            await admin.close();
+
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "reconnect-failed"), 30_000);
+
+            // The cycle is terminally dead — the retry loop must recognize it
+            // (connection === null) instead of burning 30 retries of backoff.
+            const startedAt = Date.now();
+            await assert.rejects(
+                () => adapter.publish("rec.fatalretry.evt", new Uint8Array([1])),
+                (err: unknown) => err instanceof AmqpConnectionError,
+            );
+            assert.ok(Date.now() - startedAt < 2_000, "no budget burn against a dead recovery cycle");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry: disconnect() during the backoff aborts the loop promptly with the last typed error (#195)", { timeout: 60_000 }, async () => {
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.abortretry195",
+            recovery: { initialDelay: 30_000, maxDelay: 60_000 }, // recovery parked far away — the wrapper stays alive
+            publishRetry: { initialDelay: 4000, maxDelay: 8000, jitter: 0, maxRetries: 5 },
+        });
+        await adapter.connect();
+        try {
+            await container.exec(["rabbitmqctl", "stop_app"]);
+            await sleep(1000);
+
+            const publishing = adapter.publish("rec.abortretry195.evt", new Uint8Array([1]));
+            publishing.catch(() => undefined); // observer: the rejection is asserted below
+            await sleep(300); // let the first attempt fail and enter the 4s backoff
+
+            const abortStartedAt = Date.now();
+            await adapter.disconnect();
+            await assert.rejects(
+                () => publishing,
+                (err: unknown) => err instanceof AmqpConnectionError,
+            );
+            const latency = Date.now() - abortStartedAt;
+            assert.ok(latency < 2_000, `disconnect() must interrupt the retry backoff promptly (took ${latency}ms of a 4000ms delay)`);
+        } finally {
+            await container.exec(["rabbitmqctl", "start_app"]).catch(() => undefined);
+            await adapter.disconnect().catch(() => undefined);
+        }
     });
 
     it("initialConnectMaxRetries: unreachable broker → per-attempt reconnecting events, terminal reconnect-failed, typed rejection (#198)", { timeout: 30_000 }, async () => {

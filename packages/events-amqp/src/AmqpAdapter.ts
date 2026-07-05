@@ -164,6 +164,26 @@ function buildConnectOptions(socketOptions: Record<string, unknown> | undefined,
     return opts;
 }
 
+/**
+ * The publish AUTO-RETRY boundary (#195): which publish failures the opt-in
+ * `publishRetry` retries inline.
+ *
+ * Deliberately NARROWER than the at-least-once REPUBLISH matrix in the error
+ * taxonomy (`errors.ts`): a broker nack is republish-safe by policy but is an
+ * explicit refusal — hammering it in a tight loop is not a retry strategy.
+ * Connection-class outcomes (`AmqpConnectionError`: publish during recovery,
+ * in-flight confirm lost to a drop) are retriable; a timeout
+ * (`AmqpPublishTimeoutError`, state UNKNOWN) joins only via
+ * `retryOnTimeout: true`. Deterministic outcomes (unroutable, serialization,
+ * topology) never retry.
+ */
+export function isAutoRetriablePublishError(err: unknown, options?: { readonly retryOnTimeout?: boolean }): boolean {
+    if (err instanceof AmqpConnectionError) {
+        return true;
+    }
+    return options?.retryOnTimeout === true && err instanceof AmqpPublishTimeoutError;
+}
+
 /** AMQP reply codes that identify DETERMINISTIC topology drift (vs a transient failure). */
 const FATAL_TOPOLOGY_REPLY_CODES: ReadonlySet<number> = new Set([404, 406]);
 
@@ -450,6 +470,29 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     // mandatory correlation so no `x-connectum-publish-id` header reaches the
     // wire — `correlationHeader` is ignored in this mode.
     const externalContract = options.publisherOptions?.externalContract ?? false;
+    // Opt-in bounded publish retry (#195): null = disabled (bit-for-bit).
+    const publishRetryRaw = options.publishRetry;
+    const publishRetry =
+        publishRetryRaw === undefined || publishRetryRaw === false
+            ? null
+            : (() => {
+                  const o = publishRetryRaw === true ? {} : publishRetryRaw;
+                  const rawBudget = o.maxRetries;
+                  // Infinity is honored (retry until disconnect() aborts),
+                  // mirroring recovery's maxRetries semantics.
+                  const maxRetries =
+                      rawBudget === Number.POSITIVE_INFINITY
+                          ? Number.POSITIVE_INFINITY
+                          : typeof rawBudget === "number" && Number.isFinite(rawBudget)
+                            ? Math.max(0, Math.floor(rawBudget))
+                            : 5;
+                  return {
+                      maxRetries,
+                      backoff: { initialDelay: o.initialDelay ?? 100, maxDelay: o.maxDelay ?? 30_000, factor: o.factor ?? 2, jitter: o.jitter ?? 0.2 },
+                      retryOnTimeout: o.retryOnTimeout === true,
+                      onRetry: o.onRetry,
+                  };
+              })();
     const correlationHeader = externalContract ? false : (options.publisherOptions?.correlationHeader ?? true);
     const lifecycle = options.lifecycle;
 
@@ -467,6 +510,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * uses to tell a connection loss from a broker nack.
      */
     const closedPublishChannels = new WeakSet<amqp.ConfirmChannel>();
+    // Root cause of a channel-level failure (e.g. 404 closing the channel on a
+    // publish to a missing exchange). Confirm callbacks only see amqplib's
+    // generic Error("channel closed") — this map preserves the broker reply
+    // (with its code) for diagnosability and for the publish-retry gate.
+    const publishChannelErrors = new WeakMap<amqp.ConfirmChannel, Error>();
 
     /** Pending mandatory publishes awaiting confirm (publish-id → return flag). */
     const pendingReturns = new Map<string, PendingReturn>();
@@ -634,10 +682,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
         });
 
-        ch.on("error", () => {
+        ch.on("error", (err: Error) => {
             // Channel-level errors surface through the connection lifecycle
-            // and through rejected confirm callbacks; nothing to do here, but
-            // the listener prevents unhandled 'error' crashes.
+            // and through rejected confirm callbacks; the listener also
+            // prevents unhandled 'error' crashes. Record the root cause (the
+            // broker reply carries the code, e.g. 404) — the confirm callback
+            // only ever sees a generic "channel closed".
+            publishChannelErrors.set(ch, err);
         });
 
         publishChannel = ch;
@@ -1170,8 +1221,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         },
 
         async publish(eventType: string, payload: Uint8Array, publishOptions?: PublishOptions): Promise<void> {
-            const ch = publishChannel;
-            if (!ch || closing) {
+            // With retry disabled the entry guard is the historical fail-fast;
+            // with retry enabled a disconnected window is a RETRIABLE state
+            // (the whole point of #195), so the guard moves into each attempt.
+            const chAtEntry = publishChannel;
+            if (publishRetry === null && (!chAtEntry || closing)) {
                 throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
             }
 
@@ -1215,10 +1269,19 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             // default; single-flight serialization when the header is disabled.
             // Frame ordering alone is NOT reliable — returns carry no
             // deliveryTag and confirms of other messages may interleave.
-            const publishId: string | null = mandatory ? eventId : null;
-            if (mandatory && correlationHeader) {
-                headers[PUBLISH_ID_HEADER] = eventId;
-            }
+            // The correlation id is PER ATTEMPT under publishRetry: a late
+            // basic.return from an abandoned (timed-out) attempt must never
+            // poison the next attempt's pending record. It is private wire
+            // correlation — the dedup identity (x-event-id / messageId) stays
+            // stable across attempts.
+            let attemptSerial = 0;
+            const nextPublishId = (): string | null => {
+                if (!mandatory) {
+                    return null;
+                }
+                attemptSerial += 1;
+                return attemptSerial === 1 ? eventId : `${eventId}#${attemptSerial}`;
+            };
 
             // messageId / timestamp: a caller-supplied value (PublishOptions)
             // always wins; otherwise auto-populate in normal mode and OMIT in
@@ -1235,7 +1298,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 ...(resolvedTimestamp !== undefined ? { timestamp: resolvedTimestamp } : {}),
             };
 
-            const doPublish = async (): Promise<void> => {
+            const doPublish = async (ch: amqp.ConfirmChannel): Promise<void> => {
+                const publishId = nextPublishId();
+                if (publishId !== null && correlationHeader) {
+                    // Restamped per attempt (publishProps.headers references
+                    // this object; amqplib serializes at publish time).
+                    headers[PUBLISH_ID_HEADER] = publishId;
+                }
                 const pending: PendingReturn = { returned: false };
                 if (publishId !== null) {
                     pendingReturns.set(publishId, pending);
@@ -1270,9 +1339,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                         // have swapped publishChannel) is a connection loss,
                                         // not a broker nack — classify by the structural
                                         // close signal, with the text regex as a fallback.
+                                        // A channel-level root cause (broker reply with its
+                                        // code, e.g. 404) replaces amqplib's generic
+                                        // "channel closed" for diagnosability and the
+                                        // publish-retry determinism gate.
                                         reject(
                                             classifyConfirmError({
-                                                err,
+                                                err: (closedPublishChannels.has(ch) ? publishChannelErrors.get(ch) : undefined) ?? err,
                                                 closing,
                                                 channelClosed: closedPublishChannels.has(ch),
                                                 channelSwapped: publishChannel !== ch,
@@ -1287,7 +1360,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                 });
                             });
                         } catch (err) {
-                            settle(() => reject(new AmqpConnectionError(`Publish failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })));
+                            const rootCause = publishChannelErrors.get(ch) ?? err;
+                            settle(() => reject(new AmqpConnectionError(`Publish failed: ${err instanceof Error ? err.message : String(err)}`, { cause: rootCause })));
                             return;
                         }
 
@@ -1302,17 +1376,81 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 }
             };
 
+            // Bounded retry loop (#195): strictly for the auto-retry boundary
+            // (isAutoRetriablePublishError), aborting on closing. eventId /
+            // messageId / timestamp were resolved ONCE above, so every attempt
+            // re-sends the identical message (consumer-side dedup anchor);
+            // only the private return-correlation id differs per attempt.
+            const runPublish = async (): Promise<void> => {
+                if (publishRetry === null) {
+                    // Bit-for-bit legacy path: single attempt on the channel
+                    // captured at entry, no re-checks at slot-execution time
+                    // (a queued single-flight publish that starts during a
+                    // disconnect() race is attempted, exactly as before).
+                    return doPublish(chAtEntry as amqp.ConfirmChannel);
+                }
+                for (let attempt = 0; ; attempt += 1) {
+                    try {
+                        // Re-resolve the CURRENT channel per attempt (recovery
+                        // may have swapped it between retries).
+                        const ch = publishChannel;
+                        if (!ch || closing) {
+                            throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
+                        }
+                        return await doPublish(ch);
+                    } catch (err) {
+                        if (closing || attempt >= publishRetry.maxRetries || !isAutoRetriablePublishError(err, publishRetry)) {
+                            throw err;
+                        }
+                        // Deterministic channel-close: a broker reply with a
+                        // 404/406 code killed the CHANNEL (e.g. a publish to a
+                        // missing exchange under topologyMode "skip") — the
+                        // connection stays up, so recovery never recreates the
+                        // channel and retrying cannot heal. Same reply-code
+                        // philosophy as treatTopologyErrorAsFatal.
+                        const cause = err instanceof Error ? (err.cause as { code?: unknown } | null | undefined) : undefined;
+                        if (typeof cause?.code === "number" && FATAL_TOPOLOGY_REPLY_CODES.has(cause.code)) {
+                            throw err;
+                        }
+                        // No connection object at all (fatal topology stop,
+                        // post-disconnect, never connected): no recovery cycle
+                        // exists to heal us — burn no budget.
+                        if (connection === null) {
+                            throw err;
+                        }
+                        const delay = computeRecoveryDelay(publishRetry.backoff, attempt + 1);
+                        try {
+                            publishRetry.onRetry?.({ attempt: attempt + 1, delay, error: err instanceof Error ? err : new Error(String(err)), routingKey });
+                        } catch {
+                            // Observability hooks must not break the retry loop.
+                        }
+                        // Interruptible backoff — disconnect()/drain must not
+                        // park behind a long delay (contract with #196).
+                        for (let waited = 0; waited < delay && !closing; waited += 100) {
+                            await new Promise<void>((resolve) => {
+                                globalThis.setTimeout(resolve, Math.min(100, delay - waited));
+                            });
+                        }
+                        if (closing) {
+                            throw err;
+                        }
+                    }
+                }
+            };
+
             // Confirms are always per-message: every publish resolves on its
             // own broker ack (or rejects with a typed error).
             if (mandatory && !correlationHeader) {
                 // Single-flight: serialize mandatory publishes so the headerless
-                // return frame is unambiguously the outstanding one.
-                const run = mandatoryChain.then(doPublish, doPublish);
+                // return frame is unambiguously the outstanding one. The WHOLE
+                // retry loop runs inside the slot (hold-the-chain): ordering is
+                // preserved at the cost of head-of-line blocking during backoff.
+                const run = mandatoryChain.then(runPublish, runPublish);
                 mandatoryChain = run.catch(() => undefined);
                 return run;
             }
 
-            return doPublish();
+            return runPublish();
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {

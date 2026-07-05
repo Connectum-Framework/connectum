@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { AmqpAdapter, classifyConfirmError, computeRecoveryDelay, dispatchLifecycle, isConnectionLostError, isDeterministicTopologyDrift, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
-import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
+import {
+    AmqpAdapter,
+    classifyConfirmError,
+    computeRecoveryDelay,
+    dispatchLifecycle,
+    isAutoRetriablePublishError,
+    isConnectionLostError,
+    isDeterministicTopologyDrift,
+    toAmqpPattern,
+    trackChannelClose,
+    wireRecoveryLifecycle,
+} from "../../src/AmqpAdapter.ts";
+import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "../../src/errors.ts";
 import type { AmqpLifecycleCallbacks, AmqpLifecycleEvent } from "../../src/types.ts";
 
 describe("isConnectionLostError", () => {
@@ -541,8 +552,24 @@ describe("dispatchLifecycle", () => {
     it("is a no-op without a lifecycle object", () => {
         assert.doesNotThrow(() => dispatchLifecycle(undefined, { type: "unblocked" }));
     });
+});
 
-    it("computeRecoveryDelay replicates amqplib's formula: cap-before-jitter, symmetric offset (#198 pin)", () => {
+describe("isAutoRetriablePublishError", () => {
+    it("the AUTO-RETRY boundary is narrower than the republish matrix (#195)", () => {
+        assert.equal(isAutoRetriablePublishError(new AmqpConnectionError("recovery in progress")), true, "connection-class = retriable");
+        assert.equal(isAutoRetriablePublishError(new AmqpPublishTimeoutError("no outcome")), false, "timeout NOT retriable by default (state UNKNOWN)");
+        assert.equal(isAutoRetriablePublishError(new AmqpPublishTimeoutError("no outcome"), { retryOnTimeout: true }), true, "timeout joins the boundary only via opt-in");
+        assert.equal(isAutoRetriablePublishError(new AmqpPublishNackError("nacked"), { retryOnTimeout: true }), false, "a nack is republish-safe by POLICY but never auto-retried");
+        assert.equal(isAutoRetriablePublishError(new AmqpUnroutableError("unroutable", "k"), { retryOnTimeout: true }), false, "deterministic: unroutable");
+        assert.equal(isAutoRetriablePublishError(new AmqpSerializationError("bad encode"), { retryOnTimeout: true }), false, "deterministic: serialization");
+        assert.equal(isAutoRetriablePublishError(new AmqpTopologyError("drift"), { retryOnTimeout: true }), false, "deterministic: topology");
+        assert.equal(isAutoRetriablePublishError(new Error("raw"), { retryOnTimeout: true }), false, "raw errors never gate a retry");
+    });
+
+});
+
+describe("computeRecoveryDelay", () => {
+    it("replicates amqplib's formula: cap-before-jitter, symmetric offset (#198 pin)", () => {
         const opts = { initialDelay: 100, maxDelay: 400, factor: 2, jitter: 0.2 };
         // random() = 0.5 → offset 0 → exact exponential base, capped at maxDelay.
         assert.equal(computeRecoveryDelay(opts, 1, () => 0.5), 100);
@@ -572,7 +599,10 @@ describe("dispatchLifecycle", () => {
         assert.equal(computeRecoveryDelay({ factor: Number.NaN, jitter: Number.NaN }, 2, () => 1), 240);
     });
 
-    it("isDeterministicTopologyDrift: 404/406 reply codes on the cause are fatal, everything else is not (#201)", () => {
+});
+
+describe("isDeterministicTopologyDrift", () => {
+    it("404/406 reply codes on the cause are fatal, everything else is not (#201)", () => {
         const withCode = (code: number) => new AmqpTopologyError("x", { cause: Object.assign(new Error("y"), { code }) });
         assert.equal(isDeterministicTopologyDrift(withCode(404)), true, "404 NOT_FOUND = deterministic drift");
         assert.equal(isDeterministicTopologyDrift(withCode(406)), true, "406 PRECONDITION_FAILED = deterministic drift");
@@ -594,6 +624,9 @@ describe("dispatchLifecycle", () => {
         );
     });
 
+});
+
+describe("AmqpTopologyError.object", () => {
     it("AmqpTopologyError carries the failing object's identity and the cause (#202)", () => {
         const cause = new Error("PRECONDITION_FAILED");
         const err = new AmqpTopologyError("Topology declaration failed", { cause, object: { kind: "queue", name: "orders.q" } });
@@ -625,6 +658,9 @@ describe("dispatchLifecycle", () => {
         assert.equal(Object.hasOwn(withObject, "cause"), false, "supplying only 'object' must not install an own 'cause'");
     });
 
+});
+
+describe("dispatchLifecycle exception isolation", () => {
     it("isolates a throwing onLifecycle: no propagation, flat shim still fires", () => {
         let flatFired = 0;
         const lifecycle: AmqpLifecycleCallbacks = {

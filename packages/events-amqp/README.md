@@ -128,6 +128,7 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | `treatTopologyErrorAsFatal` | `boolean` | `false` | Stop the reconnect cycle on **deterministic** topology drift during steady-state recovery (AMQP reply code `404`/`406` on the cause) instead of retrying forever; reports terminal `reconnect-failed` after `setup-failed`. Transient causes (`320`/`541`/`405`, connection drops) stay in recovery. Since 1.3.0 |
 | `lifecycle` | `AmqpLifecycleCallbacks` | `undefined` | Connection lifecycle callbacks |
 | `publishTimeoutMs` | `number` | `30000` | Per-publish broker-outcome deadline |
+| `publishRetry` | `boolean \| AmqpPublishRetryOptions` | `false` | Opt-in bounded retry for **connection-class** publish failures (`AmqpConnectionError`; timeouts only via `retryOnTimeout`) — a broker blip becomes a transparent delay instead of an instant rejection. At-least-once; ids stay stable across attempts. See [Publish Retry](#publish-retry). Since 1.3.0 |
 
 ### AmqpExchangeOptions
 
@@ -296,9 +297,30 @@ Event metadata is transmitted as AMQP message headers. Internal headers (`x-even
 The adapter publishes on a confirm channel with **per-message confirms**: every `publish()` resolves when the broker acks that specific message and rejects when the broker nacks it. There is no batching and no `waitForConfirms()` -- each publish has its own outcome.
 
 - A publish with no broker outcome (ack/nack/return/connection loss) within `publishTimeoutMs` (default 30000 ms) rejects with `AmqpPublishTimeoutError`. The message state is then UNKNOWN -- it may or may not have been routed; an at-least-once producer should republish.
-- A publish during a disconnected window (or while recovery is in progress) fails fast with `AmqpConnectionError`. In-flight publishes at the moment of a connection loss also reject with `AmqpConnectionError`.
+- A publish during a disconnected window (or while recovery is in progress) fails fast with `AmqpConnectionError` — unless the opt-in [`publishRetry`](#publish-retry) is enabled, which retries connection-class failures in place. In-flight publishes at the moment of a connection loss also reject with `AmqpConnectionError` (retried under the same opt-in).
 
 > **Note**: confirms are always per-message — every `publish()` resolves on its own broker ack (or rejects with a typed error). There is no fire-and-forget mode. (The legacy `sync` flag was removed from `PublishOptions` ahead of the first stable release.)
+
+### Publish Retry
+
+Opt-in (`publishRetry: true` or an `AmqpPublishRetryOptions` object, since 1.3.0): a `publish()` that fails with a **connection-class** outcome — publishing during a recovery window, or an in-flight confirm lost to a drop — is retried in place (the caller's promise stays pending) instead of rejecting immediately.
+
+```typescript
+publishRetry: {
+  maxRetries: 5,        // retries after the first attempt (default 5 — bounded, unlike recovery)
+  initialDelay: 100,    // backoff mirrors the recovery formula (cap-before-jitter)
+  retryOnTimeout: false, // opt-in: also retry AmqpPublishTimeoutError (state UNKNOWN — raises duplicate likelihood)
+  onRetry: ({ attempt, delay, routingKey }) => metrics.increment('amqp.publish_retry'),
+}
+```
+
+- **The auto-retry boundary is `isAutoRetriablePublishError` (exported)** and is deliberately **narrower** than the at-least-once *republish* matrix below: a broker `nack` is republish-safe by policy but is an explicit refusal — it is never auto-retried inline. Deterministic outcomes (unroutable, serialization, topology) never retry.
+- **At-least-once, full stop**: a retry after an in-flight confirm loss (state UNKNOWN) may duplicate on the broker. `x-event-id` / `messageId` stay **stable across attempts** (incl. `externalContract` with caller-supplied ids), so consumer-side dedup keys on them.
+- **Worst-case latency**: each attempt is bounded by `publishTimeoutMs` (default 30s) — at defaults a single `publish()` can be held for minutes, far beyond typical 30s RPC timeouts. Bound the budget via `maxRetries`/`publishTimeoutMs`; there is deliberately no second overall-deadline knob.
+- **Shutdown-aware**: the loop aborts promptly on `disconnect()` (also when the adapter has been terminally stopped by `treatTopologyErrorAsFatal` — no budget is burned against a dead cycle), and — living inside the `adapter.publish()` promise — is automatically covered by the bus-level `drainPublishTimeout`.
+- **Single-flight interaction** (`mandatory: true` with `correlationHeader: false`; `externalContract` forces the latter but single-flight still requires `mandatory`): retries **hold the chain** — ordering is preserved at the cost of head-of-line blocking during backoff. In this headerless mode a late `basic.return` from an abandoned timed-out attempt may mark the current one — prefer the default header correlation when combining `mandatory` with `retryOnTimeout`.
+- **Deterministic channel-close is not retried**: a broker reply with a `404`/`406` code that killed the publish *channel* (e.g. a publish to a missing exchange under `topologyMode: "skip"`) surfaces immediately with the broker reply as `cause` — the connection stays up, recovery never recreates the channel, so retrying cannot heal.
+- The publish channel is re-resolved on every attempt, so a recovery swap mid-loop is picked up automatically (a *connection*-level recovery; see the previous bullet for channel-only closes).
 
 ### Mandatory Publishing and basic.return Correlation
 

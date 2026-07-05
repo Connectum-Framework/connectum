@@ -191,6 +191,58 @@ export interface AmqpAdapterOptions {
     readonly treatTopologyErrorAsFatal?: boolean;
 
     /**
+     * Opt-in bounded publish retry for CONNECTION-CLASS outcomes (since 1.3.0).
+     *
+     * When enabled, a `publish()` that fails with `AmqpConnectionError` —
+     * publishing during a recovery window, or an in-flight confirm lost to a
+     * connection drop — is retried in place (the caller's promise stays
+     * pending) instead of rejecting immediately: a short broker blip becomes
+     * a transparent delay. `true` = defaults; an object tunes the budget.
+     *
+     * The retry boundary is {@link isAutoRetriablePublishError} — deliberately
+     * NARROWER than the at-least-once republish matrix in the error taxonomy:
+     * a broker `nack` is republish-safe by policy but is NOT auto-retried
+     * inline (it is an explicit broker refusal, e.g. an over-capacity queue —
+     * hammering it in a tight loop helps nobody). `AmqpPublishTimeoutError`
+     * joins the boundary only with `retryOnTimeout: true`.
+     *
+     * Semantics — read before enabling:
+     * - **At-least-once, full stop.** A retried publish whose previous attempt
+     *   was lost IN FLIGHT (confirm never arrived: state UNKNOWN) may
+     *   duplicate on the broker. `x-event-id` / `messageId` stay STABLE across
+     *   attempts (also with `externalContract` — a caller-supplied id is
+     *   reused as-is), so consumer-side dedup keys on them.
+     * - **Worst-case latency**: each attempt is bounded by `publishTimeoutMs`
+     *   (default 30s), so `maxRetries: 5` can hold a single `publish()` for
+     *   several minutes worst-case — far beyond typical 30s RPC timeouts.
+     *   There is deliberately no second overall-deadline knob: bound the
+     *   budget via `maxRetries`/`publishTimeoutMs`.
+     * - **Shutdown-aware**: the loop aborts on `disconnect()` (throws the last
+     *   connection error) and, living inside the `adapter.publish()` promise,
+     *   is automatically covered by the bus-level `drainPublishTimeout`.
+     * - **Single-flight** (`mandatory: true` with `correlationHeader: false`;
+     *   `externalContract` forces the latter but single-flight still requires
+     *   `mandatory`): retries hold the chain — ordering is preserved at the
+     *   cost of head-of-line blocking during backoff. In this headerless mode
+     *   a late `basic.return` from an abandoned timed-out attempt may mark the
+     *   current one (correlation is attempt-agnostic without the header) —
+     *   prefer the default header correlation when combining `mandatory` with
+     *   `retryOnTimeout`.
+     * - **Deterministic channel-close is not retried**: a broker reply with a
+     *   `404`/`406` code that killed the publish CHANNEL (e.g. a publish to a
+     *   missing exchange under `topologyMode: "skip"`) surfaces immediately
+     *   with the broker reply as `cause` — the connection stays up, recovery
+     *   never recreates the channel, so retrying cannot heal.
+     *
+     * Backoff mirrors the recovery formula (same knob names and semantics,
+     * incl. cap-before-jitter), but the DEFAULT budget differs: `maxRetries`
+     * here defaults to **5** (bounded), not `Infinity`.
+     *
+     * @default undefined (disabled — behavior unchanged)
+     */
+    readonly publishRetry?: boolean | AmqpPublishRetryOptions;
+
+    /**
      * Connection lifecycle callbacks. Connection errors are surfaced here —
      * not just logged.
      */
@@ -399,6 +451,39 @@ export type AmqpLifecycleEvent =
     | { readonly type: "setup-failed"; readonly initial: boolean; readonly attempt: number; readonly error: Error }
     | { readonly type: "blocked"; readonly reason: string }
     | { readonly type: "unblocked" };
+
+/**
+ * Tuning for the opt-in bounded publish retry
+ * ({@link AmqpAdapterOptions.publishRetry}). Backoff knobs mirror
+ * {@link AmqpRecoveryOptions} (same names, same cap-before-jitter semantics)
+ * — but `maxRetries` defaults to a BOUNDED `5` here, not `Infinity`.
+ */
+export interface AmqpPublishRetryOptions {
+    /** Retries after the first attempt (N retries = N+1 attempts). `Infinity` is honored — retry until `disconnect()` aborts. @default 5 */
+    readonly maxRetries?: number;
+    /** First retry delay in ms. @default 100 */
+    readonly initialDelay?: number;
+    /** Base delay cap in ms; jitter applies on top of the capped base. @default 30000 */
+    readonly maxDelay?: number;
+    /** Exponential backoff factor. @default 2 */
+    readonly factor?: number;
+    /** Symmetric jitter factor (0..1). @default 0.2 */
+    readonly jitter?: number;
+    /**
+     * Also retry `AmqpPublishTimeoutError` (no broker outcome within
+     * `publishTimeoutMs`). The message state at a timeout is UNKNOWN, so this
+     * raises the duplicate likelihood — enable only with consumer-side dedup.
+     * @default false
+     */
+    readonly retryOnTimeout?: boolean;
+    /**
+     * Observability hook, invoked once per scheduled retry. MUST NOT throw
+     * (exceptions are isolated). Scoped here deliberately — publish retries
+     * are per-operation events, not connection lifecycle, so they do not join
+     * {@link AmqpLifecycleEvent}.
+     */
+    readonly onRetry?: (info: { readonly attempt: number; readonly delay: number; readonly error: Error; readonly routingKey: string }) => void;
+}
 
 /**
  * Connection lifecycle callbacks.

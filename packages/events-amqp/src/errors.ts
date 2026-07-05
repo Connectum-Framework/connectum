@@ -36,8 +36,11 @@ export class AmqpAdapterError extends Error {
 
 /**
  * Connection is absent, lost, or recovery is in progress / exhausted.
- * Publishes during a disconnected window fail fast with this error;
- * in-flight confirms are rejected with it on connection loss.
+ * Publishes during a disconnected window fail fast with this error (unless
+ * the opt-in `publishRetry` is enabled — connection-class failures are then
+ * retried in place within the AUTO-RETRY boundary, see
+ * `isAutoRetriablePublishError`); in-flight confirms are rejected with it on
+ * connection loss.
  */
 export class AmqpConnectionError extends AmqpAdapterError {}
 
