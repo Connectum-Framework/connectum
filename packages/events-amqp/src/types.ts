@@ -152,6 +152,44 @@ export interface AmqpAdapterOptions {
     readonly failFastOnInitialSetupError?: boolean;
 
     /**
+     * Treat DETERMINISTIC topology drift during steady-state recovery as
+     * fatal: stop the reconnect cycle instead of retrying forever against a
+     * misconfigured broker.
+     *
+     * Under the default `maxRetries: Infinity`, a queue/exchange deleted or
+     * redeclared incompatibly while the adapter is reconnecting makes every
+     * recovery attempt fail deterministically — the adapter would retry
+     * forever, reporting `setup-failed` on each attempt but never giving up.
+     * With this flag the adapter stops the cycle on the first such failure
+     * and reports the terminal `reconnect-failed` lifecycle event (after the
+     * `setup-failed` event for the same attempt); subsequent publishes fail
+     * fast with `AmqpConnectionError`.
+     *
+     * The gate is the AMQP reply code of the failure cause — `404`
+     * (NOT_FOUND) or `406` (PRECONDITION_FAILED) — NOT the error class:
+     * transient causes wrapped into `AmqpTopologyError` during a setup pass
+     * (broker restarting `320`, internal error `541`, resource locked `405`,
+     * a mid-setup connection drop) stay in normal recovery. One known
+     * transient 404 is excluded explicitly: a RabbitMQ cluster classic queue
+     * whose home node is down ("... down or inaccessible") stays in recovery.
+     *
+     * After the fatal stop the adapter is fully torn down: consumers are dead
+     * (subscription records are cleared, mirroring `disconnect()`), publishes
+     * fail fast, and a later `connect()` starts from a clean slate —
+     * re-subscribe explicitly.
+     *
+     * Scope: steady-state recovery only. Boot-time drift is the startup
+     * probe's job — see {@link failFastOnInitialSetupError}. Setting both
+     * covers boot and steady state; the remaining gap — broker unreachable at
+     * `connect()` time with drift surfacing before the first successful
+     * connect — is covered by neither flag until the bounded initial phase
+     * lands ({@link https://github.com/Connectum-Framework/connectum/issues/198}).
+     *
+     * @default false
+     */
+    readonly treatTopologyErrorAsFatal?: boolean;
+
+    /**
      * Connection lifecycle callbacks. Connection errors are surfaced here —
      * not just logged.
      */
@@ -293,7 +331,9 @@ export interface AmqpRecoveryOptions {
  * - `disconnected` fires once per connection loss (a socket-level cut no longer
  *   double-fires via the raw `error` event — fixed in 1.3.0).
  * - `reconnecting` fires once per scheduled retry AFTER the connection has been
- *   established once; the terminal retries-exhausted case is `reconnect-failed`.
+ *   established once. `reconnect-failed` is terminal and fires for either of
+ *   its two triggers: the retry budget is exhausted (`maxRetries`), or the
+ *   fatal topology policy stopped the cycle (`treatTopologyErrorAsFatal`).
  * - `setup-failed` reports a topology/setup failure on the initial validation
  *   probe (`initial: true`, `attempt: 0`) or a reconnect re-assert
  *   (`initial: false`, `attempt` >= 1).
@@ -354,8 +394,10 @@ export interface AmqpLifecycleCallbacks {
     /**
      * A reconnect attempt has been scheduled. Fires exactly ONCE per scheduled
      * retry (amqplib's `reconnect-scheduled`). A failed attempt that also emits
-     * `connect-failed` does NOT double-invoke this; the terminal, retries-exhausted
-     * case is reported via {@link onReconnectFailed}, not here.
+     * `connect-failed` does NOT double-invoke this; the terminal case (retry
+     * budget exhausted, or a fatal topology stop under
+     * `treatTopologyErrorAsFatal`) is reported via {@link onReconnectFailed},
+     * not here.
      *
      * @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "reconnecting"`). Kept until at least 2.0.
      */

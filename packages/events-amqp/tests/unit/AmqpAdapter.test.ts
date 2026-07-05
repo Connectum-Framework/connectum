@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { AmqpAdapter, classifyConfirmError, dispatchLifecycle, isConnectionLostError, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, classifyConfirmError, dispatchLifecycle, isConnectionLostError, isDeterministicTopologyDrift, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
 import type { AmqpLifecycleCallbacks, AmqpLifecycleEvent } from "../../src/types.ts";
 
@@ -294,11 +294,11 @@ describe("trackChannelClose", () => {
 });
 
 describe("wireRecoveryLifecycle", () => {
-    function setup(lifecycle: AmqpLifecycleCallbacks) {
+    function setup(lifecycle: AmqpLifecycleCallbacks, opts?: { fatalGate?: (err: Error) => boolean; isClosing?: () => boolean }) {
         const ee = new EventEmitter();
         let attempt = 0;
         let connectedDelivered = false;
-        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0 };
+        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0, enterFatalState: 0 };
         wireRecoveryLifecycle(ee, lifecycle, {
             clearPublishChannel: () => {
                 calls.clearPublishChannel += 1;
@@ -321,6 +321,11 @@ describe("wireRecoveryLifecycle", () => {
                 connectedDelivered = true;
                 dispatchLifecycle(lifecycle, { type: "connected", reconnected });
             },
+            fatalTopologyGate: opts?.fatalGate ?? (() => false),
+            enterFatalState: () => {
+                calls.enterFatalState += 1;
+            },
+            isClosing: opts?.isClosing ?? (() => false),
         });
         return { ee, calls };
     }
@@ -398,6 +403,51 @@ describe("wireRecoveryLifecycle", () => {
         assert.equal(calls.reset, 1);
         assert.equal(calls.failPendingReturns, 1);
         assert.deepEqual(disconnects.map((e) => e.message), ["dropped"]);
+    });
+
+    it("fatal topology gate: enterFatalState + terminal reconnect-failed after setup-failed, exactly once (#201)", () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const codeErr = Object.assign(new Error("NOT_FOUND - no queue 'q'"), { code: 404 });
+        const topoErr = new AmqpTopologyError("Topology check failed (missing broker object): NOT_FOUND", { cause: codeErr });
+
+        const { ee, calls } = setup({ onLifecycle: (event) => events.push(event) }, { fatalGate: (err) => isDeterministicTopologyDrift(err) });
+
+        ee.emit("connect-failed", topoErr);
+
+        assert.equal(calls.enterFatalState, 1, "fatal gate must tear the cycle down exactly once");
+        assert.deepEqual(
+            events.map((e) => e.type),
+            ["setup-failed", "reconnect-failed"],
+            "setup-failed (what failed) precedes the terminal reconnect-failed (recovery stopped)",
+        );
+        assert.equal((events[1] as { error?: Error }).error, topoErr);
+    });
+
+    it("fatal topology gate is suppressed while the adapter's own disconnect() is in progress (#201)", () => {
+        const events: string[] = [];
+        const codeErr = Object.assign(new Error("NOT_FOUND - no queue 'q'"), { code: 404 });
+        const topoErr = new AmqpTopologyError("Topology check failed: NOT_FOUND", { cause: codeErr });
+
+        const { ee, calls } = setup({ onLifecycle: (event) => events.push(event.type) }, { fatalGate: (err) => isDeterministicTopologyDrift(err), isClosing: () => true });
+
+        ee.emit("connect-failed", topoErr);
+
+        assert.equal(calls.enterFatalState, 0, "a racing failure must not fire terminal teardown after disconnect() started");
+        assert.deepEqual(events, ["setup-failed"], "no terminal reconnect-failed during graceful shutdown");
+    });
+
+    it("fatal topology gate stays closed for non-deterministic failures (#201)", () => {
+        const events: string[] = [];
+        const transientErr = Object.assign(new Error("CONNECTION_FORCED - broker restarting"), { code: 320 });
+        const topoWrapped = new AmqpTopologyError("Topology declaration failed: CONNECTION_FORCED", { cause: transientErr });
+
+        const { ee, calls } = setup({ onLifecycle: (event) => events.push(event.type) }, { fatalGate: (err) => isDeterministicTopologyDrift(err) });
+
+        ee.emit("connect-failed", topoWrapped); // transient cause wrapped as topology error
+        ee.emit("connect-failed", new Error("ECONNREFUSED")); // plain network failure
+
+        assert.equal(calls.enterFatalState, 0, "transient/network failures must stay in recovery");
+        assert.deepEqual(events, ["setup-failed"], "only the topology-wrapped failure reports setup-failed; no terminal event");
     });
 
     it("delivers the full discriminated union to onLifecycle (first connected is initial, later ones reconnected)", () => {
@@ -490,6 +540,28 @@ describe("dispatchLifecycle", () => {
 
     it("is a no-op without a lifecycle object", () => {
         assert.doesNotThrow(() => dispatchLifecycle(undefined, { type: "unblocked" }));
+    });
+
+    it("isDeterministicTopologyDrift: 404/406 reply codes on the cause are fatal, everything else is not (#201)", () => {
+        const withCode = (code: number) => new AmqpTopologyError("x", { cause: Object.assign(new Error("y"), { code }) });
+        assert.equal(isDeterministicTopologyDrift(withCode(404)), true, "404 NOT_FOUND = deterministic drift");
+        assert.equal(isDeterministicTopologyDrift(withCode(406)), true, "406 PRECONDITION_FAILED = deterministic drift");
+        assert.equal(isDeterministicTopologyDrift(withCode(320)), false, "320 connection-forced is transient");
+        assert.equal(isDeterministicTopologyDrift(withCode(541)), false, "541 internal-error is transient");
+        assert.equal(isDeterministicTopologyDrift(withCode(405)), false, "405 resource-locked is transient");
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: new Error("no code") })), false, "cause without a reply code is not deterministic");
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x")), false, "no cause at all");
+        assert.equal(isDeterministicTopologyDrift(Object.assign(new Error("raw"), { code: 404 })), false, "a raw non-AmqpTopologyError never gates fatal");
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: Object.assign(new Error("y"), { code: "404" }) })), false, "string code is not a reply code");
+        assert.equal(
+            isDeterministicTopologyDrift(
+                new AmqpTopologyError("x", {
+                    cause: Object.assign(new Error("NOT_FOUND - home node 'rabbit@node1' of durable queue 'q' in vhost '/' is down or inaccessible"), { code: 404 }),
+                }),
+            ),
+            false,
+            "cluster classic-queue home-node outage is a TRANSIENT 404 — must stay in recovery",
+        );
     });
 
     it("AmqpTopologyError carries the failing object's identity and the cause (#202)", () => {
