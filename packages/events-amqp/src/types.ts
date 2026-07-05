@@ -459,7 +459,7 @@ export type AmqpLifecycleEvent =
  * — but `maxRetries` defaults to a BOUNDED `5` here, not `Infinity`.
  */
 export interface AmqpPublishRetryOptions {
-    /** Retries after the first attempt (N retries = N+1 attempts). `Infinity` is honored — retry until `disconnect()` aborts. @default 5 */
+    /** Retries after the first attempt (N retries = N+1 attempts). A negative value clamps to `0` (single attempt); `Infinity` is honored — retry until `disconnect()` aborts. @default 5 */
     readonly maxRetries?: number;
     /** First retry delay in ms. @default 100 */
     readonly initialDelay?: number;
