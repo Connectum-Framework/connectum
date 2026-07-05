@@ -180,10 +180,11 @@ export interface AmqpAdapterOptions {
      *
      * Scope: steady-state recovery only. Boot-time drift is the startup
      * probe's job — see {@link failFastOnInitialSetupError}. Setting both
-     * covers boot and steady state; the remaining gap — broker unreachable at
-     * `connect()` time with drift surfacing before the first successful
-     * connect — is covered by neither flag until the bounded initial phase
-     * lands ({@link https://github.com/Connectum-Framework/connectum/issues/198}).
+     * covers boot and steady state; the remaining window — broker unreachable
+     * at `connect()` time with drift surfacing before the first successful
+     * connect — is closed by
+     * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (since 1.3.0),
+     * whose bounded phase surfaces those failures and rejects on exhaustion.
      *
      * @default false
      */
@@ -301,12 +302,12 @@ export interface AmqpQueueOverride {
  * `initialDelay`/`maxDelay` — the delay becomes uniform in `[0, intended cap]`
  * (verified against amqplib 2.0.1's internal formula; re-verify on upgrades).
  *
- * Bounding the initial connect independently from steady-state recovery, and a
- * pluggable backoff hook, are tracked as future options — see
- * {@link https://github.com/Connectum-Framework/connectum/issues/198} and
+ * The initial connect CAN be bounded independently since 1.3.0 — see
+ * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (#198; upstream native
+ * support tracked in {@link https://github.com/amqp-node/amqplib/issues/856}).
+ * A pluggable backoff hook remains tracked in
  * {@link https://github.com/Connectum-Framework/connectum/issues/199}
- * (upstream: {@link https://github.com/amqp-node/amqplib/issues/856} and
- * {@link https://github.com/amqp-node/amqplib/issues/855}).
+ * (upstream: {@link https://github.com/amqp-node/amqplib/issues/855}).
  */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
@@ -317,8 +318,40 @@ export interface AmqpRecoveryOptions {
     readonly factor?: number;
     /** Symmetric jitter factor (0..1): the delay is uniform in `[base × (1 − jitter), base × (1 + jitter)]`. @default 0.2 */
     readonly jitter?: number;
-    /** Attempts per series (initial connect and each recovery series); resets on success. @default Infinity */
+    /** Attempts per series (initial connect and each recovery series); resets on success. To bound ONLY startup, use {@link initialConnectMaxRetries}. @default Infinity */
     readonly maxRetries?: number;
+
+    /**
+     * Bound the retry budget of the INITIAL connect independently of
+     * steady-state recovery: N retries = N+1 attempts, mirroring `maxRetries`
+     * semantics. A single `maxRetries` cannot express "bounded startup,
+     * unbounded steady-state" — its counter resets on every success.
+     *
+     * When set to an explicit finite value (a negative value clamps to `0` —
+     * single attempt — mirroring amqplib's `maxRetries` normalization), the
+     * adapter owns the initial window with a bounded validate-connect loop
+     * (the startup probe folds into it — validation IS each attempt, no extra
+     * connects): every
+     * attempt surfaces per-attempt lifecycle events (`reconnecting` with the
+     * next delay, `setup-failed { initial: true, attempt }` for topology
+     * failures), and budget exhaustion rejects `connect()` with a typed
+     * `AmqpConnectionError` after a terminal `reconnect-failed` — never a
+     * silent block. Backoff matches amqplib's steady-state formula exactly
+     * (same knobs above, same cap-before-jitter semantics).
+     *
+     * `failFastOnInitialSetupError` still short-circuits a deterministic
+     * topology error on the first sight, budget notwithstanding.
+     *
+     * Handoff caveat: after a successful validation the real recovering
+     * connect runs — a broker dying inside that small window blocks per
+     * amqplib's own initial loop.
+     *
+     * Unset (default): behavior unchanged — amqplib's initial loop with the
+     * shared `maxRetries` governs startup, and initial-window per-retry events
+     * are not surfaced. Since 1.3.0; upstream native support tracked in
+     * {@link https://github.com/amqp-node/amqplib/issues/856}.
+     */
+    readonly initialConnectMaxRetries?: number;
 }
 
 /**
@@ -330,24 +363,30 @@ export interface AmqpRecoveryOptions {
  *   for the initial connect and `true` after a recovery.
  * - `disconnected` fires once per connection loss (a socket-level cut no longer
  *   double-fires via the raw `error` event — fixed in 1.3.0).
- * - `reconnecting` fires once per scheduled retry AFTER the connection has been
- *   established once. `reconnect-failed` is terminal and fires for either of
- *   its two triggers: the retry budget is exhausted (`maxRetries`), or the
- *   fatal topology policy stopped the cycle (`treatTopologyErrorAsFatal`).
- * - `setup-failed` reports a topology/setup failure on the initial validation
- *   probe (`initial: true`, `attempt: 0`) or a reconnect re-assert
- *   (`initial: false`, `attempt` >= 1).
+ * - `reconnecting` fires once per scheduled retry — after the connection has
+ *   been established once, and also per attempt of the bounded initial phase
+ *   when {@link AmqpRecoveryOptions.initialConnectMaxRetries} is set.
+ *   `reconnect-failed` is terminal and fires for any of its three triggers:
+ *   the retry budget is exhausted (`maxRetries`), the fatal topology policy
+ *   stopped the cycle (`treatTopologyErrorAsFatal`), or the initial connect
+ *   budget ran out (`initialConnectMaxRetries`).
+ * - `setup-failed` reports a topology/setup failure with `initial: true` for
+ *   the startup window (`attempt: 0` on the probe; the 0-based attempt index
+ *   in the bounded initial phase) or `initial: false` for a reconnect
+ *   re-assert (`attempt` >= 1).
  * - `blocked`/`unblocked` surface broker flow control (RabbitMQ
  *   `connection.blocked`, e.g. under a memory/disk alarm); they have no flat
  *   callback equivalent.
  *
- * Scope: the retry loop of the INITIAL connect (broker unreachable when
- * `connect()` is called) happens before the lifecycle wiring can attach, so
- * its per-retry events are not surfaced; the startup probe covers the
- * deterministic-misconfiguration case (`setup-failed { initial: true }`).
- * Full initial-window observability lands with the adapter-owned bounded
- * initial phase — see
- * {@link https://github.com/Connectum-Framework/connectum/issues/198}.
+ * Scope: with amqplib's own initial loop (default), the retry loop of the
+ * INITIAL connect (broker unreachable when `connect()` is called) happens
+ * before the lifecycle wiring can attach, so its per-retry events are not
+ * surfaced; the startup probe covers the deterministic-misconfiguration case
+ * (`setup-failed { initial: true }`). Set
+ * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (since 1.3.0) to make
+ * the adapter own that window — its bounded phase surfaces per-attempt
+ * `reconnecting`/`setup-failed` events and a terminal `reconnect-failed` on
+ * budget exhaustion.
  *
  * The `type` values are deliberately broker-agnostic so a future
  * cross-adapter generalization stays non-breaking.
@@ -406,8 +445,9 @@ export interface AmqpLifecycleCallbacks {
     readonly onReconnectFailed?: (cause: Error) => void;
     /**
      * A setup/topology failure occurred while (re)applying the declarative
-     * topology — on the initial connect's validation probe (`ctx.initial: true`,
-     * `ctx.attempt: 0`) and/or on a reconnect whose topology re-assert fails
+     * topology — during the startup window (`ctx.initial: true`; `ctx.attempt`
+     * is 0 on the probe, or the 0-based attempt index in the bounded initial
+     * phase) and/or on a reconnect whose topology re-assert fails
      * (`ctx.initial: false`, `ctx.attempt` ≥ 1).
      *
      * This surfaces deterministic configuration drift (e.g. a missing queue in

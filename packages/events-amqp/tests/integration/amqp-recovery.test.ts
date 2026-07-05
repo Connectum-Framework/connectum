@@ -324,6 +324,152 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         await adapter.disconnect().catch(() => undefined);
     });
 
+    it("initialConnectMaxRetries: unreachable broker → per-attempt reconnecting events, terminal reconnect-failed, typed rejection (#198)", { timeout: 30_000 }, async () => {
+        const events: Array<{ type: string; attempt?: number; delay?: number }> = [];
+        const adapter = AmqpAdapter({
+            // Nothing listens on port 1 — every attempt is a fast ECONNREFUSED.
+            url: "amqp://guest:guest@127.0.0.1:1",
+            exchange: "rec.bounded198",
+            recovery: { initialDelay: 50, maxDelay: 100, initialConnectMaxRetries: 2 },
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError, "budget exhaustion rejects typed");
+                assert.ok((err as Error).message.includes("initialConnectMaxRetries: 2"));
+                assert.ok((err as { cause?: unknown }).cause instanceof Error, "the last attempt's failure is the cause");
+                return true;
+            },
+        );
+
+        // 2 retries = 3 attempts → reconnecting fired for attempts 1 and 2.
+        assert.deepEqual(
+            events.filter((e) => e.type === "reconnecting").map((e) => e.attempt),
+            [1, 2],
+            "per-attempt reconnecting events surface from the bounded initial phase",
+        );
+        assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 1, "exactly one terminal event");
+        assert.equal(events.filter((e) => e.type === "connected").length, 0);
+        await adapter.disconnect().catch(() => undefined);
+    });
+
+    it("initialConnectMaxRetries: boot-time drift surfaces setup-failed{initial:true} and heals within the budget (#198, 5.2a)", { timeout: 60_000 }, async () => {
+        // Exchange exists, the check-mode queue does NOT — first attempt(s)
+        // fail with a deterministic 404 until the queue appears.
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.bootdrift198", "topic", { durable: true });
+        await preCh.deleteQueue("rec.bootdrift198.q").catch(() => undefined);
+        await preCh.close();
+        await pre.close();
+
+        const events: Array<{ type: string; initial?: boolean; attempt?: number; reconnected?: boolean }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.bootdrift198",
+            recovery: { initialDelay: 400, maxDelay: 800, initialConnectMaxRetries: 8 },
+            topology: { queues: [{ name: "rec.bootdrift198.q", durable: true }] },
+            topologyMode: "check",
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+
+        const connecting = adapter.connect();
+        // A pre-wiring window that used to be silent: the bounded phase now
+        // reports the boot-time drift per attempt.
+        await waitFor(() => events.some((e) => e.type === "setup-failed" && e.initial === true), 20_000);
+
+        // Heal the drift mid-phase — a later attempt must succeed.
+        const healer = await connect(url);
+        const healCh = await healer.createChannel();
+        await healCh.assertQueue("rec.bootdrift198.q", { durable: true });
+        await healCh.close();
+        await healer.close();
+
+        await connecting;
+        try {
+            assert.ok(
+                events.filter((e) => e.type === "setup-failed" && e.initial === true).length >= 1,
+                "boot-time drift was observable during the bounded phase",
+            );
+            assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 0, "healed within the budget — no terminal event");
+            assert.deepEqual(
+                events.filter((e) => e.type === "connected"),
+                [{ type: "connected", reconnected: false }],
+                "the handoff connect delivers exactly one initial connected",
+            );
+            await adapter.publish("rec.bootdrift198.evt", new Uint8Array([1]));
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("initialConnectMaxRetries + failFastOnInitialSetupError: deterministic drift short-circuits the phase immediately (#198)", { timeout: 30_000 }, async () => {
+        const pre = await connect(url);
+        const preCh = await pre.createChannel();
+        await preCh.assertExchange("rec.ffphase198", "topic", { durable: true });
+        await preCh.deleteQueue("rec.ffphase198.q").catch(() => undefined);
+        await preCh.close();
+        await pre.close();
+
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.ffphase198",
+            recovery: { initialDelay: 100, maxDelay: 200, initialConnectMaxRetries: 5 },
+            topology: { queues: [{ name: "rec.ffphase198.q", durable: true }] },
+            topologyMode: "check",
+            failFastOnInitialSetupError: true,
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: unknown) => err instanceof AmqpTopologyError,
+            "fail-fast wins over the budget: deterministic drift rejects on first sight",
+        );
+        assert.equal(events.filter((e) => e.type === "setup-failed").length, 1, "one setup-failed for the single attempt");
+        assert.equal(events.filter((e) => e.type === "reconnecting").length, 0, "no retries were scheduled");
+        await adapter.disconnect().catch(() => undefined);
+    });
+
+    it("initialConnectMaxRetries: disconnect() during the backoff aborts the phase promptly with a typed error (#198)", { timeout: 30_000 }, async () => {
+        const events: Array<{ type: string }> = [];
+        const adapter = AmqpAdapter({
+            url: "amqp://guest:guest@127.0.0.1:1",
+            exchange: "rec.abort198",
+            // Long delays: without interruption the phase would park ~4s+.
+            recovery: { initialDelay: 4000, maxDelay: 8000, jitter: 0, initialConnectMaxRetries: 5 },
+            lifecycle: {
+                onLifecycle: (event) => events.push(event),
+            },
+        });
+
+        const connecting = adapter.connect();
+        await waitFor(() => events.some((e) => e.type === "reconnecting"), 10_000);
+
+        const abortStarted = Date.now();
+        await adapter.disconnect();
+        await assert.rejects(
+            () => connecting,
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError);
+                assert.match((err as Error).message, /closed (during the initial connect phase|while connect\(\) was in progress)/);
+                return true;
+            },
+        );
+        const abortLatency = Date.now() - abortStarted;
+        assert.ok(abortLatency < 2000, `disconnect() must interrupt the backoff promptly (took ${abortLatency}ms of a 4000ms delay)`);
+        assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 0, "an aborted phase is not a budget exhaustion");
+    });
+
     it("treatTopologyErrorAsFatal: topology drift during recovery stops the cycle (setup-failed → reconnect-failed, no further retries) (#201)", { timeout: 60_000 }, async () => {
         // Pre-declare ALL check-mode objects (check mode verifies existence
         // and never asserts): the adapter's default exchange, the checked
