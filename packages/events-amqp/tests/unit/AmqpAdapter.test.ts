@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
-import { AmqpAdapter, classifyConfirmError, dispatchLifecycle, isConnectionLostError, isDeterministicTopologyDrift, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
+import { AmqpAdapter, classifyConfirmError, computeRecoveryDelay, dispatchLifecycle, isConnectionLostError, isDeterministicTopologyDrift, toAmqpPattern, trackChannelClose, wireRecoveryLifecycle } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
 import type { AmqpLifecycleCallbacks, AmqpLifecycleEvent } from "../../src/types.ts";
 
@@ -540,6 +540,36 @@ describe("dispatchLifecycle", () => {
 
     it("is a no-op without a lifecycle object", () => {
         assert.doesNotThrow(() => dispatchLifecycle(undefined, { type: "unblocked" }));
+    });
+
+    it("computeRecoveryDelay replicates amqplib's formula: cap-before-jitter, symmetric offset (#198 pin)", () => {
+        const opts = { initialDelay: 100, maxDelay: 400, factor: 2, jitter: 0.2 };
+        // random() = 0.5 → offset 0 → exact exponential base, capped at maxDelay.
+        assert.equal(computeRecoveryDelay(opts, 1, () => 0.5), 100);
+        assert.equal(computeRecoveryDelay(opts, 2, () => 0.5), 200);
+        assert.equal(computeRecoveryDelay(opts, 3, () => 0.5), 400);
+        assert.equal(computeRecoveryDelay(opts, 10, () => 0.5), 400, "base is capped at maxDelay");
+        // Symmetric jitter bounds: random()=1 → base×(1+jitter) — the cap
+        // applies BEFORE jitter, so overshoot above maxDelay is preserved
+        // (matching amqplib); random()=0 → base×(1−jitter).
+        assert.equal(computeRecoveryDelay(opts, 10, () => 1), 480, "overshoot above maxDelay matches amqplib");
+        assert.equal(computeRecoveryDelay(opts, 10, () => 0), 320);
+        // jitter: 0 → deterministic base.
+        assert.equal(computeRecoveryDelay({ ...opts, jitter: 0 }, 2, () => 1), 200);
+        // Full-jitter workaround identity (docs recipe): jitter 1 → uniform [0, 2×base].
+        assert.equal(computeRecoveryDelay({ ...opts, jitter: 1 }, 3, () => 0), 0);
+        assert.equal(computeRecoveryDelay({ ...opts, jitter: 1 }, 3, () => 1), 800);
+        // Defaults mirror amqplib's DEFAULT_RECOVERY (100 / 30000 / 2 / 0.2).
+        assert.equal(computeRecoveryDelay({}, 1, () => 0.5), 100);
+        assert.equal(computeRecoveryDelay({}, 20, () => 0.5), 30_000);
+        // Non-finite knobs fall back to defaults (amqplib's toFiniteNumber),
+        // never propagate NaN into the delay (a NaN delay = zero backoff =
+        // retry storm).
+        assert.equal(computeRecoveryDelay({ initialDelay: Number.NaN }, 1, () => 0.5), 100);
+        assert.equal(computeRecoveryDelay({ initialDelay: Number.POSITIVE_INFINITY }, 1, () => 0.5), 100);
+        assert.equal(computeRecoveryDelay({ maxDelay: Number.NaN }, 20, () => 0.5), 30_000);
+        // factor NaN → 2, jitter NaN → 0.2: base 200, random()=1 → 200×1.2.
+        assert.equal(computeRecoveryDelay({ factor: Number.NaN, jitter: Number.NaN }, 2, () => 1), 240);
     });
 
     it("isDeterministicTopologyDrift: 404/406 reply codes on the cause are fatal, everything else is not (#201)", () => {
