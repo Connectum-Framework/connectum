@@ -12,6 +12,9 @@ catalogs:
     '@bufbuild/buf':
       specifier: ^1.70.0
       version: 1.70.0
+    '@bufbuild/protobuf':
+      specifier: ^2.12.1
+      version: 2.12.1
     '@bufbuild/protoc-gen-es':
       specifier: ^2.12.1
       version: 2.12.1
@@ -317,6 +320,9 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@bufbuild/protobuf':
+        specifier: 'catalog:'
+        version: 2.12.1
       '@connectum/events':
         specifier: workspace:^
         version: link:../events
