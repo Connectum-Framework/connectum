@@ -80,7 +80,11 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let startPromise: Promise<void> | null = null;
     let stopPromise: Promise<void> | null = null;
     const drainTimeout = options.drainTimeout ?? 30_000;
+    // Opt-in (#196): undefined or <= 0 disables publish tracking entirely —
+    // default behavior stays bit-for-bit.
+    const drainPublishTimeout = options.drainPublishTimeout !== undefined && options.drainPublishTimeout > 0 ? options.drainPublishTimeout : undefined;
     const inFlight = new Set<Promise<void>>();
+    const inFlightPublishes = new Set<Promise<void>>();
     let drainController = new AbortController();
     let draining = false;
     const defaultSignal = options.signal;
@@ -284,31 +288,67 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
 
-                    // 2. Drain in-flight handlers with timeout
-                    if (inFlight.size > 0 && drainTimeout > 0) {
-                        const deadline = Date.now() + drainTimeout;
-
-                        while (inFlight.size > 0) {
-                            const remaining = deadline - Date.now();
-                            if (remaining <= 0) break;
-
+                    // 2. Drain in-flight handlers and (opt-in, #196) in-flight
+                    //    publishes CONCURRENTLY — shutdown waits for the
+                    //    slower of the two budgets, never their sum. The
+                    //    publish drain must finish before adapter.disconnect()
+                    //    below, which would fail the outstanding confirms.
+                    // The race timers MUST be cleared after each round: a
+                    // leftover ref'd timer would keep the event loop alive for
+                    // the full remaining budget after stop() already returned
+                    // (a SIGTERM'd process would linger until SIGKILL).
+                    const raceSettled = async (pending: Set<Promise<void>>, remaining: number): Promise<void> => {
+                        let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+                        try {
                             await Promise.race([
-                                Promise.allSettled([...inFlight]),
+                                Promise.allSettled([...pending]),
                                 new Promise<void>((resolve) => {
-                                    globalThis.setTimeout(resolve, remaining);
+                                    timer = globalThis.setTimeout(resolve, remaining);
                                 }),
                             ]);
+                        } finally {
+                            if (timer !== undefined) {
+                                globalThis.clearTimeout(timer);
+                            }
                         }
-                    }
+                    };
+                    const drainHandlers = async (): Promise<void> => {
+                        if (inFlight.size > 0 && drainTimeout > 0) {
+                            const deadline = Date.now() + drainTimeout;
 
-                    // 3. Force-abort remaining handlers if still in-flight
-                    if (inFlight.size > 0) {
-                        drainController.abort("Drain timeout exceeded");
-                        // Brief settle window for abort handlers
-                        await Promise.allSettled([...inFlight]);
-                    }
+                            while (inFlight.size > 0) {
+                                const remaining = deadline - Date.now();
+                                if (remaining <= 0) break;
+                                await raceSettled(inFlight, remaining);
+                            }
+                        }
+
+                        // 3. Force-abort remaining handlers at THIS drain's own
+                        //    deadline — it must not wait for a (possibly
+                        //    longer) publish drain, or the documented
+                        //    drainTimeout abort contract would break.
+                        if (inFlight.size > 0) {
+                            drainController.abort("Drain timeout exceeded");
+                            // Brief settle window for abort handlers
+                            await Promise.allSettled([...inFlight]);
+                        }
+                    };
+                    const drainPublishes = async (): Promise<void> => {
+                        if (drainPublishTimeout === undefined || inFlightPublishes.size === 0) {
+                            return;
+                        }
+                        const deadline = Date.now() + drainPublishTimeout;
+
+                        while (inFlightPublishes.size > 0) {
+                            const remaining = deadline - Date.now();
+                            if (remaining <= 0) break;
+                            await raceSettled(inFlightPublishes, remaining);
+                        }
+                    };
+                    await Promise.all([drainHandlers(), drainPublishes()]);
 
                     inFlight.clear();
+                    inFlightPublishes.clear();
                     await adapter.disconnect();
                 } finally {
                     started = false;
@@ -340,7 +380,24 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             }
             const eventType = declaredTopic ?? schema.typeName;
 
-            await adapter.publish(eventType, payload, publishOptions);
+            const publishPromise = adapter.publish(eventType, payload, publishOptions);
+            if (drainPublishTimeout !== undefined) {
+                inFlightPublishes.add(publishPromise);
+                // Removal observer with swallowed outcomes: a publish that
+                // settles after the drain deadline (or after the caller
+                // dropped its promise) must never surface as an
+                // unhandledRejection. The caller awaits the ORIGINAL promise
+                // below, so rejections still propagate to it unchanged.
+                publishPromise.then(
+                    () => {
+                        inFlightPublishes.delete(publishPromise);
+                    },
+                    () => {
+                        inFlightPublishes.delete(publishPromise);
+                    },
+                );
+            }
+            await publishPromise;
         },
     };
 }

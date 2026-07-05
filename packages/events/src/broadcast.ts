@@ -44,6 +44,8 @@ export interface BroadcastSubscribersOptions {
     readonly handlerTimeout?: number;
     /** Shared per-bus drain timeout (ms). */
     readonly drainTimeout?: number;
+    /** Shared per-bus opt-in publish drain budget at `stop()` (ms). Since 1.3.0. */
+    readonly drainPublishTimeout?: number;
     /** Shared abort signal for graceful shutdown. */
     readonly signal?: AbortSignal;
 }
@@ -92,6 +94,7 @@ export function createBroadcastSubscribers(options: BroadcastSubscribersOptions)
             ...(reactor.middleware !== undefined ? { middleware: reactor.middleware } : {}),
             ...(options.handlerTimeout !== undefined ? { handlerTimeout: options.handlerTimeout } : {}),
             ...(options.drainTimeout !== undefined ? { drainTimeout: options.drainTimeout } : {}),
+            ...(options.drainPublishTimeout !== undefined ? { drainPublishTimeout: options.drainPublishTimeout } : {}),
             ...(options.signal !== undefined ? { signal: options.signal } : {}),
         }),
     );
