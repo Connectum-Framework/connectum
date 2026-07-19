@@ -20,6 +20,9 @@ export type NodeExec = "raw" | "tsx";
 /** EventBus transport adapter. */
 export type EventAdapter = "nats" | "kafka" | "redpanda" | "redis" | "amqp";
 
+/** Opt-in resilience interceptors (off by default in `createDefaultInterceptors`). */
+export type ResilienceInterceptor = "timeout" | "bulkhead" | "circuitBreaker" | "retry" | "fallback";
+
 /**
  * Optional modules the user can enable. Each maps to an additive {@link ScaffoldConfig}
  * fragment (deps + wiring). Healthcheck and Reflection are part of the base and are
@@ -32,6 +35,12 @@ export interface ModuleSelection {
     events?: { adapter: EventAdapter } | undefined;
     /** Auth: adds `@connectum/auth` (JWT + proto-driven authorization) + a second buf module. */
     auth?: boolean;
+    /** Opt-in resilience interceptors to enable in `createDefaultInterceptors`. */
+    resilience?: readonly ResilienceInterceptor[];
+    /** Include the gRPC health protocol (+ HTTP /healthz). Default true. */
+    healthcheck?: boolean;
+    /** Include the gRPC server reflection protocol. Default true. */
+    reflection?: boolean;
 }
 
 /**

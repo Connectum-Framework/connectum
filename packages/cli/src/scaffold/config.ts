@@ -7,12 +7,13 @@
  * @module scaffold/config
  */
 
-import type { EventAdapter, NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
+import type { EventAdapter, NodeExec, PackageManager, ResilienceInterceptor, Runtime, ScaffoldConfig } from "./types.ts";
 
 const RUNTIMES: readonly Runtime[] = ["node", "bun"];
 const PACKAGE_MANAGERS: readonly PackageManager[] = ["pnpm", "npm"];
 const NODE_EXECS: readonly NodeExec[] = ["raw", "tsx"];
 const EVENT_ADAPTERS: readonly EventAdapter[] = ["nats", "kafka", "redpanda", "redis", "amqp"];
+const RESILIENCE: readonly ResilienceInterceptor[] = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"];
 
 /** Raw, unvalidated input from flags or prompts (all optional except that name is required at resolve time). */
 export interface RawInput {
@@ -25,6 +26,10 @@ export interface RawInput {
     /** Event adapter name, or undefined/empty to disable the events module. */
     events?: string | undefined;
     auth?: boolean | undefined;
+    /** Comma-separated resilience interceptors (e.g. "retry,timeout"). */
+    resilience?: string | undefined;
+    healthcheck?: boolean | undefined;
+    reflection?: boolean | undefined;
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
@@ -55,6 +60,12 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
     const eventsRaw = (input.events ?? "").trim();
     const events = eventsRaw === "" ? undefined : { adapter: oneOf(eventsRaw, EVENT_ADAPTERS, "events", "nats") };
 
+    const resilience = (input.resilience ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => oneOf(s, RESILIENCE, "resilience", "retry"));
+
     return {
         name,
         runtime,
@@ -65,6 +76,9 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
             otel: input.otel ?? false,
             events,
             auth: input.auth ?? false,
+            resilience,
+            healthcheck: input.healthcheck ?? true,
+            reflection: input.reflection ?? true,
         },
     };
 }

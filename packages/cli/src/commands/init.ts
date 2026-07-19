@@ -45,6 +45,12 @@ export interface InitOptions {
     events?: string | undefined;
     /** Enable the auth module (JWT + proto authorization). */
     auth?: boolean | undefined;
+    /** Comma-separated resilience interceptors (timeout,bulkhead,circuitBreaker,retry,fallback). */
+    resilience?: string | undefined;
+    /** Include the gRPC health protocol (default true; pass --no-healthcheck to omit). */
+    healthcheck?: boolean | undefined;
+    /** Include gRPC reflection (default true; pass --no-reflection to omit). */
+    reflection?: boolean | undefined;
     /** Non-interactive mode (skip the TUI; use flags/defaults). */
     yes?: boolean | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
@@ -70,6 +76,9 @@ export async function executeInit(options: InitOptions): Promise<void> {
         otel: options.otel,
         events: options.events,
         auth: options.auth,
+        resilience: options.resilience,
+        healthcheck: options.healthcheck,
+        reflection: options.reflection,
         yes: options.yes,
     });
     const config = resolveConfig(raw);
@@ -144,6 +153,18 @@ export const initCommand = defineCommand({
             type: "boolean",
             description: "Add JWT authentication + proto authorization",
         },
+        resilience: {
+            type: "string",
+            description: "Enable resilience interceptors (comma list: timeout,bulkhead,circuitBreaker,retry,fallback)",
+        },
+        healthcheck: {
+            type: "boolean",
+            description: "Include the gRPC health protocol (default: true)",
+        },
+        reflection: {
+            type: "boolean",
+            description: "Include gRPC server reflection (default: true)",
+        },
         yes: {
             type: "boolean",
             alias: "y",
@@ -166,6 +187,9 @@ export const initCommand = defineCommand({
             otel: args.otel,
             events: args.events,
             auth: args.auth,
+            resilience: args.resilience,
+            healthcheck: args.healthcheck,
+            reflection: args.reflection,
             yes: args.yes,
             force: args.force,
         });

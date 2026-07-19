@@ -32,6 +32,35 @@ describe("generateServer", () => {
     });
 });
 
+describe("resilience + protocol toggles", () => {
+    it("injects opt-in resilience flags into createDefaultInterceptors", () => {
+        const s = generateServer({ ...base, modules: { resilience: ["retry", "timeout"] } });
+        assert.match(s, /createDefaultInterceptors\(\{ retry: true, timeout: true \}\)/);
+    });
+
+    it("merges resilience with the auth errorHandler:false branch", () => {
+        const s = generateServer({ ...base, modules: { auth: true, resilience: ["retry"] } });
+        assert.match(s, /createDefaultInterceptors\(\{ errorHandler: false, retry: true \}\)/);
+    });
+
+    it("omits Healthcheck / Reflection when toggled off", () => {
+        const s = generateServer({ ...base, modules: { healthcheck: false, reflection: false } });
+        assert.match(s, /protocols: \[\]/);
+        assert.doesNotMatch(s, /Healthcheck/);
+        assert.doesNotMatch(s, /import \{ Reflection \}/);
+    });
+
+    it("keeps both protocols by default", () => {
+        const s = generateServer(base);
+        assert.match(s, /protocols: \[Healthcheck\(\{ httpEnabled: true \}\), Reflection\(\)\]/);
+    });
+
+    it("index.ts drops healthcheckManager when healthcheck is off", () => {
+        const i = generateIndex({ ...base, modules: { healthcheck: false } });
+        assert.doesNotMatch(i, /healthcheckManager/);
+    });
+});
+
 describe("generateIndex", () => {
     it("base has no provider lifecycle", () => {
         const i = generateIndex(base);

@@ -23,7 +23,14 @@ const nodePnpm: ScaffoldConfig = { name: "payments", runtime: "node", packageMan
 describe("resolveConfig", () => {
     it("applies defaults", () => {
         const cfg = resolveConfig({ name: "svc" });
-        assert.deepEqual(cfg, { name: "svc", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { otel: false, events: undefined, auth: false } });
+        assert.deepEqual(cfg, {
+            name: "svc",
+            runtime: "node",
+            packageManager: "pnpm",
+            nodeExec: "raw",
+            sample: true,
+            modules: { otel: false, events: undefined, auth: false, resilience: [], healthcheck: true, reflection: true },
+        });
     });
 
     it("requires a name", () => {
