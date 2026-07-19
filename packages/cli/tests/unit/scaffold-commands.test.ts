@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -85,12 +85,39 @@ describe("executeInit pipeline (injected clone, no network)", () => {
     });
 });
 
-describe("generate service command seam (Phase 3 work in progress)", () => {
+describe("executeGenerateService", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "connectum-gensvc-"));
+    });
+    afterEach(() => {
+        rmSync(dir, { recursive: true, force: true });
+    });
+
     it("exports a citty command with a run handler", () => {
         assert.equal(typeof generateServiceCommand.run, "function");
     });
 
-    it("executeGenerateService rejects with a clear work-in-progress message", async () => {
-        await assert.rejects(() => executeGenerateService({ name: "billing" }), /not yet functional/);
+    it("scaffolds a proto + defineService skeleton (throwing Unimplemented, D-6)", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        assert.match(readFileSync(join(dir, "proto/billing/v1/billing.proto"), "utf8"), /service BillingService/);
+        const impl = readFileSync(join(dir, "src/services/billingService.ts"), "utf8");
+        assert.match(impl, /defineService\(BillingService/);
+        assert.match(impl, /Code\.Unimplemented/);
+    });
+
+    it("with --with-events emits the event-handler proto + vendored option proto", async () => {
+        await executeGenerateService({ name: "orders", withEvents: true, cwd: dir });
+        assert.match(readFileSync(join(dir, "proto/orders/v1/orders.proto"), "utf8"), /service OrdersEventHandlers/);
+        assert.match(readFileSync(join(dir, "src/services/ordersService.ts"), "utf8"), /EventRoute/);
+        assert.ok(existsSync(join(dir, "proto/connectum/events/v1/options.proto")));
+    });
+
+    it("refuses to clobber and requires a name", async () => {
+        await assert.rejects(() => executeGenerateService({ name: "  ", cwd: dir }), /service name is required/);
+        await executeGenerateService({ name: "billing", cwd: dir });
+        // Second run without force skips existing files (no throw).
+        await executeGenerateService({ name: "billing", cwd: dir });
     });
 });
