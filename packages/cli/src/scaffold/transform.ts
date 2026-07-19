@@ -16,6 +16,7 @@
  * @module scaffold/transform
  */
 
+import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
 
@@ -112,6 +113,11 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     // (keep the whole @connectum/* stack on one minor — see reference_examples_connectum_slice).
     const connectumVersion = pkg.dependencies?.["@connectum/core"] ?? "^1.0.0";
 
+    // Additive module runtime deps (kept on the same @connectum slice, then sorted).
+    if (config.modules.otel && pkg.dependencies) {
+        pkg.dependencies = Object.fromEntries(Object.entries({ ...pkg.dependencies, "@connectum/otel": connectumVersion }).sort(([a], [b]) => (a < b ? -1 : 1)));
+    }
+
     pkg.scripts = buildScripts(config);
     pkg.devDependencies = buildDevDeps(pkg.devDependencies ?? {}, config, connectumVersion);
 
@@ -178,6 +184,10 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
             // Regenerated with the in-process createLocalClient (D-7).
             continue;
         }
+        if (relPath === "src/server.ts" || relPath === "src/index.ts") {
+            // Regenerated as the composition root from the module set (D-2/D-3).
+            continue;
+        }
         if (relPath === "package.json") {
             out.set(relPath, transformPackageJson(content, config));
             continue;
@@ -185,6 +195,8 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
         out.set(relPath, content);
     }
 
+    out.set("src/server.ts", generateServer(config));
+    out.set("src/index.ts", generateIndex(config));
     out.set(E2E_TEST_PATH, generateGreeterE2eTest(config.runtime));
     out.set("README.md", generateReadme(config));
 

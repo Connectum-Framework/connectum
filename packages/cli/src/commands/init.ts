@@ -38,6 +38,8 @@ export interface InitOptions {
     nodeExec?: string | undefined;
     /** Emit a runnable sample service (default true) or config-only. */
     sample?: boolean | undefined;
+    /** Enable the OpenTelemetry module. */
+    otel?: boolean | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
     ref?: string | undefined;
     /** Overwrite existing files instead of refusing. */
@@ -58,6 +60,7 @@ export async function executeInit(options: InitOptions): Promise<void> {
         packageManager: options.packageManager,
         nodeExec: options.nodeExec,
         sample: options.sample,
+        otel: options.otel,
     });
 
     const targetDir = resolve(process.cwd(), config.name);
@@ -119,6 +122,11 @@ export const initCommand = defineCommand({
             description: "Emit a runnable sample service",
             default: true,
         },
+        otel: {
+            type: "boolean",
+            description: "Add OpenTelemetry instrumentation",
+            default: false,
+        },
         force: {
             type: "boolean",
             description: "Overwrite existing files",
@@ -132,6 +140,7 @@ export const initCommand = defineCommand({
             packageManager: args["package-manager"],
             nodeExec: args["node-exec"],
             sample: args.sample,
+            otel: args.otel,
             force: args.force,
         });
     },

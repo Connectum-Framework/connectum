@@ -18,6 +18,16 @@ export type PackageManager = "pnpm" | "npm";
 export type NodeExec = "raw" | "tsx";
 
 /**
+ * Optional modules the user can enable. Each maps to an additive {@link ScaffoldConfig}
+ * fragment (deps + wiring). Healthcheck and Reflection are part of the base and are
+ * not toggled here.
+ */
+export interface ModuleSelection {
+    /** OpenTelemetry: adds `createOtelInterceptor` (outermost) + provider lifecycle. */
+    otel?: boolean;
+}
+
+/**
  * Fully-resolved scaffolding configuration (the flat object both the interactive
  * TUI and the non-interactive flag path collapse to).
  */
@@ -32,6 +42,8 @@ export interface ScaffoldConfig {
     nodeExec: NodeExec;
     /** Emit the runnable sample service (`true`) or config-only (`false`). */
     sample: boolean;
+    /** Enabled optional modules. */
+    modules: ModuleSelection;
 }
 
 /**

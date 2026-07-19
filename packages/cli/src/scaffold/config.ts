@@ -20,6 +20,7 @@ export interface RawInput {
     packageManager?: string | undefined;
     nodeExec?: string | undefined;
     sample?: boolean | undefined;
+    otel?: boolean | undefined;
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
@@ -53,5 +54,8 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
         packageManager,
         nodeExec,
         sample: input.sample ?? true,
+        modules: {
+            otel: input.otel ?? false,
+        },
     };
 }
