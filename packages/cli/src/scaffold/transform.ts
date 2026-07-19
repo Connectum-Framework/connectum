@@ -16,6 +16,7 @@
  * @module scaffold/transform
  */
 
+import { adapterPackage, generateBufYaml, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto } from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
@@ -114,8 +115,16 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     const connectumVersion = pkg.dependencies?.["@connectum/core"] ?? "^1.0.0";
 
     // Additive module runtime deps (kept on the same @connectum slice, then sorted).
-    if (config.modules.otel && pkg.dependencies) {
-        pkg.dependencies = Object.fromEntries(Object.entries({ ...pkg.dependencies, "@connectum/otel": connectumVersion }).sort(([a], [b]) => (a < b ? -1 : 1)));
+    const extraDeps: Record<string, string> = {};
+    if (config.modules.otel) {
+        extraDeps["@connectum/otel"] = connectumVersion;
+    }
+    if (config.modules.events) {
+        extraDeps["@connectum/events"] = connectumVersion;
+        extraDeps[adapterPackage(config.modules.events.adapter)] = connectumVersion;
+    }
+    if (Object.keys(extraDeps).length > 0 && pkg.dependencies) {
+        pkg.dependencies = Object.fromEntries(Object.entries({ ...pkg.dependencies, ...extraDeps }).sort(([a], [b]) => (a < b ? -1 : 1)));
     }
 
     pkg.scripts = buildScripts(config);
@@ -188,6 +197,10 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
             // Regenerated as the composition root from the module set (D-2/D-3).
             continue;
         }
+        if (relPath === "buf.yaml") {
+            // Regenerated so events can add the lint `except` list.
+            continue;
+        }
         if (relPath === "package.json") {
             out.set(relPath, transformPackageJson(content, config));
             continue;
@@ -197,8 +210,17 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
 
     out.set("src/server.ts", generateServer(config));
     out.set("src/index.ts", generateIndex(config));
+    out.set("buf.yaml", generateBufYaml(config));
     out.set(E2E_TEST_PATH, generateGreeterE2eTest(config.runtime));
     out.set("README.md", generateReadme(config));
+
+    // events module: vendored option proto, demo event-handler proto, EventBus + route.
+    if (config.modules.events) {
+        out.set("proto/connectum/events/v1/options.proto", generateEventsOptionsProto());
+        out.set("proto/greeter/v1/events.proto", generateEventsProto());
+        out.set("src/greeterEventBus.ts", generateEventBusFile(config, config.modules.events.adapter));
+        out.set("src/services/greeterEvents.ts", generateEventRouteFile());
+    }
 
     // A standalone pnpm project still needs to approve @bufbuild/buf's postinstall
     // (the buf binary download); under pnpm 11 that setting lives in

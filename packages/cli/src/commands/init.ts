@@ -40,6 +40,8 @@ export interface InitOptions {
     sample?: boolean | undefined;
     /** Enable the OpenTelemetry module. */
     otel?: boolean | undefined;
+    /** Enable the EventBus module with the given adapter (nats|kafka|redpanda|redis|amqp). */
+    events?: string | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
     ref?: string | undefined;
     /** Overwrite existing files instead of refusing. */
@@ -61,6 +63,7 @@ export async function executeInit(options: InitOptions): Promise<void> {
         nodeExec: options.nodeExec,
         sample: options.sample,
         otel: options.otel,
+        events: options.events,
     });
 
     const targetDir = resolve(process.cwd(), config.name);
@@ -127,6 +130,10 @@ export const initCommand = defineCommand({
             description: "Add OpenTelemetry instrumentation",
             default: false,
         },
+        events: {
+            type: "string",
+            description: "Add EventBus with an adapter: nats | kafka | redpanda | redis | amqp",
+        },
         force: {
             type: "boolean",
             description: "Overwrite existing files",
@@ -141,6 +148,7 @@ export const initCommand = defineCommand({
             nodeExec: args["node-exec"],
             sample: args.sample,
             otel: args.otel,
+            events: args.events,
             force: args.force,
         });
     },

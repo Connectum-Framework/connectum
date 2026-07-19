@@ -7,11 +7,12 @@
  * @module scaffold/config
  */
 
-import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
+import type { EventAdapter, NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 
 const RUNTIMES: readonly Runtime[] = ["node", "bun"];
 const PACKAGE_MANAGERS: readonly PackageManager[] = ["pnpm", "npm"];
 const NODE_EXECS: readonly NodeExec[] = ["raw", "tsx"];
+const EVENT_ADAPTERS: readonly EventAdapter[] = ["nats", "kafka", "redpanda", "redis", "amqp"];
 
 /** Raw, unvalidated input from flags or prompts (all optional except that name is required at resolve time). */
 export interface RawInput {
@@ -21,6 +22,8 @@ export interface RawInput {
     nodeExec?: string | undefined;
     sample?: boolean | undefined;
     otel?: boolean | undefined;
+    /** Event adapter name, or undefined/empty to disable the events module. */
+    events?: string | undefined;
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
@@ -48,6 +51,9 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
     const packageManager = oneOf(input.packageManager, PACKAGE_MANAGERS, "package-manager", "pnpm");
     const nodeExec = oneOf(input.nodeExec, NODE_EXECS, "node-exec", "raw");
 
+    const eventsRaw = (input.events ?? "").trim();
+    const events = eventsRaw === "" ? undefined : { adapter: oneOf(eventsRaw, EVENT_ADAPTERS, "events", "nats") };
+
     return {
         name,
         runtime,
@@ -56,6 +62,7 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
         sample: input.sample ?? true,
         modules: {
             otel: input.otel ?? false,
+            events,
         },
     };
 }

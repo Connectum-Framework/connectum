@@ -17,6 +17,9 @@ export type PackageManager = "pnpm" | "npm";
  */
 export type NodeExec = "raw" | "tsx";
 
+/** EventBus transport adapter. */
+export type EventAdapter = "nats" | "kafka" | "redpanda" | "redis" | "amqp";
+
 /**
  * Optional modules the user can enable. Each maps to an additive {@link ScaffoldConfig}
  * fragment (deps + wiring). Healthcheck and Reflection are part of the base and are
@@ -25,6 +28,8 @@ export type NodeExec = "raw" | "tsx";
 export interface ModuleSelection {
     /** OpenTelemetry: adds `createOtelInterceptor` (outermost) + provider lifecycle. */
     otel?: boolean;
+    /** EventBus: adds `@connectum/events` + the chosen adapter, an EventRoute, and proto. */
+    events?: { adapter: EventAdapter } | undefined;
 }
 
 /**

@@ -32,14 +32,17 @@ function interceptorsExpr(config: ScaffoldConfig): { imports: string[]; expr: st
  */
 export function generateServer(config: ScaffoldConfig): string {
     const { imports: interceptorImports, expr } = interceptorsExpr(config);
+    const events = config.modules.events !== undefined;
     const imports = [
         'import { createServer } from "@connectum/core";',
         'import type { Server } from "@connectum/core";',
         'import { Healthcheck } from "@connectum/healthcheck";',
         ...interceptorImports,
         'import { Reflection } from "@connectum/reflection";',
+        ...(events ? ['import { greeterEventBus } from "#greeterEventBus.ts";'] : []),
         'import { greeterService } from "#services/greeterService.ts";',
     ];
+    const eventBusLine = events ? "\n        eventBus: greeterEventBus," : "";
     return `/**
  * Server factory — services, health, reflection, interceptors, graceful shutdown.
  *
@@ -56,7 +59,7 @@ ${imports.join("\n")}
  */
 export function buildServer(port = 5000, autoShutdown = false): Server {
     return createServer({
-        services: [greeterService],
+        services: [greeterService],${eventBusLine}
         port,
         host: "0.0.0.0",
         allowHTTP1: false,
