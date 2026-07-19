@@ -18,7 +18,7 @@
 
 import { generateAuthFile } from "./authFragment.ts";
 import { generateBufGenYaml, generateBufYaml } from "./bufConfig.ts";
-import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto } from "./eventsFragment.ts";
+import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto, generateEventsTest } from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
@@ -234,6 +234,7 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
         out.set("proto/greeter/v1/events.proto", generateEventsProto());
         out.set("src/greeterEventBus.ts", generateEventBusFile(config, config.modules.events.adapter));
         out.set("src/services/greeterEvents.ts", generateEventRouteFile());
+        out.set("tests/e2e/events.test.ts", generateEventsTest(config.runtime));
     }
 
     // A standalone pnpm project still needs to approve @bufbuild/buf's postinstall

@@ -113,7 +113,35 @@ export const greeterEventBus = createEventBus({
 `;
 }
 
-/** `src/services/greeterEvents.ts` — the EventRoute with an empty (ack) handler. */
+/**
+ * `tests/e2e/events.test.ts` — a broker-free smoke test: registers the EventRoute on an
+ * in-memory bus and exercises the start/stop lifecycle (no external broker needed). Uses
+ * the runtime-appropriate test runner import (D-7 pattern).
+ */
+export function generateEventsTest(runtime: "node" | "bun"): string {
+    const runnerImport = runtime === "bun" ? 'import { describe, it } from "bun:test";' : 'import { describe, it } from "node:test";';
+    return `/**
+ * Smoke test for the event wiring: the EventRoute registers on an in-memory bus and
+ * the bus start/stop lifecycle works — no external broker required.
+ */
+
+import assert from "node:assert/strict";
+${runnerImport}
+import { createEventBus, MemoryAdapter } from "@connectum/events";
+import { greeterEventRoutes } from "#services/greeterEvents.ts";
+
+describe("greeter events", () => {
+    it("registers handlers on an in-memory bus and starts/stops cleanly", async () => {
+        const bus = createEventBus({ adapter: MemoryAdapter(), routes: [greeterEventRoutes], group: "test" });
+        await bus.start();
+        await bus.stop();
+        assert.ok(true);
+    });
+});
+`;
+}
+
+/** \`src/services/greeterEvents.ts\` — the EventRoute with an empty (ack) handler. */
 export function generateEventRouteFile(): string {
     return `import type { EventRoute } from "@connectum/events";
 import { GreeterEventHandlers } from "#gen/greeter/v1/events_pb.ts";

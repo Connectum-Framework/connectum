@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { generateBufYaml } from "../../src/scaffold/bufConfig.ts";
 import { resolveConfig } from "../../src/scaffold/config.ts";
-import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsProto } from "../../src/scaffold/eventsFragment.ts";
+import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsProto, generateEventsTest } from "../../src/scaffold/eventsFragment.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
@@ -64,6 +64,11 @@ describe("EventBus / EventRoute files", () => {
         assert.match(r, /await ctx\.ack\(\)/);
         assert.doesNotMatch(r, /throw/);
     });
+    it("events smoke test uses MemoryAdapter and the runtime-appropriate runner", () => {
+        assert.match(generateEventsTest("node"), /from "node:test"/);
+        assert.match(generateEventsTest("bun"), /from "bun:test"/);
+        assert.match(generateEventsTest("node"), /MemoryAdapter\(\)/);
+    });
 });
 
 describe("buf.yaml lint excepts", () => {
@@ -89,12 +94,13 @@ describe("transformBase with events", () => {
         ["src/services/greeterService.ts", "export const greeterService = {};\n"],
     ]);
 
-    it("emits option proto, event proto, EventBus and route files", () => {
+    it("emits option proto, event proto, EventBus, route, and a MemoryAdapter smoke test", () => {
         const out = transformBase(base, natsConfig);
         assert.ok(out.has("proto/connectum/events/v1/options.proto"));
         assert.ok(out.has("proto/greeter/v1/events.proto"));
         assert.ok(out.has("src/greeterEventBus.ts"));
         assert.ok(out.has("src/services/greeterEvents.ts"));
+        assert.match(out.get("tests/e2e/events.test.ts") ?? "", /MemoryAdapter/);
     });
 
     it("adds @connectum/events + the adapter package to dependencies", () => {
