@@ -77,15 +77,18 @@ export function generateServer(config: ScaffoldConfig): string {
     const { imports: interceptorImports, expr } = interceptorsExpr(config);
     const { imports: protocolImports, expr: protoExpr } = protocolsExpr(config);
     const events = config.modules.events !== undefined;
+    const catalog = config.modules.catalog === true;
     const imports = [
         'import { createServer } from "@connectum/core";',
         'import type { Server } from "@connectum/core";',
         ...protocolImports,
         ...interceptorImports,
+        ...(catalog ? ['import { serviceCatalog } from "#gen/catalog.gen.ts";'] : []),
         ...(events ? ['import { greeterEventBus } from "#greeterEventBus.ts";'] : []),
         'import { greeterService } from "#services/greeterService.ts";',
     ];
     const eventBusLine = events ? "\n        eventBus: greeterEventBus," : "";
+    const catalogLine = catalog ? "\n        catalog: serviceCatalog," : "";
     return `/**
  * Server factory — services, health, reflection, interceptors, graceful shutdown.
  *
@@ -102,7 +105,7 @@ ${imports.join("\n")}
  */
 export function buildServer(port = 5000, autoShutdown = false): Server {
     return createServer({
-        services: [greeterService],${eventBusLine}
+        services: [greeterService],${catalogLine}${eventBusLine}
         port,
         host: "0.0.0.0",
         allowHTTP1: false,

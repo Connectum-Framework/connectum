@@ -17,7 +17,7 @@
  */
 
 import { generateAuthFile } from "./authFragment.ts";
-import { generateBufYaml } from "./bufConfig.ts";
+import { generateBufGenYaml, generateBufYaml } from "./bufConfig.ts";
 import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto } from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
@@ -91,6 +91,9 @@ export function buildDevDeps(existing: Record<string, string>, config: ScaffoldC
         }
     }
     devDeps["@connectum/testing"] = connectumVersion;
+    if (config.modules.catalog) {
+        devDeps["@connectum/protoc-gen-catalog"] = connectumVersion;
+    }
     if (config.runtime === "node" && config.nodeExec === "tsx") {
         devDeps.tsx = existing.tsx ?? "^4.21.0";
     }
@@ -202,8 +205,8 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
             // Regenerated as the composition root from the module set (D-2/D-3).
             continue;
         }
-        if (relPath === "buf.yaml") {
-            // Regenerated so events can add the lint `except` list.
+        if (relPath === "buf.yaml" || relPath === "buf.gen.yaml") {
+            // Regenerated: buf.yaml (events/auth lint + modules), buf.gen.yaml (catalog plugin).
             continue;
         }
         if (relPath === "package.json") {
@@ -216,6 +219,7 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
     out.set("src/server.ts", generateServer(config));
     out.set("src/index.ts", generateIndex(config));
     out.set("buf.yaml", generateBufYaml(config));
+    out.set("buf.gen.yaml", generateBufGenYaml(config));
     out.set(E2E_TEST_PATH, generateGreeterE2eTest(config.runtime));
     out.set("README.md", generateReadme(config));
 

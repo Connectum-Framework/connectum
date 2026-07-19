@@ -109,5 +109,18 @@ export async function promptForMissing(flags: RawInput, prompter: Prompter): Pro
     const sample = flags.sample ?? (await prompter.confirm({ message: "Include the sample Greeter service?", initialValue: true }));
 
     // Advanced toggles are flag-only (kept out of the wizard); preserve them.
-    return { name, runtime, packageManager, nodeExec, sample, otel, auth, events, resilience: flags.resilience, healthcheck: flags.healthcheck, reflection: flags.reflection };
+    return {
+        name,
+        runtime,
+        packageManager,
+        nodeExec,
+        sample,
+        otel,
+        auth,
+        events,
+        resilience: flags.resilience,
+        healthcheck: flags.healthcheck,
+        reflection: flags.reflection,
+        catalog: flags.catalog,
+    };
 }

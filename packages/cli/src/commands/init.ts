@@ -51,6 +51,8 @@ export interface InitOptions {
     healthcheck?: boolean | undefined;
     /** Include gRPC reflection (default true; pass --no-reflection to omit). */
     reflection?: boolean | undefined;
+    /** Add the service catalog (typed ctx.call). */
+    catalog?: boolean | undefined;
     /** Non-interactive mode (skip the TUI; use flags/defaults). */
     yes?: boolean | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
@@ -79,6 +81,7 @@ export async function executeInit(options: InitOptions): Promise<void> {
         resilience: options.resilience,
         healthcheck: options.healthcheck,
         reflection: options.reflection,
+        catalog: options.catalog,
         yes: options.yes,
     });
     const config = resolveConfig(raw);
@@ -165,6 +168,10 @@ export const initCommand = defineCommand({
             type: "boolean",
             description: "Include gRPC server reflection (default: true)",
         },
+        catalog: {
+            type: "boolean",
+            description: "Add the service catalog (typed ctx.call / ctx.stream)",
+        },
         yes: {
             type: "boolean",
             alias: "y",
@@ -190,6 +197,7 @@ export const initCommand = defineCommand({
             resilience: args.resilience,
             healthcheck: args.healthcheck,
             reflection: args.reflection,
+            catalog: args.catalog,
             yes: args.yes,
             force: args.force,
         });

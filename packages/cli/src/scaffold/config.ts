@@ -30,6 +30,7 @@ export interface RawInput {
     resilience?: string | undefined;
     healthcheck?: boolean | undefined;
     reflection?: boolean | undefined;
+    catalog?: boolean | undefined;
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
@@ -79,6 +80,7 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
             resilience,
             healthcheck: input.healthcheck ?? true,
             reflection: input.reflection ?? true,
+            catalog: input.catalog ?? false,
         },
     };
 }

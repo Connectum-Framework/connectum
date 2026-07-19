@@ -40,3 +40,31 @@ breaking:
     - FILE
 `;
 }
+
+/**
+ * Generate `buf.gen.yaml`. protoc-gen-es always; the catalog plugin
+ * (`protoc-gen-connectum-catalog`, `strategy: all`) is added when `catalog` is enabled
+ * so `serviceCatalog` / typed `ctx.call` are generated into a single `catalog.gen.ts`.
+ */
+export function generateBufGenYaml(config: ScaffoldConfig): string {
+    const catalogPlugin = config.modules.catalog
+        ? `
+  - local: protoc-gen-connectum-catalog
+    strategy: all
+    out: gen
+    opt:
+      - target=ts
+      - import_extension=.ts`
+        : "";
+    return `version: v2
+clean: true
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-es
+    out: gen
+    opt:
+      - target=ts
+      - import_extension=.ts${catalogPlugin}
+`;
+}

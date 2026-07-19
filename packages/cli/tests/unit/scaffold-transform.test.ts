@@ -29,7 +29,7 @@ describe("resolveConfig", () => {
             packageManager: "pnpm",
             nodeExec: "raw",
             sample: true,
-            modules: { otel: false, events: undefined, auth: false, resilience: [], healthcheck: true, reflection: true },
+            modules: { otel: false, events: undefined, auth: false, resilience: [], healthcheck: true, reflection: true, catalog: false },
         });
     });
 
@@ -174,7 +174,9 @@ describe("transformBase", () => {
     it("preserves source files and generates a README", () => {
         const out = transformBase(base, nodePnpm);
         assert.equal(out.get("src/services/greeterService.ts"), "export const greeterService = {};\n");
-        assert.equal(out.get("buf.gen.yaml"), "version: v2\n");
+        // buf.gen.yaml is regenerated (es-only when no catalog).
+        assert.match(out.get("buf.gen.yaml") ?? "", /protoc-gen-es/);
+        assert.doesNotMatch(out.get("buf.gen.yaml") ?? "", /catalog/);
         assert.match(out.get("README.md") ?? "", /payments/);
     });
 

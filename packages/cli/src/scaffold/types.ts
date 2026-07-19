@@ -41,6 +41,8 @@ export interface ModuleSelection {
     healthcheck?: boolean;
     /** Include the gRPC server reflection protocol. Default true. */
     reflection?: boolean;
+    /** Service catalog: adds the catalog buf plugin + typed `ctx.call`/`ctx.stream`. */
+    catalog?: boolean;
 }
 
 /**
