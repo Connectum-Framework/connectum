@@ -30,6 +30,8 @@ export interface ModuleSelection {
     otel?: boolean;
     /** EventBus: adds `@connectum/events` + the chosen adapter, an EventRoute, and proto. */
     events?: { adapter: EventAdapter } | undefined;
+    /** Auth: adds `@connectum/auth` (JWT + proto-driven authorization) + a second buf module. */
+    auth?: boolean;
 }
 
 /**

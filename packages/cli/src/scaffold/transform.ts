@@ -16,7 +16,9 @@
  * @module scaffold/transform
  */
 
-import { adapterPackage, generateBufYaml, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto } from "./eventsFragment.ts";
+import { generateAuthFile } from "./authFragment.ts";
+import { generateBufYaml } from "./bufConfig.ts";
+import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto } from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
@@ -123,6 +125,9 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
         extraDeps["@connectum/events"] = connectumVersion;
         extraDeps[adapterPackage(config.modules.events.adapter)] = connectumVersion;
     }
+    if (config.modules.auth) {
+        extraDeps["@connectum/auth"] = connectumVersion;
+    }
     if (Object.keys(extraDeps).length > 0 && pkg.dependencies) {
         pkg.dependencies = Object.fromEntries(Object.entries({ ...pkg.dependencies, ...extraDeps }).sort(([a], [b]) => (a < b ? -1 : 1)));
     }
@@ -213,6 +218,11 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
     out.set("buf.yaml", generateBufYaml(config));
     out.set(E2E_TEST_PATH, generateGreeterE2eTest(config.runtime));
     out.set("README.md", generateReadme(config));
+
+    // auth module: JWT + proto-authz interceptor builder (buf.yaml adds the 2nd module).
+    if (config.modules.auth) {
+        out.set("src/auth.ts", generateAuthFile());
+    }
 
     // events module: vendored option proto, demo event-handler proto, EventBus + route.
     if (config.modules.events) {

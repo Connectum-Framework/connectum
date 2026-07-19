@@ -129,30 +129,3 @@ export const greeterEventRoutes: EventRoute = (events) => {
 };
 `;
 }
-
-/**
- * `buf.yaml`. Event-handler services (`*EventHandlers`, `OnX(Event) returns Empty`)
- * intentionally violate STANDARD lint (SERVICE_SUFFIX / RPC_*), so when events are
- * enabled we add the same `except` list the multi-service examples use, keeping
- * `buf lint` green.
- */
-export function generateBufYaml(config: ScaffoldConfig): string {
-    const except = config.modules.events
-        ? `
-  except:
-    - SERVICE_SUFFIX
-    - RPC_REQUEST_STANDARD_NAME
-    - RPC_RESPONSE_STANDARD_NAME
-    - RPC_REQUEST_RESPONSE_UNIQUE`
-        : "";
-    return `version: v2
-modules:
-  - path: proto
-lint:
-  use:
-    - STANDARD${except}
-breaking:
-  use:
-    - FILE
-`;
-}

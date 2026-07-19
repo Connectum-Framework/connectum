@@ -5,14 +5,9 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { generateBufYaml } from "../../src/scaffold/bufConfig.ts";
 import { resolveConfig } from "../../src/scaffold/config.ts";
-import {
-    adapterPackage,
-    generateBufYaml,
-    generateEventBusFile,
-    generateEventRouteFile,
-    generateEventsProto,
-} from "../../src/scaffold/eventsFragment.ts";
+import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsProto } from "../../src/scaffold/eventsFragment.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";

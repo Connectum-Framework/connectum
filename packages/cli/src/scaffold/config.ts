@@ -24,6 +24,7 @@ export interface RawInput {
     otel?: boolean | undefined;
     /** Event adapter name, or undefined/empty to disable the events module. */
     events?: string | undefined;
+    auth?: boolean | undefined;
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
@@ -63,6 +64,7 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
         modules: {
             otel: input.otel ?? false,
             events,
+            auth: input.auth ?? false,
         },
     };
 }

@@ -18,11 +18,31 @@ import type { ScaffoldConfig } from "./types.ts";
  * `createDefaultInterceptors()` already yields `errorHandler → validation`.
  */
 function interceptorsExpr(config: ScaffoldConfig): { imports: string[]; expr: string } {
-    const imports = ['import { createDefaultInterceptors } from "@connectum/interceptors";'];
-    if (config.modules.otel) {
+    const otel = config.modules.otel === true;
+    const auth = config.modules.auth === true;
+    const imports: string[] = [];
+    const parts: string[] = [];
+
+    // otel is outermost so the span covers the whole request (including errors).
+    if (otel) {
         imports.push('import { createOtelInterceptor } from "@connectum/otel";');
-        // otel is outermost so the span covers the whole request (incl. errors).
-        return { imports, expr: "[createOtelInterceptor({ trustRemote: true }), ...createDefaultInterceptors()]" };
+        parts.push("createOtelInterceptor({ trustRemote: true })");
+    }
+
+    if (auth) {
+        // Canonical order (D-3): otel -> errorHandler -> auth -> validation. An explicit
+        // errorHandler goes under otel, then auth, then the default chain WITHOUT its own
+        // errorHandler (so it is never duplicated).
+        imports.push('import { createDefaultInterceptors, createErrorHandlerInterceptor } from "@connectum/interceptors";');
+        imports.push('import { buildAuthInterceptors } from "#auth.ts";');
+        parts.push("createErrorHandlerInterceptor()", "...buildAuthInterceptors()", "...createDefaultInterceptors({ errorHandler: false })");
+        return { imports, expr: `[${parts.join(", ")}]` };
+    }
+
+    imports.push('import { createDefaultInterceptors } from "@connectum/interceptors";');
+    if (parts.length > 0) {
+        parts.push("...createDefaultInterceptors()");
+        return { imports, expr: `[${parts.join(", ")}]` };
     }
     return { imports, expr: "createDefaultInterceptors()" };
 }

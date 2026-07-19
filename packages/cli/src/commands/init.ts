@@ -42,6 +42,8 @@ export interface InitOptions {
     otel?: boolean | undefined;
     /** Enable the EventBus module with the given adapter (nats|kafka|redpanda|redis|amqp). */
     events?: string | undefined;
+    /** Enable the auth module (JWT + proto authorization). */
+    auth?: boolean | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
     ref?: string | undefined;
     /** Overwrite existing files instead of refusing. */
@@ -64,6 +66,7 @@ export async function executeInit(options: InitOptions): Promise<void> {
         sample: options.sample,
         otel: options.otel,
         events: options.events,
+        auth: options.auth,
     });
 
     const targetDir = resolve(process.cwd(), config.name);
@@ -134,6 +137,11 @@ export const initCommand = defineCommand({
             type: "string",
             description: "Add EventBus with an adapter: nats | kafka | redpanda | redis | amqp",
         },
+        auth: {
+            type: "boolean",
+            description: "Add JWT authentication + proto authorization",
+            default: false,
+        },
         force: {
             type: "boolean",
             description: "Overwrite existing files",
@@ -149,6 +157,7 @@ export const initCommand = defineCommand({
             sample: args.sample,
             otel: args.otel,
             events: args.events,
+            auth: args.auth,
             force: args.force,
         });
     },
