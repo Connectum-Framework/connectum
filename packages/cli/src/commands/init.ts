@@ -21,6 +21,7 @@ import { defineCommand } from "citty";
 import { resolveConfig } from "../scaffold/config.ts";
 import type { CloneFn } from "../scaffold/fetchBase.ts";
 import { fetchBase, readTree } from "../scaffold/fetchBase.ts";
+import { collectConfig } from "../scaffold/prompts.ts";
 import { transformBase } from "../scaffold/transform.ts";
 import { emitFiles } from "../utils/emit.ts";
 
@@ -44,6 +45,8 @@ export interface InitOptions {
     events?: string | undefined;
     /** Enable the auth module (JWT + proto authorization). */
     auth?: boolean | undefined;
+    /** Non-interactive mode (skip the TUI; use flags/defaults). */
+    yes?: boolean | undefined;
     /** Base git ref to fetch (advanced; defaults to the pinned example ref). */
     ref?: string | undefined;
     /** Overwrite existing files instead of refusing. */
@@ -58,7 +61,7 @@ export interface InitOptions {
  * @param options - Init configuration
  */
 export async function executeInit(options: InitOptions): Promise<void> {
-    const config = resolveConfig({
+    const raw = await collectConfig({
         name: options.name,
         runtime: options.runtime,
         packageManager: options.packageManager,
@@ -67,7 +70,9 @@ export async function executeInit(options: InitOptions): Promise<void> {
         otel: options.otel,
         events: options.events,
         auth: options.auth,
+        yes: options.yes,
     });
+    const config = resolveConfig(raw);
 
     const targetDir = resolve(process.cwd(), config.name);
     if (!options.force && existsSync(targetDir) && readdirSync(targetDir).length > 0) {
@@ -109,7 +114,7 @@ export const initCommand = defineCommand({
         name: {
             type: "positional",
             description: "Project name / target directory",
-            required: true,
+            required: false,
         },
         runtime: {
             type: "string",
@@ -125,13 +130,11 @@ export const initCommand = defineCommand({
         },
         sample: {
             type: "boolean",
-            description: "Emit a runnable sample service",
-            default: true,
+            description: "Emit a runnable sample service (default: true)",
         },
         otel: {
             type: "boolean",
             description: "Add OpenTelemetry instrumentation",
-            default: false,
         },
         events: {
             type: "string",
@@ -140,6 +143,11 @@ export const initCommand = defineCommand({
         auth: {
             type: "boolean",
             description: "Add JWT authentication + proto authorization",
+        },
+        yes: {
+            type: "boolean",
+            alias: "y",
+            description: "Non-interactive mode (skip prompts; use flags/defaults)",
             default: false,
         },
         force: {
@@ -158,6 +166,7 @@ export const initCommand = defineCommand({
             otel: args.otel,
             events: args.events,
             auth: args.auth,
+            yes: args.yes,
             force: args.force,
         });
     },
