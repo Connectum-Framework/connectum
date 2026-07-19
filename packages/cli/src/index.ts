@@ -4,7 +4,9 @@
  * CLI tools for Connectum framework.
  *
  * Commands:
- * - connectum proto sync  -- Sync proto types from a running server via reflection
+ * - connectum init                 -- Scaffold a new Connectum project (work in progress)
+ * - connectum proto sync           -- Sync proto types from a running server via reflection
+ * - connectum generate service     -- Scaffold a service with empty handlers (work in progress)
  *
  * @module @connectum/cli
  * @mergeModuleWith <project>
@@ -12,6 +14,8 @@
 
 import { readFileSync } from "node:fs";
 import { defineCommand, runMain } from "citty";
+import { generateServiceCommand } from "./commands/generate-service.ts";
+import { initCommand } from "./commands/init.ts";
 import { protoSyncCommand } from "./commands/proto-sync.ts";
 
 // Read the version from package.json so `connectum --version` always reports the
@@ -25,6 +29,7 @@ const main = defineCommand({
         description: "CLI tools for Connectum gRPC/ConnectRPC framework",
     },
     subCommands: {
+        init: initCommand,
         proto: defineCommand({
             meta: {
                 name: "proto",
@@ -32,6 +37,15 @@ const main = defineCommand({
             },
             subCommands: {
                 sync: protoSyncCommand,
+            },
+        }),
+        generate: defineCommand({
+            meta: {
+                name: "generate",
+                description: "Code generation / scaffolding commands",
+            },
+            subCommands: {
+                service: generateServiceCommand,
             },
         }),
     },
