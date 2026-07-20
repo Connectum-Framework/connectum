@@ -189,8 +189,9 @@ describe("transformBase", () => {
 
     it("emits a standalone pnpm-workspace.yaml (build-approval) for pnpm, not for npm", () => {
         const pnpmOut = transformBase(base, nodePnpm);
-        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /onlyBuiltDependencies/);
-        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /@bufbuild\/buf/);
+        // pnpm 11 honours `allowBuilds` (map), NOT `onlyBuiltDependencies` — see transform.ts.
+        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /allowBuilds:/);
+        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /'@bufbuild\/buf': true/);
         const npmOut = transformBase(base, { ...nodePnpm, packageManager: "npm" });
         assert.equal(npmOut.has("pnpm-workspace.yaml"), false);
     });

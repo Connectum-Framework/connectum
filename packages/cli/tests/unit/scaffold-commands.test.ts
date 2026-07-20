@@ -69,7 +69,7 @@ describe("executeInit pipeline (injected clone, no network)", () => {
         assert.equal(pkg.name, "myservice");
         assert.equal(pkg.private, undefined);
         // pnpm (default) gets a standalone pnpm-workspace.yaml with the buf build-approval.
-        assert.match(readFileSync(join(workdir, "myservice/pnpm-workspace.yaml"), "utf8"), /onlyBuiltDependencies/);
+        assert.match(readFileSync(join(workdir, "myservice/pnpm-workspace.yaml"), "utf8"), /allowBuilds:/);
         assert.match(readFileSync(join(workdir, "myservice/tests/e2e/e2e.test.ts"), "utf8"), /createLocalClient/);
         assert.equal(pkg.devDependencies["@connectum/testing"], "^1.0.0");
     });

@@ -237,13 +237,15 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
         out.set("tests/e2e/events.test.ts", generateEventsTest(config.runtime));
     }
 
-    // A standalone pnpm project still needs to approve @bufbuild/buf's postinstall
-    // (the buf binary download); under pnpm 11 that setting lives in
-    // `pnpm-workspace.yaml` (the package.json `pnpm.*` field is no longer read).
-    // Without it pnpm blocks the build and `buf generate` cannot run. npm runs
-    // postinstall by default, so no file is needed there.
+    // A standalone pnpm project must approve @bufbuild/buf's postinstall (the buf binary
+    // download) or `buf generate` cannot run (ERR_PNPM_IGNORED_BUILDS). Under pnpm 11
+    // the setting lives in `pnpm-workspace.yaml` — and the key is **`allowBuilds`** (a
+    // map), which is what the monorepo root and every dogfooded example use. (The
+    // `onlyBuiltDependencies` list named in pnpm's deprecation warning for the old
+    // package.json `pnpm.*` field is NOT honoured by pnpm 11.0.4 — verified by CI.)
+    // npm runs postinstall by default, so no file is needed there.
     if (config.packageManager === "pnpm") {
-        out.set("pnpm-workspace.yaml", "onlyBuiltDependencies:\n  - '@bufbuild/buf'\n  - esbuild\n");
+        out.set("pnpm-workspace.yaml", "allowBuilds:\n  '@bufbuild/buf': true\n  esbuild: true\n");
     }
 
     return out;
