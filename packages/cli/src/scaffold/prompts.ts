@@ -101,8 +101,10 @@ export async function promptForMissing(flags: RawInput, prompter: Prompter): Pro
     const auth = flags.auth ?? (await prompter.confirm({ message: "Add auth (JWT + proto authorization)?", initialValue: false }));
 
     let events = flags.events;
-    if (events === undefined) {
-        const wantEvents = await prompter.confirm({ message: "Add an EventBus?", initialValue: false });
+    if (events === undefined || events.trim() === "") {
+        // `--events` with no value is an explicit opt-in that named no adapter: skip the
+        // yes/no question and go straight to the adapter picker.
+        const wantEvents = events !== undefined || (await prompter.confirm({ message: "Add an EventBus?", initialValue: false }));
         events = wantEvents ? await prompter.select({ message: "Event adapter", options: ADAPTER_OPTIONS, initialValue: "nats" }) : undefined;
     }
 

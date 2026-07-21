@@ -83,6 +83,11 @@ describe("executeInit pipeline (injected clone, no network)", () => {
     it("rejects an invalid runtime before doing any work", async () => {
         await assert.rejects(() => executeInit({ name: "x", runtime: "deno", clone: cloneStub }), /invalid --runtime/);
     });
+
+    it("fails clearly when the target path exists as a file (not a raw ENOTDIR)", async () => {
+        writeFileSync(join(workdir, "afile"), "x");
+        await assert.rejects(() => executeInit({ name: "afile", clone: cloneStub }), /is not a directory/);
+    });
 });
 
 describe("executeGenerateService", () => {
@@ -112,6 +117,10 @@ describe("executeGenerateService", () => {
         assert.match(readFileSync(join(dir, "proto/orders/v1/orders.proto"), "utf8"), /service OrdersEventHandlers/);
         assert.match(readFileSync(join(dir, "src/services/ordersService.ts"), "utf8"), /EventRoute/);
         assert.ok(existsSync(join(dir, "proto/connectum/events/v1/options.proto")));
+    });
+
+    it("rejects a service name with no alphanumeric characters", async () => {
+        await assert.rejects(() => executeGenerateService({ name: "!!!", cwd: dir }), /no alphanumeric characters/);
     });
 
     it("refuses to clobber and requires a name", async () => {

@@ -11,7 +11,7 @@
 
 import { resolve } from "node:path";
 import { defineCommand } from "citty";
-import { buildServiceFiles, registrationMessage } from "../scaffold/generateService.ts";
+import { buildServiceFiles, packageName, registrationMessage } from "../scaffold/generateService.ts";
 import { emitFiles } from "../utils/emit.ts";
 
 /**
@@ -37,6 +37,11 @@ export async function executeGenerateService(options: GenerateServiceOptions): P
     const name = options.name.trim();
     if (name === "") {
         throw new Error("connectum generate service: a service name is required (e.g. `connectum generate service billing`)");
+    }
+    // A name with no alphanumerics (e.g. "!!!") reduces to an empty proto package and an
+    // empty service identifier, which would emit a malformed `package .v1;` — reject it.
+    if (packageName(name) === "") {
+        throw new Error(`connectum generate service: "${options.name}" has no alphanumeric characters — cannot derive a proto package or service name.`);
     }
     const withEvents = options.withEvents ?? false;
     const targetDir = resolve(options.cwd ?? process.cwd());

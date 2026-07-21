@@ -18,9 +18,12 @@ describe("resolveConfig events flag", () => {
     it("parses a valid adapter", () => {
         assert.deepEqual(resolveConfig({ name: "x", events: "kafka" }).modules.events, { adapter: "kafka" });
     });
-    it("treats empty/absent as disabled", () => {
+    it("treats an absent flag as disabled", () => {
         assert.equal(resolveConfig({ name: "x" }).modules.events, undefined);
-        assert.equal(resolveConfig({ name: "x", events: "" }).modules.events, undefined);
+    });
+    it("rejects `--events` passed with no adapter instead of silently disabling it", () => {
+        assert.throws(() => resolveConfig({ name: "x", events: "" }), /--events requires an adapter/);
+        assert.throws(() => resolveConfig({ name: "x", events: "   " }), /--events requires an adapter/);
     });
     it("rejects an unknown adapter", () => {
         assert.throws(() => resolveConfig({ name: "x", events: "rabbitmq" }), /invalid --events/);
@@ -107,6 +110,14 @@ describe("transformBase with events", () => {
         const pkg = JSON.parse(transformBase(base, natsConfig).get("package.json") ?? "{}");
         assert.equal(pkg.dependencies["@connectum/events"], "^1.2.0");
         assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.2.0");
+    });
+
+    it("adds module deps even when the base package.json has no dependencies block", () => {
+        const noDeps = new Map(base);
+        noDeps.set("package.json", JSON.stringify({ name: "@connectum/example-getting-started", devDependencies: {} }));
+        const pkg = JSON.parse(transformBase(noDeps, natsConfig).get("package.json") ?? "{}");
+        assert.equal(pkg.dependencies["@connectum/events"], "^1.0.0");
+        assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.0.0");
     });
 
     it("regenerates buf.yaml with the lint excepts", () => {

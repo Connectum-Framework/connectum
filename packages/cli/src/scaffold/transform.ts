@@ -131,8 +131,10 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     if (config.modules.auth) {
         extraDeps["@connectum/auth"] = connectumVersion;
     }
-    if (Object.keys(extraDeps).length > 0 && pkg.dependencies) {
-        pkg.dependencies = Object.fromEntries(Object.entries({ ...pkg.dependencies, ...extraDeps }).sort(([a], [b]) => (a < b ? -1 : 1)));
+    // Note: no `&& pkg.dependencies` guard — a base without a `dependencies` block must
+    // still receive the enabled modules' deps rather than silently dropping them.
+    if (Object.keys(extraDeps).length > 0) {
+        pkg.dependencies = Object.fromEntries(Object.entries({ ...(pkg.dependencies ?? {}), ...extraDeps }).sort(([a], [b]) => (a < b ? -1 : 1)));
     }
 
     pkg.scripts = buildScripts(config);

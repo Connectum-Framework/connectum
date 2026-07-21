@@ -58,6 +58,12 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
     const packageManager = oneOf(input.packageManager, PACKAGE_MANAGERS, "package-manager", "pnpm");
     const nodeExec = oneOf(input.nodeExec, NODE_EXECS, "node-exec", "raw");
 
+    // `--events` passed with no value is an explicit opt-in that names no adapter — fail
+    // loudly instead of silently disabling the module. (The wizard resolves this case by
+    // asking for an adapter, so an empty value only reaches here in non-interactive mode.)
+    if (input.events !== undefined && input.events.trim() === "") {
+        throw new Error(`connectum init: --events requires an adapter (expected one of: ${EVENT_ADAPTERS.join(", ")})`);
+    }
     const eventsRaw = (input.events ?? "").trim();
     const events = eventsRaw === "" ? undefined : { adapter: oneOf(eventsRaw, EVENT_ADAPTERS, "events", "nats") };
 

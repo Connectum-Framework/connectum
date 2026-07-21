@@ -14,7 +14,7 @@
  * @module commands/init
  */
 
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
@@ -87,8 +87,14 @@ export async function executeInit(options: InitOptions): Promise<void> {
     const config = resolveConfig(raw);
 
     const targetDir = resolve(process.cwd(), config.name);
-    if (!options.force && existsSync(targetDir) && readdirSync(targetDir).length > 0) {
-        throw new Error(`connectum init: target directory "${config.name}" already exists and is not empty (use --force to overwrite).`);
+    if (existsSync(targetDir)) {
+        // Guard before readdirSync: a path that exists but is a file would throw a raw ENOTDIR.
+        if (!statSync(targetDir).isDirectory()) {
+            throw new Error(`connectum init: "${config.name}" already exists and is not a directory.`);
+        }
+        if (!options.force && readdirSync(targetDir).length > 0) {
+            throw new Error(`connectum init: target directory "${config.name}" already exists and is not empty (use --force to overwrite).`);
+        }
     }
 
     const tmp = mkdtempSync(join(tmpdir(), "connectum-init-base-"));

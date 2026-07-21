@@ -69,6 +69,13 @@ describe("promptForMissing", () => {
         assert.ok(!calls.includes("select:Node execution model"));
     });
 
+    it("goes straight to the adapter picker when --events was passed with no value", async () => {
+        const { prompter, calls } = stubPrompter({ select: { "Event adapter": "redis" } });
+        const out = await promptForMissing({ events: "" }, prompter);
+        assert.equal(out.events, "redis");
+        assert.ok(!calls.includes("confirm:Add an EventBus?"));
+    });
+
     it("asks for an adapter only when the user opts into events", async () => {
         const { prompter, calls } = stubPrompter({ confirm: { "Add an EventBus?": true }, select: { "Event adapter": "amqp" } });
         const out = await promptForMissing({}, prompter);
