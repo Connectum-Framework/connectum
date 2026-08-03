@@ -1,5 +1,5 @@
 {
-  "entryPoints": ["src/index.ts", "src/types.ts"],
+  "entryPoints": ["src/index.ts", "src/types.ts", "src/testing.ts"],
 
   "tsconfig": "../../tsconfig.json"
 }
