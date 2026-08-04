@@ -87,7 +87,19 @@ describe("applyAuthProtoAnnotations", () => {
 
     it("fails loudly if the base drifted and SayHello is gone", () => {
         // Emitting a project whose sample call cannot succeed is worse than refusing.
-        assert.throws(() => applyAuthProtoAnnotations('syntax = "proto3";\n\npackage greeter.v1;\n'), /base example and the CLI have drifted/);
+        assert.throws(() => applyAuthProtoAnnotations('syntax = "proto3";\n\npackage greeter.v1;\n'), /rpc SayHello.*drifted/s);
+    });
+
+    it("fails loudly if the package declaration is gone", () => {
+        assert.throws(() => applyAuthProtoAnnotations(`syntax = "proto3";\n\nservice GreeterService {\n  ${"rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {}"}\n}\n`), /`package` declaration.*drifted/s);
+    });
+
+    it("preserves the rest of the file verbatim", () => {
+        // A line scan must not reflow or drop anything it was not asked to touch.
+        const out = applyAuthProtoAnnotations(BASE_GREETER_PROTO);
+        assert.ok(out.includes('syntax = "proto3";'));
+        assert.ok(out.includes("service GreeterService {"));
+        assert.equal(out.split("\n").filter((l) => l.includes("rpc SayHello")).length, 1);
     });
 });
 

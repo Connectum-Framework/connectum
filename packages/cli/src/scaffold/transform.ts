@@ -97,6 +97,12 @@ export function buildDevDeps(existing: Record<string, string>, config: ScaffoldC
     if (config.runtime === "node" && config.nodeExec === "tsx") {
         devDeps.tsx = existing.tsx ?? "^4.21.0";
     }
+    if (config.runtime === "bun") {
+        // The generated e2e test imports `bun:test`, which tsc cannot resolve without
+        // Bun's ambient types — otherwise `typecheck` fails with TS2307 on a scaffold
+        // that runs perfectly well (caught by the Bun matrix cell).
+        devDeps["@types/bun"] = existing["@types/bun"] ?? "^1.3.6";
+    }
     // Sort keys for a stable, diff-friendly package.json.
     return Object.fromEntries(Object.entries(devDeps).sort(([a], [b]) => (a < b ? -1 : 1)));
 }

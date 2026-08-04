@@ -28,28 +28,48 @@ export const GREETER_PROTO_PATH = "proto/greeter/v1/greeter.proto";
  * - `SayGoodbye` -> left unannotated: requires a valid JWT, so the generated e2e test can
  *   assert that the auth chain actually rejects an unauthenticated call.
  *
+ * Implemented as a line scan rather than with regular expressions: the input is a file
+ * fetched at runtime, and the natural patterns here (`\s*` next to a literal, `\s+`
+ * beside `[^;]+`) are ambiguous enough to backtrack polynomially on pathological
+ * whitespace — flagged as `js/polynomial-redos`. Line comparisons have no such failure
+ * mode and read more plainly.
+ *
  * @param source - The fetched `greeter.proto` contents
  * @returns The annotated proto
- * @throws Error if the expected `SayHello` rpc is absent — failing loudly beats emitting
- *   a project whose sample call cannot succeed.
+ * @throws Error if the expected `SayHello` rpc or the package declaration is absent —
+ *   failing loudly beats emitting a project whose sample call cannot succeed.
  */
 export function applyAuthProtoAnnotations(source: string): string {
-    const sayHello = /(\s*)rpc SayHello\(SayHelloRequest\) returns \(SayHelloResponse\) \{\}/;
-    if (!sayHello.test(source)) {
-        throw new Error(
-            `connectum init: could not annotate ${GREETER_PROTO_PATH} for the auth module — the expected \`rpc SayHello\` declaration was not found in the fetched base. Re-run without --auth, or open an issue: the base example and the CLI have drifted.`,
+    const drift = (what: string): Error =>
+        new Error(
+            `connectum init: could not annotate ${GREETER_PROTO_PATH} for the auth module — ${what} was not found in the fetched base. Re-run without --auth, or open an issue: the base example and the CLI have drifted.`,
         );
+
+    const lines = source.split("\n");
+    const rpc = "rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {}";
+    const rpcIndex = lines.findIndex((line) => line.trimStart() === rpc);
+    if (rpcIndex === -1) {
+        throw drift("the expected `rpc SayHello` declaration");
     }
-    const annotated = source.replace(
-        sayHello,
-        (_match, indent: string) =>
-            `${indent}// Public: skips authentication and authorization, so the sample call works` +
-            `${indent}// out of the box. Remove this option to require a JWT (as SayGoodbye does).` +
-            `${indent}rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {` +
-            `${indent}  option (connectum.auth.v1.method_auth) = { public: true };` +
-            `${indent}}`,
+    const rpcLine = lines[rpcIndex] ?? "";
+    const indent = rpcLine.slice(0, rpcLine.length - rpcLine.trimStart().length);
+    lines.splice(
+        rpcIndex,
+        1,
+        `${indent}// Public: skips authentication and authorization, so the sample call works`,
+        `${indent}// out of the box. Remove this option to require a JWT (as SayGoodbye does).`,
+        `${indent}rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {`,
+        `${indent}  option (connectum.auth.v1.method_auth) = { public: true };`,
+        `${indent}}`,
     );
-    return annotated.replace(/^(package\s+[^;]+;\n)/m, `$1\nimport "connectum/auth/v1/options.proto";\n`);
+
+    const packageIndex = lines.findIndex((line) => line.startsWith("package ") && line.trimEnd().endsWith(";"));
+    if (packageIndex === -1) {
+        throw drift("the `package` declaration");
+    }
+    lines.splice(packageIndex + 1, 0, "", 'import "connectum/auth/v1/options.proto";');
+
+    return lines.join("\n");
 }
 
 /** `src/auth.ts` — builds the JWT + proto-authz interceptor chain. */
