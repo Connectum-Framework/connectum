@@ -24,6 +24,7 @@
     "lint": "turbo run lint",
     "format": "turbo run format",
     "biome": "biome check --write .",
+    "scaffold:check": "node scripts/scaffold-check.mjs",
     "release:gate": "node scripts/release-gate/run.mjs --mode pack",
     "release:gate:preview": "node scripts/release-gate/run.mjs --mode preview",
     "dev": "turbo run dev --parallel",
