@@ -38,10 +38,16 @@ export async function executeGenerateService(options: GenerateServiceOptions): P
     if (name === "") {
         throw new Error("connectum generate service: a service name is required (e.g. `connectum generate service billing`)");
     }
-    // A name with no alphanumerics (e.g. "!!!") reduces to an empty proto package and an
-    // empty service identifier, which would emit a malformed `package .v1;` — reject it.
-    if (packageName(name) === "") {
-        throw new Error(`connectum generate service: "${options.name}" has no alphanumeric characters — cannot derive a proto package or service name.`);
+    // The normalized name feeds three derivations: the proto package (`<pkg>.v1`), the
+    // proto service identifier (`<Pascal>Service`) and a TypeScript binding
+    // (`<camel>Service`). Proto identifiers must start with an ASCII letter, and so must
+    // a JS identifier — so a name with no alphanumerics ("!!!" -> `package .v1;`) or one
+    // starting with a digit ("123-orders" -> `package 123orders.v1;` plus a `123Orders`
+    // binding that will not parse) has to be rejected before anything is emitted.
+    if (!/^[a-z][a-z0-9]*$/.test(packageName(name))) {
+        throw new Error(
+            `connectum generate service: "${options.name}" does not yield a valid identifier — after removing non-alphanumeric characters the name must start with a letter (e.g. "billing", "billing-v2"), not be empty or start with a digit.`,
+        );
     }
     const withEvents = options.withEvents ?? false;
     const targetDir = resolve(options.cwd ?? process.cwd());

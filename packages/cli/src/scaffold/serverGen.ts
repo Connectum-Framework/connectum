@@ -37,7 +37,11 @@ function interceptorsExpr(config: ScaffoldConfig): { imports: string[]; expr: st
 
     if (otel) {
         imports.push('import { createOtelInterceptor } from "@connectum/otel";');
-        parts.push("createOtelInterceptor({ trustRemote: true })");
+        // `trustRemote` stays at the framework default (false): the scaffolded server
+        // binds 0.0.0.0, so trusting caller-supplied trace context — and inheriting the
+        // caller's sampling decision — must be an explicit deployment choice at a
+        // trusted boundary, not a default the generator turns on silently.
+        parts.push("createOtelInterceptor({ trustRemote: false })");
     }
 
     if (auth) {

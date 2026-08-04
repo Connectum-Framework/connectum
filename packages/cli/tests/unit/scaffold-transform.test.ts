@@ -137,15 +137,31 @@ describe("transformPackageJson", () => {
 
 describe("generateGreeterE2eTest", () => {
     it("uses the in-process createLocalClient and node:test on Node", () => {
-        const t = generateGreeterE2eTest("node");
+        const t = generateGreeterE2eTest(nodePnpm);
         assert.match(t, /from "node:test"/);
         assert.match(t, /createLocalClient/);
-        assert.match(t, /createServer\(\{ services: \[greeterService\] \}\)/);
         assert.doesNotMatch(t, /createGrpcTransport/);
     });
 
+    it("exercises the real composition root, not a bare server", () => {
+        // A test that builds its own `createServer({ services: [...] })` never runs the
+        // interceptor chain, so a module that makes the service unreachable still passes.
+        const t = generateGreeterE2eTest(nodePnpm);
+        assert.match(t, /import \{ buildServer \} from "#server\.ts"/);
+        assert.match(t, /buildServer\(0\)/);
+        assert.doesNotMatch(t, /createServer\(/);
+    });
+
+    it("asserts the auth chain both allows the public rpc and rejects the private one", () => {
+        const t = generateGreeterE2eTest({ ...nodePnpm, modules: { ...nodePnpm.modules, auth: true } });
+        assert.match(t, /sayHello is public/);
+        assert.match(t, /sayGoodbye requires authentication/);
+        assert.match(t, /assert\.rejects/);
+        assert.match(t, /unauthenticated/);
+    });
+
     it("uses bun:test on Bun (same body)", () => {
-        const t = generateGreeterE2eTest("bun");
+        const t = generateGreeterE2eTest({ ...nodePnpm, runtime: "bun" });
         assert.match(t, /from "bun:test"/);
         assert.match(t, /createLocalClient/);
     });

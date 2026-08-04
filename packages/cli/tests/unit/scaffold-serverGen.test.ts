@@ -25,7 +25,10 @@ describe("generateServer", () => {
     it("otel is outermost in the interceptor chain (D-3)", () => {
         const s = generateServer(withOtel);
         assert.match(s, /import \{ createOtelInterceptor \} from "@connectum\/otel"/);
-        assert.match(s, /interceptors: \[createOtelInterceptor\(\{ trustRemote: true \}\), \.\.\.createDefaultInterceptors\(\)\]/);
+        // trustRemote stays false (the framework default): the scaffolded server binds
+        // 0.0.0.0, so inheriting a caller's trace context and sampling decision must be
+        // an explicit deployment choice, never a generator default.
+        assert.match(s, /interceptors: \[createOtelInterceptor\(\{ trustRemote: false \}\), \.\.\.createDefaultInterceptors\(\)\]/);
         // otel must appear before createDefaultInterceptors in the array (outermost).
         const arr = s.slice(s.indexOf("interceptors: ["));
         assert.ok(arr.indexOf("createOtelInterceptor") < arr.indexOf("createDefaultInterceptors"));

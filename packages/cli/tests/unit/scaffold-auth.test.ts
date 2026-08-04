@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { generateAuthFile } from "../../src/scaffold/authFragment.ts";
+import { applyAuthProtoAnnotations, generateAuthFile } from "../../src/scaffold/authFragment.ts";
 import { generateBufYaml } from "../../src/scaffold/bufConfig.ts";
 import { resolveConfig } from "../../src/scaffold/config.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
@@ -58,11 +58,45 @@ describe("generateBufYaml with auth", () => {
     });
 });
 
+/** The shape of the base sample proto that the auth annotation transform depends on. */
+const BASE_GREETER_PROTO = `syntax = "proto3";
+
+package greeter.v1;
+
+service GreeterService {
+  rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {}
+
+  rpc SayGoodbye(SayGoodbyeRequest) returns (SayGoodbyeResponse) {}
+}
+`;
+
+describe("applyAuthProtoAnnotations", () => {
+    it("marks SayHello public and leaves SayGoodbye authenticated", () => {
+        // proto-authz is deny-by-default: without this annotation a scaffolded --auth
+        // project rejects its own sample call with "[unauthenticated] Missing credentials"
+        // (verified against a live scaffold).
+        const out = applyAuthProtoAnnotations(BASE_GREETER_PROTO);
+        assert.match(out, /rpc SayHello\(SayHelloRequest\) returns \(SayHelloResponse\) \{\n\s+option \(connectum\.auth\.v1\.method_auth\) = \{ public: true \};\n\s+\}/);
+        assert.match(out, /rpc SayGoodbye\(SayGoodbyeRequest\) returns \(SayGoodbyeResponse\) \{\}/);
+    });
+
+    it("imports the auth option proto after the package declaration", () => {
+        const out = applyAuthProtoAnnotations(BASE_GREETER_PROTO);
+        assert.match(out, /package greeter\.v1;\n\nimport "connectum\/auth\/v1\/options\.proto";/);
+    });
+
+    it("fails loudly if the base drifted and SayHello is gone", () => {
+        // Emitting a project whose sample call cannot succeed is worse than refusing.
+        assert.throws(() => applyAuthProtoAnnotations('syntax = "proto3";\n\npackage greeter.v1;\n'), /base example and the CLI have drifted/);
+    });
+});
+
 describe("transformBase with auth", () => {
     const base = new Map<string, string>([
         ["package.json", JSON.stringify({ name: "@connectum/example-getting-started", dependencies: { "@connectum/core": "^1.2.0" }, devDependencies: {} })],
         ["buf.yaml", "version: v2\n"],
         ["src/services/greeterService.ts", "export const greeterService = {};\n"],
+        ["proto/greeter/v1/greeter.proto", BASE_GREETER_PROTO],
     ]);
 
     it("emits src/auth.ts and adds @connectum/auth, buf module", () => {
@@ -71,5 +105,15 @@ describe("transformBase with auth", () => {
         const pkg = JSON.parse(out.get("package.json") ?? "{}");
         assert.equal(pkg.dependencies["@connectum/auth"], "^1.2.0");
         assert.match(out.get("buf.yaml") ?? "", /node_modules\/@connectum\/auth\/proto/);
+    });
+
+    it("annotates the sample proto so the scaffolded project is reachable", () => {
+        const out = transformBase(base, authConfig);
+        assert.match(out.get("proto/greeter/v1/greeter.proto") ?? "", /method_auth\) = \{ public: true \}/);
+    });
+
+    it("leaves the sample proto untouched when auth is off", () => {
+        const out = transformBase(base, { ...authConfig, modules: {} });
+        assert.equal(out.get("proto/greeter/v1/greeter.proto"), BASE_GREETER_PROTO);
     });
 });

@@ -63,9 +63,12 @@ describe("EventBus / EventRoute files", () => {
     it("EventRoute registers the handler with ack (not throw)", () => {
         const r = generateEventRouteFile();
         assert.match(r, /events\.service\(GreeterEventHandlers, \{/);
-        assert.match(r, /async onGreetingSent\(event, ctx\)/);
+        assert.match(r, /async onGreetingSent\(_event, ctx\)/);
         assert.match(r, /await ctx\.ack\(\)/);
         assert.doesNotMatch(r, /throw/);
+        // The starter handler must not log the event body: payloads can carry user data,
+        // and a generated default is exactly where that leaks unnoticed.
+        assert.doesNotMatch(r, /console\.log/);
     });
     it("events smoke test uses MemoryAdapter and the runtime-appropriate runner", () => {
         assert.match(generateEventsTest("node"), /from "node:test"/);

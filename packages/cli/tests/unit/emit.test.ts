@@ -1,12 +1,13 @@
 /**
  * Unit tests for the file-emission layer (utils/emit).
  *
- * Covers path-safety, refuse-to-clobber (default), force overwrite, deterministic
- * ordering, and the all-or-nothing validation guarantee.
+ * Covers path-safety (lexical traversal AND symlink containment), refuse-to-clobber
+ * (default), force overwrite, deterministic ordering, and the all-or-nothing
+ * validation guarantee.
  */
 
 import assert from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -113,5 +114,31 @@ describe("emitFiles", () => {
         );
         // "ok.txt" must NOT have been written — validation runs before any write.
         assert.throws(() => readFileSync(join(dir, "ok.txt"), "utf8"));
+    });
+
+    it("refuses to write through a symlinked path component", () => {
+        // Lexical validation alone is not enough: "linked/file.ts" contains no "..", but
+        // mkdirSync/writeFileSync follow symlinks, so an existing symlinked component
+        // would redirect the write outside the target directory.
+        const outside = mkdtempSync(join(tmpdir(), "connectum-emit-outside-"));
+        try {
+            symlinkSync(outside, join(dir, "linked"), "dir");
+            assert.throws(() => emitFiles(dir, new Map([["linked/file.ts", "x"]])), /symbolic link/);
+            assert.equal(existsSync(join(outside, "file.ts")), false);
+        } finally {
+            rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
+    it("refuses to write when the target directory itself is a symlink", () => {
+        const real = mkdtempSync(join(tmpdir(), "connectum-emit-real-"));
+        const link = join(dir, "target-link");
+        try {
+            symlinkSync(real, link, "dir");
+            assert.throws(() => emitFiles(link, new Map([["file.ts", "x"]])), /symbolic link/);
+            assert.equal(existsSync(join(real, "file.ts")), false);
+        } finally {
+            rmSync(real, { recursive: true, force: true });
+        }
     });
 });

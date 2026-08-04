@@ -2,8 +2,8 @@
  * Tests for the scaffolding command seam.
  *
  * `init` runs the real fetch→transform→emit pipeline against an injected local
- * clone stub (no network). `generate service` is still a Phase-3 work-in-progress
- * stub and this locks its honest contract.
+ * clone stub (no network). `generate service` emits a starter proto plus a
+ * `defineService` skeleton, and these lock its input validation and output shape.
  */
 
 import assert from "node:assert/strict";
@@ -119,8 +119,16 @@ describe("executeGenerateService", () => {
         assert.ok(existsSync(join(dir, "proto/connectum/events/v1/options.proto")));
     });
 
+    it("rejects a service name that starts with a digit", async () => {
+        // "123-orders" normalizes to "123orders": a proto package must start with a
+        // letter, and the derived TS binding `123OrdersService` would not even parse.
+        for (const name of ["123", "123-orders", "0a"]) {
+            await assert.rejects(() => executeGenerateService({ name, cwd: dir }), /must start with a letter/);
+        }
+    });
+
     it("rejects a service name with no alphanumeric characters", async () => {
-        await assert.rejects(() => executeGenerateService({ name: "!!!", cwd: dir }), /no alphanumeric characters/);
+        await assert.rejects(() => executeGenerateService({ name: "!!!", cwd: dir }), /must start with a letter/);
     });
 
     it("refuses to clobber and requires a name", async () => {

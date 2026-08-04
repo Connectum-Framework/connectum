@@ -4,9 +4,9 @@
  * CLI tools for Connectum framework.
  *
  * Commands:
- * - connectum init                 -- Scaffold a new Connectum project (work in progress)
+ * - connectum init                 -- Scaffold a new Connectum project
  * - connectum proto sync           -- Sync proto types from a running server via reflection
- * - connectum generate service     -- Scaffold a service with empty handlers (work in progress)
+ * - connectum generate service     -- Scaffold a service with empty handlers
  *
  * @module @connectum/cli
  * @mergeModuleWith <project>

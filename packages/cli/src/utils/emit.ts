@@ -10,8 +10,8 @@
  * @module utils/emit
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 
 /** Matches Windows absolute paths: drive-letter (`C:\`, `C:/`) and UNC (`\\server\share`). */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]|^\\\\/;
@@ -29,6 +29,40 @@ const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]|^\\\\/;
 export function assertSafeRelativePath(relPath: string): void {
     if (relPath === "" || relPath.startsWith("/") || WINDOWS_ABSOLUTE.test(relPath) || relPath.split(/[/\\]/).includes("..")) {
         throw new Error(`Unsafe emit path: "${relPath}" (must be a relative path without "..")`);
+    }
+}
+
+/**
+ * Assert that no existing path component of `targetDir/relPath` is a symbolic link.
+ *
+ * {@link assertSafeRelativePath} is purely lexical, but `mkdirSync`/`writeFileSync`
+ * **follow** symlinks — so an existing symlinked component (e.g. a `src` that points
+ * elsewhere) would silently redirect writes outside `targetDir` even though the relative
+ * path itself is clean. Every component is `lstat`ed and rejected if it is a link,
+ * mirroring the symlink skip already used when reading the base tree.
+ *
+ * @param targetDir - Directory the relative path is resolved against
+ * @param relPath - Validated relative path
+ * @throws Error if any existing component (including `targetDir` itself) is a symlink
+ */
+function assertNoSymlinkComponent(targetDir: string, relPath: string): void {
+    const check = (path: string): void => {
+        let stat: ReturnType<typeof lstatSync>;
+        try {
+            stat = lstatSync(path);
+        } catch {
+            // Does not exist yet — mkdirSync will create a real directory.
+            return;
+        }
+        if (stat.isSymbolicLink()) {
+            throw new Error(`Unsafe emit path: "${relPath}" resolves through the symbolic link "${path}" (emission must stay inside the target directory)`);
+        }
+    };
+    check(targetDir);
+    let current = targetDir;
+    for (const segment of relPath.split(/[/\\]/)) {
+        current = current === "" ? segment : `${current}${sep}${segment}`;
+        check(current);
     }
 }
 
@@ -77,6 +111,7 @@ export function emitFiles(targetDir: string, files: ReadonlyMap<string, string>,
 
     for (const [relPath, content] of entries) {
         const absPath = join(targetDir, relPath);
+        assertNoSymlinkComponent(targetDir, relPath);
         if (!options.force && existsSync(absPath)) {
             skipped.push(relPath);
             continue;

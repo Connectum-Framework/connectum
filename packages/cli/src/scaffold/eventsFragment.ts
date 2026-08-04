@@ -148,9 +148,10 @@ import { GreeterEventHandlers } from "#gen/greeter/v1/events_pb.ts";
 
 export const greeterEventRoutes: EventRoute = (events) => {
     events.service(GreeterEventHandlers, {
-        async onGreetingSent(event, ctx) {
+        async onGreetingSent(_event, ctx) {
             // TODO: handle the GreetingSent event (topic: greeter.greeting-sent).
-            console.log(\`[greeterEvents] GreetingSent: \${event.name} — \${event.message}\`);
+            // Deliberately no logging of the event body: payloads can carry user data,
+            // so add logging with your own redaction policy.
             await ctx.ack();
         },
     });

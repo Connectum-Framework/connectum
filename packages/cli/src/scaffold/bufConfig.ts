@@ -56,10 +56,16 @@ export function generateBufGenYaml(config: ScaffoldConfig): string {
       - target=ts
       - import_extension=.ts`
         : "";
+    // No explicit `inputs`: buf generate then defaults to the whole local workspace
+    // declared by buf.yaml. That matters twice over. (1) With auth, the imported
+    // `connectum/auth/v1/options.proto` lives in a second module under node_modules;
+    // pinning `inputs: [directory: proto]` excludes it, so `options_pb.ts` is never
+    // emitted and the generated `greeter_pb.ts` fails to resolve its import (verified:
+    // TS2307 on a live scaffold). (2) Listing modules as separate inputs would invoke
+    // each plugin once per input, and the services-less auth module would clobber
+    // catalog.gen.ts. Mirrors the dogfooded car-sharing example.
     return `version: v2
 clean: true
-inputs:
-  - directory: proto
 plugins:
   - local: protoc-gen-es
     out: gen

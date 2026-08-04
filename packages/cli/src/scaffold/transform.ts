@@ -16,7 +16,7 @@
  * @module scaffold/transform
  */
 
-import { generateAuthFile } from "./authFragment.ts";
+import { applyAuthProtoAnnotations, GREETER_PROTO_PATH, generateAuthFile } from "./authFragment.ts";
 import { generateBufGenYaml, generateBufYaml } from "./bufConfig.ts";
 import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto, generateEventsTest } from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
@@ -148,35 +148,49 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
  * body is identical across runtimes; only the test-runner import differs
  * (`node:test` on Node, `bun:test` on Bun, matching the chosen `test` script).
  */
-export function generateGreeterE2eTest(runtime: Runtime): string {
-    const runnerImport = runtime === "bun" ? 'import { describe, it } from "bun:test";' : 'import { describe, it } from "node:test";';
+export function generateGreeterE2eTest(config: ScaffoldConfig): string {
+    const runnerImport = config.runtime === "bun" ? 'import { describe, it } from "bun:test";' : 'import { describe, it } from "node:test";';
+    // With auth, SayGoodbye is deliberately left unannotated (see applyAuthProtoAnnotations)
+    // so the test proves the chain both allows the public rpc and rejects the private one.
+    const secondCase =
+        config.modules.auth === true
+            ? `    it("sayGoodbye requires authentication", async () => {
+        await assert.rejects(
+            () => client.sayGoodbye({ name: "Ada" }),
+            (err: Error) => err.message.includes("unauthenticated"),
+        );
+    });`
+            : `    it("sayGoodbye returns a farewell", async () => {
+        const res = await client.sayGoodbye({ name: "Ada" });
+        assert.equal(res.message, "Goodbye, Ada!");
+    });`;
+    const firstTitle = config.modules.auth === true ? "sayHello is public and returns a greeting" : "sayHello returns a greeting";
     return `/**
  * End-to-end test for the sample Greeter service.
  *
- * Uses @connectum/testing's in-process \`createLocalClient\` — no socket is opened,
- * so the same test runs identically on Node and Bun.
+ * Exercises the REAL composition root (\`buildServer\`) — the same services, interceptor
+ * chain and protocols the process entry starts — so a module that breaks the chain fails
+ * here instead of shipping. Uses @connectum/testing's in-process \`createLocalClient\`:
+ * no socket is opened, so the same test runs identically on Node and Bun.
  */
 
 import assert from "node:assert/strict";
 ${runnerImport}
-import { createServer } from "@connectum/core";
 import { createLocalClient } from "@connectum/testing";
 import { GreeterService } from "#gen/greeter/v1/greeter_pb.ts";
-import { greeterService } from "#services/greeterService.ts";
+import { buildServer } from "#server.ts";
 
 describe("GreeterService", () => {
-    const server = createServer({ services: [greeterService] });
+    // Port 0: never bound — the in-process client bypasses the network entirely.
+    const server = buildServer(0);
     const client = createLocalClient(server, GreeterService);
 
-    it("sayHello returns a greeting", async () => {
+    it("${firstTitle}", async () => {
         const res = await client.sayHello({ name: "Ada" });
         assert.equal(res.message, "Hello, Ada!");
     });
 
-    it("sayGoodbye returns a farewell", async () => {
-        const res = await client.sayGoodbye({ name: "Ada" });
-        assert.equal(res.message, "Goodbye, Ada!");
-    });
+${secondCase}
 });
 `;
 }
@@ -222,12 +236,19 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
     out.set("src/index.ts", generateIndex(config));
     out.set("buf.yaml", generateBufYaml(config));
     out.set("buf.gen.yaml", generateBufGenYaml(config));
-    out.set(E2E_TEST_PATH, generateGreeterE2eTest(config.runtime));
+    out.set(E2E_TEST_PATH, generateGreeterE2eTest(config));
     out.set("README.md", generateReadme(config));
 
     // auth module: JWT + proto-authz interceptor builder (buf.yaml adds the 2nd module).
     if (config.modules.auth) {
         out.set("src/auth.ts", generateAuthFile());
+        // proto-authz is deny-by-default, so the sample rpc must be annotated public or
+        // the scaffolded project rejects its own sample call.
+        const greeterProto = out.get(GREETER_PROTO_PATH);
+        if (greeterProto === undefined) {
+            throw new Error(`connectum init: the fetched base does not contain ${GREETER_PROTO_PATH}, which the auth module needs to annotate.`);
+        }
+        out.set(GREETER_PROTO_PATH, applyAuthProtoAnnotations(greeterProto));
     }
 
     // events module: vendored option proto, demo event-handler proto, EventBus + route.

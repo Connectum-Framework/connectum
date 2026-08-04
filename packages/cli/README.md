@@ -18,7 +18,9 @@ CLI tools for the Connectum gRPC/ConnectRPC framework.
 pnpm add @connectum/cli
 ```
 
-Requires Node.js >= 22.13.0.
+The CLI itself requires Node.js >= 22.13.0. The project it scaffolds targets whichever
+runtime you choose: the default `--node-exec raw` runs `.ts` natively and therefore needs
+Node.js >= 25.2.0, while `--node-exec tsx` lowers the generated project's floor to 22.13.0.
 
 ## Quick Start
 
@@ -29,7 +31,8 @@ npx @connectum/cli init
 # ...or non-interactively, with modules
 npx @connectum/cli init payments --package-manager pnpm --otel --events nats --auth --yes
 
-# Add a service to an existing project
+# Add a service to an existing project (run inside the project)
+cd payments
 connectum generate service billing --with-events
 
 # Generate TypeScript types from a running server with reflection enabled
