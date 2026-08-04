@@ -103,7 +103,8 @@ describe("executeInit pipeline (injected clone, no network)", () => {
             await cloneStub(source, dest);
         };
         await executeInit({ name: "pinned", clone: recordingClone });
-        assert.deepStrictEqual(seen, [`Connectum-Framework/examples/getting-started#${DEFAULT_BASE_REF}`]);
+        // `gh:` is giget's provider prefix; without it the spec reads as a local path.
+        assert.deepStrictEqual(seen, [`gh:Connectum-Framework/examples/getting-started#${DEFAULT_BASE_REF}`]);
     });
 
     it("honours an explicit --ref override", async () => {
@@ -113,7 +114,7 @@ describe("executeInit pipeline (injected clone, no network)", () => {
             await cloneStub(source, dest);
         };
         await executeInit({ name: "overridden", clone: recordingClone, ref: "main" });
-        assert.deepStrictEqual(seen, ["Connectum-Framework/examples/getting-started#main"]);
+        assert.deepStrictEqual(seen, ["gh:Connectum-Framework/examples/getting-started#main"]);
     });
 });
 

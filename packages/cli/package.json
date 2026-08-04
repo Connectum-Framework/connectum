@@ -79,7 +79,7 @@
     "@connectrpc/connect-node": "catalog:",
     "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
     "citty": "^0.2.2",
-    "tiged": "^2.12.8"
+    "giget": "^3.3.1"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

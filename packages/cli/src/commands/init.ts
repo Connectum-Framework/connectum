@@ -59,7 +59,7 @@ export interface InitOptions {
     ref?: string | undefined;
     /** Overwrite existing files instead of refusing. */
     force?: boolean | undefined;
-    /** Injected clone function (tests supply a local-copy stub; production uses tiged). */
+    /** Injected clone function (tests supply a local-copy stub; production uses giget). */
     clone?: CloneFn | undefined;
 }
 
