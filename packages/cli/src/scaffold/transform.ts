@@ -266,13 +266,17 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
         out.set("tests/e2e/events.test.ts", generateEventsTest(config.runtime));
     }
 
-    // A standalone pnpm project must approve @bufbuild/buf's postinstall (the buf binary
-    // download) or `buf generate` cannot run (ERR_PNPM_IGNORED_BUILDS). Under pnpm 11
-    // the setting lives in `pnpm-workspace.yaml` — and the key is **`allowBuilds`** (a
-    // map), which is what the monorepo root and every dogfooded example use. (The
-    // `onlyBuiltDependencies` list named in pnpm's deprecation warning for the old
-    // package.json `pnpm.*` field is NOT honoured by pnpm 11.0.4 — verified by CI.)
-    // npm runs postinstall by default, so no file is needed there.
+    // pnpm 11 **fails the install** (exit 1, ERR_PNPM_IGNORED_BUILDS) when a dependency
+    // has an unapproved build script — @bufbuild/buf declares a `postinstall`. The buf
+    // binary itself is unaffected either way: it ships as an optionalDependencies
+    // platform package behind a Node shim, and the postinstall is only a validator that
+    // rescues the `--no-optional` case. What breaks is the exit code, which fails the
+    // scaffolded project's very first command and CI. The approval lives in
+    // `pnpm-workspace.yaml` under **`allowBuilds`** (a map), which is what the monorepo
+    // root and every dogfooded example use. (The `onlyBuiltDependencies` list named in
+    // pnpm's deprecation warning for the old package.json `pnpm.*` field is NOT honoured
+    // by pnpm 11.0.4 — verified by CI.) npm and bun need no file: npm runs postinstalls
+    // by default, and bun exits 0 even when it blocks one.
     if (config.packageManager === "pnpm") {
         out.set("pnpm-workspace.yaml", "allowBuilds:\n  '@bufbuild/buf': true\n  esbuild: true\n");
     }

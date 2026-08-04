@@ -33,7 +33,7 @@ export interface InitOptions {
     name?: string | undefined;
     /** Target runtime: `node` (default) or `bun`. */
     runtime?: string | undefined;
-    /** Package manager: `pnpm` (default) or `npm`. */
+    /** Package manager: `pnpm` (default), `npm` or `bun`. */
     packageManager?: string | undefined;
     /** Node execution model: `raw` (default) or `tsx` (Node runtime only). */
     nodeExec?: string | undefined;
@@ -140,7 +140,7 @@ export const initCommand = defineCommand({
         },
         "package-manager": {
             type: "string",
-            description: "Package manager: pnpm (default) or npm",
+            description: "Package manager: pnpm (default), npm or bun",
         },
         "node-exec": {
             type: "string",

@@ -67,6 +67,10 @@ const COMBOS = [
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
+    // The two axes are independent, so both crossings are worth a cell: the one above
+    // runs a Bun-runtime project installed with npm, this one installs with bun and
+    // runs on Node. `bun install` lays out an ordinary node_modules either way.
+    { name: "bun-pm", pm: "bun", args: [], optional: true, needsBun: true },
     { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
 ];
 
