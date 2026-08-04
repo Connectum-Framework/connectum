@@ -139,9 +139,22 @@ jobs:
         run: pnpm --filter @connectum/events-amqp test:integration
 
   # ── Bun runtime tests ──────────────────────────────────────────────────
+  # Two cells, because they guard different claims. `latest` catches regressions in
+  # the runtime we tell people to use. `1.2.6` is the floor the docs publish for
+  # HTTP/2 client transports (Bun <= 1.2.5 hangs on the first RPC); without a cell
+  # there, nothing would catch a wrong floor or a regression at it.
+  #
+  # The full `test:bun` suite runs on `latest` only. It does NOT pass on 1.2.6, for
+  # reasons unrelated to the floor: `events-redis` and `reflection` have tests that
+  # need a newer Bun. Pinning the floor cell to the wire test that actually
+  # exercises the claim keeps it honest instead of red.
   test-bun:
-    name: Bun (latest)
+    name: Bun (${{ matrix.bun }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bun: [latest, "1.2.6"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -154,7 +167,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: ${{ matrix.bun }}
 
       - run: pnpm install --frozen-lockfile
 
@@ -162,7 +175,14 @@ jobs:
         run: pnpm build
 
       - name: Bun runtime tests
+        if: matrix.bun == 'latest'
         run: pnpm test:bun
+
+      # The documented floor itself: an HTTP/2 client against a plaintext h2c server,
+      # asserting the gRPC status arrives in trailers. On Bun <= 1.2.5 this hangs.
+      # Runs on both cells so a regression on `latest` is caught by the same check.
+      - name: HTTP/2 client floor guard
+        run: pnpm --filter @connectum/core run test:bun:h2
 
   # ── esbuild transpilation tests ────────────────────────────────────────
   test-esbuild:
