@@ -29,6 +29,7 @@
  *   pnpm scaffold:check --keep              # keep the generated projects for inspection
  *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
  *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
+ *   pnpm scaffold:check --list-needs-bun    # which of those need bun (CI gates setup-bun on this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
  *
@@ -132,6 +133,7 @@ function main() {
                 "  --runtime bun    include the Bun cell (requires bun on PATH)",
                 "  --keep           keep the generated projects instead of deleting them",
                 "  --list           print every combination name as JSON (used by CI to build its matrix)",
+                "  --list-needs-bun print the combinations that require bun as JSON (CI gates its setup step on this)",
                 "",
                 `Default: ${DEFAULT_COMBOS.map((c) => c.name).join(", ")}`,
                 `Opt-in:  ${COMBOS.filter((c) => c.optional)
