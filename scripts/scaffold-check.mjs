@@ -6,8 +6,10 @@
  * install it, then run `typecheck` (which runs `buf generate` first) and `test`. A
  * broken module fragment fails here instead of in CI — or, worse, in a user's `init`.
  *
- * The combination list is kept identical to `.github/workflows/cli-scaffold-matrix.yml`
- * on purpose: this script is only useful if a green run here means a green run there.
+ * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
+ * not restate it. That workflow calls `--list` to build its matrix and then runs one
+ * cell per name, so a green run here means a green run there by construction rather
+ * than by two lists being kept in step by hand.
  *
  * WHAT IS DETERMINISTIC, AND WHAT IS NOT — this matters when reading a failure:
  * - The base project IS pinned: `connectum init` fetches `DEFAULT_BASE_REF`, a tag,
@@ -21,11 +23,12 @@
  *   the `init base-drift` cell and tracks the live example on purpose.
  *
  * Usage:
- *   pnpm scaffold:check                     # every combo, pinned base
+ *   pnpm scaffold:check                     # the default combos, pinned base
  *   pnpm scaffold:check --combo auth,otel   # only the named combos
  *   pnpm scaffold:check --drift             # also run the kitchen sink against examples@main
  *   pnpm scaffold:check --keep              # keep the generated projects for inspection
- *   pnpm scaffold:check --runtime bun       # the Bun cell (requires bun on PATH)
+ *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
+ *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
  *
@@ -43,8 +46,17 @@ const CLI_ENTRY = join(REPO_ROOT, "packages/cli/dist/index.js");
 const SCRATCH_ROOT = join(REPO_ROOT, ".tmp");
 
 /**
- * The combinations exercised by CI. Keep in lockstep with
- * `.github/workflows/cli-scaffold-matrix.yml` — a divergence makes this script lie.
+ * **The single source of truth for what gets scaffold-checked.**
+ *
+ * `cli-scaffold-matrix.yml` does not restate this list: it asks for it with
+ * `--list` and builds its matrix from the answer, then runs one cell per name via
+ * `--combo <name>`. Adding a combination here adds a CI cell, and there is no second
+ * place that can silently disagree.
+ *
+ * `optional: true` keeps a combination out of a bare local run — `bun` needs `bun` on
+ * PATH, and `base-drift` reaches for the live example branch — while still exposing it
+ * to `--combo <name>` (which is how CI selects every cell) and to `--runtime bun` /
+ * `--drift`.
  */
 const COMBOS = [
     { name: "base-node-pnpm", pm: "pnpm", args: [] },
@@ -54,21 +66,21 @@ const COMBOS = [
     { name: "auth", pm: "npm", args: ["--auth"] },
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
+    { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
+    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
 ];
 
-/** The Bun cell, opt-in because it needs `bun` on PATH. */
-const BUN_COMBO = { name: "bun", pm: "npm", args: ["--runtime", "bun"] };
-
-/** The drift cell: same modules as CI, but scaffolded from the live example branch. */
-const DRIFT_COMBO = { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"] };
+/** Combinations a bare `pnpm scaffold:check` runs. */
+const DEFAULT_COMBOS = COMBOS.filter((c) => c.optional !== true);
 
 /** Parse `--flag value` / `--flag` arguments without pulling in a dependency. */
 function parseArgs(argv) {
-    const opts = { combos: undefined, drift: false, keep: false, runtime: undefined };
+    const opts = { combos: undefined, drift: false, keep: false, list: false, runtime: undefined };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === "--drift") opts.drift = true;
         else if (arg === "--keep") opts.keep = true;
+        else if (arg === "--list") opts.list = true;
         else if (arg === "--combo") opts.combos = (argv[++i] ?? "").split(",").filter(Boolean);
         else if (arg === "--runtime") opts.runtime = argv[++i];
         else if (arg === "--help" || arg === "-h") opts.help = true;
@@ -114,10 +126,20 @@ function main() {
                 "  --drift          also scaffold from examples@main (the base-drift cell)",
                 "  --runtime bun    include the Bun cell (requires bun on PATH)",
                 "  --keep           keep the generated projects instead of deleting them",
+                "  --list           print every combination name as JSON (used by CI to build its matrix)",
                 "",
-                `Combinations: ${COMBOS.map((c) => c.name).join(", ")}`,
+                `Default: ${DEFAULT_COMBOS.map((c) => c.name).join(", ")}`,
+                `Opt-in:  ${COMBOS.filter((c) => c.optional)
+                    .map((c) => c.name)
+                    .join(", ")}`,
             ].join("\n"),
         );
+        return;
+    }
+
+    // Answered before anything is built: the CI job that reads this only has a checkout.
+    if (opts.list) {
+        console.log(JSON.stringify(COMBOS.map((c) => c.name)));
         return;
     }
 
@@ -126,17 +148,28 @@ function main() {
         run("pnpm", ["--filter", "@connectum/cli", "build"], REPO_ROOT);
     }
 
-    let selected = COMBOS;
+    let selected = DEFAULT_COMBOS;
     if (opts.combos) {
         const known = new Set(COMBOS.map((c) => c.name));
         const unknown = opts.combos.filter((n) => !known.has(n));
         if (unknown.length > 0) {
             throw new Error(`scaffold-check: unknown combo(s) ${unknown.join(", ")}. Known: ${[...known].join(", ")}`);
         }
+        // Explicit selection reaches the opt-in combinations too — this is how CI runs them.
         selected = COMBOS.filter((c) => opts.combos.includes(c.name));
+    } else {
+        if (opts.runtime === "bun") selected = [...selected, ...COMBOS.filter((c) => c.name === "bun")];
+        if (opts.drift) selected = [...selected, ...COMBOS.filter((c) => c.name === "base-drift")];
     }
-    if (opts.runtime === "bun") selected = [...selected, BUN_COMBO];
-    if (opts.drift) selected = [...selected, DRIFT_COMBO];
+
+    const needsBun = selected.some((c) => c.needsBun === true);
+    if (needsBun) {
+        try {
+            execFileSync("bun", ["--version"], { stdio: "pipe" });
+        } catch {
+            throw new Error("scaffold-check: the `bun` combination needs bun on PATH (https://bun.sh). Drop --runtime bun, or install bun.");
+        }
+    }
 
     mkdirSync(SCRATCH_ROOT, { recursive: true });
     const workdir = mkdtempSync(join(SCRATCH_ROOT, "scaffold-check-"));
