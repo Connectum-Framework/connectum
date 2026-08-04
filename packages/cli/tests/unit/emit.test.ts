@@ -130,6 +130,31 @@ describe("emitFiles", () => {
         }
     });
 
+    it("writes nothing when a later entry escapes through a symlink", () => {
+        // Symlink containment must be part of the preflight, not the write loop: entries
+        // are emitted in sorted order, so a per-write check would let "a.txt" land on disk
+        // before "linked/file.ts" threw.
+        const outside = mkdtempSync(join(tmpdir(), "connectum-emit-outside-"));
+        try {
+            symlinkSync(outside, join(dir, "linked"), "dir");
+            assert.throws(
+                () =>
+                    emitFiles(
+                        dir,
+                        new Map([
+                            ["a.txt", "safe"],
+                            ["linked/file.ts", "escape"],
+                        ]),
+                    ),
+                /symbolic link/,
+            );
+            assert.equal(existsSync(join(dir, "a.txt")), false);
+            assert.equal(existsSync(join(outside, "file.ts")), false);
+        } finally {
+            rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
     it("refuses to write when the target directory itself is a symlink", () => {
         const real = mkdtempSync(join(tmpdir(), "connectum-emit-real-"));
         const link = join(dir, "target-link");

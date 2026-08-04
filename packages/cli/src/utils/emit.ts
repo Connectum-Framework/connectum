@@ -101,9 +101,12 @@ export function emitFiles(targetDir: string, files: ReadonlyMap<string, string>,
     const entries = [...files.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
     // Validate every path before writing anything, so an unsafe path never leaves a
-    // partially-emitted tree behind.
+    // partially-emitted tree behind. Symlink containment belongs in this preflight too:
+    // checking it per-write would let the entries sorted ahead of the offending one land
+    // on disk first, breaking the all-or-nothing guarantee.
     for (const [relPath] of entries) {
         assertSafeRelativePath(relPath);
+        assertNoSymlinkComponent(targetDir, relPath);
     }
 
     const written: string[] = [];
@@ -111,6 +114,8 @@ export function emitFiles(targetDir: string, files: ReadonlyMap<string, string>,
 
     for (const [relPath, content] of entries) {
         const absPath = join(targetDir, relPath);
+        // Re-checked immediately before the write as well: preflight can only observe the
+        // components that existed then, so this covers anything swapped in meanwhile.
         assertNoSymlinkComponent(targetDir, relPath);
         if (!options.force && existsSync(absPath)) {
             skipped.push(relPath);
