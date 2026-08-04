@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { executeGenerateService, generateServiceCommand } from "../../src/commands/generate-service.ts";
 import { executeInit, initCommand } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
+import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
 
 /** A clone stub that writes a minimal getting-started-shaped base into `dest`. */
 const cloneStub: CloneFn = async (_source, dest) => {
@@ -87,6 +88,32 @@ describe("executeInit pipeline (injected clone, no network)", () => {
     it("fails clearly when the target path exists as a file (not a raw ENOTDIR)", async () => {
         writeFileSync(join(workdir, "afile"), "x");
         await assert.rejects(() => executeInit({ name: "afile", clone: cloneStub }), /is not a directory/);
+    });
+
+    it("fetches a pinned tag by default, not a moving branch", async () => {
+        // A published CLI is immutable but its base is not: the module fragments
+        // transform the fetched text, so a moving default ref would let an edit on
+        // examples/main break `init` for every already-released CLI version.
+        assert.notEqual(DEFAULT_BASE_REF, "main");
+        assert.match(DEFAULT_BASE_REF, /^v\d+\.\d+\.\d+$/);
+
+        const seen: string[] = [];
+        const recordingClone: CloneFn = async (source, dest) => {
+            seen.push(source);
+            await cloneStub(source, dest);
+        };
+        await executeInit({ name: "pinned", clone: recordingClone });
+        assert.deepStrictEqual(seen, [`Connectum-Framework/examples/getting-started#${DEFAULT_BASE_REF}`]);
+    });
+
+    it("honours an explicit --ref override", async () => {
+        const seen: string[] = [];
+        const recordingClone: CloneFn = async (source, dest) => {
+            seen.push(source);
+            await cloneStub(source, dest);
+        };
+        await executeInit({ name: "overridden", clone: recordingClone, ref: "main" });
+        assert.deepStrictEqual(seen, ["Connectum-Framework/examples/getting-started#main"]);
     });
 });
 

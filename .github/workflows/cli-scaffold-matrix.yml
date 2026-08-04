@@ -62,6 +62,39 @@ jobs:
         working-directory: out
         run: ${{ matrix.combo.pm }} run test
 
+  # `connectum init` fetches a PINNED examples tag so a published CLI stays reproducible
+  # (DEFAULT_BASE_REF). This cell scaffolds from the live `main` of the examples repo
+  # instead, so drift between the pin and the dogfooded example fails a connectum PR
+  # here rather than a user's `init`. A red cell means: verify the example, then bump
+  # DEFAULT_BASE_REF to a new tag as part of the next CLI release.
+  scaffold-base-drift:
+    name: "init base-drift (examples@main)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "25.2.0"
+          cache: pnpm
+      - name: Install + build the CLI
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @connectum/cli build
+      - name: Scaffold from the live example (kitchen sink)
+        run: node packages/cli/dist/index.js init out --package-manager npm --yes --ref main --otel --events nats --auth --catalog
+      - name: Install the scaffolded project
+        working-directory: out
+        run: npm install
+      - name: Typecheck (runs buf generate first)
+        working-directory: out
+        run: npm run typecheck
+      - name: Test
+        working-directory: out
+        run: npm run test
+
   scaffold-bun:
     name: "init bun"
     runs-on: ubuntu-latest

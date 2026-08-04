@@ -9,9 +9,17 @@
  * The clone function is injectable so the composition/transform logic can be unit
  * tested against a local fixture without any network access.
  *
- * NOTE: the `examples` repository does not yet publish release tags, so the default
- * ref is `main`. When examples begins tagging releases, pin `DEFAULT_BASE_REF` (per
- * CLI release) to the matching tag so a broken `main` cannot break every `init`.
+ * The default ref is a **tag, not `main`**. A published CLI is immutable but its base
+ * is not: because the module fragments transform the fetched text (see
+ * `applyAuthProtoAnnotations`, which matches the sample rpc and fails loudly if it is
+ * gone), an edit on `examples/main` would otherwise break `init` for every already-
+ * published CLI version, retroactively. Pinning makes each CLI release reproducible.
+ *
+ * That does not retire `examples` as the place regressions surface — it moves the
+ * discovery into CI: the `cli-scaffold-matrix` workflow additionally scaffolds with
+ * `--ref main`, so drift between the pinned base and the live example fails a
+ * connectum PR instead of a user's `init`. Bump this constant deliberately, as part
+ * of a CLI release, once that cell is green on a new example tag.
  *
  * @module scaffold/fetchBase
  */
@@ -22,8 +30,11 @@ import { join, relative } from "node:path";
 /** Source-of-truth base repo + subdirectory (without the `#ref` suffix). */
 export const BASE_SOURCE = "Connectum-Framework/examples/getting-started";
 
-/** Default git ref to fetch (see module note: examples has no tags yet). */
-export const DEFAULT_BASE_REF = "main";
+/**
+ * Default git ref to fetch: a pinned `examples` release tag, never a moving branch
+ * (see the module note). Override per invocation with `connectum init --ref <ref>`.
+ */
+export const DEFAULT_BASE_REF = "v1.3.0";
 
 /**
  * Clones `source` (a tiged-style `owner/repo/subdir#ref` spec) into `dest`.

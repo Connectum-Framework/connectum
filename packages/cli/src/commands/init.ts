@@ -20,7 +20,7 @@ import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { resolveConfig } from "../scaffold/config.ts";
 import type { CloneFn } from "../scaffold/fetchBase.ts";
-import { fetchBase, readTree } from "../scaffold/fetchBase.ts";
+import { DEFAULT_BASE_REF, fetchBase, readTree } from "../scaffold/fetchBase.ts";
 import { collectConfig } from "../scaffold/prompts.ts";
 import { transformBase } from "../scaffold/transform.ts";
 import { emitFiles } from "../utils/emit.ts";
@@ -189,6 +189,10 @@ export const initCommand = defineCommand({
             description: "Overwrite existing files",
             default: false,
         },
+        ref: {
+            type: "string",
+            description: `Base example git ref to fetch (advanced; default: ${DEFAULT_BASE_REF})`,
+        },
     },
     async run({ args }) {
         await executeInit({
@@ -206,6 +210,7 @@ export const initCommand = defineCommand({
             catalog: args.catalog,
             yes: args.yes,
             force: args.force,
+            ref: args.ref,
         });
     },
 });

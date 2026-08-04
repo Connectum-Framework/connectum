@@ -71,6 +71,7 @@ connectum init [name] [options]
 | `--sample` / `--no-sample` | — | Runnable sample Greeter service (default on) |
 | `--yes`, `-y` | — | Non-interactive (flags + defaults) |
 | `--force` | — | Overwrite existing files |
+| `--ref` | git ref | Base example ref to fetch (advanced; defaults to a pinned tag) |
 
 When several interceptor-adding modules are selected, the composition root emits one
 consistent order (outermost → innermost): **OpenTelemetry → error handler → auth →
