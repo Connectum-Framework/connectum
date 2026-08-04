@@ -3,7 +3,12 @@ name: CLI Scaffold Matrix
 # Anti-drift gate for `connectum init` (OpenSpec change cli-scaffolding, task 1.7 / D-9):
 # scaffold a project for each named combo, then buf generate -> typecheck -> test, so a
 # broken module fragment fails CI. Scaffolded projects install PUBLISHED @connectum/*
-# from npm (consumer perspective) and fetch the base via tiged from GitHub.
+# from npm (consumer perspective) and fetch the base via giget from GitHub.
+#
+# The combination list lives ONLY in scripts/scaffold-check.mjs. This workflow asks for
+# it (`--list`) and runs one cell per name (`--combo <name>`), so `pnpm scaffold:check`
+# locally and this gate cannot disagree — there is no second list to keep in sync.
+# Adding a combination to that file adds a cell here.
 #
 # NOT covered here (named per the "no silent caps" rule): the tsx Node-exec model; pnpm
 # beyond the one base cell; event adapters other than nats; and live-broker event
@@ -13,30 +18,42 @@ on:
   pull_request:
     paths:
       - "packages/cli/**"
+      - "scripts/scaffold-check.mjs"
       - ".github/workflows/cli-scaffold-matrix.yml"
   push:
     branches: [main]
     paths:
       - "packages/cli/**"
+      - "scripts/scaffold-check.mjs"
 
 permissions:
   contents: read
 
 jobs:
+  discover:
+    name: discover combinations
+    runs-on: ubuntu-latest
+    outputs:
+      combos: ${{ steps.list.outputs.combos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "25.2.0"
+      # No install needed: the script answers --list using node builtins only.
+      - id: list
+        run: echo "combos=$(node scripts/scaffold-check.mjs --list)" >> "$GITHUB_OUTPUT"
+
   scaffold:
-    name: "init ${{ matrix.combo.name }}"
+    name: "init ${{ matrix.combo }}"
+    needs: discover
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        combo:
-          - { name: base-node-pnpm, pm: pnpm, args: "" }
-          - { name: base-node-npm, pm: npm, args: "" }
-          - { name: otel, pm: npm, args: "--otel" }
-          - { name: events-nats, pm: npm, args: "--events nats" }
-          - { name: auth, pm: npm, args: "--auth" }
-          - { name: catalog, pm: npm, args: "--catalog" }
-          - { name: kitchen-sink, pm: npm, args: "--otel --events nats --auth --catalog --resilience retry,timeout" }
+        combo: ${{ fromJSON(needs.discover.outputs.combos) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,68 +63,8 @@ jobs:
         with:
           node-version: "25.2.0"
           cache: pnpm
-      - name: Install + build the CLI
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --filter @connectum/cli build
-      - name: Scaffold a project
-        run: node packages/cli/dist/index.js init out --package-manager ${{ matrix.combo.pm }} --yes ${{ matrix.combo.args }}
-      - name: Install the scaffolded project
-        working-directory: out
-        run: ${{ matrix.combo.pm }} install
-      - name: Typecheck (runs buf generate first)
-        working-directory: out
-        run: ${{ matrix.combo.pm }} run typecheck
-      - name: Test
-        working-directory: out
-        run: ${{ matrix.combo.pm }} run test
-
-  # `connectum init` fetches a PINNED examples tag so a published CLI stays reproducible
-  # (DEFAULT_BASE_REF). This cell scaffolds from the live `main` of the examples repo
-  # instead, so drift between the pin and the dogfooded example fails a connectum PR
-  # here rather than a user's `init`. A red cell means: verify the example, then bump
-  # DEFAULT_BASE_REF to a new tag as part of the next CLI release.
-  scaffold-base-drift:
-    name: "init base-drift (examples@main)"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "25.2.0"
-          cache: pnpm
-      - name: Install + build the CLI
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --filter @connectum/cli build
-      - name: Scaffold from the live example (kitchen sink)
-        run: node packages/cli/dist/index.js init out --package-manager npm --yes --ref main --otel --events nats --auth --catalog
-      - name: Install the scaffolded project
-        working-directory: out
-        run: npm install
-      - name: Typecheck (runs buf generate first)
-        working-directory: out
-        run: npm run typecheck
-      - name: Test
-        working-directory: out
-        run: npm run test
-
-  scaffold-bun:
-    name: "init bun"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "25.2.0"
-          cache: pnpm
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - if: matrix.combo == 'bun'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           # Pinned, not `latest`: a mutable external release would make this gate's
           # verdict depend on whatever Bun shipped that morning. Bump deliberately.
@@ -116,11 +73,9 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm --filter @connectum/cli build
-      - name: Scaffold a Bun project
-        run: node packages/cli/dist/index.js init out --runtime bun --package-manager npm --yes
-      - name: Install + typecheck + test (bun test)
-        working-directory: out
-        run: |
-          npm install
-          npm run typecheck
-          npm run test
+      # Scaffold -> install -> typecheck (runs buf generate first) -> test.
+      # `base-drift` scaffolds from examples@main instead of the pinned tag: a red cell
+      # means the pinned base and the live example diverged. Fix the scaffold fragment,
+      # then tag examples and bump DEFAULT_BASE_REF — do not bump the tag alone.
+      - name: Scaffold and validate
+        run: pnpm scaffold:check --combo ${{ matrix.combo }}
