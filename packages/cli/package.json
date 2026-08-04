@@ -17,9 +17,21 @@
       "types": "./dist/commands/proto-sync.d.ts",
       "default": "./dist/commands/proto-sync.js"
     },
+    "./commands/init": {
+      "types": "./dist/commands/init.d.ts",
+      "default": "./dist/commands/init.js"
+    },
+    "./commands/generate-service": {
+      "types": "./dist/commands/generate-service.d.ts",
+      "default": "./dist/commands/generate-service.js"
+    },
     "./utils/reflection": {
       "types": "./dist/utils/reflection.d.ts",
       "default": "./dist/utils/reflection.js"
+    },
+    "./utils/emit": {
+      "types": "./dist/utils/emit.d.ts",
+      "default": "./dist/utils/emit.js"
     }
   },
   "files": [
@@ -62,10 +74,12 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "catalog:",
+    "@clack/prompts": "^1.7.0",
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
-    "citty": "^0.2.2"
+    "citty": "^0.2.2",
+    "giget": "^3.3.1"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
