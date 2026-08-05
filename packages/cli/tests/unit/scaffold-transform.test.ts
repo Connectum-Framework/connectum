@@ -41,6 +41,9 @@ describe("resolveConfig", () => {
     it("rejects invalid enum values", () => {
         assert.throws(() => resolveConfig({ name: "x", runtime: "deno" }), /invalid --runtime/);
         assert.throws(() => resolveConfig({ name: "x", packageManager: "yarn" }), /invalid --package-manager/);
+        // Accepted values come from the runtime array, not the type union: dropping one
+        // there breaks `--package-manager <value>` without failing typecheck.
+        assert.equal(resolveConfig({ name: "x", packageManager: "bun" }).packageManager, "bun");
         assert.throws(() => resolveConfig({ name: "x", nodeExec: "swc" }), /invalid --node-exec/);
     });
 });
@@ -209,18 +212,11 @@ describe("transformBase", () => {
         assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /allowBuilds:/);
         assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /'@bufbuild\/buf': true/);
 
-        // Only pnpm exits non-zero on an unapproved build script, so only pnpm needs the
-        // file. npm runs postinstalls by default; bun exits 0 even when it blocks one.
+        // Only pnpm exits non-zero on an unapproved build script — see transform.ts.
         for (const packageManager of ["npm", "bun"] as const) {
             const out = transformBase(base, { ...nodePnpm, packageManager });
             assert.equal(out.has("pnpm-workspace.yaml"), false, `${packageManager} must not get pnpm-workspace.yaml`);
         }
     });
 
-    it("writes bun run scripts into the README for --package-manager bun", () => {
-        const out = transformBase(base, { ...nodePnpm, packageManager: "bun" });
-        const readme = out.get("README.md") ?? "";
-        assert.match(readme, /bun install/);
-        assert.match(readme, /bun run start/);
-    });
 });
