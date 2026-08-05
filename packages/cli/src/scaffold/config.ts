@@ -10,7 +10,7 @@
 import type { EventAdapter, NodeExec, PackageManager, ResilienceInterceptor, Runtime, ScaffoldConfig } from "./types.ts";
 
 const RUNTIMES: readonly Runtime[] = ["node", "bun"];
-const PACKAGE_MANAGERS: readonly PackageManager[] = ["pnpm", "npm"];
+const PACKAGE_MANAGERS: readonly PackageManager[] = ["pnpm", "npm", "bun"];
 const NODE_EXECS: readonly NodeExec[] = ["raw", "tsx"];
 const EVENT_ADAPTERS: readonly EventAdapter[] = ["nats", "kafka", "redpanda", "redis", "amqp"];
 const RESILIENCE: readonly ResilienceInterceptor[] = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"];

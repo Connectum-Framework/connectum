@@ -29,6 +29,7 @@
  *   pnpm scaffold:check --keep              # keep the generated projects for inspection
  *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
  *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
+ *   pnpm scaffold:check --list-needs-bun    # which of those need bun (CI gates setup-bun on this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
  *
@@ -67,6 +68,10 @@ const COMBOS = [
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
+    // The two axes are independent, so both crossings are worth a cell: the one above
+    // runs a Bun-runtime project installed with npm, this one installs with bun and
+    // runs on Node. `bun install` lays out an ordinary node_modules either way.
+    { name: "bun-pm", pm: "bun", args: [], optional: true, needsBun: true },
     { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
 ];
 
@@ -75,12 +80,13 @@ const DEFAULT_COMBOS = COMBOS.filter((c) => c.optional !== true);
 
 /** Parse `--flag value` / `--flag` arguments without pulling in a dependency. */
 function parseArgs(argv) {
-    const opts = { combos: undefined, drift: false, keep: false, list: false, runtime: undefined };
+    const opts = { combos: undefined, drift: false, keep: false, list: false, listNeedsBun: false, runtime: undefined };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === "--drift") opts.drift = true;
         else if (arg === "--keep") opts.keep = true;
         else if (arg === "--list") opts.list = true;
+        else if (arg === "--list-needs-bun") opts.listNeedsBun = true;
         else if (arg === "--combo") opts.combos = (argv[++i] ?? "").split(",").filter(Boolean);
         else if (arg === "--runtime") opts.runtime = argv[++i];
         else if (arg === "--help" || arg === "-h") opts.help = true;
@@ -127,6 +133,7 @@ function main() {
                 "  --runtime bun    include the Bun cell (requires bun on PATH)",
                 "  --keep           keep the generated projects instead of deleting them",
                 "  --list           print every combination name as JSON (used by CI to build its matrix)",
+                "  --list-needs-bun print the combinations that require bun as JSON (CI gates its setup step on this)",
                 "",
                 `Default: ${DEFAULT_COMBOS.map((c) => c.name).join(", ")}`,
                 `Opt-in:  ${COMBOS.filter((c) => c.optional)
@@ -140,6 +147,13 @@ function main() {
     // Answered before anything is built: the CI job that reads this only has a checkout.
     if (opts.list) {
         console.log(JSON.stringify(COMBOS.map((c) => c.name)));
+        return;
+    }
+
+    // Which cells the workflow must install bun for. Emitted from the same table that
+    // declares them, so adding a bun combination cannot silently miss the setup step.
+    if (opts.listNeedsBun) {
+        console.log(JSON.stringify(COMBOS.filter((c) => c.needsBun === true).map((c) => c.name)));
         return;
     }
 

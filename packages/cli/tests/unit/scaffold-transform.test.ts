@@ -203,12 +203,24 @@ describe("transformBase", () => {
         assert.equal(pkg.devDependencies["@connectum/testing"], "^1.0.0");
     });
 
-    it("emits a standalone pnpm-workspace.yaml (build-approval) for pnpm, not for npm", () => {
+    it("emits a standalone pnpm-workspace.yaml (build-approval) for pnpm only", () => {
         const pnpmOut = transformBase(base, nodePnpm);
         // pnpm 11 honours `allowBuilds` (map), NOT `onlyBuiltDependencies` — see transform.ts.
         assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /allowBuilds:/);
         assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /'@bufbuild\/buf': true/);
-        const npmOut = transformBase(base, { ...nodePnpm, packageManager: "npm" });
-        assert.equal(npmOut.has("pnpm-workspace.yaml"), false);
+
+        // Only pnpm exits non-zero on an unapproved build script, so only pnpm needs the
+        // file. npm runs postinstalls by default; bun exits 0 even when it blocks one.
+        for (const packageManager of ["npm", "bun"] as const) {
+            const out = transformBase(base, { ...nodePnpm, packageManager });
+            assert.equal(out.has("pnpm-workspace.yaml"), false, `${packageManager} must not get pnpm-workspace.yaml`);
+        }
+    });
+
+    it("writes bun run scripts into the README for --package-manager bun", () => {
+        const out = transformBase(base, { ...nodePnpm, packageManager: "bun" });
+        const readme = out.get("README.md") ?? "";
+        assert.match(readme, /bun install/);
+        assert.match(readme, /bun run start/);
     });
 });

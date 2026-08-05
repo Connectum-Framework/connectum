@@ -8,7 +8,7 @@
 export type Runtime = "node" | "bun";
 
 /** Package manager the scaffolded project is configured for. */
-export type PackageManager = "pnpm" | "npm";
+export type PackageManager = "pnpm" | "npm" | "bun";
 
 /**
  * Node execution model (only meaningful when {@link Runtime} is `node`):

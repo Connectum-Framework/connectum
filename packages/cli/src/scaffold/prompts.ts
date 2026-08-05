@@ -66,6 +66,9 @@ const NODE_EXEC_OPTIONS = [
 const PM_OPTIONS = [
     { value: "pnpm" as const, label: "pnpm" },
     { value: "npm" as const, label: "npm" },
+    // Appended, not reordered: scaffold-prompts.test.ts stubs `select` as
+    // `options[0].value` and asserts the default is pnpm.
+    { value: "bun" as const, label: "bun" },
 ];
 const ADAPTER_OPTIONS = [{ value: "nats" as const }, { value: "kafka" as const }, { value: "redpanda" as const }, { value: "redis" as const }, { value: "amqp" as const }];
 

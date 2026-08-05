@@ -59,7 +59,7 @@ connectum init [name] [options]
 | Flag | Values | Description |
 |------|--------|-------------|
 | `--runtime` | `node` (default), `bun` | Target runtime |
-| `--package-manager` | `pnpm` (default), `npm` | Package manager |
+| `--package-manager` | `pnpm` (default), `npm`, `bun` | Package manager |
 | `--node-exec` | `raw` (default), `tsx` | `raw` runs `.ts` directly (Node >= 25.2); `tsx` runs on Node >= 22.13 |
 | `--otel` | — | OpenTelemetry interceptor + provider lifecycle |
 | `--events` | `nats`, `kafka`, `redpanda`, `redis`, `amqp` | EventBus with the chosen adapter |
