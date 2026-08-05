@@ -26,6 +26,10 @@ on:
       - "packages/cli/**"
       - "scripts/scaffold-check.mjs"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -35,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       combos: ${{ steps.list.outputs.combos }}
-      bunCombos: ${{ steps.list.outputs.bunCombos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,12 +48,10 @@ jobs:
           node-version: "25.2.0"
       # No install needed: the script answers --list using node builtins only.
       - id: list
-        run: |
-          echo "combos=$(node scripts/scaffold-check.mjs --list)" >> "$GITHUB_OUTPUT"
-          echo "bunCombos=$(node scripts/scaffold-check.mjs --list-needs-bun)" >> "$GITHUB_OUTPUT"
+        run: echo "combos=$(node scripts/scaffold-check.mjs --list)" >> "$GITHUB_OUTPUT"
 
   scaffold:
-    name: "init ${{ matrix.combo }}"
+    name: "init ${{ matrix.combo.name }}"
     needs: discover
     runs-on: ubuntu-latest
     strategy:
@@ -66,7 +67,7 @@ jobs:
         with:
           node-version: "25.2.0"
           cache: pnpm
-      - if: contains(fromJSON(needs.discover.outputs.bunCombos), matrix.combo)
+      - if: matrix.combo.needsBun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           # Pinned, not `latest`: a mutable external release would make this gate's
@@ -81,4 +82,4 @@ jobs:
       # means the pinned base and the live example diverged. Fix the scaffold fragment,
       # then tag examples and bump DEFAULT_BASE_REF — do not bump the tag alone.
       - name: Scaffold and validate
-        run: pnpm scaffold:check --combo ${{ matrix.combo }}
+        run: pnpm scaffold:check --combo ${{ matrix.combo.name }}
