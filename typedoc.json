@@ -14,7 +14,8 @@
     "packages/events-nats",
     "packages/events-kafka",
     "packages/events-redis",
-    "packages/events-amqp"
+    "packages/events-amqp",
+    "packages/protoc-gen-catalog"
   ],
   "entryPointStrategy": "packages",
   "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
