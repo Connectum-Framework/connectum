@@ -48,7 +48,7 @@
     "access": "public"
   },
   "dependencies": {
-    "ioredis": "^5.11.1"
+    "ioredis": "^6.0.0"
   },
   "peerDependencies": {
     "@connectum/events": "workspace:^"
