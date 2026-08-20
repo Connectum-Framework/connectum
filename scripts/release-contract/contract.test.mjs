@@ -18,6 +18,9 @@ outputs:
 `;
 
 const validWorkflow = `
+jobs:
+  release:
+    steps:
       - name: Release
         id: changesets
         uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a
@@ -55,8 +58,24 @@ for (const legacy of ["hasChangesets", "pullRequestNumber"]) {
 }
 
 test("rejects missing GitHub App token wiring", () => {
-    const workflow = validWorkflow.replace("\${{ steps.app-token.outputs.token }}", "\${{ github.token }}");
+    const workflow = validWorkflow.replace("$" + "{{ steps.app-token.outputs.token }}", "$" + "{{ github.token }}");
     assert.ok(validateWorkflowContract({ workflow, metadata, packageJson }).some((error) => error.includes("GitHub App token")));
+});
+
+test("rejects a pinned decoy before an unpinned changesets step", () => {
+    const unpinnedWorkflow = validWorkflow.replace("uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a", "uses: changesets/action@v2");
+    const workflow = unpinnedWorkflow.replace(
+        "      - name: Release\n",
+        "      - name: Decoy\n        uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a\n      - name: Release\n",
+    );
+
+    assert.ok(validateWorkflowContract({ workflow, metadata, packageJson }).some((error) => error.includes("must be pinned")));
+});
+
+test("rejects duplicate changesets step ids", () => {
+    const workflow = validWorkflow.replace("      - name: Release\n", "      - id: changesets\n        uses: example/action@v1\n      - name: Release\n");
+
+    assert.ok(validateWorkflowContract({ workflow, metadata, packageJson }).some((error) => error.includes("exactly one step")));
 });
 
 for (const input of ["create-github-releases", "push-git-tags"]) {

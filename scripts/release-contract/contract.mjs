@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { parse } from "yaml";
 
 export const CHANGESETS_ACTION_SHA = "198f833dd7d863100ea6e28967bc9a9fdefadb0a";
 
@@ -27,24 +28,15 @@ export function parseActionMetadata(source) {
 }
 
 export function extractWorkflowContract(source) {
-    const uses = source.match(/uses:\s*changesets\/action@([a-f0-9]{40})/);
-    const lines = source.split(/\r?\n/);
-    const actionLine = lines.findIndex((line) => /uses:\s*changesets\/action@/.test(line));
-    let stepStart = actionLine;
-    while (stepStart >= 0 && !/^\s{6}- /.test(lines[stepStart])) stepStart -= 1;
-    let stepEnd = actionLine + 1;
-    while (stepEnd < lines.length && !/^\s{6}- /.test(lines[stepEnd])) stepEnd += 1;
-    const actionStep = lines.slice(stepStart, stepEnd).join("\n");
-    const inputLines = actionStep.match(/^\s{10}([a-z][a-z0-9-]*):\s*(.+)$/gm) ?? [];
-    const inputs = new Map(
-        inputLines.map((line) => {
-            const match = line.match(/^\s{10}([a-z][a-z0-9-]*):\s*(.+)$/);
-            return [match[1], match[2].trim()];
-        }),
-    );
+    const workflow = parse(source);
+    const steps = Object.values(workflow?.jobs ?? {}).flatMap((job) => (Array.isArray(job?.steps) ? job.steps : []));
+    const actionSteps = steps.filter((step) => step?.id === "changesets");
+    const actionStep = actionSteps.length === 1 ? actionSteps[0] : undefined;
+    const uses = typeof actionStep?.uses === "string" ? actionStep.uses.match(/^changesets\/action@([a-f0-9]{40})$/) : undefined;
+    const inputs = new Map(Object.entries(actionStep?.with ?? {}).map(([key, value]) => [key, String(value)]));
     const outputMatches = [...source.matchAll(/steps\.changesets\.outputs(?:\.([A-Za-z][A-Za-z0-9-]*)|\[['"]([A-Za-z][A-Za-z0-9-]*)['"]\])/g)];
     const outputs = new Set(outputMatches.map((match) => match[1] ?? match[2]));
-    return { sha: uses?.[1], inputs, outputs, source };
+    return { actionStepCount: actionSteps.length, sha: uses?.[1], inputs, outputs, source };
 }
 
 export function validateWorkflowContract(options) {
@@ -55,6 +47,7 @@ export function validateWorkflowContract(options) {
     const requiredInputs = ["github-token", "version-script", "publish-script", "pr-title", "commit-message", "create-github-releases", "push-git-tags"];
     const requiredOutputs = ["published", "has-changesets", "pr-number"];
 
+    if (contract.actionStepCount !== 1) errors.push(`workflow must contain exactly one step with id changesets; found ${contract.actionStepCount}`);
     if (contract.sha !== CHANGESETS_ACTION_SHA) errors.push(`changesets/action must be pinned to ${CHANGESETS_ACTION_SHA}`);
     for (const input of contract.inputs.keys()) {
         if (!action.inputs.has(input)) errors.push(`workflow uses unknown changesets/action input: ${input}`);

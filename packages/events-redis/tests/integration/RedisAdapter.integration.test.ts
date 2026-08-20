@@ -143,4 +143,43 @@ describe("Redis adapter protocol integration", { skip: REDIS_TEST_URL === undefi
             }
         });
     }
+
+    it("stops instead of retrying an unsupported broker reply", async () => {
+        const redisPrototype = Redis.prototype as unknown as { call: (...args: unknown[]) => Promise<unknown> };
+        const originalCall = redisPrototype.call;
+        const originalConsoleError = console.error;
+        const fatalError = deferred<void>();
+        const loggedErrors: unknown[][] = [];
+        let xreadGroupCalls = 0;
+        const adapter = RedisAdapter({ url, brokerOptions: { blockMs: 20 } });
+
+        redisPrototype.call = function (...args: unknown[]): Promise<unknown> {
+            if (args[0] === "XREADGROUP") {
+                xreadGroupCalls += 1;
+                return Promise.resolve(["malformed"]);
+            }
+            return originalCall.apply(this, args);
+        };
+        console.error = (...args: unknown[]) => {
+            loggedErrors.push(args);
+            if (args[0] === "[RedisAdapter] consume loop stopped after an unsupported Redis reply:") {
+                fatalError.resolve();
+            }
+        };
+
+        try {
+            await adapter.connect({ serviceName: "integration-malformed-reply" });
+            const subscription = await adapter.subscribe([`integration.redis.${randomUUID()}`], async () => {});
+            await withTimeout(fatalError.promise, "fatal reply-shape error");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            assert.equal(xreadGroupCalls, 1, "unsupported replies must not enter the transient retry loop");
+            assert.equal(loggedErrors.length, 1);
+            await subscription.unsubscribe();
+        } finally {
+            console.error = originalConsoleError;
+            redisPrototype.call = originalCall;
+            await adapter.disconnect();
+        }
+    });
 });

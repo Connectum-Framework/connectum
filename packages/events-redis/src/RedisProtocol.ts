@@ -11,8 +11,8 @@
 
 import type { RedisOptions } from "ioredis";
 
-export type RedisProtocolVersion = 2 | 3;
-export type RedisReplyMapping = "legacy" | "resp3";
+export type RedisProtocolVersion = NonNullable<RedisOptions["protocol"]>;
+export type RedisReplyMapping = NonNullable<RedisOptions["replyMapping"]>;
 
 export interface RedisReplyContext {
     readonly protocol: RedisProtocolVersion;

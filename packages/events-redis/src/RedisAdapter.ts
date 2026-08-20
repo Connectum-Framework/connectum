@@ -445,6 +445,12 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         if (!subscriptionRunning) {
                             break;
                         }
+                        if (err instanceof RedisReplyShapeError) {
+                            subscriptionRunning = false;
+                            blockingRedis.disconnect();
+                            console.error("[RedisAdapter] consume loop stopped after an unsupported Redis reply:", err);
+                            break;
+                        }
                         console.error("[RedisAdapter] consume loop error, retrying in", ERROR_RETRY_DELAY_MS, "ms:", err);
                         // Transient error -- wait before retrying
                         await new Promise((resolve) => {

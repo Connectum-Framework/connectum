@@ -4,7 +4,10 @@ import { CHANGESETS_ACTION_SHA, exerciseChangesetsVersion, localChangesetsCli, v
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const metadataUrl = `https://raw.githubusercontent.com/changesets/action/${CHANGESETS_ACTION_SHA}/action.yml`;
-const response = await fetch(metadataUrl, { headers: { "user-agent": "connectum-release-contract" } });
+const response = await fetch(metadataUrl, {
+    headers: { "user-agent": "connectum-release-contract" },
+    signal: AbortSignal.timeout(15_000),
+});
 if (!response.ok) throw new Error(`Unable to load pinned changesets/action metadata: HTTP ${response.status}`);
 
 const [workflow, packageJson] = await Promise.all([
