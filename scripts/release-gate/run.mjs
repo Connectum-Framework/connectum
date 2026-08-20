@@ -123,7 +123,10 @@ const checks = [
     ["runtime importability", ["node", "checks/runtime-import.mjs"]],
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
-    ["behavioral smoke", ["node", "src/smoke.ts"]],
+    // Node 22.13 supports native type stripping behind an explicit flag. Keep
+    // the consumer-floor cell on the exact documented version instead of
+    // relying on the later Node 22 release that enabled it by default.
+    ["behavioral smoke", ["node", "--experimental-strip-types", "src/smoke.ts"]],
 ];
 const failed = [];
 for (const [label, [cmd, ...args]] of checks) {

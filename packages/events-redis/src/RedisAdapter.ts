@@ -10,6 +10,8 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { Redis } from "ioredis";
+import type { RedisReplyMapping } from "./RedisProtocol.ts";
+import { normalizeXAutoClaimReply, normalizeXPendingReply, normalizeXReadGroupReply, RedisReplyShapeError, redisReplyContext, resolveRedisOptions } from "./RedisProtocol.ts";
 import type { RedisAdapterOptions } from "./types.ts";
 
 /**
@@ -66,10 +68,14 @@ const PENDING_IDLE_MS = 30_000;
  * ```
  */
 export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
-    let redis: Redis | null = null;
+    const baseRedisOptions = resolveRedisOptions(options.redisOptions);
+    const replyContext = redisReplyContext(baseRedisOptions);
+    type RedisClient = Redis<RedisReplyMapping>;
+
+    let redis: RedisClient | null = null;
 
     /** Blocking reader connections created by subscribe(), tracked for cleanup. */
-    const readers: Redis[] = [];
+    const readers: RedisClient[] = [];
 
     /** Stop callbacks that set subscriptionRunning = false for each active subscription. */
     const stopCallbacks: (() => void)[] = [];
@@ -90,22 +96,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
      * @param connectionName - Optional connection name injected via `CLIENT SETNAME`.
      *   Only applied when the user has not set `redisOptions.connectionName`.
      */
-    function createRedisInstance(connectionName?: string): Redis {
-        // Merge connectionName into redisOptions only when the user has not
-        // explicitly set it, preserving user-defined priority.
-        const hasExplicitConnectionName = options.redisOptions?.connectionName !== undefined;
-        const mergedRedisOptions = connectionName !== undefined && !hasExplicitConnectionName ? { ...options.redisOptions, connectionName } : options.redisOptions;
+    function createRedisInstance(connectionName?: string): RedisClient {
+        const redisOptions = resolveRedisOptions(baseRedisOptions, connectionName);
 
         if (options.url) {
-            if (mergedRedisOptions) {
-                return new Redis(options.url, mergedRedisOptions);
-            }
-            return new Redis(options.url);
+            return new Redis<RedisReplyMapping>(options.url, redisOptions);
         }
-        if (mergedRedisOptions) {
-            return new Redis(mergedRedisOptions);
-        }
-        return new Redis();
+        return new Redis<RedisReplyMapping>(redisOptions);
     }
 
     /**
@@ -115,7 +112,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
      * connecting yet (status "wait"), explicitly triggers connect()
      * before waiting for the "ready" event.
      */
-    async function waitForReady(instance: Redis): Promise<void> {
+    async function waitForReady(instance: RedisClient): Promise<void> {
         // If already connected, return immediately
         if (instance.status === "ready") {
             return;
@@ -358,9 +355,10 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                     try {
                         // XAUTOCLAIM key group consumer min-idle-time start [COUNT count]
                         // Returns: [next-start-id, [[id, [fields...]], ...], [deleted-ids...]]
-                        const result = (await blockingRedis.call("XAUTOCLAIM", key, group, consumer, String(PENDING_IDLE_MS), "0-0", "COUNT", String(count))) as
-                            | [string, [string, string[]][], string[]]
-                            | null;
+                        const result = normalizeXAutoClaimReply(
+                            await blockingRedis.call("XAUTOCLAIM", key, group, consumer, String(PENDING_IDLE_MS), "0-0", "COUNT", String(count)),
+                            replyContext,
+                        );
 
                         if (!result) {
                             continue;
@@ -374,15 +372,16 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         try {
                             const [firstId] = entries[0] as [string, string[]];
                             const [lastId] = entries[entries.length - 1] as [string, string[]];
-                            const pendingAll = (await blockingRedis.call("XPENDING", key, group, firstId, lastId, String(entries.length))) as
-                                | [string, string, number, number][]
-                                | null;
+                            const pendingAll = normalizeXPendingReply(await blockingRedis.call("XPENDING", key, group, firstId, lastId, String(entries.length)), replyContext);
                             if (pendingAll) {
                                 for (const [entryId, , , deliveryCount] of pendingAll) {
                                     deliveryCounts.set(entryId, deliveryCount ?? 2);
                                 }
                             }
-                        } catch {
+                        } catch (err) {
+                            if (err instanceof RedisReplyShapeError) {
+                                throw err;
+                            }
                             // XPENDING error is non-fatal — fall back to defaults
                         }
 
@@ -393,6 +392,9 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             await processEntry(key, entryId, fields, deliveryCounts.get(entryId) ?? 2);
                         }
                     } catch (err) {
+                        if (err instanceof RedisReplyShapeError) {
+                            throw err;
+                        }
                         console.warn("[RedisAdapter] XAUTOCLAIM error (non-fatal):", err);
                     }
                 }
@@ -423,7 +425,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             ...streamKeys,
                             ...streamKeys.map(() => ">"),
                         ];
-                        const results = (await blockingRedis.call("XREADGROUP", ...xreadArgs)) as [string, [string, string[]][]][] | null;
+                        const results = normalizeXReadGroupReply(await blockingRedis.call("XREADGROUP", ...xreadArgs), replyContext);
 
                         if (!results) {
                             // Timeout with no messages -- loop continues

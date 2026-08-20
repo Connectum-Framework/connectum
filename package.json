@@ -1,7 +1,7 @@
 {
   "name": "@connectum/monorepo",
   "version": "0.0.0",
-  "description": "Universal framework for gRPC/ConnectRPC microservices on Node.js 25+",
+  "description": "Connectum framework development workspace for Node.js 26+",
   "private": true,
   "type": "module",
   "repository": {
@@ -27,6 +27,7 @@
     "scaffold:check": "node scripts/scaffold-check.mjs",
     "release:gate": "node scripts/release-gate/run.mjs --mode pack",
     "release:gate:preview": "node scripts/release-gate/run.mjs --mode preview",
+    "release:contract": "node --test scripts/release-contract/contract.test.mjs && node scripts/validate-release-contract.mjs",
     "dev": "turbo run dev --parallel",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "changeset": "changeset",
@@ -49,7 +50,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.0.4+sha512.0a397165007a014ed52919a61e5f46c48b9bca88404c303ecaecc63f62def563898d3c6b8a5d5ea5811eb398cfe03ab05da1a5ce963f126d5ead4c02f93b83c3",
   "engines": {
-    "node": ">=25.2.0",
+    "node": ">=26.0.0",
     "pnpm": ">=11"
   },
   "publishConfig": {
@@ -58,15 +59,15 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
-    "@changesets/changelog-github": "^0.7.0",
-    "@changesets/cli": "^2.31.1",
+    "@changesets/changelog-github": "^1.0.0",
+    "@changesets/cli": "^3.0.0",
     "@commitlint/cli": "catalog:",
     "@commitlint/config-conventional": "catalog:",
     "@exodus/test": "catalog:",
     "@types/node": "catalog:",
     "c8": "^10.1.3",
     "husky": "catalog:",
-    "turbo": "^2.10.7",
+    "turbo": "^2.10.9",
     "typedoc": "^0.28.20",
     "typedoc-plugin-markdown": "^4.12.0",
     "typedoc-vitepress-theme": "^1.1.3",
