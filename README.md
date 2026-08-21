@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
-  <strong>Production-ready gRPC/ConnectRPC framework for Node.js 25+</strong>
+  <strong>Production-ready gRPC/ConnectRPC framework for Node.js 22.13+</strong>
 </p>
 
 <p align="center">
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D25-brightgreen" alt="Node.js"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.13-brightgreen" alt="Node.js"></a>
   <a href="https://nodejs.org/api/typescript.html"><img src="https://img.shields.io/badge/TypeScript-Native-blue" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 </p>

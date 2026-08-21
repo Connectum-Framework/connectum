@@ -14,6 +14,7 @@ Redis Streams adapter for `@connectum/events`.
 - **Stream Trimming** -- optional MAXLEN trimming on publish
 - **Connection Isolation** -- dedicated blocking reader per subscription
 - **Metadata as Fields** -- event metadata stored as `meta:*` stream fields
+- **RESP2 and RESP3** -- backward-compatible RESP2 default with explicit RESP3 opt-in
 
 ## Installation
 
@@ -54,6 +55,8 @@ const bus = createEventBus({
       password: process.env.REDIS_PASSWORD,
       tls: {},
       db: 1,
+      protocol: 3,
+      replyMapping: 'resp3',
     },
     brokerOptions: {
       maxLen: 100000,   // Trim streams to 100k entries
@@ -87,6 +90,27 @@ function RedisAdapter(options: RedisAdapterOptions): EventAdapter
 | `url` | `string` | `undefined` | Redis connection URL (e.g., `redis://localhost:6379`) |
 | `redisOptions` | `RedisOptions` | `undefined` | ioredis connection options (merged with URL if both set) |
 | `brokerOptions` | `RedisBrokerOptions` | `{}` | Stream consumption tuning |
+
+### Redis protocol
+
+The adapter defaults to RESP2 so upgrading `ioredis` does not silently change
+the wire protocol for existing applications. Opt into RESP3 through the existing
+`redisOptions` surface:
+
+```typescript
+RedisAdapter({
+  url: 'redis://localhost:6379',
+  redisOptions: {
+    protocol: 3,
+    // Optional. `legacy` keeps array-oriented replies; `resp3` uses native maps.
+    replyMapping: 'resp3',
+  },
+});
+```
+
+Both RESP3 reply mappings are supported. `replyMapping: 'resp3'` requires
+`protocol: 3`; an incompatible configuration fails immediately with a clear
+error. Dedicated blocking connections inherit the selected protocol and mapping.
 
 ### RedisBrokerOptions
 
@@ -143,7 +167,7 @@ Stream entry fields:
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **Redis**: >=6.2 (for XAUTOCLAIM support)
+- **Redis**: >=6.2 (for XAUTOCLAIM support), including Valkey-compatible servers
 
 ## Documentation
 

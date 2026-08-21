@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "25.2.0"
+          node-version: "26"
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -43,6 +43,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Validate release workflow contract
+        run: pnpm release:contract
+
   # ── Node.js test matrix ────────────────────────────────────────────────
   test-node:
     name: "Node ${{ matrix.node-version }}"
@@ -50,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["22", "25.2.0"]
+        node-version: ["24", "26"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -66,7 +69,7 @@ jobs:
       - name: Build packages
         run: pnpm build
 
-      # Node 22.18+ and 25.x run TypeScript directly via native type stripping.
+      # Maintained Node lines run TypeScript directly via native type stripping.
       # esbuild transpilation is covered by the dedicated test-esbuild job below.
       - name: Unit tests
         run: pnpm test:unit
@@ -97,7 +100,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "25.2.0"
+          node-version: "26"
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -109,6 +112,43 @@ jobs:
         env:
           AMQP_TEST_URL: amqp://guest:guest@localhost:5672
         run: pnpm --filter @connectum/events-amqp test:integration
+
+  # ── Redis/Valkey protocol compatibility (required) ────────────────────
+  test-redis-broker:
+    name: "Redis protocol (${{ matrix.broker.name }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        broker:
+          - name: redis-6.2
+            image: redis:6.2-alpine
+          - name: valkey-9.1.1
+            image: valkey/valkey:9.1.1-alpine
+    services:
+      redis:
+        image: ${{ matrix.broker.image }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build packages
+        run: pnpm build
+      - name: Redis adapter integration tests
+        env:
+          REDIS_TEST_URL: redis://localhost:6379
+        run: pnpm --filter @connectum/events-redis test:integration
 
   # ── AMQP connection recovery (testcontainers, non-blocking) ────────────
   # Recovery scenarios crash/drop the broker mid-test via testcontainers
@@ -125,7 +165,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "25.2.0"
+          node-version: "26"
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -162,7 +202,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "25.2.0"
+          node-version: "26"
           cache: pnpm
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -195,7 +235,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "25.2.0"
+          node-version: "26"
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

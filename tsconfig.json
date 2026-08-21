@@ -4,7 +4,7 @@
     // Type checking only (no emit)
     "noEmit": true,
 
-    // Native TypeScript execution (Node.js 25.2.0+)
+    // Native TypeScript execution (Node.js 26+ development baseline)
     "target": "esnext",
     "module": "nodenext",
     "moduleResolution": "nodenext",

@@ -54,7 +54,7 @@ Enhancement ideas are welcome:
 
 ### Prerequisites
 
-- **Node.js**: ≥25.2.0 (for stable type stripping)
+- **Node.js**: ≥26.0.0 (development and release baseline)
 - **pnpm**: ≥11.0.0
 - **Git**: Latest version
 - **protoc**: Latest version (for proto generation)
@@ -211,7 +211,7 @@ We use **Biome** for linting and formatting. Configuration is in `biome.json`.
 
 #### Key Rules
 
-1. **Native TypeScript** - using stable type stripping (Node.js 25.2.0+)
+1. **Native TypeScript** - using stable type stripping (Node.js 26+ development baseline)
    - ❌ No `enum` - use `const` objects with `as const`
    - ❌ No `namespace` with runtime code
    - ❌ No parameter properties
