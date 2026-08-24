@@ -1,5 +1,41 @@
 # @connectum/cli
 
+## 1.3.0
+
+### Minor Changes
+
+- [#229](https://github.com/Connectum-Framework/connectum/pull/229) [`8ed62cf`](https://github.com/Connectum-Framework/connectum/commit/8ed62cfaaf96cb2f08cadf3db9d0ab9c1b70b236) Thanks [@intech](https://github.com/intech)! - feat: `connectum init` and `connectum generate service` — project scaffolding
+  
+  - **`connectum init`** scaffolds a production-ready standalone project, interactively (a `@clack/prompts` wizard) or fully from flags (`--yes` / CI / non-TTY). The base is fetched from the dogfooded `getting-started` example via a degit-style clone, so the starter layout stays in sync with a tested example instead of a drift-prone template copy; the selected modules are composed on top.
+  - **Modules:** OpenTelemetry (`--otel`), EventBus with an adapter (`--events nats|kafka|redpanda|redis|amqp`), auth (`--auth`, JWT + proto-driven authorization), service catalog (`--catalog`, typed `ctx.call`/`ctx.stream`), opt-in resilience interceptors (`--resilience timeout,retry,...`), and health/reflection toggles. Runtime (`node`/`bun`), package manager (`pnpm`/`npm`/`bun`) and the Node execution model (`raw` `.ts` >= 25.2 vs `tsx` >= 22.13) are all first-class choices.
+  - **Deterministic interceptor order.** When several interceptor-adding modules are selected the composition root emits one canonical chain (outermost → innermost): OpenTelemetry → error handler → auth → validation → resilience → custom, with exactly one error handler.
+  - **Lifecycle fix baked in.** `buf generate` is chained into the generated `start` / `test` / `typecheck` scripts (not a pnpm `pre*` hook, which silently no-ops), so a fresh clone never fails with an unresolved `#gen/...` import. Standalone pnpm projects also get the `buf` build-approval that pnpm 11 requires.
+  - **`connectum generate service <name>`** adds a service to an existing project: a starter proto plus a `defineService` skeleton whose rpc handlers throw `Code.Unimplemented` (a deliberate, documented trade-off — the handler-map key must still exist, so a later proto method addition remains a compile error). `--with-events` also scaffolds an event-handler service and an ack-by-default `EventRoute`. It never edits your `src/server.ts`; it prints the exact registration to add.
+  - **Generated tests are runtime-agnostic**: the e2e test uses the public in-process `createLocalClient` from `@connectum/testing` (no socket, identical on Node and Bun); event-enabled projects also get a broker-free `MemoryAdapter` smoke test.
+  - A CI scaffold matrix (`cli-scaffold-matrix`) scaffolds each named module combination and runs `buf generate` → typecheck → test, so a broken fragment fails CI.
+
+### Patch Changes
+
+- [#229](https://github.com/Connectum-Framework/connectum/pull/229) [`8ed62cf`](https://github.com/Connectum-Framework/connectum/commit/8ed62cfaaf96cb2f08cadf3db9d0ab9c1b70b236) Thanks [@intech](https://github.com/intech)! - Fetch the `init` base project with `giget` instead of `tiged`.
+  
+  `tiged` depends on `tar`, and the releases it pins (`^6.1.11`) carry a critical
+  decompression denial-of-service advisory and a high-severity arbitrary
+  file-overwrite advisory. `tiged@2.12.8` is its latest release, so upgrading does not
+  reach a fixed `tar` — the constraint is in `tiged` itself. That matters more here
+  than it would elsewhere: a scaffolder exists to download and unpack a remote
+  archive, so the extraction path is exactly the exposed one.
+  
+  `giget` is the maintained degit-style downloader from the same project family as
+  `citty`, which this CLI already uses, and it has **no dependencies at all**. The
+  change removes the critical and both high advisories from the CLI's production
+  dependency closure and drops nine transitive packages.
+  
+  The fetcher was already injectable behind `CloneFn`, so the change is confined to
+  the default implementation. The only externally visible difference is the spec
+  format: giget needs its `gh:` provider prefix, so the base is now requested as
+  `gh:Connectum-Framework/examples/getting-started#<ref>`. `connectum init` was run
+  end to end against the real repository to confirm it.
+
 ## 1.2.0
 
 ## 1.1.0

@@ -1,5 +1,11 @@
 # @connectum/events-redis
 
+## 1.3.0
+
+### Minor Changes
+
+- [#254](https://github.com/Connectum-Framework/connectum/pull/254) [`d9f9fb4`](https://github.com/Connectum-Framework/connectum/commit/d9f9fb4f3360a906a0404a0feeda45d026a5cadd) Thanks [@intech](https://github.com/intech)! - Add configurable RESP2 and RESP3 Redis Streams support while preserving RESP2 as the backward-compatible default, and refresh the Redis, AMQP testcontainer, and authentication dependencies.
+
 ## 1.2.0
 
 ## 1.1.0

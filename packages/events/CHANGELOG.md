@@ -1,5 +1,54 @@
 # @connectum/events
 
+## 1.3.0
+
+### Minor Changes
+
+- [#223](https://github.com/Connectum-Framework/connectum/pull/223) [`774ef46`](https://github.com/Connectum-Framework/connectum/commit/774ef46e743ce528b554115553cddf19233bf52b) Thanks [@intech](https://github.com/intech)! - feat: named `EventAdapterFactory` type + official DI/testing guidance ([#204](https://github.com/Connectum-Framework/connectum/issues/204))
+  
+  - New exported `EventAdapterFactory` (`() => EventAdapter`) — the previously inline factory shape of `createBroadcastSubscribers`' `adapter` option, now a named public type (per-adapter named types are deliberately not added).
+  - README gains a "Dependency Injection and Testing" section: the primary pattern is injecting an `EventAdapter` instance at the composition root (a configured test double does not fit a zero-argument factory without a wrapper); the factory is the secondary pattern for per-consumer connections (broadcast reactors). Test-double guidance: `MemoryAdapter` for the generic happy path; broker-specific failure semantics via the upcoming `@connectum/events-amqp/testing` fake ([#203](https://github.com/Connectum-Framework/connectum/issues/203)).
+  - Types + docs only — zero runtime change.
+
+- [#220](https://github.com/Connectum-Framework/connectum/pull/220) [`8962afa`](https://github.com/Connectum-Framework/connectum/commit/8962afa7d50cc67c1a385e0441a8ff00378871f6) Thanks [@intech](https://github.com/intech)! - feat: `drainPublishTimeout` — opt-in symmetric publish drain on shutdown ([#196](https://github.com/Connectum-Framework/connectum/issues/196))
+  
+  - New `EventBusOptions.drainPublishTimeout`: during `stop()`, wait up to the budget for in-flight `publish()` promises (started before `stop()`) to settle, before the adapter disconnects and would fail their confirms. Bus-level (L1): zero adapter-contract changes — nats/kafka/redis/amqp get the drain for free.
+  - Runs concurrently with the handler drain (`drainTimeout`) — shutdown waits for the slower of the two budgets, never their sum.
+  - Tracked promises carry a no-op observer: a publish settling (even rejecting) after the deadline never becomes an `unhandledRejection`; the caller's own `publish()` promise is unaffected.
+  - Default `undefined` (and `0`/negative) — disabled: `stop()` behavior stays bit-for-bit (pinned by a regression test).
+  - Documented limitation: publishes issued from draining handlers are not covered — the stopping gate rejects them (relay-pattern design tracked in [#212](https://github.com/Connectum-Framework/connectum/issues/212)).
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Update protobuf-es to 2.13.0 and clear the remaining dependency advisories.
+  
+  `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` move to
+  2.13.0, and `@bufbuild/buf` to 1.72.0. The single-instance pin moves with them:
+  `@bufbuild/protoplugin` was still on 2.12.1 and pinned a second copy of
+  `@bufbuild/protobuf`, which is exactly the split the pin exists to prevent -- two
+  instances break `@connectrpc/connect`'s protobuf peer and the reflection DTS build.
+  The workspace now resolves a single 2.13.0.
+  
+  connect-es is unchanged: `@connectrpc/connect` and `@connectrpc/connect-node` 2.1.2
+  are already the latest published releases.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#214](https://github.com/Connectum-Framework/connectum/pull/214) [`e2b613b`](https://github.com/Connectum-Framework/connectum/commit/e2b613bad73024bf5b00c41717c063aac3665859) Thanks [@intech](https://github.com/intech)! - docs: recovery backoff tuning and publisher shutdown guidance
+  
+  - **events-amqp**: accurate reconnect-delay semantics in README and `AmqpRecoveryOptions` JSDoc — the amqplib v2 strategy is symmetric jitter around the exponential base (not equal-jitter), with the cap applied before jitter (hence the overshoot above `maxDelay`). Documented the exact full-jitter workaround (`jitter: 1` + halved `initialDelay`/`maxDelay` → delay uniform in `[0, intended cap]`, verified against amqplib 2.0.1) with a fragility caveat and upstream tracking links (amqp-node/amqplib#855, amqp-node/amqplib#856).
+  - **events**: new "Publishers and Shutdown" README section — `stop()` drains consumer handlers only; await-before-stop recipe for at-least-once producers; the stopping-gate limitation for publishes from draining handlers ([#212](https://github.com/Connectum-Framework/connectum/issues/212)); the planned opt-in `drainPublishTimeout` ([#196](https://github.com/Connectum-Framework/connectum/issues/196)).
+- Updated dependencies [[`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289)]:
+  - @connectum/core@1.3.0
+
 ## 1.2.0
 
 ### Patch Changes
