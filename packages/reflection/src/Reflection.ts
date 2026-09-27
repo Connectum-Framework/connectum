@@ -11,7 +11,7 @@
  */
 
 import { create } from "@bufbuild/protobuf";
-import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
+import { type FileDescriptorSet, FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import type { ConnectRouter } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { ProtocolContext, ProtocolRegistration } from "@connectum/core";
@@ -41,14 +41,24 @@ import { collectFileProtos } from "./utils.ts";
  * ```
  */
 export function Reflection(): ProtocolRegistration {
+    // Built once from the registry snapshot and shared by every router, so the
+    // HTTP and in-process listings are identical.
+    let fileDescriptorSet: FileDescriptorSet | undefined;
+
     return {
         name: "reflection",
 
-        register(router: ConnectRouter, context: ProtocolContext): void {
-            const fileDescriptorSet = create(FileDescriptorSetSchema, {
+        setup(context: ProtocolContext): void {
+            fileDescriptorSet = create(FileDescriptorSetSchema, {
                 file: collectFileProtos(context.registry),
             });
+        },
 
+        register(router: ConnectRouter): void {
+            if (fileDescriptorSet === undefined) {
+                // An empty listing would be indistinguishable from "no services".
+                throw new Error("Reflection: register() called before setup(); the server must call setup() first.");
+            }
             registerServerReflectionFromFileDescriptorSet(router, fileDescriptorSet);
         },
     };

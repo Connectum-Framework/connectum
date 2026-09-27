@@ -49,8 +49,13 @@ function bidiUserService(): ServiceDefinition {
 function bidiDescriptorProtocol(): ProtocolRegistration {
     return {
         name: "bidi-fixture",
-        register(_router, context): void {
-            (context.registry as DescFile[]).push(BIDI_FILE);
+        register(router): void {
+            try {
+                router.service({ file: BIDI_FILE } as never, {} as never);
+            } catch {
+                // Same structural mock as bidiUserService: the descriptor is
+                // recorded in the registry before Connect rejects it.
+            }
         },
     };
 }
