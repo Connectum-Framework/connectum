@@ -27,7 +27,15 @@ import { Healthcheck } from "../../src/Healthcheck.ts";
 import { createHealthcheckManager } from "../../src/HealthcheckManager.ts";
 import { ServingStatus } from "../../src/types.ts";
 
-/** Fetch an HTTP health endpoint over h2c and return the status code. */
+/**
+ * Fetch an HTTP health endpoint over h2c and return the status code.
+ *
+ * The body is drained before the session is closed. Closing the stream from
+ * the 'response' handler instead leaves it half-read, and on Node 24.21 (whose
+ * http2 client defers RST_STREAM while receiving) such a stream is never
+ * destroyed: the client keeps its TCP connection open and the server's
+ * graceful stop() never completes.
+ */
 function httpStatus(baseUrl: string, path: string): Promise<number> {
     return new Promise((resolve, reject) => {
         const session = http2.connect(baseUrl);
@@ -35,9 +43,11 @@ function httpStatus(baseUrl: string, path: string): Promise<number> {
         const req = session.request({ ":path": path });
         req.on("response", (headers) => {
             const status = Number(headers[":status"] ?? 0);
-            req.close();
-            session.close();
-            resolve(status);
+            req.on("end", () => {
+                session.close();
+                resolve(status);
+            });
+            req.resume();
         });
         req.on("error", reject);
         req.end();
