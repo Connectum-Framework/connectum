@@ -590,34 +590,88 @@ describe("isAutoRetriablePublishError", () => {
 });
 
 describe("computeRecoveryDelay", () => {
-    it("replicates amqplib's formula: cap-before-jitter, symmetric offset (#198 pin)", () => {
+    // Expected values follow amqplib 2.2.0's built-in delay: the base is capped
+    // at maxDelay / (1 + jitter) before the symmetric jitter, so the delay
+    // never exceeds maxDelay. A copy that caps the base at maxDelay itself
+    // (amqplib 2.0.1) overshoots by up to maxDelay × jitter and fails here.
+
+    it("grows exponentially and caps the base at maxDelay / (1 + jitter)", () => {
         const opts = { initialDelay: 100, maxDelay: 400, factor: 2, jitter: 0.2 };
-        // random() = 0.5 → offset 0 → exact exponential base, capped at maxDelay.
+        // random() = 0.5 → offset 0 → the exact base.
         assert.equal(computeRecoveryDelay(opts, 1, () => 0.5), 100);
         assert.equal(computeRecoveryDelay(opts, 2, () => 0.5), 200);
-        assert.equal(computeRecoveryDelay(opts, 3, () => 0.5), 400);
-        assert.equal(computeRecoveryDelay(opts, 10, () => 0.5), 400, "base is capped at maxDelay");
-        // Symmetric jitter bounds: random()=1 → base×(1+jitter) — the cap
-        // applies BEFORE jitter, so overshoot above maxDelay is preserved
-        // (matching amqplib); random()=0 → base×(1−jitter).
-        assert.equal(computeRecoveryDelay(opts, 10, () => 1), 480, "overshoot above maxDelay matches amqplib");
-        assert.equal(computeRecoveryDelay(opts, 10, () => 0), 320);
-        // jitter: 0 → deterministic base.
-        assert.equal(computeRecoveryDelay({ ...opts, jitter: 0 }, 2, () => 1), 200);
-        // Full-jitter workaround identity (docs recipe): jitter 1 → uniform [0, 2×base].
-        assert.equal(computeRecoveryDelay({ ...opts, jitter: 1 }, 3, () => 0), 0);
-        assert.equal(computeRecoveryDelay({ ...opts, jitter: 1 }, 3, () => 1), 800);
-        // Defaults mirror amqplib's DEFAULT_RECOVERY (100 / 30000 / 2 / 0.2).
+        assert.equal(computeRecoveryDelay(opts, 3, () => 0.5), 333, "base saturates at 400 / 1.2, not at 400");
+        assert.equal(computeRecoveryDelay(opts, 10, () => 0.5), 333);
+        // Symmetric jitter bounds at saturation: the top lands exactly on maxDelay.
+        assert.equal(computeRecoveryDelay(opts, 10, () => 1), 400, "the largest offset reaches maxDelay and no further");
+        assert.equal(computeRecoveryDelay(opts, 10, () => 0), 267);
+    });
+
+    it("saturates within [20000, 30000] at the defaults (100 / 30000 / 2 / 0.2)", () => {
         assert.equal(computeRecoveryDelay({}, 1, () => 0.5), 100);
-        assert.equal(computeRecoveryDelay({}, 20, () => 0.5), 30_000);
-        // Non-finite knobs fall back to defaults (amqplib's toFiniteNumber),
-        // never propagate NaN into the delay (a NaN delay = zero backoff =
-        // retry storm).
+        assert.equal(computeRecoveryDelay({}, 20, () => 0), 20_000);
+        assert.equal(computeRecoveryDelay({}, 20, () => 0.5), 25_000);
+        assert.equal(computeRecoveryDelay({}, 20, () => 1), 30_000);
+        // Draws near the top still spread instead of piling up on the cap.
+        assert.equal(computeRecoveryDelay({}, 20, () => 0.8), 28_000);
+        assert.equal(computeRecoveryDelay({}, 20, () => 0.9), 29_000);
+    });
+
+    it("jitter: 0 is exact: the base itself, capped at maxDelay", () => {
+        const opts = { initialDelay: 100, maxDelay: 400, factor: 2, jitter: 0 };
+        for (const r of [0, 0.3, 1]) {
+            assert.equal(computeRecoveryDelay(opts, 2, () => r), 200);
+            assert.equal(computeRecoveryDelay(opts, 10, () => r), 400);
+        }
+    });
+
+    it("full-jitter recipe: jitter 1, initialDelay I/2, maxDelay C gives uniform [0, min(I × factor^(n−1), C)]", () => {
+        const I = 200;
+        const C = 1000;
+        const recipe = { initialDelay: I / 2, maxDelay: C, factor: 2, jitter: 1 };
+        for (let n = 1; n <= 12; n += 1) {
+            const upper = Math.min(I * 2 ** (n - 1), C);
+            assert.equal(computeRecoveryDelay(recipe, n, () => 0), 0, `attempt ${n}: lower bound is 0`);
+            assert.equal(computeRecoveryDelay(recipe, n, () => 0.5), Math.round(upper / 2), `attempt ${n}: midpoint`);
+            assert.equal(computeRecoveryDelay(recipe, n, () => 1), upper, `attempt ${n}: upper bound is min(I × 2^(n−1), C)`);
+        }
+    });
+
+    it("normalizes options like amqplib: non-finite fallbacks, maxDelay ≥ initialDelay, factor ≥ 1, jitter within [0, 1]", () => {
+        // Non-finite knobs fall back to the defaults instead of propagating
+        // (a NaN delay would mean zero backoff — a retry storm).
         assert.equal(computeRecoveryDelay({ initialDelay: Number.NaN }, 1, () => 0.5), 100);
         assert.equal(computeRecoveryDelay({ initialDelay: Number.POSITIVE_INFINITY }, 1, () => 0.5), 100);
-        assert.equal(computeRecoveryDelay({ maxDelay: Number.NaN }, 20, () => 0.5), 30_000);
-        // factor NaN → 2, jitter NaN → 0.2: base 200, random()=1 → 200×1.2.
+        assert.equal(computeRecoveryDelay({ maxDelay: Number.NaN }, 20, () => 1), 30_000);
+        // factor NaN → 2, jitter NaN → 0.2: base 200, random()=1 → 200 × 1.2.
         assert.equal(computeRecoveryDelay({ factor: Number.NaN, jitter: Number.NaN }, 2, () => 1), 240);
+        // Clamps.
+        assert.equal(computeRecoveryDelay({ initialDelay: -5, jitter: 0 }, 3, () => 0.5), 0, "a negative initialDelay becomes 0");
+        assert.equal(computeRecoveryDelay({ initialDelay: 500, maxDelay: 100, jitter: 0 }, 5, () => 0.5), 500, "maxDelay is raised to initialDelay");
+        assert.equal(computeRecoveryDelay({ factor: 0.5, jitter: 0 }, 5, () => 0.5), 100, "factor below 1 becomes 1");
+        assert.equal(computeRecoveryDelay({ jitter: 5 }, 1, () => 1), 200, "jitter above 1 becomes 1");
+        assert.equal(computeRecoveryDelay({ jitter: -1 }, 1, () => 1), 100, "negative jitter becomes 0");
+    });
+
+    it("never returns a delay outside [0, maxDelay] over a sampled range of options, attempts and draws", () => {
+        const optionSets = [
+            {},
+            { initialDelay: 100, maxDelay: 400, factor: 2, jitter: 0.2 },
+            { initialDelay: 50, maxDelay: 1000, factor: 3, jitter: 1 },
+            { initialDelay: 10, maxDelay: 777, factor: 1.5, jitter: 0.35 },
+            { initialDelay: 1000, maxDelay: 1000, factor: 2, jitter: 0.5 },
+            { initialDelay: 250, maxDelay: 5000, factor: 2, jitter: 0 },
+        ];
+        const draws = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.999999, 1];
+        for (const opts of optionSets) {
+            const maxDelay = opts.maxDelay ?? 30_000;
+            for (let attempt = 1; attempt <= 40; attempt += 1) {
+                for (const r of draws) {
+                    const delay = computeRecoveryDelay(opts, attempt, () => r);
+                    assert.ok(delay >= 0 && delay <= maxDelay, `delay ${delay} outside [0, ${maxDelay}] for ${JSON.stringify(opts)}, attempt ${attempt}, random ${r}`);
+                }
+            }
+        }
     });
 
 });

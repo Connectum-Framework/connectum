@@ -124,14 +124,21 @@ export function trackChannelClose<C extends AmqpChannelCloseSource>(ch: C, close
 }
 
 /**
- * Replicate amqplib 2.x's recovery delay formula (`lib/recovery.js`
- * `calculateDelay` + `normaliseRecoveryOptions` defaults): an exponential base
- * capped at `maxDelay` BEFORE symmetric jitter — the delay is uniform in
- * `[base × (1 − jitter), base × (1 + jitter)]`, floored at 0, rounded.
- * Kept formula-identical so the bounded initial phase (#198) backs off exactly
- * like amqplib's steady-state recovery; pinned by unit tests. `random` is
- * injectable for cross-runtime-deterministic tests. Exported (not via the
- * package barrel) for direct unit testing.
+ * Replicate amqplib's built-in recovery delay (amqplib ≥ 2.2.0
+ * `lib/recovery.js`: `calculateBuiltinDelay` with the
+ * `normaliseRecoveryOptions` defaults and fallbacks). The exponential base is
+ * capped at `maxDelay / (1 + jitter)`, so even the largest jitter offset lands
+ * exactly on `maxDelay`: the delay is uniform in
+ * `[base × (1 − jitter), base × (1 + jitter)]`, rounded, floored at 0, and
+ * never exceeds `maxDelay` (up to rounding when `maxDelay` is not an integer)
+ * with no pile-up of draws on the cap.
+ *
+ * Kept formula-identical because the adapter's own delay sites — the bounded
+ * initial connect and `publishRetry` — must back off exactly like amqplib's
+ * steady-state recovery, which the adapter does not compute itself. amqplib
+ * does not export its function, so unit tests pin this copy at the
+ * boundaries. `random` is injectable for cross-runtime-deterministic tests.
+ * Exported (not via the package barrel) for direct unit testing.
  */
 export function computeRecoveryDelay(
     recovery: Pick<AmqpRecoveryOptions, "initialDelay" | "maxDelay" | "factor" | "jitter">,
@@ -145,7 +152,8 @@ export function computeRecoveryDelay(
     const maxDelay = Math.max(initialDelay, finite(recovery.maxDelay, 30_000));
     const factor = Math.max(1, finite(recovery.factor, 2));
     const jitter = Math.min(1, Math.max(0, finite(recovery.jitter, 0.2)));
-    const base = Math.min(maxDelay, initialDelay * factor ** (attempt - 1));
+    const cappedBase = maxDelay / (1 + jitter);
+    const base = Math.min(cappedBase, initialDelay * factor ** (attempt - 1));
     const jitterPart = base * jitter;
     const offset = jitterPart > 0 ? random() * jitterPart * 2 - jitterPart : 0;
     return Math.max(0, Math.round(base + offset));
