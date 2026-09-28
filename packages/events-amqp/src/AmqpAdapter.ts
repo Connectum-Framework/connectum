@@ -238,6 +238,14 @@ interface RecoveryLifecycleHooks {
      */
     readonly enterFatalState: (err: Error) => void;
     /**
+     * Forget a cycle that amqplib itself abandoned (`reconnect-failed` after
+     * the retry budget ran out). amqplib has already stopped the wrapper, so
+     * nothing is closed here; the adapter only drops its references so later
+     * operations take the typed "not connected" paths and a new `connect()`
+     * starts clean.
+     */
+    readonly markCycleDead: () => void;
+    /**
      * `true` while the adapter's own `disconnect()` is in progress — a fatal
      * classification racing a graceful shutdown must not fire terminal events
      * after the caller already asked to stop.
@@ -373,7 +381,10 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         }
     });
     conn.on("reconnect-failed", (err: Error) => {
-        hooks.clearPublishChannel();
+        // Tear down before notifying, like the fatal path: a callback that
+        // reacts to the give-up (for example by calling connect() again) must
+        // already see the dead cycle forgotten, not "already connected".
+        hooks.markCycleDead();
         dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: err });
     });
     wireFlowControlEvents(conn, lifecycle);
@@ -653,6 +664,31 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      */
     function failPendingReturns(): void {
         pendingReturns.clear();
+    }
+
+    /**
+     * Forget a recovery cycle that can never deliver a connection again —
+     * either the adapter stopped it on deterministic topology drift, or
+     * amqplib gave up after exhausting the retry budget.
+     *
+     * A dead wrapper left in `connection` would make `subscribe()` wait on
+     * (or be rejected by) amqplib with an untyped error, make `publishRetry`
+     * spend its whole budget, and make `connect()` refuse with "already
+     * connected". Clearing it routes all three to their typed "not connected"
+     * paths instead. The consumers died with the cycle, so their records are
+     * dropped without network calls; keeping them would resurrect stale
+     * subscriptions on the next `connect()`.
+     */
+    function markCycleDead(): void {
+        connection = null;
+        publishChannel = null;
+        for (const record of subscriptionRecords) {
+            record.active = false;
+            record.channel = null;
+            record.consumerTag = null;
+        }
+        subscriptionRecords.length = 0;
+        failPendingReturns();
     }
 
     /**
@@ -1124,21 +1160,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         // amqplib's _scheduleReconnect — called right after
                         // this handler — schedules nothing.
                         void conn.close().catch(() => undefined);
-                        connection = null;
-                        publishChannel = null;
-                        // The cycle is dead — so are its consumers. Mirror
-                        // disconnect()'s bookkeeping (no network calls: the
-                        // channels died with the model) so a later connect()
-                        // starts from a clean slate instead of silently
-                        // resurrecting stale subscriptions.
-                        for (const record of subscriptionRecords) {
-                            record.active = false;
-                            record.channel = null;
-                            record.consumerTag = null;
-                        }
-                        subscriptionRecords.length = 0;
-                        failPendingReturns();
+                        markCycleDead();
                     },
+                    markCycleDead,
                     isClosing: () => closing,
                 });
 
@@ -1413,8 +1437,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                             throw err;
                         }
                         // No connection object at all (fatal topology stop,
-                        // post-disconnect, never connected): no recovery cycle
-                        // exists to heal us — burn no budget.
+                        // recovery gave up, post-disconnect, never connected):
+                        // no recovery cycle exists to heal us — burn no budget.
                         if (connection === null) {
                             throw err;
                         }

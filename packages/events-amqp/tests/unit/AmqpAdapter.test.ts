@@ -309,7 +309,7 @@ describe("wireRecoveryLifecycle", () => {
         const ee = new EventEmitter();
         let attempt = 0;
         let connectedDelivered = false;
-        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0, enterFatalState: 0 };
+        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0, enterFatalState: 0, markCycleDead: 0 };
         wireRecoveryLifecycle(ee, lifecycle, {
             clearPublishChannel: () => {
                 calls.clearPublishChannel += 1;
@@ -335,6 +335,9 @@ describe("wireRecoveryLifecycle", () => {
             fatalTopologyGate: opts?.fatalGate ?? (() => false),
             enterFatalState: () => {
                 calls.enterFatalState += 1;
+            },
+            markCycleDead: () => {
+                calls.markCycleDead += 1;
             },
             isClosing: opts?.isClosing ?? (() => false),
         });
@@ -370,7 +373,25 @@ describe("wireRecoveryLifecycle", () => {
 
         assert.equal(reconnecting, 0);
         assert.equal(reconnectFailed, 1);
-        assert.equal(calls.clearPublishChannel, 2, "both connect-failed and reconnect-failed clear the publish channel");
+        assert.equal(calls.clearPublishChannel, 1, "a failed attempt only clears the half-open publish channel");
+        assert.equal(calls.markCycleDead, 1, "the give-up forgets the whole dead cycle exactly once");
+    });
+
+    it("forgets the dead cycle BEFORE the give-up reaches user callbacks, and never on a retriable failure", () => {
+        // A callback that reconnects on give-up must find the cycle already
+        // forgotten; otherwise connect() would refuse with "already connected".
+        let teardownsSeenByCallback = -1;
+        const { ee, calls } = setup({
+            onReconnectFailed: () => {
+                teardownsSeenByCallback = calls.markCycleDead;
+            },
+        });
+
+        ee.emit("connect-failed", new Error("ECONNREFUSED"));
+        assert.equal(calls.markCycleDead, 0, "a retriable attempt failure keeps the cycle alive");
+
+        ee.emit("reconnect-failed", new Error("recovery exhausted"));
+        assert.equal(teardownsSeenByCallback, 1, "the teardown already ran when the callback fired");
     });
 
     it("reports a topology setup failure on a reconnect via onSetupFailed with attempt context", () => {

@@ -12,8 +12,9 @@
  *   INCLUDING the deprecated flat-callback shim — events go through the real
  *   adapter's dispatch, so ordering, shim payloads, and exception isolation
  *   match the real adapter by construction;
- * - the state machine: `connect()` on a live or recovering (or dead
- *   retries-exhausted) adapter throws `already connected` like the real one;
+ * - the state machine: `connect()` on a live or recovering adapter throws
+ *   `already connected` like the real one, while an adapter whose recovery
+ *   gave up accepts a fresh `connect()` without its old subscriptions;
  *   a mid-recovery `subscribe()` PARKS and settles with the recovery outcome;
  *   the probe-then-recover `connect()` semantics gate on `AmqpTopologyError`
  *   exactly like the real probe.
@@ -110,10 +111,12 @@ export interface FakeAmqpControl {
      */
     completeRecovery(): void;
     /**
-     * Terminal outcome: `reconnect-failed { error }`. The dead adapter fails
-     * publishes fast, rejects parked subscribes typed, and deactivates all
-     * subscriptions (the cycle died — so did its consumers). Reconnect
-     * requires `disconnect()` first, like the real retries-exhausted state.
+     * Terminal outcome: `reconnect-failed { error }`. Like the real adapter,
+     * the dead cycle is forgotten BEFORE the event is dispatched: publishes and
+     * new subscribes fail fast with the real adapter's typed "not connected"
+     * error, parked subscribes reject typed, all subscriptions are dropped (the
+     * cycle died — so did its consumers), and a later `connect()` starts clean
+     * without them.
      */
     exhaustRecovery(error?: Error): void;
     /** Broker flow control: `blocked { reason }` / `unblocked` (union-only events). */
@@ -268,15 +271,18 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
                 throw new Error(`FakeAmqpAdapter.control.exhaustRecovery(): adapter is '${state}', not 'recovering'`);
             }
             state = CONNECTION_STATE.DEAD;
-            dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: error ?? new Error("recovery exhausted") });
             // The cycle died — so did its consumers and any parked subscribes
-            // (same typed error the real startConsumer remaps to).
+            // (same typed error the real startConsumer remaps to). Torn down
+            // before the dispatch, in the real adapter's order, so a callback
+            // reacting to the give-up already sees the clean state.
             for (const sub of subscriptions) {
                 sub.active = false;
             }
+            subscriptions.length = 0;
             for (const parked of parkedSubscribes.splice(0)) {
                 parked.reject(new AmqpConnectionError("Connection lost while establishing consumer channel", { cause: error }));
             }
+            dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: error ?? new Error("recovery exhausted") });
         },
 
         block(reason = "memory alarm"): void {
@@ -376,10 +382,10 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
         control,
 
         async connect(_context?: AdapterContext): Promise<void> {
-            if (state === CONNECTION_STATE.CONNECTED || state === CONNECTION_STATE.RECOVERING || state === CONNECTION_STATE.DEAD) {
+            if (state === CONNECTION_STATE.CONNECTED || state === CONNECTION_STATE.RECOVERING) {
                 // Parity: the real adapter keeps `connection` non-null through
-                // the whole recovery window AND after a plain retries-exhausted
-                // reconnect-failed — reconnecting requires disconnect() first.
+                // the whole recovery window. Once recovery has given up (DEAD)
+                // it drops the connection, so a fresh connect() is accepted.
                 throw new AmqpConnectionError("AmqpAdapter: already connected");
             }
             const failure = queuedSetupFailure();
