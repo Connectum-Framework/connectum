@@ -201,9 +201,13 @@ export interface ShutdownOptions {
     autoShutdown?: boolean;
 
     /**
-     * Force close all HTTP/2 sessions when shutdown timeout is exceeded.
-     * When true, sessions are destroyed after timeout. When false, server
-     * waits indefinitely for in-flight requests to complete.
+     * Force close every client connection when the shutdown timeout is exceeded.
+     * When true, all connections of every transport (HTTP/2 sessions, HTTP/1.1
+     * and TLS sockets) are destroyed after the timeout, aborting requests still
+     * in flight, so no client can keep the process alive. When false, nothing is
+     * destroyed: `stop()` still resolves after the timeout and shutdown hooks
+     * run, but open connections stay open and keep the process alive until
+     * their clients close them.
      * @default true
      */
     forceCloseOnTimeout?: boolean;
