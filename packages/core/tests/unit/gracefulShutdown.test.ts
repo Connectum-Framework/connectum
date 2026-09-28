@@ -218,6 +218,24 @@ describe("performGracefulShutdown()", () => {
             assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1);
             assert.strictEqual(mockCallCount(transport.dispose), 1);
         });
+
+        // Hooks release the application's own resources (brokers, databases);
+        // a listener that fails to close cleanly must not make shutdown skip
+        // them. The close error is still reported to the caller afterwards.
+        it("should run hooks and dispose, then re-throw, when transport.close() rejects before the timeout", async () => {
+            const closeError = new Error("close failed");
+            const transport = createMockTransport({ closeError });
+            const shutdownManager = createMockShutdownManager();
+
+            await assert.rejects(
+                () => performGracefulShutdown(transport, shutdownManager, defaultOptions),
+                (err: unknown) => err === closeError,
+            );
+
+            assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1, "hooks must run despite the close failure");
+            assert.strictEqual(mockCallCount(transport.dispose), 1, "transport state must be disposed despite the close failure");
+            assert.strictEqual(mockCallCount(transport.destroyAllSessions), 0, "a close failure is not a timeout: nothing is force-closed");
+        });
     });
 
     // -----------------------------------------------------------------

@@ -72,6 +72,8 @@ export class TransportManager {
      */
     async listen(handler: (req: NodeRequest, res: NodeResponse) => void, config: TransportConfig): Promise<void> {
         const { tls, allowHTTP1 = true, handshakeTimeout = 30_000, http2Options } = config;
+        // A fresh server starts accepting; only close() turns this on.
+        this._closing = false;
 
         const port = config.port ?? env.get("PORT").default(5000).asPortNumber();
         const host = config.host ?? env.get("LISTEN").default("0.0.0.0").asString();
@@ -213,12 +215,16 @@ export class TransportManager {
 
     /**
      * Reset internal state (nullify server, address, clear tracked sessions and sockets)
+     *
+     * The closing flag is deliberately kept: with `forceCloseOnTimeout: false`
+     * the underlying server still accepts TLS handshakes of connections taken
+     * before close(), and a session completing after dispose() must still be
+     * told to go away rather than serve requests after `stop()`.
      */
     dispose(): void {
         this._server = null;
         this._address = null;
         this._sessions.clear();
         this._sockets.clear();
-        this._closing = false;
     }
 }

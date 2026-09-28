@@ -20,11 +20,18 @@ export interface GracefulShutdownOptions {
 /**
  * Perform a graceful shutdown sequence:
  *
- * 1. Phase 2: Close the transport (sends GOAWAY, stops accepting new connections)
+ * 1. Phase 2: Close the transport (stops accepting new connections, sends
+ *    GOAWAY to every HTTP/2 session)
  * 2. Timeout race: wait for in-flight requests or timeout
- * 3. On timeout + forceClose: destroy all HTTP/2 sessions
+ * 3. On timeout + forceClose: destroy every remaining connection of every
+ *    transport (HTTP/2 sessions and the TCP sockets of HTTP/1.1, h2c and TLS)
  * 4. Phase 4: Execute all shutdown hooks (even after timeout -- hooks should be fast)
  * 5. Dispose transport state
+ *
+ * Steps 4 and 5 run even when closing the transport fails: hooks release the
+ * application's own resources (brokers, databases), and skipping them because
+ * the listener could not close cleanly would leak exactly what the shutdown
+ * exists to release. The close error is re-thrown afterwards.
  *
  * @param transport - The transport manager to close
  * @param shutdownManager - The shutdown hook manager
@@ -50,6 +57,8 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
         timer = globalThis.setTimeout(() => resolve("timeout"), shutdownTimeout);
     });
 
+    let closeFailed = false;
+    let closeError: unknown;
     try {
         const result = await Promise.race([graceful, timeout]);
 
@@ -59,6 +68,9 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
                 transport.destroyAllSessions();
             }
         }
+    } catch (err) {
+        closeFailed = true;
+        closeError = err;
     } finally {
         if (timer !== undefined) {
             globalThis.clearTimeout(timer);
@@ -69,4 +81,8 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
     await shutdownManager.executeAll();
 
     transport.dispose();
+
+    if (closeFailed) {
+        throw closeError;
+    }
 }
