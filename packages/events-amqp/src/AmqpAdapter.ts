@@ -1507,7 +1507,21 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 active: true,
             };
 
-            await startConsumer(connection, record);
+            const cycle = connection;
+            await startConsumer(cycle, record);
+            // The cycle may have died while the consumer was being set up
+            // (recovery gave up, fatal stop, disconnect). The dead-cycle
+            // bookkeeping has then already cleared the subscription list, so
+            // recording this subscription now would make a later connect()
+            // replay it on a fresh cycle. Drop it and report the loss instead.
+            if (connection !== cycle) {
+                const orphan = record.channel;
+                record.active = false;
+                record.channel = null;
+                record.consumerTag = null;
+                await orphan?.close().catch(() => undefined);
+                throw new AmqpConnectionError("Connection lost while establishing consumer channel");
+            }
             subscriptionRecords.push(record);
 
             const subscription: EventSubscription = {
