@@ -216,11 +216,11 @@ queueOverrides: {
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `initialDelay` | `number` | `100` | First reconnect delay in ms |
-| `maxDelay` | `number` | `30000` | Base delay cap in ms. Jitter is applied on top of the capped base, so the effective wait can exceed this (~20% at the default jitter, up to ~2x at `jitter: 1`) |
+| `maxDelay` | `number` | `30000` | Upper bound of every reconnect delay in ms. The base is capped at `maxDelay / (1 + jitter)`, so jitter never pushes a delay above it (saturated delays lie in `[20000, 30000]` at the defaults) |
 | `factor` | `number` | `2` | Exponential backoff factor |
-| `jitter` | `number` | `0.2` | Symmetric jitter factor (0..1): the delay is drawn uniformly from `[base × (1 − jitter), base × (1 + jitter)]` |
+| `jitter` | `number` | `0.2` | Symmetric jitter factor (0..1): the delay is drawn uniformly from `[base × (1 − jitter), base × (1 + jitter)]` around the capped base |
 | `maxRetries` | `number` | `Infinity` | Attempts per series before giving up. Governs **both** the initial connect and each later recovery series; the counter resets on every success. To bound only startup, use `initialConnectMaxRetries` |
-| `initialConnectMaxRetries` | `number` | unset | Bound the **initial** connect independently (N retries = N+1 attempts): the adapter runs a bounded validate-connect loop with per-attempt lifecycle events (`reconnecting`, `setup-failed {initial: true}`) and rejects `connect()` typed on exhaustion (terminal `reconnect-failed`) — instead of blocking forever. Backoff matches amqplib's formula exactly. Since 1.3.0 |
+| `initialConnectMaxRetries` | `number` | unset | Bound the **initial** connect independently (N retries = N+1 attempts): the adapter runs a bounded validate-connect loop with per-attempt lifecycle events (`reconnecting`, `setup-failed {initial: true}`) and rejects `connect()` typed on exhaustion (terminal `reconnect-failed`) — instead of blocking forever. Backoff uses amqplib's built-in formula. Since 1.3.0 |
 
 ### AmqpLifecycleCallbacks
 
@@ -243,7 +243,7 @@ lifecycle: {
 | `connected` | `reconnected: boolean` | Connection established — exactly once per (re)connect; `false` for the initial connect, `true` after a recovery |
 | `disconnected` | `error: Error` | Connection lost — exactly once per drop |
 | `reconnecting` | `attempt, delay, error` | A reconnect attempt is scheduled (exactly once per scheduled retry) |
-| `reconnect-failed` | `error: Error` | Terminal: retry budget exhausted (`maxRetries`), or the cycle was stopped by the fatal topology policy (`treatTopologyErrorAsFatal`) |
+| `reconnect-failed` | `error: Error` | Terminal: retry budget exhausted (`maxRetries`), or the cycle was stopped by the fatal topology policy (`treatTopologyErrorAsFatal`). By the time it fires the adapter has dropped the dead connection and its subscriptions: `publish()`/`subscribe()` reject with `AmqpConnectionError`, and a new `connect()` starts clean (re-subscribe explicitly) |
 | `setup-failed` | `initial, attempt, error` | Topology/setup failed on the initial validation probe (`initial: true`) or a reconnect re-assert (`initial: false`). The startup probe runs when `onLifecycle`, `onSetupFailed`, or `failFastOnInitialSetupError` is set — and only with recovery enabled |
 | `blocked` | `reason: string` | Broker flow control (`connection.blocked`, e.g. a memory/disk alarm). Union-only — no flat equivalent |
 | `unblocked` | — | Broker resumed after flow control. Union-only — no flat equivalent |
@@ -308,7 +308,7 @@ Opt-in (`publishRetry: true` or an `AmqpPublishRetryOptions` object, since 1.3.0
 ```typescript
 publishRetry: {
   maxRetries: 5,        // retries after the first attempt (default 5 — bounded, unlike recovery)
-  initialDelay: 100,    // backoff mirrors the recovery formula (cap-before-jitter)
+  initialDelay: 100,    // backoff mirrors the recovery formula (never above maxDelay)
   retryOnTimeout: false, // opt-in: also retry AmqpPublishTimeoutError (state UNKNOWN — raises duplicate likelihood)
   onRetry: ({ attempt, delay, routingKey }) => metrics.increment('amqp.publish_retry'),
 }
@@ -317,7 +317,7 @@ publishRetry: {
 - **The auto-retry boundary is `isAutoRetriablePublishError` (exported)** and is deliberately **narrower** than the at-least-once *republish* matrix below: a broker `nack` is republish-safe by policy but is an explicit refusal — it is never auto-retried inline. Deterministic outcomes (unroutable, serialization, topology) never retry.
 - **At-least-once, full stop**: a retry after an in-flight confirm loss (state UNKNOWN) may duplicate on the broker. `x-event-id` / `messageId` stay **stable across attempts** (incl. `externalContract` with caller-supplied ids), so consumer-side dedup keys on them.
 - **Worst-case latency**: each attempt is bounded by `publishTimeoutMs` (default 30s) — at defaults a single `publish()` can be held for minutes, far beyond typical 30s RPC timeouts. Bound the budget via `maxRetries`/`publishTimeoutMs`; there is deliberately no second overall-deadline knob.
-- **Shutdown-aware**: the loop aborts promptly on `disconnect()` (also when the adapter has been terminally stopped by `treatTopologyErrorAsFatal` — no budget is burned against a dead cycle), and — living inside the `adapter.publish()` promise — is automatically covered by the bus-level `drainPublishTimeout`.
+- **Shutdown-aware**: the loop aborts promptly on `disconnect()` (also when the recovery cycle is dead — stopped by `treatTopologyErrorAsFatal` or given up after `maxRetries` — no budget is burned against it), and — living inside the `adapter.publish()` promise — is automatically covered by the bus-level `drainPublishTimeout`.
 - **Single-flight interaction** (`mandatory: true` with `correlationHeader: false`; `externalContract` forces the latter but single-flight still requires `mandatory`): retries **hold the chain** — ordering is preserved at the cost of head-of-line blocking during backoff. In this headerless mode a late `basic.return` from an abandoned timed-out attempt may mark the current one — prefer the default header correlation when combining `mandatory` with `retryOnTimeout`.
 - **Deterministic channel-close is not retried**: a broker reply with a `404`/`406` code that killed the publish *channel* (e.g. a publish to a missing exchange under `topologyMode: "skip"`) surfaces immediately with the broker reply as `cause` — the connection stays up, recovery never recreates the channel, so retrying cannot heal.
 - The publish channel is re-resolved on every attempt, so a recovery swap mid-loop is picked up automatically (a *connection*-level recovery; see the previous bullet for channel-only closes).
@@ -341,28 +341,29 @@ Connection behavior:
 
 - **With recovery enabled**, `connect()` retries with backoff until the broker becomes reachable -- convenient for `docker-compose` startup ordering. Under the default `maxRetries: Infinity`, `connect()` blocks rather than failing fast, and a **permanent** setup/topology error on the first connect would otherwise loop indefinitely. Set `failFastOnInitialSetupError: true` to reject `connect()` with the typed `AmqpTopologyError` on such a deterministic startup misconfiguration while still recovering from transient broker outages; use `onSetupFailed` for observability without changing behavior.
 - **`maxRetries` scope.** The retry budget governs **both** the initial connect and every later recovery series, with the counter reset on each success. A finite value chosen only to bound startup therefore makes the adapter brittle in steady state: a normal transient blip of that many consecutive failures in any single series permanently stops recovery. The default `Infinity` blocks at startup but never self-destructs on a transient outage. Since 1.3.0, `recovery.initialConnectMaxRetries` expresses "bounded startup, unbounded steady-state" directly: the adapter owns the initial window with a bounded validate-connect loop (the startup probe folds into it), surfaces per-attempt `reconnecting`/`setup-failed { initial: true }` events, and rejects `connect()` with a typed `AmqpConnectionError` on exhaustion.
-- **Reconnect delay.** The effective delay is symmetric jitter around the exponential base — uniform in `[base × (1 − jitter), base × (1 + jitter)]` with `base = min(maxDelay, initialDelay × factor^(attempt − 1))`. The cap applies to the base **before** jitter, so the wait can overshoot `maxDelay` (~20% at the default `jitter: 0.2`, up to ~2x at `jitter: 1`). See [Tuning the reconnect backoff](#tuning-the-reconnect-backoff).
+- **Recovery give-up.** When a finite `maxRetries` runs out, recovery is over: the adapter reports the terminal `reconnect-failed` after dropping the dead connection and its subscriptions. From then on `publish()` and `subscribe()` reject at once with `AmqpConnectionError` (`publishRetry` spends no budget), and a later `connect()` starts from a clean slate — re-subscribe explicitly.
+- **Reconnect delay.** The delay is symmetric jitter around a capped exponential base — uniform in `[base × (1 − jitter), base × (1 + jitter)]`, rounded, with `base = min(maxDelay / (1 + jitter), initialDelay × factor^(attempt − 1))`. The largest jitter offset lands exactly on `maxDelay`, so a delay never exceeds it: at the defaults a saturated delay lies in `[20000, 30000]` ms. This is amqplib's built-in formula (amqplib ≥ 2.2.0, the minimum this package requires); `initialConnectMaxRetries` and `publishRetry` use the same one. See [Tuning the reconnect backoff](#tuning-the-reconnect-backoff).
 - **Topology drift during recovery.** Under the default policy, a queue/exchange deleted or incompatibly redeclared while the adapter reconnects makes every recovery attempt fail deterministically — the cycle retries forever, reporting `setup-failed` per attempt (and heals if the topology is restored). Set `treatTopologyErrorAsFatal: true` to stop the cycle on the first such failure instead: the adapter reports `setup-failed` then the terminal `reconnect-failed`, tears down fully (consumers are dead, subscription records cleared — a later `connect()` starts from a clean slate; re-subscribe explicitly), and subsequent publishes fail fast with `AmqpConnectionError`. The gate is the AMQP reply code of the cause (`404`/`406` = deterministic; `320`/`541`/`405`/connection drops stay in recovery — never `instanceof`, which also wraps transient causes; the cluster classic-queue "home node ... down or inaccessible" 404 is excluded as transient). Boot-time drift is `failFastOnInitialSetupError`'s job; setting both covers boot and steady state — the remaining window (broker unreachable at `connect()` time with drift surfacing before the first successful connect) is closed by `recovery.initialConnectMaxRetries` (since 1.3.0).
 - **With `recovery: false`**, `connect()` rejects immediately if the broker is unreachable or topology setup fails, and a lost connection is not restored. A lost connection surfaces as a single `disconnected` on the connection `close` (an abnormal loss keeps its `error` as the cause; since 1.3.0 a server-forced graceful close also counts, matching the exactly-once contract). The startup probe never runs in this mode — setup errors reject `connect()` directly.
 
 #### Tuning the reconnect backoff
 
-The delay strategy is fixed inside amqplib — a pluggable backoff hook is proposed upstream ([amqp-node/amqplib#855](https://github.com/amqp-node/amqplib/issues/855); tracked here as [#199](https://github.com/Connectum-Framework/connectum/issues/199)). An independent initial-connect budget ships since 1.3.0 as `recovery.initialConnectMaxRetries` (see above); native upstream support is tracked in [amqp-node/amqplib#856](https://github.com/amqp-node/amqplib/issues/856), which would turn the adapter's bounded phase into a passthrough.
+The adapter exposes only the numeric knobs above. amqplib ≥ 2.2.0 also accepts a `calculateDelay` backoff hook and a native `initialMaxRetries`; the adapter passes neither through yet (a pluggable backoff hook is tracked in [#199](https://github.com/Connectum-Framework/connectum/issues/199)), and `recovery.initialConnectMaxRetries` (since 1.3.0, see above) remains the adapter's own bounded startup loop.
 
-One shape that **is** expressible exactly with the current knobs is AWS-style **full jitter** with a hard cap — the delay drawn uniformly from `[0, min(cap, schedule step)]`, never above the cap. Set `jitter: 1` and halve both `initialDelay` and `maxDelay`:
+One shape that **is** expressible exactly with the current knobs is AWS-style **full jitter** with a hard cap — the delay drawn uniformly from `[0, min(schedule step, cap)]`, never above the cap. Set `jitter: 1`, halve `initialDelay`, and keep `maxDelay` at the intended cap:
 
 ```typescript
 // Full jitter over an intended 500ms → 30s exponential schedule, hard-capped at 30s:
 recovery: {
   jitter: 1,          // delay becomes uniform in [0, 2 × base]
   initialDelay: 250,  // half of the intended 500ms first step
-  maxDelay: 15_000,   // half of the intended 30s cap
+  maxDelay: 30_000,   // the intended cap itself
 }
 ```
 
-With `jitter: 1` the delay is uniform in `[0, 2 × base]`; halving the knobs makes `2 × base` trace the intended schedule, so the effective delay never exceeds the intended cap.
+With `jitter: 1` the delay is uniform in `[0, 2 × base]`, and the base is capped at `maxDelay / 2`. Halving `initialDelay` makes `2 × base` trace the intended schedule, and the cap stops it at `maxDelay`: attempt `n` waits uniformly in `[0, min(500 × 2^(n − 1), 30000)]` ms.
 
-> **Caveat**: this leans on the exact internal delay formula of amqplib v2 (verified against 2.0.1: `base = min(maxDelay, initialDelay × factor^(attempt − 1))`, then a uniform offset of `± base × jitter`). It is precise today but is not a documented amqplib contract — re-verify after amqplib upgrades.
+> **Caveat**: this relies on amqplib's built-in delay formula, which this package requires in its 2.2.0 form (`base = min(maxDelay / (1 + jitter), initialDelay × factor^(attempt − 1))`, then a uniform offset of `± base × jitter`). amqplib 2.0.x capped the base at `maxDelay` itself, where the same settings would double the cap.
 
 ### Error Taxonomy
 
@@ -483,7 +484,7 @@ const result = await fake.control.deliver('order.created', payload);
 // result: { delivered, acked, nacked, requeued, failed }
 ```
 
-Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering/retries-exhausted adapter throws `already connected`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
+Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
 
 Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`); handler `ack`/`nack` calls are recorded in the `deliver()` result but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 

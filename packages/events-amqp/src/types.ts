@@ -115,7 +115,9 @@ export interface AmqpAdapterOptions {
      * blocks until the broker is reachable rather than failing fast (see
      * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
      * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
-     * for the retry-budget scope and jitter/`maxDelay` overshoot.
+     * for the retry-budget scope and the delay bounds. Once a finite budget
+     * is exhausted, recovery is over for good — see the terminal
+     * `reconnect-failed` in {@link AmqpLifecycleEvent}.
      *
      * @default true (amqplib defaults: 100ms initial, ×2, 30s cap, jitter 0.2, infinite retries)
      */
@@ -234,9 +236,14 @@ export interface AmqpAdapterOptions {
      *   with the broker reply as `cause` — the connection stays up, recovery
      *   never recreates the channel, so retrying cannot heal.
      *
-     * Backoff mirrors the recovery formula (same knob names and semantics,
-     * incl. cap-before-jitter), but the DEFAULT budget differs: `maxRetries`
-     * here defaults to **5** (bounded), not `Infinity`.
+     * - **No retry against a dead cycle**: once recovery has given up
+     *   (terminal `reconnect-failed`) or `recovery: false` lost its
+     *   connection, nothing can heal the publish, so it rejects at once
+     *   without spending the budget.
+     *
+     * Backoff mirrors the recovery formula (same knob names and semantics; a
+     * delay never exceeds `maxDelay`), but the DEFAULT budget differs:
+     * `maxRetries` here defaults to **5** (bounded), not `Infinity`.
      *
      * @default undefined (disabled — behavior unchanged)
      */
@@ -344,31 +351,35 @@ export interface AmqpQueueOverride {
  * series, with the counter reset on each success — so a finite value chosen only
  * to bound startup also caps steady-state recovery and makes the adapter brittle
  * (N consecutive transient failures in any single series stop it permanently).
- * The effective reconnect delay is symmetric jitter around the exponential
- * base — uniform in `[base × (1 − jitter), base × (1 + jitter)]` with
- * `base = min(maxDelay, initialDelay × factor^(attempt − 1))`. The cap applies
- * BEFORE jitter, so the wait can overshoot `maxDelay` (~20% at the default
- * jitter, up to ~2x at `jitter: 1`).
+ * The reconnect delay is symmetric jitter around a capped exponential base —
+ * uniform in `[base × (1 − jitter), base × (1 + jitter)]`, rounded, with
+ * `base = min(maxDelay / (1 + jitter), initialDelay × factor^(attempt − 1))`.
+ * Capping the base below `maxDelay` means the largest jitter offset lands
+ * exactly on `maxDelay`, so a delay never exceeds it: at the defaults a
+ * saturated delay lies in `[20000, 30000]` ms. This is amqplib's built-in
+ * formula (amqplib ≥ 2.2.0, the minimum this package requires), and the
+ * adapter's own delay sites — `initialConnectMaxRetries` and `publishRetry` —
+ * use the same one.
  *
- * Full jitter with a hard cap is expressible today: set `jitter: 1` and halve
- * `initialDelay`/`maxDelay` — the delay becomes uniform in `[0, intended cap]`
- * (verified against amqplib 2.0.1's internal formula; re-verify on upgrades).
+ * Full jitter with a hard cap is expressible with these knobs: for an intended
+ * schedule `I × factor^(n − 1)` capped at `C`, set `jitter: 1`,
+ * `initialDelay: I / 2` and `maxDelay: C`. The delay for attempt `n` is then
+ * uniform in `[0, min(I × factor^(n − 1), C)]`.
  *
  * The initial connect CAN be bounded independently since 1.3.0 — see
- * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (#198; upstream native
- * support tracked in {@link https://github.com/amqp-node/amqplib/issues/856}).
- * A pluggable backoff hook remains tracked in
- * {@link https://github.com/Connectum-Framework/connectum/issues/199}
- * (upstream: {@link https://github.com/amqp-node/amqplib/issues/855}).
+ * {@link AmqpRecoveryOptions.initialConnectMaxRetries}. amqplib ≥ 2.2.0 also
+ * has its own `initialMaxRetries` and a `calculateDelay` backoff hook; the
+ * adapter passes neither through. A pluggable backoff hook on the adapter is
+ * tracked in {@link https://github.com/Connectum-Framework/connectum/issues/199}.
  */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
     readonly initialDelay?: number;
-    /** Base delay cap in ms; jitter is applied on top of the capped base, so the effective wait can exceed it. @default 30000 */
+    /** Upper bound of every reconnect delay in ms: the base is capped at `maxDelay / (1 + jitter)`, so jitter never pushes a delay above it. @default 30000 */
     readonly maxDelay?: number;
     /** @default 2 */
     readonly factor?: number;
-    /** Symmetric jitter factor (0..1): the delay is uniform in `[base × (1 − jitter), base × (1 + jitter)]`. @default 0.2 */
+    /** Symmetric jitter factor (0..1): the delay is uniform in `[base × (1 − jitter), base × (1 + jitter)]` around the capped base. @default 0.2 */
     readonly jitter?: number;
     /** Attempts per series (initial connect and each recovery series); resets on success. To bound ONLY startup, use {@link initialConnectMaxRetries}. @default Infinity */
     readonly maxRetries?: number;
@@ -388,8 +399,8 @@ export interface AmqpRecoveryOptions {
      * next delay, `setup-failed { initial: true, attempt }` for topology
      * failures), and budget exhaustion rejects `connect()` with a typed
      * `AmqpConnectionError` after a terminal `reconnect-failed` — never a
-     * silent block. Backoff matches amqplib's steady-state formula exactly
-     * (same knobs above, same cap-before-jitter semantics).
+     * silent block. Backoff uses the same formula as amqplib's steady-state
+     * recovery (same knobs above; a delay never exceeds `maxDelay`).
      *
      * `failFastOnInitialSetupError` still short-circuits a deterministic
      * topology error on the first sight, budget notwithstanding.
@@ -400,8 +411,12 @@ export interface AmqpRecoveryOptions {
      *
      * Unset (default): behavior unchanged — amqplib's initial loop with the
      * shared `maxRetries` governs startup, and initial-window per-retry events
-     * are not surfaced. Since 1.3.0; upstream native support tracked in
-     * {@link https://github.com/amqp-node/amqplib/issues/856}.
+     * are not surfaced. Since 1.3.0.
+     *
+     * amqplib ≥ 2.2.0 offers a native `initialMaxRetries`, but this option
+     * stays the adapter's own loop: amqplib fires its per-attempt events
+     * before `connect()` resolves — before the adapter's lifecycle wiring is
+     * attached — and rejects with the raw last error on exhaustion.
      */
     readonly initialConnectMaxRetries?: number;
 }
@@ -421,7 +436,11 @@ export interface AmqpRecoveryOptions {
  *   `reconnect-failed` is terminal and fires for any of its three triggers:
  *   the retry budget is exhausted (`maxRetries`), the fatal topology policy
  *   stopped the cycle (`treatTopologyErrorAsFatal`), or the initial connect
- *   budget ran out (`initialConnectMaxRetries`).
+ *   budget ran out (`initialConnectMaxRetries`). Once it fires, the adapter
+ *   has already dropped the dead connection and its subscriptions:
+ *   `publish()` and `subscribe()` reject with `AmqpConnectionError`
+ *   ("not connected"), and a new `connect()` starts from a clean state —
+ *   re-subscribe explicitly.
  * - `setup-failed` reports a topology/setup failure with `initial: true` for
  *   the startup window (`attempt: 0` on the probe; the 0-based attempt index
  *   in the bounded initial phase) or `initial: false` for a reconnect
@@ -455,15 +474,16 @@ export type AmqpLifecycleEvent =
 /**
  * Tuning for the opt-in bounded publish retry
  * ({@link AmqpAdapterOptions.publishRetry}). Backoff knobs mirror
- * {@link AmqpRecoveryOptions} (same names, same cap-before-jitter semantics)
- * — but `maxRetries` defaults to a BOUNDED `5` here, not `Infinity`.
+ * {@link AmqpRecoveryOptions} (same names, same formula — a delay never
+ * exceeds `maxDelay`) — but `maxRetries` defaults to a BOUNDED `5` here, not
+ * `Infinity`.
  */
 export interface AmqpPublishRetryOptions {
     /** Retries after the first attempt (N retries = N+1 attempts). A negative value clamps to `0` (single attempt); `Infinity` is honored — retry until `disconnect()` aborts. @default 5 */
     readonly maxRetries?: number;
     /** First retry delay in ms. @default 100 */
     readonly initialDelay?: number;
-    /** Base delay cap in ms; jitter applies on top of the capped base. @default 30000 */
+    /** Upper bound of every retry delay in ms; jitter never pushes a delay above it. @default 30000 */
     readonly maxDelay?: number;
     /** Exponential backoff factor. @default 2 */
     readonly factor?: number;
