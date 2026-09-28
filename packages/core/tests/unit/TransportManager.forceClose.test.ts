@@ -16,7 +16,7 @@
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect as connectHttp2 } from "node:http2";
 import type { Server as NetServer, Socket } from "node:net";
 import { connect } from "node:net";
@@ -81,6 +81,7 @@ describe("TransportManager shutdown with clients that never close", () => {
     let transport: TransportManager;
     let tlsDir: string;
     let tls: TransportConfig["tls"];
+    let trustedCert: Buffer;
     const sockets: Socket[] = [];
 
     before(() => {
@@ -102,12 +103,17 @@ describe("TransportManager shutdown with clients that never close", () => {
             "1",
             "-subj",
             "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
             "-keyout",
             keyPath,
             "-out",
             certPath,
         ], { stdio: "ignore" });
         tls = { keyPath, certPath };
+        // The client trusts exactly this certificate rather than disabling
+        // verification, so the TLS path is exercised the way real clients use it.
+        trustedCert = readFileSync(certPath);
     });
 
     after(() => {
@@ -204,7 +210,7 @@ describe("TransportManager shutdown with clients that never close", () => {
         const closing = transport.close();
         closing.catch(() => {});
 
-        const secure = connectTls({ socket: raw, ALPNProtocols: ["h2"], rejectUnauthorized: false });
+        const secure = connectTls({ socket: raw, ALPNProtocols: ["h2"], ca: trustedCert, servername: "localhost" });
         secure.on("error", () => {});
         const goaway = goawayReceived(secure);
         await once(secure, "secureConnect");
