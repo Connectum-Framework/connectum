@@ -114,9 +114,9 @@ export interface FakeAmqpControl {
      * Terminal outcome: `reconnect-failed { error }`. Like the real adapter,
      * the dead cycle is forgotten BEFORE the event is dispatched: publishes and
      * new subscribes fail fast with the real adapter's typed "not connected"
-     * error, parked subscribes reject typed, all subscriptions are dropped (the
-     * cycle died — so did its consumers), and a later `connect()` starts clean
-     * without them.
+     * error, all subscriptions are dropped (the cycle died — so did its
+     * consumers), and a later `connect()` starts clean without them. Parked
+     * subscribes reject with a typed `AmqpConnectionError`.
      */
     exhaustRecovery(error?: Error): void;
     /** Broker flow control: `blocked { reason }` / `unblocked` (union-only events). */
