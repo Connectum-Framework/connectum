@@ -749,10 +749,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             ch = await model.createChannel();
         } catch (err) {
             // A subscribe() parked in the recovering wrapper's waiter queue is
-            // rejected with amqplib's plain Error("Connection closed") when the
-            // cycle dies (fatal topology stop, disconnect, budget exhaustion).
-            // Keep the documented typed-error taxonomy at this public boundary.
-            if (isConnectionLostError(err)) {
+            // rejected when the cycle dies: with amqplib's plain
+            // Error("Connection closed") on a fatal topology stop or
+            // disconnect, but with the last raw connection error
+            // (ECONNRESET, ECONNREFUSED, ...) when amqplib gives up after the
+            // retry budget. The text heuristic misses the latter; the adapter
+            // has, however, already forgotten the cycle — amqplib emits
+            // reconnect-failed synchronously, before this rejection is handled —
+            // so a missing connection identifies it. Keep the documented
+            // typed-error taxonomy at this public boundary.
+            if (isConnectionLostError(err) || connection === null) {
                 throw new AmqpConnectionError("Connection lost while establishing consumer channel", { cause: err });
             }
             throw err;

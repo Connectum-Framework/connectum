@@ -1030,6 +1030,43 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
                 await adapter.disconnect().catch(() => undefined);
             }
         });
+
+        it("a subscribe() waiting for a channel when recovery gives up rejects with a typed error", { timeout: 60_000 }, async () => {
+            // Called while recovery is still retrying, subscribe() parks in
+            // amqplib's waiter queue. amqplib rejects parked waiters with its
+            // last raw connection error (e.g. ECONNRESET/ECONNREFUSED), which
+            // the connection-lost text heuristic does not recognise — the
+            // public boundary must still surface the typed AmqpConnectionError.
+            const events: Array<{ type: string }> = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.giveup.parked",
+                recovery: { ...GIVE_UP_RECOVERY, initialDelay: 300, maxDelay: 400 },
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await adapter.connect();
+            try {
+                const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+                assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+                await waitFor(() => events.some((e) => e.type === "disconnected"), 30_000);
+                assert.ok(!events.some((e) => e.type === "reconnect-failed"), "precondition: recovery has not given up yet");
+
+                const subscribing = adapter.subscribe(["rec.giveup.parked.evt"], async () => undefined);
+                subscribing.catch(() => undefined);
+
+                await assert.rejects(
+                    () => settleWithin(subscribing, 20_000),
+                    (err: unknown) => {
+                        assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                        return true;
+                    },
+                );
+                assert.ok(events.some((e) => e.type === "reconnect-failed"), "the rejection must come from the recovery give-up");
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
     });
 
     it("reconnect during subscribe: consumer is replayed and resumes delivery", async () => {
