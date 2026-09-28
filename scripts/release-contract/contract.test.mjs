@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateWorkflowContract } from "./contract.mjs";
+import { CHANGESETS_ACTION_SHA, validateWorkflowContract } from "./contract.mjs";
 
 const metadata = `
 inputs:
@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Release
         id: changesets
-        uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a
+        uses: changesets/action@${CHANGESETS_ACTION_SHA}
         with:
           github-token: \${{ steps.app-token.outputs.token }}
           version-script: pnpm changeset:version
@@ -63,10 +63,10 @@ test("rejects missing GitHub App token wiring", () => {
 });
 
 test("rejects a pinned decoy before an unpinned changesets step", () => {
-    const unpinnedWorkflow = validWorkflow.replace("uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a", "uses: changesets/action@v2");
+    const unpinnedWorkflow = validWorkflow.replace(`uses: changesets/action@${CHANGESETS_ACTION_SHA}`, "uses: changesets/action@v2");
     const workflow = unpinnedWorkflow.replace(
         "      - name: Release\n",
-        "      - name: Decoy\n        uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a\n      - name: Release\n",
+        `      - name: Decoy\n        uses: changesets/action@${CHANGESETS_ACTION_SHA}\n      - name: Release\n`,
     );
 
     assert.ok(validateWorkflowContract({ workflow, metadata, packageJson }).some((error) => error.includes("must be pinned")));
