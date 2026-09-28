@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parse } from "yaml";
 
-export const CHANGESETS_ACTION_SHA = "198f833dd7d863100ea6e28967bc9a9fdefadb0a";
+// changesets/action v2.1.1 (the annotated tag's target commit). Must equal the
+// SHA pinned in .github/workflows/release.yml: a dependency bump of the action
+// has to update both, or the release contract check fails every pull request.
+export const CHANGESETS_ACTION_SHA = "8488615a623b1b9c987934bb89eae8af6a946ac1";
 
 function sectionKeys(source, section) {
     const lines = source.split(/\r?\n/);
