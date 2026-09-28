@@ -243,6 +243,57 @@ check("testing.assertConnectError validates a ConnectError", () => {
     fn(new ConnectError("x", Code.NotFound), Code.NotFound);
 });
 
+// ---------- @connectum/core: shutdown ----------
+// Runs on the consumer floor (Node 22.13) against the packed artifacts: Node 22's
+// server.close() sends no GOAWAY and its connection handling differs from 24+,
+// so this is the only CI cell that guards the drain and force-close paths there.
+
+/** Resolve true if the socket is closed by the server within `ms`. */
+function closedWithin(socket: import("node:net").Socket, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), ms);
+        const done = () => {
+            clearTimeout(timer);
+            resolve(true);
+        };
+        socket.once("end", done);
+        socket.once("close", done);
+    });
+}
+
+await checkAsync("core server.stop() drains an idle HTTP/2 client with GOAWAY before the timeout", async () => {
+    const { connect } = await import("node:http2");
+    const server = core.createServer({ services: [], port: 0, allowHTTP1: false, shutdown: { timeout: 5000 } });
+    await server.start();
+    const session = connect(`http://127.0.0.1:${server.address?.port}`);
+    session.on("error", () => {});
+    session.on("goaway", () => session.close());
+    await new Promise<void>((resolve) => session.once("connect", () => resolve()));
+    const startedAt = Date.now();
+    await server.stop();
+    session.destroy();
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 2000, `stop() took ${elapsed}ms: the idle session was not asked to go away`);
+});
+
+await checkAsync("core server.stop() force-closes a client that never closes (forceCloseOnTimeout)", async () => {
+    const { connect } = await import("node:net");
+    const server = core.createServer({ services: [], port: 0, shutdown: { timeout: 300, forceCloseOnTimeout: true } });
+    await server.start();
+    // Default plaintext transport (HTTP/1.1): an unfinished request on a client
+    // that ignores the server's FIN and never closes its side.
+    const client = connect({ port: server.address?.port ?? 0, host: "127.0.0.1", allowHalfOpen: true });
+    client.on("error", () => {});
+    client.resume();
+    await new Promise<void>((resolve) => client.once("connect", () => resolve()));
+    client.write("GET / HTTP/1.1\r\nHost: loc");
+    const closedByServer = closedWithin(client, 3000);
+    await server.stop();
+    const closed = await closedByServer;
+    client.destroy();
+    assert.ok(closed, "the connection outlived the shutdown timeout despite forceCloseOnTimeout");
+});
+
 console.log(`\nLayer-2 smoke: pass=${pass} fail=${fails.length}`);
 if (fails.length) {
     for (const f of fails) console.log(`  XX ${f}`);
