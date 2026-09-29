@@ -120,10 +120,27 @@ describe("TransportManager shutdown with clients that never close", () => {
         rmSync(tlsDir, { recursive: true, force: true });
     });
 
-    afterEach(() => {
+    // Every server a test starts, kept independently of the transport: a test
+    // that fails between listen() and close() — or that disposes the
+    // transport itself — must not leave a listener that keeps the test
+    // process alive.
+    const servers: NetServer[] = [];
+
+    async function listenTracked(options: { handler: Parameters<TransportManager["listen"]>[0]; config: TransportConfig }): Promise<void> {
+        transport = new TransportManager();
+        await transport.listen(options.handler, options.config);
+        servers.push(transport.server as unknown as NetServer);
+    }
+
+    afterEach(async () => {
         for (const s of sockets.splice(0)) s.destroy();
         transport?.destroyAllSessions();
         transport?.dispose();
+        for (const server of servers.splice(0)) {
+            if (server.listening) {
+                await new Promise<void>((resolve) => server.close(() => resolve()));
+            }
+        }
     });
 
     const cases: Array<{ name: string; config: () => TransportConfig; payload: Buffer | string }> = [
@@ -147,8 +164,7 @@ describe("TransportManager shutdown with clients that never close", () => {
     for (const { name, config, payload } of cases) {
         describe(name, () => {
             it("close() keeps the connection; destroyAllSessions() closes the server-side socket", async () => {
-                transport = new TransportManager();
-                await transport.listen(noopHandler, { ...config(), port: 0, host: "127.0.0.1" });
+                await listenTracked({ handler: noopHandler, config: { ...config(), port: 0, host: "127.0.0.1" } });
                 // The oracle is the server-side socket: while it is open it
                 // keeps the event loop — and the host process — alive. The
                 // client never finishes its side, so client-side 'close' can
@@ -177,8 +193,7 @@ describe("TransportManager shutdown with clients that never close", () => {
     }
 
     it("close() drains an idle HTTP/2 client without waiting for the force-close path", async () => {
-        transport = new TransportManager();
-        await transport.listen(respondOk as never, { allowHTTP1: false, port: 0, host: "127.0.0.1" });
+        await listenTracked({ handler: respondOk as never, config: { allowHTTP1: false, port: 0, host: "127.0.0.1" } });
         const session = connectHttp2(`http://127.0.0.1:${transport.address?.port}`);
         session.on("error", () => {});
         // A well-behaved client closes its session once the server says GOAWAY.
@@ -195,28 +210,46 @@ describe("TransportManager shutdown with clients that never close", () => {
         session.destroy();
     });
 
-    it("a TLS session that completes its handshake after close() still receives GOAWAY", async () => {
-        transport = new TransportManager();
-        await transport.listen(noopHandler, { tls, port: 0, host: "127.0.0.1" });
-        // TCP is accepted before close(), the TLS handshake (and so the HTTP/2
-        // session) only completes after it: that session is created while the
-        // server is already draining and must be told to go away too.
-        const raw = connect({ port: transport.address?.port ?? 0, host: "127.0.0.1", allowHalfOpen: true });
-        raw.on("error", () => {});
-        sockets.push(raw);
-        await once(raw, "connect");
-        await delay(50);
+    // TCP is accepted before close(), the TLS handshake (and so the HTTP/2
+    // session) only completes after it: that session is created while the
+    // server is already draining and must be told to go away too. The second
+    // case is the shutdown timeout with forceCloseOnTimeout: false, where the
+    // transport is disposed while the server still completes handshakes of
+    // connections it accepted — a session born then must not serve requests
+    // after stop(). The third case starts a new server on the same manager
+    // while the old one is still draining: that must not reopen the old one.
+    const lateSessionCases = [
+        { when: "after close()", dispose: false, relisten: false },
+        { when: "after close() and dispose()", dispose: true, relisten: false },
+        { when: "after close() while the same manager listens again", dispose: true, relisten: true },
+    ] as const;
+    for (const scenario of lateSessionCases) {
+        it(`a TLS session that completes its handshake ${scenario.when} still receives GOAWAY`, async () => {
+            await listenTracked({ handler: noopHandler, config: { tls, port: 0, host: "127.0.0.1" } });
+            const raw = connect({ port: transport.address?.port ?? 0, host: "127.0.0.1", allowHalfOpen: true });
+            raw.on("error", () => {});
+            sockets.push(raw);
+            await once(raw, "connect");
+            await delay(50);
 
-        const closing = transport.close();
-        closing.catch(() => {});
+            const closing = transport.close();
+            closing.catch(() => {});
+            if (scenario.dispose) {
+                transport.dispose();
+            }
+            if (scenario.relisten) {
+                await transport.listen(noopHandler, { tls, port: 0, host: "127.0.0.1" });
+                servers.push(transport.server as unknown as NetServer);
+            }
 
-        const secure = connectTls({ socket: raw, ALPNProtocols: ["h2"], ca: trustedCert, servername: "localhost" });
-        secure.on("error", () => {});
-        const goaway = goawayReceived(secure);
-        await once(secure, "secureConnect");
-        secure.write(HTTP2_PREFACE);
+            const secure = connectTls({ socket: raw, ALPNProtocols: ["h2"], ca: trustedCert, servername: "localhost" });
+            secure.on("error", () => {});
+            const goaway = goawayReceived(secure);
+            await once(secure, "secureConnect");
+            secure.write(HTTP2_PREFACE);
 
-        assert.strictEqual(await settlesWithin(goaway, 1000), true, "late session must receive GOAWAY during the graceful phase");
-        secure.destroy();
-    });
+            assert.strictEqual(await settlesWithin(goaway, 1000), true, "late session must receive GOAWAY");
+            secure.destroy();
+        });
+    }
 });

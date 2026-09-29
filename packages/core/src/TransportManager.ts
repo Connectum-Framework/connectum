@@ -43,7 +43,13 @@ export class TransportManager {
     private _isHttp2 = false;
     private readonly _sessions: Set<ServerHttp2Session> = new Set();
     private readonly _sockets: Set<Socket> = new Set();
-    private _closing = false;
+    /**
+     * Closing state of the server started by the latest listen(). Each server
+     * gets its own object and its session listener keeps a reference to it,
+     * so starting a new server on this manager can never reopen an older one
+     * that is still draining.
+     */
+    private _closingState: { closing: boolean } = { closing: false };
 
     /**
      * The underlying server instance
@@ -72,6 +78,9 @@ export class TransportManager {
      */
     async listen(handler: (req: NodeRequest, res: NodeResponse) => void, config: TransportConfig): Promise<void> {
         const { tls, allowHTTP1 = true, handshakeTimeout = 30_000, http2Options } = config;
+        // A fresh server starts accepting; only close() marks it closing.
+        const closingState = { closing: false };
+        this._closingState = closingState;
 
         const port = config.port ?? env.get("PORT").default(5000).asPortNumber();
         const host = config.host ?? env.get("LISTEN").default("0.0.0.0").asString();
@@ -119,7 +128,7 @@ export class TransportManager {
                 });
                 // A connection accepted just before close() may complete its
                 // HTTP/2 handshake afterwards; it must drain like the others.
-                if (this._closing) session.close();
+                if (closingState.closing) session.close();
             });
         }
 
@@ -178,7 +187,7 @@ export class TransportManager {
      * In-flight streams are allowed to finish.
      */
     async close(): Promise<void> {
-        this._closing = true;
+        this._closingState.closing = true;
         const closed = new Promise<void>((resolve, reject) => {
             this._server?.close((err) => {
                 if (err) reject(err);
@@ -213,12 +222,17 @@ export class TransportManager {
 
     /**
      * Reset internal state (nullify server, address, clear tracked sessions and sockets)
+     *
+     * The disposed server's closing state is deliberately left as it is (its
+     * session listener holds it): with `forceCloseOnTimeout: false` the server
+     * still completes TLS handshakes of connections taken before close(), and
+     * a session completing after dispose() must still be told to go away
+     * rather than serve requests after `stop()`.
      */
     dispose(): void {
         this._server = null;
         this._address = null;
         this._sessions.clear();
         this._sockets.clear();
-        this._closing = false;
     }
 }
