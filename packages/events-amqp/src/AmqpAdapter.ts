@@ -190,8 +190,10 @@ export function buildRecoveryConnectOptions(params: {
     readonly recovery: AmqpRecoveryOptions;
     readonly setup: (model: amqp.ChannelModel) => Promise<void>;
     readonly initialBudget: number | null;
+    /** The guarded `recovery.backoff` ({@link createBackoffGuard}); absent = amqplib's built-in delay. */
+    readonly calculateDelay?: ((attempt: number) => number) | undefined;
 }): Record<string, unknown> {
-    const { recovery, setup, initialBudget } = params;
+    const { recovery, setup, initialBudget, calculateDelay } = params;
     const forwarded: Record<string, unknown> = {
         initialDelay: recovery.initialDelay,
         maxDelay: recovery.maxDelay,
@@ -204,7 +206,105 @@ export function buildRecoveryConnectOptions(params: {
         forwarded.initialMaxRetries = initialBudget;
         forwarded.waitForConnect = false;
     }
+    if (calculateDelay !== undefined) {
+        forwarded.calculateDelay = calculateDelay;
+    }
     return forwarded;
+}
+
+/** The numeric delay knobs amqplib ignores once `calculateDelay` is set. */
+const DELAY_KNOBS = ["initialDelay", "maxDelay", "factor", "jitter"] as const;
+
+/**
+ * Reject `recovery.backoff` combined with a numeric delay knob. With a custom
+ * delay function amqplib does not read `initialDelay`, `maxDelay`, `factor`
+ * or `jitter` at all, so accepting the pair would leave a configured value
+ * silently without effect.
+ */
+function rejectBackoffWithDelayKnobs(recovery: AmqpAdapterOptions["recovery"]): void {
+    if (typeof recovery !== "object" || recovery.backoff === undefined) {
+        return;
+    }
+    for (const knob of DELAY_KNOBS) {
+        if (recovery[knob] !== undefined) {
+            throw new TypeError(
+                `AmqpAdapter: recovery.backoff cannot be combined with recovery.${knob} — the delay knobs have no effect once a backoff hook is set; compute the delay (and its cap) inside the hook`,
+            );
+        }
+    }
+}
+
+/** A `recovery.backoff` wrapped for amqplib, with the state needed to explain a give-up. */
+export interface BackoffGuard {
+    /** Forwarded to amqplib as `calculateDelay`. */
+    readonly calculateDelay: (attempt: number) => number;
+    /** Remember the latest connection error; the give-up message names it. */
+    noteConnectionError(err: Error): void;
+    /** The typed give-up error once the hook has failed, else `null`. The same object on every call. */
+    giveUpError(): AmqpConnectionError | null;
+}
+
+/**
+ * Wrap a user `recovery.backoff` before handing it to amqplib as
+ * `calculateDelay`.
+ *
+ * amqplib 2.2.0 gives recovery up when `calculateDelay` throws or returns
+ * anything but a finite number ≥ 0, and reports only that error: the
+ * connection error that led to the retry is dropped, and nothing but message
+ * text tells a hook failure from an exhausted budget. The wrapper therefore
+ * validates the return itself and records the first failure, so the adapter
+ * can surface the give-up as a typed `AmqpConnectionError` carrying the
+ * hook's error as `cause` and naming the last connection error — decided by
+ * recorded state, never by parsing amqplib's message.
+ *
+ * A thenable return (an `async` hook) is a failure too: amqplib calls the hook
+ * synchronously and would reject it with an unclear "got [object Promise]".
+ * A no-op rejection handler is attached so a later rejection of that Promise
+ * cannot surface as an unhandled rejection. Exported (not via the package
+ * barrel) for direct unit testing.
+ */
+export function createBackoffGuard(backoff: (attempt: number) => number): BackoffGuard {
+    let lastConnectionError: Error | null = null;
+    let failure: { readonly attempt: number; readonly error: Error } | null = null;
+    let typed: AmqpConnectionError | null = null;
+
+    const fail = (attempt: number, error: Error): Error => {
+        failure ??= { attempt, error };
+        return error;
+    };
+
+    return {
+        calculateDelay(attempt: number): number {
+            let value: unknown;
+            try {
+                value = backoff(attempt);
+            } catch (err) {
+                throw fail(attempt, err instanceof Error ? err : new Error(`recovery.backoff threw ${String(err)}`, { cause: err }));
+            }
+            if (typeof (value as { then?: unknown } | null)?.then === "function") {
+                (value as PromiseLike<unknown>).then(undefined, () => undefined);
+                throw fail(attempt, new Error(`recovery.backoff must be synchronous: attempt ${attempt} returned a Promise`));
+            }
+            if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+                const shown = typeof value === "string" ? `the string '${value}'` : String(value);
+                throw fail(attempt, new Error(`recovery.backoff must return a finite, non-negative number of milliseconds: attempt ${attempt} returned ${shown}`));
+            }
+            return value;
+        },
+        noteConnectionError(err: Error): void {
+            lastConnectionError = err;
+        },
+        giveUpError(): AmqpConnectionError | null {
+            if (failure === null) {
+                return null;
+            }
+            typed ??= new AmqpConnectionError(
+                `Recovery gave up: recovery.backoff failed at attempt ${failure.attempt} (${failure.error.message}); last connection error: ${lastConnectionError?.message ?? "none observed"}`,
+                { cause: failure.error },
+            );
+            return typed;
+        },
+    };
 }
 
 /**
@@ -370,6 +470,14 @@ interface RecoveryLifecycleHooks {
      * schedules the next attempt right after emitting `connect-failed`.
      */
     readonly stopInitialConnect: (err: Error) => void;
+    /** Remember a connection error (`disconnect`, `connect-failed`) so a later give-up can name it. */
+    readonly noteConnectionError: (err: Error) => void;
+    /**
+     * The error the terminal `reconnect-failed` event reports for amqplib's
+     * give-up error: the typed backoff-hook failure when the hook caused the
+     * give-up, otherwise amqplib's error unchanged.
+     */
+    readonly mapGiveUpError: (err: Error) => Error;
     /**
      * Deliver a `connected` event exactly once per successful (re)connect.
      * Owned by the adapter so the initial-vs-reconnect flag does not depend on
@@ -515,6 +623,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         hooks.deliverConnected();
     });
     conn.on("disconnect", (err: Error) => {
+        hooks.noteConnectionError(err);
         hooks.failPendingReturns();
         dispatchLifecycle(lifecycle, { type: "disconnected", error: err });
     });
@@ -525,6 +634,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: info.error });
     });
     conn.on("connect-failed", (err: Error) => {
+        hooks.noteConnectionError(err);
         if (hooks.isInitialWindow()) {
             // amqplib finishes an attempt that was already in flight when
             // the wrapper was closed and still reports its failure — often
@@ -566,7 +676,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         // reacts to the give-up (for example by calling connect() again) must
         // already see the dead cycle forgotten, not "already connected".
         hooks.markCycleDead();
-        dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: err });
+        dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: hooks.mapGiveUpError(err) });
     });
     wireFlowControlEvents(conn, lifecycle);
 }
@@ -732,6 +842,8 @@ interface RecoveryCycle {
     /** The setup error that stopped the initial connect under fail-fast. */
     failFastError: Error | null;
     connectedDelivered: boolean;
+    /** The guarded `recovery.backoff` of this cycle, or `null` without a hook. */
+    readonly backoffGuard: BackoffGuard | null;
 }
 
 /**
@@ -777,6 +889,7 @@ interface RecoveryCycle {
  * ```
  */
 export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
+    rejectBackoffWithDelayKnobs(options.recovery);
     const exchange = options.exchange ?? DEFAULT_EXCHANGE;
     const exchangeType = options.exchangeType ?? DEFAULT_EXCHANGE_TYPE;
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
@@ -1199,8 +1312,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         }
     }
 
-    function newRecoveryCycle(wrapper: RecoveryCycle["wrapper"], initialWindow: boolean): RecoveryCycle {
-        return { wrapper, initialWindow, abandoned: false, initialAttempts: 0, failFastError: null, connectedDelivered: false };
+    function newRecoveryCycle(wrapper: RecoveryCycle["wrapper"], initialWindow: boolean, backoffGuard: BackoffGuard | null): RecoveryCycle {
+        return { wrapper, initialWindow, abandoned: false, initialAttempts: 0, failFastError: null, connectedDelivered: false, backoffGuard };
     }
 
     /** Deliver `connected`: the first delivery of a cycle is the initial connect, later ones are recoveries. */
@@ -1264,15 +1377,20 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // Synchronous stop, as in enterFatalState: no retry is scheduled.
                 void conn.close().catch(() => undefined);
             },
+            noteConnectionError: (err) => {
+                cycle.backoffGuard?.noteConnectionError(err);
+            },
+            mapGiveUpError: (err) => cycle.backoffGuard?.giveUpError() ?? err,
         });
     }
 
     /**
      * Turn the rejection of amqplib's initial connect into the adapter's
      * error. amqplib rejects with plain `Error("Connection closed")` after
-     * any close() and with the raw last error on exhaustion, so the cause is
-     * read from what the adapter recorded, in this order: the startup
-     * fail-fast, then a disconnect(), then an exhausted budget.
+     * any close(), with the hook's error when the backoff hook failed, and
+     * with the raw last error on exhaustion, so the cause is read from what
+     * the adapter recorded, in this order: the startup fail-fast, then a
+     * disconnect(), then a failed backoff hook, then an exhausted budget.
      */
     function initialConnectFailure(cycle: RecoveryCycle, err: unknown, budget: number): Error {
         if (cycle.failFastError !== null) {
@@ -1280,6 +1398,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         }
         if (closing || cycle.abandoned) {
             return new AmqpConnectionError("Adapter closed during the initial connect phase", { cause: err });
+        }
+        const hookFailure = cycle.backoffGuard?.giveUpError();
+        if (hookFailure) {
+            return hookFailure;
         }
         return new AmqpConnectionError(`Initial connect failed after ${cycle.initialAttempts} attempt(s) (initialConnectMaxRetries: ${budget})`, { cause: err });
     }
@@ -1314,11 +1436,14 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             // connection that is kept after the first success.
             const initialBudget = normalizeInitialConnectBudget(recoveryOpts.initialConnectMaxRetries);
 
+            // A fresh guard per connect(): a hook failure ends only the cycle it happened in.
+            const backoffGuard = recoveryEnabled && recoveryOpts.backoff !== undefined ? createBackoffGuard(recoveryOpts.backoff) : null;
+
             const connectOptions = buildConnectOptions(options.socketOptions, clientProperties);
             if (recoveryEnabled) {
                 // amqplib opt-in recovery: reconnect with backoff+jitter; our
                 // setup hook re-creates channels/topology/subscriptions.
-                connectOptions.recovery = buildRecoveryConnectOptions({ recovery: recoveryOpts, setup: onSetup, initialBudget });
+                connectOptions.recovery = buildRecoveryConnectOptions({ recovery: recoveryOpts, setup: onSetup, initialBudget, calculateDelay: backoffGuard?.calculateDelay });
             }
 
             // Optional fail-fast / observability probe: validate topology against
@@ -1391,7 +1516,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     await wrapper.close().catch(() => undefined);
                     throw new AmqpConnectionError("Adapter closed while connect() was in progress");
                 }
-                const cycle = newRecoveryCycle(wrapper, true);
+                const cycle = newRecoveryCycle(wrapper, true, backoffGuard);
                 pendingCycle = cycle;
                 wireRecoveryCycle(cycle);
                 try {
@@ -1430,6 +1555,14 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // topology error from setup) pass through unchanged. Without
                 // recovery the raw error is left as is: that single-shot mode
                 // has always surfaced it, and callers may match on its code.
+                // A failed backoff hook also rejects here, with the hook's
+                // error; it is reported as the hook failure it is, and the
+                // last connection error stays unknown — this window is not
+                // observable before amqplib resolves.
+                const hookFailure = backoffGuard?.giveUpError();
+                if (hookFailure) {
+                    throw hookFailure;
+                }
                 if (recoveryEnabled && !(err instanceof AmqpTopologyError) && !(err instanceof AmqpConnectionError)) {
                     throw new AmqpConnectionError(`Initial connect failed: recovery gave up (maxRetries: ${String(recoveryOpts.maxRetries)})`, { cause: err });
                 }
@@ -1449,7 +1582,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // Without an initial connect budget amqplib resolved only after
                 // the first success, so the wiring attaches after the initial
                 // window: its per-retry events stay unreported.
-                const cycle = newRecoveryCycle(conn, false);
+                const cycle = newRecoveryCycle(conn, false, backoffGuard);
                 wireRecoveryCycle(cycle);
 
                 // With recovery, the wrapper already ran onSetup before resolving.

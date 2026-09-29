@@ -398,8 +398,8 @@ export interface AmqpQueueOverride {
  * uniform in `[0, min(I × factor^(n − 1), C)]`.
  *
  * The initial connect CAN be bounded independently since 1.3.0 — see
- * {@link AmqpRecoveryOptions.initialConnectMaxRetries}. amqplib ≥ 2.2.0 also
- * has a `calculateDelay` backoff hook, which the adapter does not pass through.
+ * {@link AmqpRecoveryOptions.initialConnectMaxRetries}. A schedule the knobs
+ * cannot express is set with {@link AmqpRecoveryOptions.backoff}.
  */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
@@ -453,6 +453,49 @@ export interface AmqpRecoveryOptions {
      * Since 1.3.0.
      */
     readonly initialConnectMaxRetries?: number;
+
+    /**
+     * Custom reconnect delay: called with the attempt number, returns the
+     * delay in milliseconds before that attempt. Forwarded to amqplib's
+     * `calculateDelay`. Since 1.4.0.
+     *
+     * - `attempt` is 1-based and restarts at 1 after every successful connect.
+     * - Covers every reconnect attempt: steady-state recovery and the retries
+     *   of the initial connect (with or without `initialConnectMaxRetries`).
+     *   It does NOT cover `publishRetry`, which keeps its own numeric backoff.
+     * - The return value must be a finite number ≥ 0. It is rounded to whole
+     *   milliseconds and applied as is — NOT clamped to `maxDelay`; cap it
+     *   yourself (`Math.min(cap, …)`). `0` is valid and retries at once. The
+     *   `reconnecting` event reports this applied delay; the adapter never
+     *   calls the hook a second time to fill it.
+     * - The hook MUST be synchronous. A throw, a return that is not a finite
+     *   number ≥ 0 (`NaN`, `Infinity`, a negative number, a numeric string)
+     *   or a Promise (an `async` function) ends recovery for good — there is
+     *   no fallback to the built-in schedule. During the initial connect,
+     *   `connect()` rejects; in steady state the terminal `reconnect-failed`
+     *   fires once and the adapter drops the dead connection, as after an
+     *   exhausted `maxRetries`. Either way the error is an
+     *   `AmqpConnectionError` whose `cause` is the hook's error (the thrown
+     *   error, or one stating the invalid return or that the hook must be
+     *   synchronous) and whose message names the last connection error —
+     *   "none observed" when it failed before the adapter could see one
+     *   (initial connect without `initialConnectMaxRetries`).
+     * - It only sets intervals. Retry budgets stay `maxRetries` and
+     *   `initialConnectMaxRetries`, and both remain valid with the hook.
+     * - Cannot be combined with `initialDelay`, `maxDelay`, `factor` or
+     *   `jitter`: amqplib ignores them once a hook is set, so the adapter
+     *   rejects the combination at construction with a `TypeError`.
+     * - A schedule that depends on the previous delay (decorrelated jitter)
+     *   needs state across calls: keep it in a closure.
+     *
+     * @example Full jitter over an exponential schedule, capped at 30 s
+     * ```typescript
+     * recovery: {
+     *     backoff: (n) => Math.random() * Math.min(30_000, 100 * 2 ** (n - 1)),
+     * }
+     * ```
+     */
+    readonly backoff?: (attempt: number) => number;
 }
 
 /**
@@ -467,10 +510,12 @@ export interface AmqpRecoveryOptions {
  * - `reconnecting` fires once per scheduled retry — after the connection has
  *   been established once, and also for every retry of the initial connect
  *   when {@link AmqpRecoveryOptions.initialConnectMaxRetries} is set.
- *   `reconnect-failed` is terminal and fires for any of its three triggers:
+ *   `reconnect-failed` is terminal and fires for any of its four triggers:
  *   the retry budget is exhausted (`maxRetries`), the fatal topology policy
- *   stopped the cycle (`treatTopologyErrorAsFatal`), or the initial connect
- *   budget ran out (`initialConnectMaxRetries`). Once it fires, the adapter
+ *   stopped the cycle (`treatTopologyErrorAsFatal`), the initial connect
+ *   budget ran out (`initialConnectMaxRetries`), or the
+ *   {@link AmqpRecoveryOptions.backoff} hook failed (the event then carries
+ *   an `AmqpConnectionError` with the hook's error as `cause`). Once it fires, the adapter
  *   has already dropped the dead connection and its subscriptions:
  *   `publish()` and `subscribe()` reject with `AmqpConnectionError`
  *   ("not connected"), and a new `connect()` starts from a clean state —
