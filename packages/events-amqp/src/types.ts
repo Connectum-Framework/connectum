@@ -135,19 +135,23 @@ export interface AmqpAdapterOptions {
      * `Infinity`). A permanent topology error on the first connect under the
      * default recovery therefore HANGS `connect()` forever, with no thrown error
      * and — because the lifecycle listeners attach only after that never-returning
-     * await — no callback. When this flag is `true` (and recovery is enabled), the
-     * adapter first validates topology against a throwaway non-recovering
-     * connection; a topology error rejects `connect()` with the typed
-     * `AmqpTopologyError` / `AmqpConnectionError`.
+     * await — no callback. When this flag is `true` (and recovery is enabled), a
+     * topology error of the initial connect rejects `connect()` with the typed
+     * `AmqpTopologyError` / `AmqpConnectionError`. Without
+     * {@link AmqpRecoveryOptions.initialConnectMaxRetries} the adapter first
+     * validates topology against a throwaway non-recovering connection (the
+     * startup probe); with it, every initial attempt runs the full setup and
+     * the first setup error stops the initial connect.
      *
      * Only deterministic setup/topology errors fail fast. A transient
      * broker-unreachable at startup is NOT a fail-fast condition — it falls
-     * through to normal recovery (block-until-broker). SUBSEQUENT reconnects
-     * always keep infinite-recovery behavior.
+     * through to normal recovery (block-until-broker, or the initial connect
+     * budget). SUBSEQUENT reconnects always keep infinite-recovery behavior.
      *
      * No-op with `recovery: false` (that path already fails fast on setup).
-     * Enabling this — or supplying {@link AmqpLifecycleCallbacks.onLifecycle}
-     * or {@link AmqpLifecycleCallbacks.onSetupFailed} — adds one extra
+     * Without `initialConnectMaxRetries`, enabling this — or supplying
+     * {@link AmqpLifecycleCallbacks.onLifecycle} or
+     * {@link AmqpLifecycleCallbacks.onSetupFailed} — adds one extra
      * short-lived connection plus a topology validation pass at startup for
      * the probe (recovery must be enabled; with `recovery: false` no probe
      * runs and no `setup-failed` event is delivered).
@@ -189,7 +193,7 @@ export interface AmqpAdapterOptions {
      * at `connect()` time with drift surfacing before the first successful
      * connect — is closed by
      * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (since 1.3.0),
-     * whose bounded phase surfaces those failures and rejects on exhaustion.
+     * which reports those failures per attempt and rejects on exhaustion.
      *
      * @default false
      */
@@ -360,9 +364,9 @@ export interface AmqpQueueOverride {
  * Capping the base below `maxDelay` means the largest jitter offset lands
  * exactly on `maxDelay`, so a delay never exceeds it: at the defaults a
  * saturated delay lies in `[20000, 30000]` ms. This is amqplib's built-in
- * formula (amqplib ≥ 2.2.0, the minimum this package requires), and the
- * adapter's own delay sites — `initialConnectMaxRetries` and `publishRetry` —
- * use the same one.
+ * formula (amqplib ≥ 2.2.0, the minimum this package requires); it applies
+ * to every reconnect attempt, including those of the bounded initial connect,
+ * and the adapter's own `publishRetry` uses the same one.
  *
  * Full jitter with a hard cap is expressible with these knobs: for an intended
  * schedule `I × factor^(n − 1)` capped at `C`, set `jitter: 1`,
@@ -371,9 +375,7 @@ export interface AmqpQueueOverride {
  *
  * The initial connect CAN be bounded independently since 1.3.0 — see
  * {@link AmqpRecoveryOptions.initialConnectMaxRetries}. amqplib ≥ 2.2.0 also
- * has its own `initialMaxRetries` and a `calculateDelay` backoff hook; the
- * adapter passes neither through. A pluggable backoff hook on the adapter is
- * tracked in {@link https://github.com/Connectum-Framework/connectum/issues/199}.
+ * has a `calculateDelay` backoff hook, which the adapter does not pass through.
  */
 export interface AmqpRecoveryOptions {
     /** @default 100 */
@@ -393,33 +395,38 @@ export interface AmqpRecoveryOptions {
      * semantics. A single `maxRetries` cannot express "bounded startup,
      * unbounded steady-state" — its counter resets on every success.
      *
-     * When set to an explicit finite value (a negative value clamps to `0` —
-     * single attempt — mirroring amqplib's `maxRetries` normalization), the
-     * adapter owns the initial window with a bounded validate-connect loop
-     * (the startup probe folds into it — validation IS each attempt, no extra
-     * connects): every
-     * attempt surfaces per-attempt lifecycle events (`reconnecting` with the
-     * next delay, `setup-failed { initial: true, attempt }` for topology
-     * failures), and budget exhaustion rejects `connect()` with a typed
-     * `AmqpConnectionError` after a terminal `reconnect-failed` — never a
-     * silent block. Backoff uses the same formula as amqplib's steady-state
-     * recovery (same knobs above; a delay never exceeds `maxDelay`).
+     * Set to a finite number N, the initial connect makes at most
+     * `max(0, floor(N)) + 1` attempts (a negative value means a single
+     * attempt, a fraction is rounded down). A value that is not a finite
+     * number — `Infinity`, `NaN` — counts as unset. The budget ends with the
+     * first successful connect; after that `maxRetries` bounds every recovery
+     * series.
      *
-     * `failFastOnInitialSetupError` still short-circuits a deterministic
-     * topology error on the first sight, budget notwithstanding.
+     * amqplib runs these attempts itself (its `initialMaxRetries`) on the
+     * recovering connection the adapter keeps: each attempt includes the full
+     * topology setup, and after a success exactly one adapter connection stays
+     * open on the broker. The adapter's lifecycle wiring is attached before
+     * the first attempt, so the initial window reports `reconnecting` for
+     * every scheduled retry (with the applied delay) and
+     * `setup-failed { initial: true, attempt }` for a topology failure
+     * (`attempt` is the 0-based index of the failed attempt). On exhaustion
+     * the adapter reports one terminal `reconnect-failed`, then `connect()`
+     * rejects with `AmqpConnectionError` stating the attempt count and the
+     * budget, with the last attempt's error as `cause` — never a silent
+     * block. Delays follow the knobs above, like every reconnect delay.
      *
-     * Handoff caveat: after a successful validation the real recovering
-     * connect runs — a broker dying inside that small window blocks per
-     * amqplib's own initial loop.
+     * `publish()` and `subscribe()` called before the initial connect
+     * succeeds reject with `AmqpConnectionError` ("not connected"), and the
+     * initial `connected` event is delivered only once the adapter is usable.
+     * `disconnect()` during the initial connect cancels a pending retry at
+     * once; `connect()` then rejects with `AmqpConnectionError` ("Adapter
+     * closed during the initial connect phase") and no lifecycle event
+     * follows. `failFastOnInitialSetupError` still stops the initial connect
+     * on the first topology error, budget notwithstanding.
      *
-     * Unset (default): behavior unchanged — amqplib's initial loop with the
-     * shared `maxRetries` governs startup, and initial-window per-retry events
-     * are not surfaced. Since 1.3.0.
-     *
-     * amqplib ≥ 2.2.0 offers a native `initialMaxRetries`, but this option
-     * stays the adapter's own loop: amqplib fires its per-attempt events
-     * before `connect()` resolves — before the adapter's lifecycle wiring is
-     * attached — and rejects with the raw last error on exhaustion.
+     * Unset (default): amqplib's initial loop with the shared `maxRetries`
+     * governs startup, and initial-window per-retry events are not surfaced.
+     * Since 1.3.0.
      */
     readonly initialConnectMaxRetries?: number;
 }
@@ -434,7 +441,7 @@ export interface AmqpRecoveryOptions {
  * - `disconnected` fires once per connection loss (a socket-level cut no longer
  *   double-fires via the raw `error` event — fixed in 1.3.0).
  * - `reconnecting` fires once per scheduled retry — after the connection has
- *   been established once, and also per attempt of the bounded initial phase
+ *   been established once, and also for every retry of the initial connect
  *   when {@link AmqpRecoveryOptions.initialConnectMaxRetries} is set.
  *   `reconnect-failed` is terminal and fires for any of its three triggers:
  *   the retry budget is exhausted (`maxRetries`), the fatal topology policy
@@ -445,9 +452,9 @@ export interface AmqpRecoveryOptions {
  *   ("not connected"), and a new `connect()` starts from a clean state —
  *   re-subscribe explicitly.
  * - `setup-failed` reports a topology/setup failure with `initial: true` for
- *   the startup window (`attempt: 0` on the probe; the 0-based attempt index
- *   in the bounded initial phase) or `initial: false` for a reconnect
- *   re-assert (`attempt` >= 1).
+ *   the startup window (`attempt: 0` on the probe; the 0-based index of the
+ *   failed attempt under `initialConnectMaxRetries`) or `initial: false` for
+ *   a reconnect re-assert (`attempt` >= 1).
  * - `blocked`/`unblocked` surface broker flow control (RabbitMQ
  *   `connection.blocked`, e.g. under a memory/disk alarm); they have no flat
  *   callback equivalent.
@@ -457,10 +464,10 @@ export interface AmqpRecoveryOptions {
  * before the lifecycle wiring can attach, so its per-retry events are not
  * surfaced; the startup probe covers the deterministic-misconfiguration case
  * (`setup-failed { initial: true }`). Set
- * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (since 1.3.0) to make
- * the adapter own that window — its bounded phase surfaces per-attempt
- * `reconnecting`/`setup-failed` events and a terminal `reconnect-failed` on
- * budget exhaustion.
+ * {@link AmqpRecoveryOptions.initialConnectMaxRetries} (since 1.3.0) to bound
+ * that window: the wiring is then attached before the first attempt, so it
+ * reports per-attempt `reconnecting`/`setup-failed` events and a terminal
+ * `reconnect-failed` on budget exhaustion.
  *
  * The `type` values are deliberately broker-agnostic so a future
  * cross-adapter generalization stays non-breaking.
@@ -531,7 +538,9 @@ export interface AmqpLifecycleCallbacks {
      * enables the startup validation probe: one extra short-lived connection
      * plus a topology validation pass at `connect()` (requires recovery
      * enabled), so `setup-failed { initial: true }` can be delivered for a
-     * deterministic misconfiguration at boot.
+     * deterministic misconfiguration at boot. With
+     * {@link AmqpRecoveryOptions.initialConnectMaxRetries} no probe runs: the
+     * initial attempts themselves report their setup failures.
      */
     readonly onLifecycle?: (event: AmqpLifecycleEvent) => void;
     /** @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "connected"`). Kept until at least 2.0. */
@@ -554,14 +563,15 @@ export interface AmqpLifecycleCallbacks {
     /**
      * A setup/topology failure occurred while (re)applying the declarative
      * topology — during the startup window (`ctx.initial: true`; `ctx.attempt`
-     * is 0 on the probe, or the 0-based attempt index in the bounded initial
-     * phase) and/or on a reconnect whose topology re-assert fails
-     * (`ctx.initial: false`, `ctx.attempt` ≥ 1).
+     * is 0 on the probe, or the 0-based index of the failed attempt under
+     * `initialConnectMaxRetries`) and/or on a reconnect whose topology
+     * re-assert fails (`ctx.initial: false`, `ctx.attempt` ≥ 1).
      *
      * This surfaces deterministic configuration drift (e.g. a missing queue in
      * `check` mode, or a `PRECONDITION_FAILED` redeclare) distinctly from a mere
-     * broker outage, even when fail-fast is off. The initial-connect invocation
-     * requires a startup validation probe, which runs when either this callback,
+     * broker outage, even when fail-fast is off. Without
+     * `initialConnectMaxRetries`, the initial-connect invocation requires a
+     * startup validation probe, which runs when either this callback,
      * {@link onLifecycle}, or {@link AmqpAdapterOptions.failFastOnInitialSetupError} is set.
      *
      * @deprecated Since 1.3.0 — use {@link onLifecycle} (`type: "setup-failed"`). Kept until at least 2.0.
