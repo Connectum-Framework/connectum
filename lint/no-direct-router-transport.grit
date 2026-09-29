@@ -1,0 +1,29 @@
+// Bans every reference to `createRouterTransport` from `@connectrpc/connect`
+// in package sources outside the two files allowed by `biome.json`.
+//
+// Why: a router transport built directly over a service router dispatches
+// calls straight to the handlers. It does not run the interceptors that
+// `createServer({ interceptors })` configures, so authentication,
+// authorization and validation would silently not apply to such calls.
+// `createLocalTransport` in `@connectum/core` is the one place that builds
+// the in-process transport, and it wires the server interceptor chain in.
+//
+// The pattern matches the identifier itself, so it catches a named import,
+// a direct call, a namespace member call (`connect.createRouterTransport`)
+// and a dynamic-import member (`(await import(...)).createRouterTransport`).
+// An aliased import (`createRouterTransport as x`) is a separate syntax node
+// and needs its own branch. Comments and string literals are not matched.
+//
+// Scope lives in the `includes` of the plugin entry in `biome.json`. Those
+// globs must start with `**/`: with Biome 2.5 a glob such as
+// `packages/*/src/**` never matched, neither from the repository root nor
+// from a package directory, so the rule silently ran nowhere.
+// `lint/no-direct-router-transport.test.mjs` pins that the rule fires.
+language js
+
+or {
+    `createRouterTransport as $alias`,
+    `createRouterTransport`
+} as $hit where {
+    register_diagnostic(span=$hit, message="Do not use createRouterTransport directly: it bypasses the server interceptor chain (authentication, authorization, validation). Use createLocalTransport from @connectum/core.", severity="error")
+}

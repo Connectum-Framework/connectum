@@ -47,6 +47,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # The custom Biome plugins fail silently (they just match nothing) when
+      # their include globs or patterns drift; this proves they still fire.
+      - name: Validate custom lint rules
+        run: pnpm lint:rules
+
       - name: Validate release workflow contract
         run: pnpm release:contract
 

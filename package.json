@@ -22,6 +22,7 @@
     "test:esbuild": "turbo run test:esbuild",
     "test:cross-runtime": "turbo run test test:bun test:esbuild",
     "lint": "turbo run lint",
+    "lint:rules": "node --test lint/*.test.mjs",
     "format": "turbo run format",
     "biome": "biome check --write .",
     "scaffold:check": "node scripts/scaffold-check.mjs",

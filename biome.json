@@ -56,6 +56,12 @@
       }
     }
   },
+  "plugins": [
+    {
+      "path": "./lint/no-direct-router-transport.grit",
+      "includes": ["**/packages/*/src/**/*.ts", "!**/packages/core/src/localTransport.ts", "!**/packages/testing/src/mockResolver.ts"]
+    }
+  ],
   "vcs": {
     "enabled": true,
     "clientKind": "git",
