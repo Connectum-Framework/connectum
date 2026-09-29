@@ -216,10 +216,15 @@ describe("TransportManager shutdown with clients that never close", () => {
     // case is the shutdown timeout with forceCloseOnTimeout: false, where the
     // transport is disposed while the server still completes handshakes of
     // connections it accepted — a session born then must not serve requests
-    // after stop().
-    for (const disposedFirst of [false, true]) {
-        const when = disposedFirst ? "after close() and dispose()" : "after close()";
-        it(`a TLS session that completes its handshake ${when} still receives GOAWAY`, async () => {
+    // after stop(). The third case starts a new server on the same manager
+    // while the old one is still draining: that must not reopen the old one.
+    const lateSessionCases = [
+        { when: "after close()", dispose: false, relisten: false },
+        { when: "after close() and dispose()", dispose: true, relisten: false },
+        { when: "after close() while the same manager listens again", dispose: true, relisten: true },
+    ] as const;
+    for (const scenario of lateSessionCases) {
+        it(`a TLS session that completes its handshake ${scenario.when} still receives GOAWAY`, async () => {
             await listenTracked({ handler: noopHandler, config: { tls, port: 0, host: "127.0.0.1" } });
             const raw = connect({ port: transport.address?.port ?? 0, host: "127.0.0.1", allowHalfOpen: true });
             raw.on("error", () => {});
@@ -229,8 +234,12 @@ describe("TransportManager shutdown with clients that never close", () => {
 
             const closing = transport.close();
             closing.catch(() => {});
-            if (disposedFirst) {
+            if (scenario.dispose) {
                 transport.dispose();
+            }
+            if (scenario.relisten) {
+                await transport.listen(noopHandler, { tls, port: 0, host: "127.0.0.1" });
+                servers.push(transport.server as unknown as NetServer);
             }
 
             const secure = connectTls({ socket: raw, ALPNProtocols: ["h2"], ca: trustedCert, servername: "localhost" });

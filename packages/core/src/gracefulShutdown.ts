@@ -31,7 +31,9 @@ export interface GracefulShutdownOptions {
  * Steps 4 and 5 run even when closing the transport fails: hooks release the
  * application's own resources (brokers, databases), and skipping them because
  * the listener could not close cleanly would leak exactly what the shutdown
- * exists to release. The close error is re-thrown afterwards.
+ * exists to release. Step 5 also runs when a hook fails. Errors are re-thrown
+ * afterwards — the close error, the hook error, or an `AggregateError` with
+ * both.
  *
  * @param transport - The transport manager to close
  * @param shutdownManager - The shutdown hook manager
@@ -77,12 +79,28 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
         }
     }
 
-    // Phase 4: Execute shutdown hooks (even after timeout -- hooks should be fast)
-    await shutdownManager.executeAll();
+    // Phase 4: Execute shutdown hooks (even after timeout -- hooks should be fast).
+    // Disposal must not depend on the hooks succeeding either.
+    let hooksFailed = false;
+    let hooksError: unknown;
+    try {
+        await shutdownManager.executeAll();
+    } catch (err) {
+        hooksFailed = true;
+        hooksError = err;
+    } finally {
+        transport.dispose();
+    }
 
-    transport.dispose();
-
+    // Report every failure: when both steps failed, neither error may hide
+    // the other.
+    if (closeFailed && hooksFailed) {
+        throw new AggregateError([closeError, hooksError], "Shutdown failed: the transport did not close and a shutdown hook failed");
+    }
     if (closeFailed) {
         throw closeError;
+    }
+    if (hooksFailed) {
+        throw hooksError;
     }
 }

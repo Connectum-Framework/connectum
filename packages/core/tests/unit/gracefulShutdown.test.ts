@@ -374,6 +374,28 @@ describe("performGracefulShutdown()", () => {
                 () => performGracefulShutdown(transport, shutdownManager, defaultOptions),
                 { message: "hook explosion" },
             );
+            // A failing hook must not leave the transport state behind.
+            assert.strictEqual(mockCallCount(transport.dispose), 1, "transport must be disposed even when a hook fails");
+        });
+
+        // When both the transport close and a hook fail, the caller must see
+        // both errors — reporting only one would hide the other failure.
+        it("should report both errors when transport.close() and a hook fail", async () => {
+            const closeError = new Error("close failed");
+            const hookError = new Error("hook explosion");
+            const transport = createMockTransport({ closeError });
+            const shutdownManager = {
+                executeAll: mock.fn(async () => {
+                    throw hookError;
+                }),
+                addHook: mock.fn(),
+            } as unknown as ShutdownManager & { executeAll: ReturnType<typeof mock.fn> };
+
+            await assert.rejects(
+                () => performGracefulShutdown(transport, shutdownManager, defaultOptions),
+                (err: unknown) => err instanceof AggregateError && err.errors[0] === closeError && err.errors[1] === hookError,
+            );
+            assert.strictEqual(mockCallCount(transport.dispose), 1, "transport must be disposed even when both steps fail");
         });
     });
 
