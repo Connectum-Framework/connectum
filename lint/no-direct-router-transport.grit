@@ -23,7 +23,8 @@ language js
 
 or {
     `createRouterTransport as $alias`,
-    `createRouterTransport`
+    `createRouterTransport`,
+    `$object["createRouterTransport"]`
 } as $hit where {
     register_diagnostic(span=$hit, message="Do not use createRouterTransport directly: it bypasses the server interceptor chain (authentication, authorization, validation). Use createLocalTransport from @connectum/core.", severity="error")
 }

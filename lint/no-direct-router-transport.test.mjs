@@ -39,17 +39,20 @@ const VIOLATING_SOURCE = [
     "export const viaDirectCall = createRouterTransport(() => {});",
     'export const inString = "createRouterTransport";',
     'export const viaDynamicImport = async () => (await import("@connectrpc/connect")).createRouterTransport(() => {});',
+    'export const viaComputedMember = connect["createRouterTransport"](() => {});',
+    "export const viaComputedMemberSingleQuoted = connect['createRouterTransport'](() => {});",
     "debugger;",
     "",
 ].join("\n");
 
 /**
  * Lines of {@link VIOLATING_SOURCE} that must carry a plugin diagnostic: the
- * named import, the aliased import, the namespace member, the direct call and
- * the dynamic-import member. The comment (1), the call through the alias (6,
- * already caught at its import) and the string literal (8) must not.
+ * named import, the aliased import, the namespace member, the direct call, the
+ * dynamic-import member and the computed member access with a double- and a
+ * single-quoted string key. The comment (1), the call through the alias (6,
+ * already caught at its import) and the plain string literal (8) must not.
  */
-const EXPECTED_VIOLATION_LINES = [3, 4, 5, 7, 9];
+const EXPECTED_VIOLATION_LINES = [3, 4, 5, 7, 9, 10, 11];
 
 const ALLOWED_SOURCE = ['import { createRouterTransport } from "@connectrpc/connect";', "export const transport = createRouterTransport(() => {});", "debugger;", ""].join("\n");
 
