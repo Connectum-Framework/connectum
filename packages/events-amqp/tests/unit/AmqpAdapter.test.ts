@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import type amqp from "amqplib";
 import {
     AmqpAdapter,
+    buildRecoveryConnectOptions,
     classifyConfirmError,
     computeRecoveryDelay,
     dispatchLifecycle,
@@ -12,6 +13,7 @@ import {
     isBrokerClosedCurrentChannel,
     isConnectionLostError,
     isDeterministicTopologyDrift,
+    normalizeInitialConnectBudget,
     resolveDisconnectCause,
     toAmqpPattern,
     trackChannelClose,
@@ -194,6 +196,90 @@ describe("AmqpAdapter connection guard", () => {
     });
 });
 
+describe("initialConnectMaxRetries normalization", () => {
+    it("a finite value becomes max(0, floor(n)); anything that is not a finite number is unset", () => {
+        assert.equal(normalizeInitialConnectBudget(-3), 0);
+        assert.equal(normalizeInitialConnectBudget(0), 0);
+        assert.equal(normalizeInitialConnectBudget(2), 2);
+        assert.equal(normalizeInitialConnectBudget(2.7), 2);
+        assert.equal(normalizeInitialConnectBudget(Number.POSITIVE_INFINITY), null);
+        assert.equal(normalizeInitialConnectBudget(Number.NaN), null);
+        assert.equal(normalizeInitialConnectBudget("2"), null);
+        assert.equal(normalizeInitialConnectBudget(undefined), null);
+    });
+
+    it("forwards the budget to amqplib as initialMaxRetries with waitForConnect: false, and neither key when unset", () => {
+        const setup = async (): Promise<void> => undefined;
+        const recovery = { initialDelay: 10, maxDelay: 20, factor: 3, jitter: 0.1, maxRetries: 7 };
+
+        assert.deepEqual(buildRecoveryConnectOptions({ recovery, setup, initialBudget: 2 }), {
+            initialDelay: 10,
+            maxDelay: 20,
+            factor: 3,
+            jitter: 0.1,
+            maxRetries: 7,
+            setup,
+            initialMaxRetries: 2,
+            waitForConnect: false,
+        });
+
+        const unset = buildRecoveryConnectOptions({ recovery, setup, initialBudget: null });
+        assert.equal(Object.hasOwn(unset, "initialMaxRetries"), false);
+        assert.equal(Object.hasOwn(unset, "waitForConnect"), false, "amqplib keeps resolving connect() only after the first success");
+    });
+
+    /**
+     * The normalization table observed end to end. Port 1 on loopback has no
+     * listener, so every attempt is refused at once — no broker needed.
+     * Attempts = scheduled retries + 1.
+     */
+    async function attemptsFor(initialConnectMaxRetries: number): Promise<{ attempts: number; error: unknown }> {
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url: "amqp://127.0.0.1:1",
+            recovery: { initialDelay: 1, maxDelay: 2, jitter: 0, maxRetries: 1, initialConnectMaxRetries },
+            lifecycle: {
+                onLifecycle: (event) => {
+                    if (event.type === "reconnecting") {
+                        retries.push(event.attempt);
+                    }
+                },
+            },
+        });
+        try {
+            await adapter.connect();
+            return { attempts: retries.length + 1, error: null };
+        } catch (error) {
+            return { attempts: retries.length + 1, error };
+        } finally {
+            await adapter.disconnect();
+        }
+    }
+
+    it("-3, 0, 2 and 2.7 give 1, 1, 3 and 3 attempts before connect() rejects", async () => {
+        for (const [value, expected] of [
+            [-3, 1],
+            [0, 1],
+            [2, 3],
+            [2.7, 3],
+        ] as const) {
+            const { attempts, error } = await attemptsFor(value);
+            assert.equal(attempts, expected, `initialConnectMaxRetries: ${value}`);
+            assert.ok(error instanceof AmqpConnectionError, `initialConnectMaxRetries: ${value} rejects typed`);
+            assert.equal(error.message, `Initial connect failed after ${expected} attempt(s) (initialConnectMaxRetries: ${expected - 1})`);
+        }
+    });
+
+    it("Infinity and NaN behave exactly as the option unset: maxRetries bounds the initial connect and no retry is reported", async () => {
+        for (const value of [Number.POSITIVE_INFINITY, Number.NaN]) {
+            const { attempts, error } = await attemptsFor(value);
+            assert.ok(error instanceof AmqpConnectionError, `initialConnectMaxRetries: ${value} rejects typed`);
+            assert.equal(error.message, "Initial connect failed: recovery gave up (maxRetries: 1)", `initialConnectMaxRetries: ${value} takes the unset path`);
+            assert.equal(attempts, 1, `initialConnectMaxRetries: ${value} reports no initial-window retry, as unset`);
+        }
+    });
+});
+
 describe("AmqpAdapter publisher options", () => {
     it("should construct with publisher options", () => {
         const adapter = AmqpAdapter({
@@ -333,11 +419,15 @@ describe("trackChannelClose", () => {
 });
 
 describe("wireRecoveryLifecycle", () => {
-    function setup(lifecycle: AmqpLifecycleCallbacks, opts?: { fatalGate?: (err: Error) => boolean; isClosing?: () => boolean }) {
+    function setup(
+        lifecycle: AmqpLifecycleCallbacks,
+        opts?: { fatalGate?: (err: Error) => boolean; isClosing?: () => boolean; isInitialWindow?: () => boolean; initialFailFastGate?: (err: Error) => boolean },
+    ) {
         const ee = new EventEmitter();
         let attempt = 0;
+        let initialAttempts = 0;
         let connectedDelivered = false;
-        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0, enterFatalState: 0, markCycleDead: 0 };
+        const calls = { clearPublishChannel: 0, failPendingReturns: 0, reset: 0, enterFatalState: 0, markCycleDead: 0, stopInitialConnect: [] as Error[] };
         wireRecoveryLifecycle(ee, lifecycle, {
             clearPublishChannel: () => {
                 calls.clearPublishChannel += 1;
@@ -368,9 +458,69 @@ describe("wireRecoveryLifecycle", () => {
                 calls.markCycleDead += 1;
             },
             isClosing: opts?.isClosing ?? (() => false),
+            isInitialWindow: opts?.isInitialWindow ?? (() => false),
+            nextInitialAttempt: () => {
+                initialAttempts += 1;
+                return initialAttempts - 1;
+            },
+            initialFailFastGate: opts?.initialFailFastGate ?? (() => false),
+            stopInitialConnect: (err) => {
+                calls.stopInitialConnect.push(err);
+            },
         });
         return { ee, calls };
     }
+
+    it("initial window: a setup failure reports setup-failed{initial:true} with the 0-based attempt index, and the retry reports reconnecting", () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const { ee, calls } = setup({ onLifecycle: (event) => events.push(event) }, { isInitialWindow: () => true });
+        const topoErr = new AmqpTopologyError("Topology check failed: NOT_FOUND");
+
+        ee.emit("connect-failed", topoErr);
+        ee.emit("reconnect-scheduled", { attempt: 1, delay: 50, error: topoErr });
+        ee.emit("connect-failed", new Error("ECONNREFUSED"));
+        ee.emit("connect-failed", topoErr);
+
+        assert.deepEqual(events, [
+            { type: "setup-failed", initial: true, attempt: 0, error: topoErr },
+            { type: "reconnecting", attempt: 1, delay: 50, error: topoErr },
+            { type: "setup-failed", initial: true, attempt: 2, error: topoErr },
+        ]);
+        assert.equal(calls.clearPublishChannel, 3, "a failed attempt leaves no half-open publish channel behind");
+    });
+
+    it("initial window: the steady-state fatal topology gate does not act, the startup fail-fast gate does", () => {
+        const events: string[] = [];
+        const codeErr = Object.assign(new Error("NOT_FOUND - no queue 'q'"), { code: 404 });
+        const topoErr = new AmqpTopologyError("Topology check failed: NOT_FOUND", { cause: codeErr });
+
+        const noFailFast = setup({ onLifecycle: (event) => events.push(event.type) }, { isInitialWindow: () => true, fatalGate: () => true });
+        noFailFast.ee.emit("connect-failed", topoErr);
+        assert.equal(noFailFast.calls.enterFatalState, 0, "treatTopologyErrorAsFatal governs steady-state recovery only");
+        assert.deepEqual(noFailFast.calls.stopInitialConnect, []);
+        assert.deepEqual(events, ["setup-failed"], "no terminal event from the steady-state gate");
+
+        const failFast = setup({}, { isInitialWindow: () => true, initialFailFastGate: (err) => err instanceof AmqpTopologyError });
+        failFast.ee.emit("connect-failed", topoErr);
+        assert.deepEqual(failFast.calls.stopInitialConnect, [topoErr], "the startup fail-fast stops the initial connect with the setup error");
+        assert.equal(failFast.calls.enterFatalState, 0);
+    });
+
+    it("initial window: after disconnect() started, a late failure and its retry are not reported and touch no adapter state", () => {
+        const events: string[] = [];
+        const topoErr = new AmqpTopologyError("Topology declaration failed: channel closed");
+        const { ee, calls } = setup(
+            { onLifecycle: (event) => events.push(event.type) },
+            { isInitialWindow: () => true, isClosing: () => true, initialFailFastGate: () => true },
+        );
+
+        ee.emit("connect-failed", topoErr);
+        ee.emit("reconnect-scheduled", { attempt: 1, delay: 50, error: topoErr });
+
+        assert.deepEqual(events, []);
+        assert.equal(calls.clearPublishChannel, 0, "a newer connection's publish channel must not be cleared by a stale failure");
+        assert.deepEqual(calls.stopInitialConnect, []);
+    });
 
     it("fires onReconnecting exactly once per failed attempt (connect-failed + reconnect-scheduled pair)", () => {
         const reconnecting: Array<{ attempt: number; delay: number }> = [];
