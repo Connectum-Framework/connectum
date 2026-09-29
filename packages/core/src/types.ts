@@ -77,6 +77,12 @@ export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
  * `ctx.call`). One-time work therefore belongs in `setup`, which runs once per
  * server, while `register` runs once per router and must only add routes.
  *
+ * A registration object belongs to one server. `setup` may keep per-server
+ * state in it (the service list below, reflection's descriptor set), so the
+ * same object passed to a second server is re-initialized by that server's
+ * `setup`, and the first server's later routers serve the second server's
+ * data. Call the protocol factory once per server.
+ *
  * @example
  * ```typescript
  * function myProtocol(): ProtocolRegistration {

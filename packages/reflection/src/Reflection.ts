@@ -24,6 +24,10 @@ import { collectFileProtos } from "./utils.ts";
  * Returns a ProtocolRegistration that implements gRPC Server Reflection
  * Protocol (v1 + v1alpha). Pass it to createServer({ protocols: [...] }).
  *
+ * The returned registration holds the descriptor set of the server it was
+ * set up for, so each server needs its own `Reflection()` call: a shared
+ * instance would list the services of whichever server ran `setup` last.
+ *
  * @returns ProtocolRegistration for server reflection
  *
  * @example
