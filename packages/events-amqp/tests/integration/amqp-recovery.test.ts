@@ -49,6 +49,27 @@ async function waitFor(cond: () => boolean, timeoutMs = 20_000): Promise<void> {
     }
 }
 
+/**
+ * Settle `promise` or fail after `ms`. node:test has no default per-test
+ * timeout, so a promise that never settles (a subscribe() against a dead
+ * recovery cycle, a recovery that falls back instead of giving up) would hang
+ * the whole run — the bound turns that hang into a readable assertion failure.
+ */
+async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
+    });
+    try {
+        return await Promise.race([promise, expired]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/** Nothing listens on port 1 of the loopback: every connection attempt is refused at once. */
+const UNREACHABLE_URL = "amqp://guest:guest@127.0.0.1:1";
+
 describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN_RECOVERY_TESTS != 1", concurrency: 1 }, () => {
     let container: StartedTestContainer;
     let url: string;
@@ -64,6 +85,28 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         const res = await container.exec(["rabbitmqctl", "close_all_connections", "test-drop"]);
         if (res.exitCode !== 0) {
             throw new Error(`close_all_connections failed (${res.exitCode}): ${res.output}`);
+        }
+    }
+
+    /**
+     * Bring the broker app back and wait until it accepts AMQP connections.
+     * The container is shared by every test in this file: leaving the app
+     * stopped (or half-started) would fail all later tests in cascade.
+     */
+    async function restoreBrokerApp(): Promise<void> {
+        await container.exec(["rabbitmqctl", "start_app"]);
+        const deadline = Date.now() + 60_000;
+        for (;;) {
+            try {
+                const probe = await connect(url);
+                await probe.close();
+                return;
+            } catch (err) {
+                if (Date.now() > deadline) {
+                    throw err;
+                }
+                await sleep(200);
+            }
         }
     }
 
@@ -987,34 +1030,171 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
+    /**
+     * Raw amqplib, no adapter: the recovery behaviors of amqplib 2.2.0 that the
+     * adapter's backoff hook and bounded initial connect are built on. If a
+     * later amqplib changes any of them, these fail first and point at the
+     * library, not at the adapter.
+     */
+    describe("amqplib recovery contract the adapter relies on", () => {
+        type RawEvent = { type: "connect-failed" | "reconnect-scheduled" | "reconnect-failed" | "connect"; attempt?: number; error?: Error };
+
+        function recordRawEvents(model: EventEmitter): RawEvent[] {
+            const events: RawEvent[] = [];
+            model.on("connect-failed", (error: Error) => events.push({ type: "connect-failed", error }));
+            model.on("reconnect-scheduled", (info: { attempt: number; error: Error }) => events.push({ type: "reconnect-scheduled", attempt: info.attempt, error: info.error }));
+            model.on("reconnect-failed", (error: Error) => events.push({ type: "reconnect-failed", error }));
+            model.on("connect", () => events.push({ type: "connect" }));
+            // A recovering wrapper re-emits connection errors; without a listener they would crash the run.
+            model.on("error", () => undefined);
+            return events;
+        }
+
+        it("a throwing calculateDelay gives up recovery: connect() rejects with the thrown error itself", { timeout: 20_000 }, async () => {
+            const boom = new Error("boom");
+            let calls = 0;
+            const connecting = connect(UNREACHABLE_URL, {
+                recovery: {
+                    calculateDelay: () => {
+                        calls += 1;
+                        throw boom;
+                    },
+                },
+            });
+            connecting.catch(() => undefined);
+            // A fallback to the built-in delay would keep retrying forever under
+            // the default maxRetries, so connect() would never settle.
+            await assert.rejects(
+                () => settleWithin(connecting, 5_000),
+                (err: unknown) => err === boom,
+            );
+            await sleep(300);
+            assert.equal(calls, 1, "the hook is consulted once and not again after the give-up");
+        });
+
+        it("a throwing calculateDelay: exactly one failed attempt, no retry scheduled, one reconnect-failed carrying the thrown error", { timeout: 20_000 }, async () => {
+            const boom = new Error("boom");
+            let calls = 0;
+            const model = await connect(UNREACHABLE_URL, {
+                recovery: {
+                    waitForConnect: false,
+                    calculateDelay: () => {
+                        calls += 1;
+                        throw boom;
+                    },
+                },
+            });
+            const events = recordRawEvents(model);
+            try {
+                await assert.rejects(
+                    () => settleWithin(model.waitForConnect(), 5_000),
+                    (err: unknown) => err === boom,
+                );
+                // Settle window: a second attempt would need a scheduled retry first.
+                await sleep(500);
+                assert.deepEqual(
+                    events.map((e) => e.type),
+                    ["connect-failed", "reconnect-failed"],
+                    "one failed attempt, no reconnect-scheduled, then the give-up",
+                );
+                assert.equal(events[1]?.error, boom, "reconnect-failed carries the hook's error, not the connection error");
+                assert.equal(calls, 1);
+            } finally {
+                await model.close();
+            }
+        });
+
+        it("a calculateDelay returning a Promise gives up with the 'finite, non-negative number' error — the Promise is not awaited", { timeout: 20_000 }, async () => {
+            let calls = 0;
+            const model = await connect(UNREACHABLE_URL, {
+                recovery: {
+                    waitForConnect: false,
+                    // A resolved Promise: had amqplib awaited it, the retry would be scheduled after 100 ms.
+                    calculateDelay: () => {
+                        calls += 1;
+                        return Promise.resolve(100) as unknown as number;
+                    },
+                },
+            });
+            const events = recordRawEvents(model);
+            try {
+                await assert.rejects(
+                    () => settleWithin(model.waitForConnect(), 5_000),
+                    (err: unknown) => err instanceof Error && /finite, non-negative number/.test(err.message),
+                );
+                await sleep(500);
+                assert.deepEqual(
+                    events.map((e) => e.type),
+                    ["connect-failed", "reconnect-failed"],
+                );
+                assert.equal(calls, 1, "no second attempt after the give-up");
+            } finally {
+                await model.close();
+            }
+        });
+
+        it("initialMaxRetries bounds only the first connect: 1 retry = 2 attempts, then give-up, although maxRetries is Infinity", { timeout: 20_000 }, async () => {
+            const model = await connect(UNREACHABLE_URL, {
+                recovery: { waitForConnect: false, initialMaxRetries: 1, maxRetries: Number.POSITIVE_INFINITY, initialDelay: 50, maxDelay: 100 },
+            });
+            const events = recordRawEvents(model);
+            try {
+                await assert.rejects(() => settleWithin(model.waitForConnect(), 5_000));
+                await sleep(500);
+                assert.deepEqual(
+                    events.map((e) => e.type),
+                    ["connect-failed", "reconnect-scheduled", "connect-failed", "reconnect-failed"],
+                );
+                assert.equal(events[3]?.error, events[2]?.error, "the give-up reports the last attempt's error unchanged");
+            } finally {
+                await model.close();
+            }
+        });
+
+        it("initialMaxRetries stops applying after the first success: a later outage retries beyond it under maxRetries", { timeout: 90_000 }, async () => {
+            const model = await connect(url, {
+                recovery: { waitForConnect: false, initialMaxRetries: 1, maxRetries: Number.POSITIVE_INFINITY, initialDelay: 100, maxDelay: 200 },
+            });
+            const events = recordRawEvents(model);
+            try {
+                await settleWithin(model.waitForConnect(), 20_000);
+                const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+                assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+                // The initial budget of 1 would give up after the second attempt; the
+                // steady-state budget (Infinity) keeps going.
+                await waitFor(() => events.some((e) => e.type === "reconnect-scheduled" && (e.attempt ?? 0) >= 3), 30_000);
+                assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 0, "no give-up under the steady-state budget");
+                await restoreBrokerApp();
+                await waitFor(() => events.filter((e) => e.type === "connect").length >= 2, 30_000);
+            } finally {
+                await restoreBrokerApp();
+                await model.close();
+            }
+        });
+
+        it("waitForConnect: false resolves before the first attempt: listeners attached afterwards see the first connect-failed and reconnect-scheduled", { timeout: 20_000 }, async () => {
+            const model = await connect(UNREACHABLE_URL, {
+                recovery: { waitForConnect: false, initialMaxRetries: 1, initialDelay: 50, maxDelay: 100 },
+            });
+            // Attached synchronously after connect() resolved — the adapter's
+            // lifecycle wiring does exactly this.
+            const events = recordRawEvents(model);
+            try {
+                await assert.rejects(() => settleWithin(model.waitForConnect(), 5_000));
+                assert.equal(events[0]?.type, "connect-failed", "the first attempt's failure is observed");
+                assert.deepEqual(events[1], { type: "reconnect-scheduled", attempt: 1, error: events[0]?.error }, "the first scheduled retry is observed");
+            } finally {
+                await model.close();
+            }
+        });
+    });
+
     describe("recovery give-up (retry budget exhausted)", () => {
         // A small finite budget with short delays: once the broker app is down
         // every reconnect attempt is refused, so amqplib gives up within about
         // a second. The same budget also bounds amqplib's initial connect, which
         // is why the broker must be fully back before any later connect().
         const GIVE_UP_RECOVERY = { initialDelay: 100, maxDelay: 200, maxRetries: 2 } as const;
-
-        /**
-         * Bring the broker app back and wait until it accepts AMQP connections.
-         * The container is shared by every test in this file: leaving the app
-         * stopped (or half-started) would fail all later tests in cascade.
-         */
-        async function restoreBrokerApp(): Promise<void> {
-            await container.exec(["rabbitmqctl", "start_app"]);
-            const deadline = Date.now() + 60_000;
-            for (;;) {
-                try {
-                    const probe = await connect(url);
-                    await probe.close();
-                    return;
-                } catch (err) {
-                    if (Date.now() > deadline) {
-                        throw err;
-                    }
-                    await sleep(200);
-                }
-            }
-        }
 
         /** Stop the broker app and wait until the adapter reports that recovery gave up. */
         async function driveToGiveUp(events: ReadonlyArray<{ type: string }>): Promise<void> {
@@ -1024,23 +1204,6 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             // Settle window: a second terminal event or a further retry would land here.
             await sleep(300);
             assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 1, "recovery give-up is reported exactly once");
-        }
-
-        /**
-         * Settle `promise` or fail after `ms`. node:test has no default per-test
-         * timeout, and a subscribe() against a dead recovery cycle used to wait
-         * forever — the bound turns that hang into a readable assertion failure.
-         */
-        async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T> {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const expired = new Promise<never>((_resolve, reject) => {
-                timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
-            });
-            try {
-                return await Promise.race([promise, expired]);
-            } finally {
-                clearTimeout(timer);
-            }
         }
 
         const isNotConnectedError = (err: unknown): boolean => err instanceof AmqpConnectionError && /not connected/.test(err.message);
