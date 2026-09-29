@@ -164,6 +164,30 @@ describe("AmqpAdapter connection guard", () => {
         await adapter.disconnect();
         await adapter.disconnect();
     });
+
+    // With a finite maxRetries and no initialConnectMaxRetries, amqplib's own
+    // initial loop gives up and rejects connect() with its raw last error
+    // (ECONNREFUSED, ...). The public boundary must keep the typed taxonomy,
+    // with the original error preserved as the cause. Port 1 on loopback has
+    // no listener, so every attempt is refused at once — no broker needed.
+    it("rejects connect() with a typed AmqpConnectionError when recovery gives up on the initial connect", async () => {
+        const adapter = AmqpAdapter({
+            url: "amqp://127.0.0.1:1",
+            recovery: { maxRetries: 1, initialDelay: 10, maxDelay: 20 },
+        });
+        try {
+            await assert.rejects(
+                () => adapter.connect(),
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                    assert.ok(err.cause instanceof Error, "the original connection error is kept as the cause");
+                    return true;
+                },
+            );
+        } finally {
+            await adapter.disconnect();
+        }
+    });
 });
 
 describe("AmqpAdapter publisher options", () => {

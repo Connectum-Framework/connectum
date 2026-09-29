@@ -219,7 +219,7 @@ queueOverrides: {
 | `maxDelay` | `number` | `30000` | Upper bound of every reconnect delay in ms. The base is capped at `maxDelay / (1 + jitter)`, so jitter never pushes a delay above it (saturated delays lie in `[20000, 30000]` at the defaults) |
 | `factor` | `number` | `2` | Exponential backoff factor |
 | `jitter` | `number` | `0.2` | Symmetric jitter factor (0..1): the delay is drawn uniformly from `[base × (1 − jitter), base × (1 + jitter)]` around the capped base |
-| `maxRetries` | `number` | `Infinity` | Attempts per series before giving up. Governs **both** the initial connect and each later recovery series; the counter resets on every success. To bound only startup, use `initialConnectMaxRetries` |
+| `maxRetries` | `number` | `Infinity` | Attempts per series before giving up. Governs **both** the initial connect and each later recovery series; the counter resets on every success. A finite value exhausted on the initial connect rejects `connect()` with `AmqpConnectionError` (`cause`: the last connection error). To bound only startup, use `initialConnectMaxRetries` |
 | `initialConnectMaxRetries` | `number` | unset | Bound the **initial** connect independently (N retries = N+1 attempts): the adapter runs a bounded validate-connect loop with per-attempt lifecycle events (`reconnecting`, `setup-failed {initial: true}`) and rejects `connect()` typed on exhaustion (terminal `reconnect-failed`) — instead of blocking forever. Backoff uses amqplib's built-in formula. Since 1.3.0 |
 
 ### AmqpLifecycleCallbacks

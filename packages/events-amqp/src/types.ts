@@ -115,8 +115,11 @@ export interface AmqpAdapterOptions {
      * blocks until the broker is reachable rather than failing fast (see
      * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
      * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
-     * for the retry-budget scope and the delay bounds. Once a finite budget
-     * is exhausted, recovery is over for good — see the terminal
+     * for the retry-budget scope and the delay bounds. With a finite
+     * `maxRetries`, a broker still unreachable when the initial connect has
+     * used its budget rejects `connect()` with a typed `AmqpConnectionError`
+     * whose `cause` is the last connection error. Once a finite budget is
+     * exhausted, recovery is over for good — see the terminal
      * `reconnect-failed` in {@link AmqpLifecycleEvent}.
      *
      * @default true (amqplib defaults: 100ms initial, ×2, 30s cap, jitter 0.2, infinite retries)

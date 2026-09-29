@@ -1121,7 +1121,23 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 throw new AmqpConnectionError("Adapter closed while connect() was in progress");
             }
 
-            const conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
+            let conn: amqp.ChannelModel;
+            try {
+                conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
+            } catch (err) {
+                // With recovery, a rejection here means amqplib's initial loop
+                // gave up (finite maxRetries without initialConnectMaxRetries):
+                // it rejects with its raw last error (ECONNREFUSED, ...). Keep
+                // the typed taxonomy at this public boundary, with the original
+                // error as the cause; the adapter's own typed errors (e.g. a
+                // topology error from setup) pass through unchanged. Without
+                // recovery the raw error is left as is: that single-shot mode
+                // has always surfaced it, and callers may match on its code.
+                if (recoveryEnabled && !(err instanceof AmqpTopologyError) && !(err instanceof AmqpConnectionError)) {
+                    throw new AmqpConnectionError(`Initial connect failed: recovery gave up (maxRetries: ${String(recoveryOpts.maxRetries)})`, { cause: err });
+                }
+                throw err;
+            }
 
             // Re-check after the await: a disconnect() that landed while THIS
             // connect was in flight saw connection === null and closed nothing —
