@@ -213,7 +213,8 @@ export interface ShutdownOptions {
      * With either value `stop()` does not wait for client connections beyond
      * the timeout, but it does wait for the shutdown hooks, which the timeout
      * does not bound. It rejects if a shutdown hook fails or the transport fails
-     * to close.
+     * to close before the timeout; a close failure after the timeout is only
+     * logged.
      * @default true
      */
     forceCloseOnTimeout?: boolean;
