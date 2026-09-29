@@ -29,6 +29,7 @@ import { connect } from "amqplib";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter, isConnectionLostError } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
+import type { AmqpLifecycleEvent } from "../../src/types.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -1329,6 +1330,290 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         });
     });
 
+    describe("recovery.backoff hook", () => {
+        type Recorded = { type: string; attempt?: number; delay?: number; error?: Error; at: number };
+
+        function recorder(): { events: Recorded[]; onLifecycle: (event: AmqpLifecycleEvent) => void } {
+            const events: Recorded[] = [];
+            return {
+                events,
+                onLifecycle: (event) => {
+                    events.push({
+                        type: event.type,
+                        ...("attempt" in event ? { attempt: event.attempt } : {}),
+                        ...("delay" in event ? { delay: event.delay } : {}),
+                        ...("error" in event ? { error: event.error } : {}),
+                        at: Date.now(),
+                    });
+                },
+            };
+        }
+
+        for (const initialConnectMaxRetries of [undefined, 3]) {
+            const label = initialConnectMaxRetries === undefined ? "without initialConnectMaxRetries" : "with initialConnectMaxRetries";
+            it(`a hook that throws during the initial connect rejects connect() with AmqpConnectionError caused by the thrown error, ${label}`, { timeout: 20_000 }, async () => {
+                const boom = new Error("boom");
+                let calls = 0;
+                const { events, onLifecycle } = recorder();
+                const adapter = AmqpAdapter({
+                    url: UNREACHABLE_URL,
+                    exchange: "rec.hook.throw",
+                    recovery: {
+                        ...(initialConnectMaxRetries === undefined ? {} : { initialConnectMaxRetries }),
+                        backoff: () => {
+                            calls += 1;
+                            throw boom;
+                        },
+                    },
+                    lifecycle: { onLifecycle },
+                });
+                try {
+                    let rejection: unknown;
+                    await assert.rejects(
+                        () => settleWithin(adapter.connect(), 5_000),
+                        (err: unknown) => {
+                            rejection = err;
+                            assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                            assert.equal(err.cause, boom);
+                            assert.match(err.message, /recovery\.backoff failed at attempt 1 \(boom\)/);
+                            return true;
+                        },
+                    );
+                    await sleep(500);
+                    assert.equal(calls, 1, "no further attempt after the hook failed: no fallback to the built-in delay");
+                    if (initialConnectMaxRetries === undefined) {
+                        assert.match((rejection as Error).message, /last connection error: none observed/, "the initial window is not observable without a budget");
+                        assert.deepEqual(events, [], "the unset option keeps the initial window unreported");
+                    } else {
+                        assert.match((rejection as Error).message, /last connection error: .*ECONNREFUSED/);
+                        assert.deepEqual(
+                            events.map((e) => e.type),
+                            ["reconnect-failed"],
+                        );
+                        assert.equal(events[0]?.error, rejection, "the terminal event carries the same typed error connect() rejects with");
+                    }
+                } finally {
+                    await adapter.disconnect().catch(() => undefined);
+                }
+            });
+        }
+
+        it("a hook returning an invalid value in steady state ends recovery with one reconnect-failed carrying a typed error", { timeout: 30_000 }, async () => {
+            let calls = 0;
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.invalid",
+                recovery: {
+                    backoff: () => {
+                        calls += 1;
+                        return -1;
+                    },
+                },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                await dropConnections();
+                await waitFor(() => events.some((e) => e.type === "reconnect-failed"), 10_000);
+                await sleep(500);
+                assert.deepEqual(
+                    events.map((e) => e.type),
+                    ["connected", "disconnected", "reconnect-failed"],
+                    "no retry was scheduled and the give-up is reported once",
+                );
+                const terminal = events[2]?.error;
+                assert.ok(terminal instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(terminal)}`);
+                assert.ok(terminal.cause instanceof Error);
+                assert.match(terminal.cause.message, /finite, non-negative number of milliseconds: attempt 1 returned -1/);
+                assert.match(terminal.message, /last connection error: .*test-drop/, "the message names the connection error that started the recovery");
+                assert.equal(calls, 1);
+                await assert.rejects(
+                    () => settleWithin(adapter.subscribe(["rec.hook.invalid.evt"], async () => undefined, { group: "g" }), 5_000),
+                    (err: unknown) => err instanceof AmqpConnectionError && /not connected/.test(err.message),
+                );
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("an async hook gives up on the first retry with 'must be synchronous', and its later rejection is not unhandled", { timeout: 20_000 }, async () => {
+            const unhandled: unknown[] = [];
+            const onUnhandled = (reason: unknown): void => {
+                unhandled.push(reason);
+            };
+            process.on("unhandledRejection", onUnhandled);
+            const adapter = AmqpAdapter({
+                url: UNREACHABLE_URL,
+                exchange: "rec.hook.async",
+                recovery: {
+                    initialConnectMaxRetries: 3,
+                    backoff: (async () => {
+                        await sleep(50);
+                        throw new Error("late rejection of the hook's Promise");
+                    }) as unknown as (attempt: number) => number,
+                },
+            });
+            try {
+                await assert.rejects(
+                    () => settleWithin(adapter.connect(), 5_000),
+                    (err: unknown) => {
+                        assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                        assert.ok(err.cause instanceof Error);
+                        assert.match(err.cause.message, /must be synchronous/);
+                        return true;
+                    },
+                );
+                // Well past the Promise's own rejection.
+                await sleep(300);
+                assert.deepEqual(unhandled, []);
+            } finally {
+                process.off("unhandledRejection", onUnhandled);
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("custom schedule in steady state: reconnecting carries the hook's attempt and delay, one hook call per retry", { timeout: 60_000 }, async () => {
+            const calls: number[] = [];
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.steady",
+                recovery: {
+                    backoff: (attempt) => {
+                        calls.push(attempt);
+                        return 250 * attempt;
+                    },
+                },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+                assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+                await waitFor(() => events.filter((e) => e.type === "reconnecting").length >= 3, 30_000);
+                await restoreBrokerApp();
+                await waitFor(() => events.filter((e) => e.type === "connected").length >= 2, 30_000);
+                const reconnecting = events.filter((e) => e.type === "reconnecting");
+                assert.deepEqual(
+                    reconnecting.slice(0, 3).map((e) => [e.attempt, e.delay]),
+                    [
+                        [1, 250],
+                        [2, 500],
+                        [3, 750],
+                    ],
+                );
+                assert.deepEqual(calls, reconnecting.map((e) => e.attempt), "the hook is called once per scheduled retry and never to fill the event");
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("attempt restarts at 1 after a successful reconnect", { timeout: 60_000 }, async () => {
+            const calls: number[] = [];
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.restart",
+                recovery: {
+                    backoff: (attempt) => {
+                        calls.push(attempt);
+                        return 200;
+                    },
+                },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                // First series: the broker app is down, so the first retry fails and a second one follows.
+                const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+                assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+                await waitFor(() => calls.includes(2), 30_000);
+                await restoreBrokerApp();
+                await waitFor(() => events.filter((e) => e.type === "connected").length >= 2, 30_000);
+                const firstSeries = [...calls];
+
+                // Second series: a plain drop against a running broker.
+                await dropConnections();
+                await waitFor(() => events.filter((e) => e.type === "connected").length >= 3, 30_000);
+
+                assert.deepEqual(
+                    firstSeries,
+                    firstSeries.map((_attempt, index) => index + 1),
+                    "the first series counts 1, 2, …",
+                );
+                assert.ok(firstSeries.length >= 2);
+                assert.deepEqual(calls.slice(firstSeries.length), [1], "the series after a successful reconnect starts again at 1");
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("a return value above the default maxDelay is applied and reported unclamped", { timeout: 30_000 }, async () => {
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.unclamped",
+                recovery: { backoff: () => 45_000 },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                await dropConnections();
+                await waitFor(() => events.some((e) => e.type === "reconnecting"), 10_000);
+                assert.equal(events.find((e) => e.type === "reconnecting")?.delay, 45_000);
+                // The retry is really 45 s away: nothing reconnects within a few seconds.
+                await sleep(2_000);
+                assert.equal(events.filter((e) => e.type === "connected").length, 1);
+            } finally {
+                // disconnect() cancels the pending 45 s retry.
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("zero means an immediate retry, and recovery continues", { timeout: 30_000 }, async () => {
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.zero",
+                recovery: { backoff: () => 0 },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                await dropConnections();
+                await waitFor(() => events.filter((e) => e.type === "connected").length >= 2, 10_000);
+                assert.equal(events.find((e) => e.type === "reconnecting")?.delay, 0);
+                assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 0);
+                await adapter.publish("rec.hook.zero.evt", new Uint8Array([1]));
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("without the hook the built-in delay applies and stays within maxDelay", { timeout: 30_000 }, async () => {
+            const { events, onLifecycle } = recorder();
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.default",
+                recovery: { initialDelay: 100, maxDelay: 500 },
+                lifecycle: { onLifecycle },
+            });
+            await adapter.connect();
+            try {
+                await dropConnections();
+                await waitFor(() => events.filter((e) => e.type === "connected").length >= 2, 10_000);
+                const delay = events.find((e) => e.type === "reconnecting")?.delay;
+                // Attempt 1 of the built-in formula: 100 ms ± 20 % jitter.
+                assert.ok(delay !== undefined && delay >= 80 && delay <= 120, `built-in delay for attempt 1, got ${delay}`);
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+    });
+
     describe("recovery give-up (retry budget exhausted)", () => {
         // A small finite budget with short delays: once the broker app is down
         // every reconnect attempt is refused, so amqplib gives up within about
@@ -1864,6 +2149,67 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
                 "a socket-level cut fires onDisconnected exactly once (no error+disconnect double-fire)",
             );
         } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("recovery.backoff sets the initial-window schedule: reconnecting 1, 2, 3 with 250, 500, 750 ms, and the waits match", { timeout: 60_000 }, async () => {
+        const calls: number[] = [];
+        const events: Array<{ type: string; attempt?: number; delay?: number; at: number }> = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.hook.initial",
+            recovery: {
+                initialConnectMaxRetries: 5,
+                backoff: (attempt) => {
+                    calls.push(attempt);
+                    return 250 * attempt;
+                },
+            },
+            lifecycle: {
+                onLifecycle: (event) => {
+                    events.push({
+                        type: event.type,
+                        ...("attempt" in event ? { attempt: event.attempt } : {}),
+                        ...("delay" in event ? { delay: event.delay } : {}),
+                        at: Date.now(),
+                    });
+                },
+            },
+        });
+        // The broker is unreachable through the proxy until three retries were scheduled.
+        await proxy.setEnabled(false);
+        try {
+            const connecting = adapter.connect();
+            connecting.catch(() => undefined);
+            await waitFor(() => events.filter((e) => e.type === "reconnecting").length >= 3, 20_000);
+            await proxy.setEnabled(true);
+            await settleWithin(connecting, 20_000);
+
+            const reconnecting = events.filter((e) => e.type === "reconnecting");
+            assert.deepEqual(
+                reconnecting.slice(0, 3).map((e) => [e.attempt, e.delay]),
+                [
+                    [1, 250],
+                    [2, 500],
+                    [3, 750],
+                ],
+            );
+            // The wait is measured from a scheduled retry to the next one: it
+            // spans the delay plus one refused connection attempt through the proxy.
+            for (const index of [0, 1]) {
+                const scheduled = reconnecting[index] as { at: number; delay: number };
+                const next = reconnecting[index + 1] as { at: number };
+                const waited = next.at - scheduled.at;
+                assert.ok(waited >= scheduled.delay - 20 && waited <= scheduled.delay + 1_000, `wait after retry ${index + 1}: ${waited} ms for a ${scheduled.delay} ms delay`);
+            }
+            assert.deepEqual(calls, reconnecting.map((e) => e.attempt), "one hook call per scheduled retry");
+            assert.deepEqual(
+                events.filter((e) => e.type === "connected").map((e) => e.type),
+                ["connected"],
+            );
+        } finally {
+            await proxy.setEnabled(true);
             await adapter.disconnect().catch(() => undefined);
         }
     });
