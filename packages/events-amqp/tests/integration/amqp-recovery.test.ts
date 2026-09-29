@@ -2179,11 +2179,15 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
         });
         // The broker is unreachable through the proxy until three retries were scheduled.
         await proxy.setEnabled(false);
+        // Re-applying the proxy config drops the connections through it, so
+        // the cleanup re-enables it only if the test body did not.
+        let proxyDisabled = true;
         try {
             const connecting = adapter.connect();
             connecting.catch(() => undefined);
             await waitFor(() => events.filter((e) => e.type === "reconnecting").length >= 3, 20_000);
             await proxy.setEnabled(true);
+            proxyDisabled = false;
             await settleWithin(connecting, 20_000);
 
             const reconnecting = events.filter((e) => e.type === "reconnecting");
@@ -2209,7 +2213,9 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
                 ["connected"],
             );
         } finally {
-            await proxy.setEnabled(true);
+            if (proxyDisabled) {
+                await proxy.setEnabled(true);
+            }
             await adapter.disconnect().catch(() => undefined);
         }
     });
