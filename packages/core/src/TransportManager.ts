@@ -14,7 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer as createHttpServer } from "node:http";
 import type { Http2SecureServer, Http2Server, SecureServerOptions, ServerHttp2Session } from "node:http2";
 import { createServer as createHttp2Server, createSecureServer } from "node:http2";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import env from "env-var";
 import { readTLSCertificates } from "./TLSConfig.ts";
 import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
@@ -42,6 +42,14 @@ export class TransportManager {
     private _address: AddressInfo | null = null;
     private _isHttp2 = false;
     private readonly _sessions: Set<ServerHttp2Session> = new Set();
+    private readonly _sockets: Set<Socket> = new Set();
+    /**
+     * Closing state of the server started by the latest listen(). Each server
+     * gets its own object and its session listener keeps a reference to it,
+     * so starting a new server on this manager can never reopen an older one
+     * that is still draining.
+     */
+    private _closingState: { closing: boolean } = { closing: false };
 
     /**
      * The underlying server instance
@@ -70,6 +78,9 @@ export class TransportManager {
      */
     async listen(handler: (req: NodeRequest, res: NodeResponse) => void, config: TransportConfig): Promise<void> {
         const { tls, allowHTTP1 = true, handshakeTimeout = 30_000, http2Options } = config;
+        // A fresh server starts accepting; only close() marks it closing.
+        const closingState = { closing: false };
+        this._closingState = closingState;
 
         const port = config.port ?? env.get("PORT").default(5000).asPortNumber();
         const host = config.host ?? env.get("LISTEN").default("0.0.0.0").asString();
@@ -107,15 +118,33 @@ export class TransportManager {
             );
         }
 
-        // Track HTTP/2 sessions for force close on timeout (HTTP/2 servers only)
+        // Track HTTP/2 sessions: they get a graceful GOAWAY in close() and are
+        // destroyed on the force-close path.
         if (this._isHttp2) {
             (this._server as Http2Server | Http2SecureServer).on("session", (session: ServerHttp2Session) => {
                 this._sessions.add(session);
                 session.on("close", () => {
                     this._sessions.delete(session);
                 });
+                // A connection accepted just before close() may complete its
+                // HTTP/2 handshake afterwards; it must drain like the others.
+                if (closingState.closing) session.close();
             });
         }
+
+        // Track every accepted TCP connection, in all three modes. On the
+        // force-close path destroying the HTTP/2 session is not enough: once
+        // the session has sent GOAWAY and ended the socket, Node waits for the
+        // peer's FIN, so a client that never closes its side keeps the socket,
+        // the server and the process alive forever. HTTP/1.1 connections have
+        // no session at all. For TLS this is the raw TCP socket, which also
+        // covers connections stuck before the handshake completes.
+        this._server.on("connection", (socket: Socket) => {
+            this._sockets.add(socket);
+            socket.once("close", () => {
+                this._sockets.delete(socket);
+            });
+        });
 
         // Start listening
         await new Promise<void>((resolve, reject) => {
@@ -153,33 +182,57 @@ export class TransportManager {
     }
 
     /**
-     * Gracefully close the HTTP/2 server (sends GOAWAY, waits for in-flight requests)
+     * Gracefully close the server: stop accepting connections, send GOAWAY to
+     * every HTTP/2 session and wait until all connections are gone.
+     * In-flight streams are allowed to finish.
      */
     async close(): Promise<void> {
-        await new Promise<void>((resolve, reject) => {
+        this._closingState.closing = true;
+        const closed = new Promise<void>((resolve, reject) => {
             this._server?.close((err) => {
                 if (err) reject(err);
                 else resolve();
             });
         });
+        // Node >= 24 sends GOAWAY to open sessions from server.close() itself;
+        // Node 22 does not, so an idle keep-alive HTTP/2 client would hold the
+        // shutdown until the timeout. Calling session.close() again on a
+        // session Node has already started closing is harmless.
+        for (const session of this._sessions) {
+            session.close();
+        }
+        await closed;
     }
 
     /**
-     * Forcefully destroy all tracked HTTP/2 sessions
+     * Forcefully terminate every connection: destroy the tracked HTTP/2
+     * sessions, then the underlying TCP sockets of all transports
+     * (HTTP/2, HTTP/1.1, TLS). Used only on the shutdown-timeout path.
      */
     destroyAllSessions(): void {
         for (const session of this._sessions) {
             session.destroy();
         }
         this._sessions.clear();
+        for (const socket of this._sockets) {
+            socket.destroy();
+        }
+        this._sockets.clear();
     }
 
     /**
-     * Reset internal state (nullify server, address, clear sessions)
+     * Reset internal state (nullify server, address, clear tracked sessions and sockets)
+     *
+     * The disposed server's closing state is deliberately left as it is (its
+     * session listener holds it): with `forceCloseOnTimeout: false` the server
+     * still completes TLS handshakes of connections taken before close(), and
+     * a session completing after dispose() must still be told to go away
+     * rather than serve requests after `stop()`.
      */
     dispose(): void {
         this._server = null;
         this._address = null;
         this._sessions.clear();
+        this._sockets.clear();
     }
 }

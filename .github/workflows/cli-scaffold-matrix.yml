@@ -37,6 +37,7 @@ jobs:
   discover:
     name: discover combinations
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       combos: ${{ steps.list.outputs.combos }}
     steps:
@@ -54,6 +55,7 @@ jobs:
     name: "init ${{ matrix.combo.name }}"
     needs: discover
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

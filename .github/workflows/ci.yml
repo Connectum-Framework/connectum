@@ -13,11 +13,15 @@ concurrency:
 permissions:
   contents: read
 
+# Every job caps its runtime with timeout-minutes. Jobs finish in about two
+# minutes; without a cap a hung test (e.g. an HTTP/2 connection that never
+# closes) holds the runner for GitHub's 6-hour default before failing.
 jobs:
   # ── Lint, Typecheck, Audit (run once on dev Node) ──────────────────────
   quality:
     name: Typecheck, Lint & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -50,6 +54,7 @@ jobs:
   test-node:
     name: "Node ${{ matrix.node-version }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +88,7 @@ jobs:
   test-amqp-broker:
     name: AMQP broker integration
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       rabbitmq:
         image: rabbitmq:4-alpine
@@ -117,6 +123,7 @@ jobs:
   test-redis-broker:
     name: "Redis protocol (${{ matrix.broker.name }})"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -157,6 +164,7 @@ jobs:
   test-amqp-recovery:
     name: AMQP recovery (testcontainers)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -191,6 +199,7 @@ jobs:
   test-bun:
     name: Bun (${{ matrix.bun }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -228,6 +237,7 @@ jobs:
   test-esbuild:
     name: esbuild transpilation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
