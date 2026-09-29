@@ -60,6 +60,21 @@ export interface LoggerOptions {
      * @default console[level]
      */
     logger?: (message: string, ...args: unknown[]) => void;
+
+    /**
+     * Tag every log line with the transport that carried the call, right
+     * after the `RPC` / `STREAM` prefix: `[in-process]` for calls made through
+     * `server.localClient()` / `createLocalTransport()` of `@connectum/core`,
+     * `[http]` for every other call (gRPC, Connect or gRPC-Web over HTTP).
+     *
+     * The tag is for reading logs only. It comes from a framework-internal
+     * request marker, so it must not drive authorization or any other
+     * security decision; decide on `req.service.typeName` and
+     * `req.method.name` instead.
+     *
+     * @default false
+     */
+    includeTransport?: boolean;
 }
 
 /**
