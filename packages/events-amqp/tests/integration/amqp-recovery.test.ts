@@ -867,6 +867,208 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
+    describe("recovery give-up (retry budget exhausted)", () => {
+        // A small finite budget with short delays: once the broker app is down
+        // every reconnect attempt is refused, so amqplib gives up within about
+        // a second. The same budget also bounds amqplib's initial connect, which
+        // is why the broker must be fully back before any later connect().
+        const GIVE_UP_RECOVERY = { initialDelay: 100, maxDelay: 200, maxRetries: 2 } as const;
+
+        /**
+         * Bring the broker app back and wait until it accepts AMQP connections.
+         * The container is shared by every test in this file: leaving the app
+         * stopped (or half-started) would fail all later tests in cascade.
+         */
+        async function restoreBrokerApp(): Promise<void> {
+            await container.exec(["rabbitmqctl", "start_app"]);
+            const deadline = Date.now() + 60_000;
+            for (;;) {
+                try {
+                    const probe = await connect(url);
+                    await probe.close();
+                    return;
+                } catch (err) {
+                    if (Date.now() > deadline) {
+                        throw err;
+                    }
+                    await sleep(200);
+                }
+            }
+        }
+
+        /** Stop the broker app and wait until the adapter reports that recovery gave up. */
+        async function driveToGiveUp(events: ReadonlyArray<{ type: string }>): Promise<void> {
+            const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+            assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+            await waitFor(() => events.some((e) => e.type === "reconnect-failed"), 30_000);
+            // Settle window: a second terminal event or a further retry would land here.
+            await sleep(300);
+            assert.equal(events.filter((e) => e.type === "reconnect-failed").length, 1, "recovery give-up is reported exactly once");
+        }
+
+        /**
+         * Settle `promise` or fail after `ms`. node:test has no default per-test
+         * timeout, and a subscribe() against a dead recovery cycle used to wait
+         * forever — the bound turns that hang into a readable assertion failure.
+         */
+        async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T> {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const expired = new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
+            });
+            try {
+                return await Promise.race([promise, expired]);
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        const isNotConnectedError = (err: unknown): boolean => err instanceof AmqpConnectionError && /not connected/.test(err.message);
+
+        it("subscribe() after give-up rejects with a typed 'not connected' error — no hang, no raw amqplib error", { timeout: 60_000 }, async () => {
+            const events: Array<{ type: string }> = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.giveup.sub",
+                recovery: GIVE_UP_RECOVERY,
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await adapter.connect();
+            try {
+                await driveToGiveUp(events);
+
+                // The rejection itself is asserted below; this only stops the
+                // race loser from surfacing as an unhandled rejection.
+                const subscribing = adapter.subscribe(["rec.giveup.sub.evt"], async () => undefined);
+                subscribing.catch(() => undefined);
+
+                await assert.rejects(
+                    () => settleWithin(subscribing, 5_000),
+                    (err: unknown) => {
+                        assert.ok(isNotConnectedError(err), `expected AmqpConnectionError 'not connected', got: ${String(err)}`);
+                        return true;
+                    },
+                );
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("publish() with publishRetry after give-up rejects at once without spending its retry budget", { timeout: 60_000 }, async () => {
+            const events: Array<{ type: string }> = [];
+            const retries: number[] = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.giveup.pub",
+                recovery: GIVE_UP_RECOVERY,
+                // Ten fixed 500 ms retries: a loop that does not recognise the
+                // dead cycle spends about 5 s and fires onRetry ten times, far
+                // outside the bounds asserted below.
+                publishRetry: { initialDelay: 500, maxDelay: 500, jitter: 0, maxRetries: 10, onRetry: (info) => retries.push(info.attempt) },
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await adapter.connect();
+            try {
+                await driveToGiveUp(events);
+
+                const startedAt = Date.now();
+                await assert.rejects(
+                    () => adapter.publish("rec.giveup.pub.evt", new Uint8Array([1])),
+                    (err: unknown) => {
+                        assert.ok(isNotConnectedError(err), `expected AmqpConnectionError 'not connected', got: ${String(err)}`);
+                        return true;
+                    },
+                );
+                const took = Date.now() - startedAt;
+                assert.deepEqual(retries, [], "no retry is attempted against a cycle that recovery abandoned");
+                assert.ok(took < 2_000, `publish must fail fast after give-up (took ${took}ms)`);
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("connect() after give-up starts clean and does not resurrect the subscriptions from before the give-up", { timeout: 90_000 }, async () => {
+            const events: Array<{ type: string }> = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.giveup.reconnect",
+                recovery: GIVE_UP_RECOVERY,
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await adapter.connect();
+            try {
+                // A durable named-group queue survives the app restart, so its
+                // consumer count afterwards shows whether the old subscription
+                // was replayed by the new connection.
+                await adapter.subscribe(["rec.giveup.reconnect.evt"], async (_event, ack) => {
+                    await ack();
+                }, { group: "g" });
+
+                await driveToGiveUp(events);
+                await restoreBrokerApp();
+
+                await adapter.connect();
+                // Any resurrected consumer would attach during this window.
+                await sleep(500);
+
+                const admin = await connect(url);
+                try {
+                    const adminCh = await admin.createChannel();
+                    const queue = await adminCh.checkQueue("rec.giveup.reconnect.g");
+                    assert.equal(queue.consumerCount, 0, "the subscription from before the give-up must not be replayed");
+                    await adminCh.close();
+                } finally {
+                    await admin.close();
+                }
+
+                // The fresh cycle is fully usable.
+                await adapter.publish("rec.giveup.reconnect.evt", new Uint8Array([1]));
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
+        it("a subscribe() waiting for a channel when recovery gives up rejects with a typed error", { timeout: 60_000 }, async () => {
+            // Called while recovery is still retrying, subscribe() parks in
+            // amqplib's waiter queue. amqplib rejects parked waiters with its
+            // last raw connection error (e.g. ECONNRESET/ECONNREFUSED), which
+            // the connection-lost text heuristic does not recognise — the
+            // public boundary must still surface the typed AmqpConnectionError.
+            const events: Array<{ type: string }> = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.giveup.parked",
+                recovery: { ...GIVE_UP_RECOVERY, initialDelay: 300, maxDelay: 400 },
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await adapter.connect();
+            try {
+                const stop = await container.exec(["rabbitmqctl", "stop_app"]);
+                assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
+                await waitFor(() => events.some((e) => e.type === "disconnected"), 30_000);
+                assert.ok(!events.some((e) => e.type === "reconnect-failed"), "precondition: recovery has not given up yet");
+
+                const subscribing = adapter.subscribe(["rec.giveup.parked.evt"], async () => undefined);
+                subscribing.catch(() => undefined);
+
+                await assert.rejects(
+                    () => settleWithin(subscribing, 20_000),
+                    (err: unknown) => {
+                        assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                        return true;
+                    },
+                );
+                assert.ok(events.some((e) => e.type === "reconnect-failed"), "the rejection must come from the recovery give-up");
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+    });
+
     it("reconnect during subscribe: consumer is replayed and resumes delivery", async () => {
         const lifecycle: string[] = [];
         const adapter = AmqpAdapter({
