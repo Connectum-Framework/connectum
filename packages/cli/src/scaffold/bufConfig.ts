@@ -42,7 +42,7 @@ breaking:
 }
 
 /**
- * Generate `buf.gen.yaml`. protoc-gen-es always; the catalog plugin
+ * Generate `buf.gen.yaml`. protoc-gen-es always, with erasable enums; the catalog plugin
  * (`protoc-gen-connectum-catalog`, `strategy: all`) is added when `catalog` is enabled
  * so `serviceCatalog` / typed `ctx.call` are generated into a single `catalog.gen.ts`.
  */
@@ -64,6 +64,14 @@ export function generateBufGenYaml(config: ScaffoldConfig): string {
     // TS2307 on a live scaffold). (2) Listing modules as separate inputs would invoke
     // each plugin once per input, and the services-less auth module would clobber
     // catalog.gen.ts. Mirrors the dogfooded car-sharing example.
+    //
+    // `erasable_syntax=true` makes protoc-gen-es emit each Protobuf enum as an `as const`
+    // object plus a same-named type instead of a TypeScript `enum`. The scaffolded project
+    // runs `node src/index.ts` with native type stripping and type-checks with
+    // `erasableSyntaxOnly`; both reject `enum`, so without it the first enum a user adds
+    // breaks `start` and `typecheck`. The output needs the protobuf-es floor from
+    // versionFloors.ts. The catalog plugin must NOT get the option: it rejects every
+    // option it does not know.
     return `version: v2
 clean: true
 plugins:
@@ -71,6 +79,7 @@ plugins:
     out: gen
     opt:
       - target=ts
-      - import_extension=.ts${catalogPlugin}
+      - import_extension=.ts
+      - erasable_syntax=true${catalogPlugin}
 `;
 }

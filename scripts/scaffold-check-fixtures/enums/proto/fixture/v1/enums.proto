@@ -1,0 +1,26 @@
+// Scaffold-check fixture: copied into a freshly scaffolded project after `connectum init`.
+//
+// A top-level enum and an enum nested in a message. Without erasable code generation,
+// protoc-gen-es turns both into TypeScript `enum` declarations, which the scaffolded
+// project rejects twice: `tsc` with `erasableSyntaxOnly` (TS1294) and `node` running
+// the file with native type stripping (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+syntax = "proto3";
+
+package fixture.v1;
+
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  COLOR_RED = 1;
+  COLOR_GREEN = 2;
+}
+
+message Paint {
+  enum Finish {
+    FINISH_UNSPECIFIED = 0;
+    FINISH_MATTE = 1;
+    FINISH_GLOSS = 2;
+  }
+
+  Color color = 1;
+  Finish finish = 2;
+}
