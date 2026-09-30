@@ -198,4 +198,34 @@ describe("Synthetic origin (Phase 2.3)", () => {
         assert.ok(url.includes("echo.v1.EchoService"), `req.url must include service name, got: ${url}`);
         assert.ok(url.includes("Echo"), `req.url must include method name, got: ${url}`);
     });
+
+    // The user guide tells authors of policy interceptors that a local call
+    // shows `https://in-memory/<service>/<method>` in `req.url` and that they
+    // must decide on `req.service.typeName` / `req.method.name` instead. The
+    // origin comes from `@connectrpc/connect`'s router transport, not from
+    // Connectum, so a dependency upgrade could change it silently; this pins
+    // the exact value a server-side interceptor sees, so the guide cannot
+    // drift from reality unnoticed.
+    it("a server interceptor sees req.url = https://in-memory/<service>/<method> on a local call", async () => {
+        const observed: Array<{ url: string; service: string; method: string }> = [];
+        const server = createServer({
+            services: [makeEchoRoutes()],
+            interceptors: [
+                ((next) => async (req) => {
+                    observed.push({ url: req.url, service: req.service.typeName, method: req.method.name });
+                    return next(req);
+                }) satisfies import("@connectrpc/connect").Interceptor,
+            ],
+        });
+
+        await server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "u" }));
+
+        assert.deepStrictEqual(observed, [
+            {
+                url: `https://in-memory/${EchoService.typeName}/${EchoService.method.echo.name}`,
+                service: "echo.v1.EchoService",
+                method: "Echo",
+            },
+        ]);
+    });
 });

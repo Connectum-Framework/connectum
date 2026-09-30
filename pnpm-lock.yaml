@@ -486,6 +486,9 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@connectrpc/connect-node':
+        specifier: 'catalog:'
+        version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
       '@connectum/test-fixtures':
         specifier: workspace:^
         version: link:../test-fixtures

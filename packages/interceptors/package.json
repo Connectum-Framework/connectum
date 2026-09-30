@@ -89,14 +89,15 @@
     "access": "public"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "catalog:",
     "@connectrpc/connect": "catalog:",
     "@connectrpc/validate": "catalog:",
-    "@bufbuild/protobuf": "catalog:",
     "@connectum/core": "workspace:^",
     "cockatiel": "^4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
     "@connectum/test-fixtures": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",

@@ -432,8 +432,18 @@ const interceptor = createLoggerInterceptor({
   level: "info",            // Log level (default: "debug")
   skipHealthCheck: true,    // Skip health check (default: true)
   logger: console.info,    // Custom logger (default: console[level])
+  includeTransport: true,  // Tag lines with the transport (default: false)
 });
 ```
+
+With `includeTransport: true`, every line carries the transport right after the `RPC` / `STREAM` prefix: `[in-process]` for calls made through `server.localClient()` or `createLocalTransport()` of `@connectum/core`, `[http]` for all other calls:
+
+```text
+RPC [in-process] /greeter.v1.GreeterService/SayHello request ...
+RPC [http] /greeter.v1.GreeterService/SayHello completed in 1.84ms
+```
+
+The tag is for reading logs only. It comes from a framework-internal request marker, so do not base authorization or other security decisions on it; use `req.service.typeName` and `req.method.name`. The option is off by default, and without it the log lines are unchanged.
 
 ## Per-Service and Per-Method Interceptors
 
@@ -678,6 +688,7 @@ interface LoggerOptions {
   level?: "debug" | "info" | "warn" | "error";  // default: "debug"
   skipHealthCheck?: boolean;                     // default: true
   logger?: (message: string, ...args: unknown[]) => void;
+  includeTransport?: boolean;                    // default: false
 }
 ```
 

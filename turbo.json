@@ -54,6 +54,7 @@
       "cache": true
     },
     "lint": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/biome.json", "$TURBO_ROOT$/lint/**"],
       "outputs": [],
       "cache": true
     },

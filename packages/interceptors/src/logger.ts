@@ -12,6 +12,29 @@ import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest } from "@
 import type { LoggerOptions } from "./types.ts";
 
 /**
+ * Request header and value that `@connectum/core` sets on every call made
+ * through its in-process transport. Core keeps this marker out of its public
+ * exports on purpose (it is not a user-facing contract), so the literals are
+ * repeated here instead of imported. They must stay equal to
+ * `LOCAL_TRANSPORT_HEADER` / `LOCAL_TRANSPORT_VALUE` in core's
+ * `localTransport.ts`; the logger transport integration test drives real
+ * in-process and HTTP calls, so any drift makes it fail.
+ *
+ * Core strips the header from inbound HTTP requests, so a remote caller
+ * cannot make a network call look in-process to a server-side logger.
+ */
+const LOCAL_TRANSPORT_HEADER = "connectum-internal-transport";
+const LOCAL_TRANSPORT_VALUE = "in-process";
+
+/**
+ * Transport tag for a call: `in-process` when the core in-process transport
+ * marked it, `http` otherwise.
+ */
+function detectTransport(req: UnaryRequest | StreamRequest): "in-process" | "http" {
+    return req.header.get(LOCAL_TRANSPORT_HEADER) === LOCAL_TRANSPORT_VALUE ? "in-process" : "http";
+}
+
+/**
  * Log request stream messages
  *
  * @param stream - Input stream
@@ -70,6 +93,13 @@ async function* logResStream<T>(schema: DescMessage, stream: AsyncIterable<T>, m
  * await server.start();
  * ```
  *
+ * @example Tag log lines with the transport (opt-in)
+ * ```typescript
+ * createLoggerInterceptor({ includeTransport: true });
+ * // RPC [in-process] /greeter.v1.GreeterService/SayHello request ...   (server.localClient)
+ * // RPC [http] /greeter.v1.GreeterService/SayHello request ...         (network client)
+ * ```
+ *
  * @example Client-side usage with transport
  * ```typescript
  * import { createConnectTransport } from '@connectrpc/connect-node';
@@ -84,12 +114,16 @@ async function* logResStream<T>(schema: DescMessage, stream: AsyncIterable<T>, m
  * ```
  */
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
-    const { level = "debug", skipHealthCheck = true } = options;
+    const { level = "debug", skipHealthCheck = true, includeTransport = false } = options;
     // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
     const logger = options.logger ?? console[level];
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
+        // With includeTransport the tag sits between the kind and the path
+        // (`RPC [http] /pkg.Service/Method ...`), so every line of one call
+        // carries it and the path stays the last token before the event.
         const path = new URL(req.url).pathname;
+        const label = includeTransport ? `[${detectTransport(req)}] ${path}` : path;
 
         // Skip health check services
         if (skipHealthCheck && req.service.typeName.includes("grpc.health")) {
@@ -102,25 +136,25 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
             // Log request (do NOT mutate req.message - it's readonly!)
             if (req.stream) {
                 // Wrap stream with logging generator and create new request
-                const modifiedReq = { ...req, message: logReqStream(req.message, `STREAM ${path}`, logger) };
+                const modifiedReq = { ...req, message: logReqStream(req.message, `STREAM ${label}`, logger) };
                 const res = await next(modifiedReq);
 
                 // Wrap response stream with logging generator
-                return { ...res, message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${path}`, logger) } as StreamResponse;
+                return { ...res, message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${label}`, logger) } as StreamResponse;
             }
             // Log unary request
-            logger(`RPC ${path} request`, req.message);
+            logger(`RPC ${label} request`, req.message);
 
             // Execute request
             const res = await next(req);
 
             // Log unary response
-            logger(`RPC ${path} response`, res.message);
+            logger(`RPC ${label} response`, res.message);
 
             return res;
         } finally {
             const duration = (performance.now() - startTime).toFixed(2);
-            logger(`RPC ${path} completed in ${duration}ms`);
+            logger(`RPC ${label} completed in ${duration}ms`);
         }
     };
 }
