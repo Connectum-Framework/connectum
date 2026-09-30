@@ -53,7 +53,7 @@ import { Reflection } from '@connectum/reflection';
 function Reflection(): ProtocolRegistration;
 ```
 
-The function takes no arguments. It automatically collects all registered service file descriptors from the `ProtocolContext` and builds a `FileDescriptorSet` for the reflection service.
+The function takes no arguments. It automatically collects the registered service file descriptors from the `ProtocolContext` — every application service plus the services of protocols listed before it — and builds a `FileDescriptorSet` for the reflection service.
 
 Pass the result to `createServer({ protocols: [...] })`.
 
@@ -72,12 +72,13 @@ This is primarily used internally by `Reflection()` but is exported for advanced
 
 ## How It Works
 
-When the server starts, the `Reflection` protocol:
+Once per server, in `setup`, the `Reflection` protocol:
 
-1. Receives all registered service file descriptors via `ProtocolContext.registry`
+1. Receives the registered service file descriptors via `ProtocolContext.registry`
 2. Recursively collects all proto file descriptors and their dependencies using `collectFileProtos()`
 3. Builds a `FileDescriptorSet` from the collected protos
-4. Registers the `ServerReflection` service (v1 and v1alpha) on the ConnectRouter via `registerServerReflectionFromFileDescriptorSet`
+
+Then, for every router the server builds (the HTTP adapter and each in-process transport), `register` mounts the `ServerReflection` service (v1 and v1alpha) with that same descriptor set via `registerServerReflectionFromFileDescriptorSet`. HTTP and in-process clients therefore see the same listing.
 
 ## Usage with grpcurl
 

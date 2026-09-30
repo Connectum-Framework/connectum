@@ -62,17 +62,23 @@ function createMockEventBus(): EventBusLike & {
     };
 }
 
-/** Create a mock protocol with tracked register calls */
+/** Create a mock protocol with tracked setup and register calls */
 function createMockProtocol(name: string): ProtocolRegistration & {
-    registerCalls: Array<{ router: ConnectRouter; context: ProtocolContext }>;
+    setupCalls: ProtocolContext[];
+    registerCalls: Array<{ router: ConnectRouter }>;
 } {
-    const registerCalls: Array<{ router: ConnectRouter; context: ProtocolContext }> = [];
+    const setupCalls: ProtocolContext[] = [];
+    const registerCalls: Array<{ router: ConnectRouter }> = [];
 
     return {
         name,
-        register(router: ConnectRouter, context: ProtocolContext) {
-            registerCalls.push({ router, context });
+        setup(context: ProtocolContext) {
+            setupCalls.push(context);
         },
+        register(router: ConnectRouter) {
+            registerCalls.push({ router });
+        },
+        setupCalls,
         registerCalls,
     };
 }
@@ -281,8 +287,8 @@ describe("Server lifecycle integration", () => {
 
             await server.start();
 
-            assert.strictEqual(protocol.registerCalls.length, 1);
-            const { context } = protocol.registerCalls[0]!;
+            assert.strictEqual(protocol.setupCalls.length, 1);
+            const context = protocol.setupCalls[0]!;
             assert.ok(context, "protocol should receive a context");
             assert.ok(
                 Array.isArray(context.registry),
@@ -311,7 +317,7 @@ describe("Server lifecycle integration", () => {
 
             const protocolWithHttp: ProtocolRegistration = {
                 name: "http-protocol",
-                register(_router: ConnectRouter, _context: ProtocolContext) {
+                register(_router: ConnectRouter) {
                     // no-op
                 },
                 httpHandler(_req, _res) {

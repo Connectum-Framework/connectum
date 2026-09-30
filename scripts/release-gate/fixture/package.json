@@ -10,9 +10,9 @@
     "buf:generate": "buf generate"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.12.1",
-    "@connectrpc/connect": "2.1.2",
-    "@connectrpc/connect-node": "2.1.2",
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0",
     "@connectum/auth": "1.0.0",
     "@connectum/cli": "1.0.0",
     "@connectum/core": "1.0.0",
@@ -31,7 +31,7 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "1.70.0",
-    "@bufbuild/protoc-gen-es": "2.12.1",
+    "@bufbuild/protoc-gen-es": "2.16.0",
     "@types/node": "25.9.3",
     "typescript": "5.9.3"
   },

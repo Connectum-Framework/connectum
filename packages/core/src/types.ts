@@ -44,13 +44,18 @@ export type ShutdownHook = () => void | Promise<void>;
 // =============================================================================
 
 /**
- * Context provided to protocol registration functions
+ * Context provided to {@link ProtocolRegistration.setup}
  *
  * Contains information about registered services that protocols
  * may need (e.g., reflection needs DescFile[], healthcheck needs service names).
  */
 export interface ProtocolContext {
-    /** Registered service file descriptors */
+    /**
+     * Service file descriptors registered before this protocol: every mounted
+     * application service, then the files of the protocols that precede this
+     * one in the `protocols` array. A frozen snapshot — later registrations do
+     * not change it.
+     */
     readonly registry: ReadonlyArray<DescFile>;
 }
 
@@ -67,18 +72,35 @@ export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
  * Protocols (healthcheck, reflection, custom) implement this interface
  * to register themselves on the server's ConnectRouter.
  *
+ * A server builds more than one router from the same registration — one for
+ * the HTTP adapter, one per in-process transport (`server.localClient`,
+ * `ctx.call`). One-time work therefore belongs in `setup`, which runs once per
+ * server, while `register` runs once per router and must only add routes.
+ *
+ * A registration object belongs to one server. `setup` may keep per-server
+ * state in it (the service list below, reflection's descriptor set), so the
+ * same object passed to a second server is re-initialized by that server's
+ * `setup`, and the first server's later routers serve the second server's
+ * data. Call the protocol factory once per server.
+ *
  * @example
  * ```typescript
- * const myProtocol: ProtocolRegistration = {
- *   name: "my-protocol",
- *   register(router, context) {
- *     router.service(MyService, myImpl);
- *   },
- * };
+ * function myProtocol(): ProtocolRegistration {
+ *   let serviceNames: string[] = [];
+ *   return {
+ *     name: "my-protocol",
+ *     setup(context) {
+ *       serviceNames = context.registry.flatMap((file) => file.services.map((s) => s.typeName));
+ *     },
+ *     register(router) {
+ *       router.service(MyService, { list: () => ({ services: serviceNames }) });
+ *     },
+ *   };
+ * }
  *
  * const server = createServer({
  *   services: [routes],
- *   protocols: [myProtocol],
+ *   protocols: [myProtocol()],
  * });
  * ```
  */
@@ -86,8 +108,21 @@ export interface ProtocolRegistration {
     /** Protocol name for identification (e.g., "healthcheck", "reflection") */
     readonly name: string;
 
-    /** Register protocol services on the router */
-    register(router: ConnectRouter, context: ProtocolContext): void;
+    /**
+     * One-time initialization, called exactly once per server immediately
+     * before this protocol's first {@link ProtocolRegistration.register}.
+     * The place for anything that reads the registry or has side effects.
+     *
+     * If route materialization fails, the next attempt calls `setup` again.
+     */
+    setup?(context: ProtocolContext): void;
+
+    /**
+     * Register protocol services on the router. Called once for every router
+     * the server builds (HTTP adapter and each in-process transport), so it
+     * must only add routes and must not change state observable elsewhere.
+     */
+    register(router: ConnectRouter): void;
 
     /** Optional HTTP handler for fallback routing (e.g., /healthz endpoint) */
     httpHandler?: HttpHandler;

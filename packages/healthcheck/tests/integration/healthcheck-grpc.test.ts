@@ -9,11 +9,11 @@
  *
  * Transport: createGrpcTransport (HTTP/2, required for streaming).
  *
- * NOTE: When `services: []` is passed, the Healthcheck's register() calls
+ * NOTE: When `services: []` is passed, the Healthcheck's setup() calls
  * manager.initialize(serviceNames) where serviceNames comes from
  * context.registry which has no files from user services. The Health service's
- * own DescFile is added to the registry only after initialize() is called,
- * so the manager starts with 0 tracked services.
+ * own DescFile is registered only after setup() runs, so the manager starts
+ * with 0 tracked services.
  *
  * To test status tracking, we call manager.initialize() with a fake service
  * AFTER server start (so it doesn't get wiped by the protocol's own initialize).
@@ -60,7 +60,7 @@ describe("Healthcheck gRPC Integration", () => {
         serverUrl = `http://localhost:${port}`;
 
         // Initialize the manager with a fake service AFTER server start.
-        // Healthcheck's register() already called initialize([]) with empty
+        // Healthcheck's setup() already called initialize([]) with empty
         // service names (no user services). We re-initialize to simulate
         // having a real user service.
         manager.initialize([FAKE_SERVICE]);
