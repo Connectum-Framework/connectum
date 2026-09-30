@@ -60,14 +60,19 @@
     "access": "public"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:",
-    "@connectrpc/connect-node": "catalog:",
     "env-var": "catalog:",
     "zod": "catalog:"
   },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
+    "@connectrpc/connect-node": "^2.2.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

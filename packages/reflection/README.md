@@ -17,11 +17,7 @@ gRPC Server Reflection protocol for Connectum.
 pnpm add @connectum/reflection
 ```
 
-**Peer dependency:**
-
-```bash
-pnpm add @connectum/core
-```
+**Peer dependencies:** `@connectum/core`, `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 ## Quick Start
 

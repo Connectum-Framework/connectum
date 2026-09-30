@@ -22,6 +22,13 @@ The CLI itself requires Node.js >= 22.13.0. The project it scaffolds targets whi
 runtime you choose: the default `--node-exec raw` runs `.ts` natively and therefore needs
 Node.js >= 25.2.0, while `--node-exec tsx` lowers the generated project's floor to 22.13.0.
 
+Unlike the Connectum runtime packages, the CLI keeps `@bufbuild/protobuf`,
+`@connectrpc/connect` and `@connectrpc/connect-node` as regular dependencies, not
+peers: it is an executable with its own copies, so it is outside the single-copy
+guarantee of the runtime packages. That includes the `FileRegistry` exposed by the
+`@connectum/cli/utils/reflection` subpath, which belongs to the CLI's own
+`@bufbuild/protobuf`.
+
 ## Quick Start
 
 ```bash

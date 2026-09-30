@@ -49,11 +49,11 @@
     "access": "public"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:",
     "@lambdalisue/connectrpc-grpcreflect": "^0.5.0"
   },
   "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
     "@connectum/core": "workspace:^"
   },
   "peerDependenciesMeta": {
@@ -63,6 +63,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/healthcheck": "workspace:^",

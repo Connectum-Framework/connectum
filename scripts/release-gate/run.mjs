@@ -4,8 +4,8 @@
 // PACKED artifacts (never src/ or in-workspace dist/). Sets up a throwaway
 // consumer from ./fixture, installs every published @connectum/* package from
 // either a pkg-pr-new preview (pinned to a commit SHA) or local pnpm-packed
-// tarballs, generates the service catalog, then runs four publish-boundary
-// checks + the behavioral smoke.
+// tarballs, generates the service catalog, then runs the publish-boundary
+// checks, the behavioral smoke and the single-copy check for protobuf / Connect.
 //
 // Usage:
 //   node scripts/release-gate/run.mjs --mode preview --ref <sha>   # pkg-pr-new
@@ -17,6 +17,8 @@ import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readPackedManifest } from "../lib/pack-workspace.mjs";
+import { candidateProblems, collectParticipants, singleCopyProblems } from "../lib/runtime-participants.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -66,6 +68,8 @@ cpSync(FIXTURE, WORK, { recursive: true });
 // --- 2. overrides: every @connectum/* → packed artifact ---
 let target;
 let overrideLines;
+/** Pack mode only: the manifest inside each tarball, which the installed copy must equal. */
+const packedManifests = new Map();
 if (mode === "preview") {
     if (!ref) die("--mode preview requires --ref <commit-sha> (pkg-pr-new is pinned to a SHA, never a moving tag)");
     target = `pkg-pr-new @${ref}`;
@@ -89,6 +93,7 @@ if (mode === "preview") {
         return join(tarDir, hit);
     };
     overrideLines = PKGS.map((p) => `  '@connectum/${p}': 'file:${find(p)}'`);
+    for (const p of PKGS) packedManifests.set(`@connectum/${p}`, readPackedManifest(find(p)));
 } else {
     die(`unknown --mode '${mode}' (expected preview|pack)`);
 }
@@ -132,6 +137,21 @@ const failed = [];
 for (const [label, [cmd, ...args]] of checks) {
     console.log(`\n=== ${label} ===`);
     if (sh(cmd, args, { env })) failed.push(label);
+}
+
+// The fixture pins @bufbuild/protobuf, @connectrpc/connect and @connectrpc/connect-node
+// inside the framework's peer ranges, and this consumer has no workspace override for
+// them, so the published peers must leave exactly one copy of each among the runtime
+// participants. In pack mode the installed @connectum/* copies must also be the tarballs
+// just packed — an override that silently fell back to the registry would otherwise pass.
+{
+    const label = "single copy of protobuf / Connect";
+    console.log(`\n=== ${label} ===`);
+    const participants = collectParticipants(WORK);
+    const problems = [...singleCopyProblems(participants), ...(mode === "pack" ? candidateProblems(participants, packedManifests) : [])];
+    for (const p of problems) console.error(`  ${p}`);
+    if (problems.length > 0) failed.push(label);
+    else console.log("  one copy of each; every @connectum/* participant is the build under test");
 }
 
 // --- 5. verdict ---

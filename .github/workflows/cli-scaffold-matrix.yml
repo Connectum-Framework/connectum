@@ -19,12 +19,14 @@ on:
     paths:
       - "packages/cli/**"
       - "scripts/scaffold-check.mjs"
+      - "scripts/lib/**"
       - ".github/workflows/cli-scaffold-matrix.yml"
   push:
     branches: [main]
     paths:
       - "packages/cli/**"
       - "scripts/scaffold-check.mjs"
+      - "scripts/lib/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

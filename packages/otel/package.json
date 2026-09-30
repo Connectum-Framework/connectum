@@ -93,7 +93,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@connectrpc/connect": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/api-logs": "catalog:",
     "@opentelemetry/exporter-trace-otlp-http": "catalog:",
@@ -109,10 +108,15 @@
     "@opentelemetry/semantic-conventions": "catalog:",
     "env-var": "catalog:"
   },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/testing": "workspace:^",
+    "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@bufbuild/protobuf": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",

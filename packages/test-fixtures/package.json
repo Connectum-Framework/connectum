@@ -51,12 +51,14 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:"
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
     "@exodus/test": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",

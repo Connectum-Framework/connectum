@@ -8,6 +8,10 @@ This package is **transport-free** — it has no dependency on
 This keeps the workspace dependency graph acyclic and lets every Connectum
 package depend on it without introducing build cycles.
 
+**Peer dependencies:** `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect`
+`^2.2.0`, so the fixtures build descriptors and errors from the same copies your
+code uses.
+
 ## What lives here
 
 - `assertConnectError` — assertion helper for `ConnectError` thrown values
