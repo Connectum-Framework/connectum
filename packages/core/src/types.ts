@@ -239,10 +239,18 @@ export interface ShutdownOptions {
      * Force close every client connection when the shutdown timeout is exceeded.
      * When true, all connections of every transport (HTTP/2 sessions, HTTP/1.1
      * and TLS sockets) are destroyed after the timeout, aborting requests still
-     * in flight, so no client can keep the process alive. When false, nothing is
-     * destroyed: `stop()` still resolves after the timeout and shutdown hooks
-     * run, but open connections stay open and keep the process alive until
-     * their clients close them.
+     * in flight, so no client connection can keep the process alive; other
+     * resources (timers, broker or database connections) still can. Release
+     * them in your shutdown hooks; `stop()` runs the hooks but does not verify
+     * that they released anything. When false, nothing is destroyed: shutdown
+     * continues after the timeout and hooks run, but open connections stay open
+     * and keep the process alive until their clients close them.
+     *
+     * With either value `stop()` does not wait for client connections beyond
+     * the timeout, but it does wait for the shutdown hooks, which the timeout
+     * does not bound. It rejects if a shutdown hook fails or the transport fails
+     * to close before the timeout; a close failure after the timeout is only
+     * logged.
      * @default true
      */
     forceCloseOnTimeout?: boolean;
