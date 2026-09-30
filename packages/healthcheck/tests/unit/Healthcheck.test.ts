@@ -53,7 +53,7 @@ describe("Healthcheck", () => {
 
 	it("should default to singleton manager when no manager option", () => {
 		// This verifies the protocol uses the module-level singleton.
-		// We can observe this by checking that register() initializes the singleton.
+		// We can observe this by checking that setup() initializes the singleton.
 		const protocol = Healthcheck();
 
 		assert.ok(protocol);
@@ -126,7 +126,8 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		const protocol = Healthcheck({ manager });
 		const { router, getHandlers } = createMockRouter();
 
-		protocol.register(router, createMockContext(["svc.v1.Foo"]));
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
 
 		// Set service to SERVING so areAllHealthy() returns true
 		manager.update(ServingStatus.SERVING, "svc.v1.Foo");
@@ -140,7 +141,8 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		const protocol = Healthcheck({ manager });
 		const { router, getHandlers } = createMockRouter();
 
-		protocol.register(router, createMockContext(["svc.v1.Foo"]));
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
 
 		// Service is in UNKNOWN state after initialization → areAllHealthy() is false
 		const response = getHandlers().check!({ service: "" });
@@ -152,7 +154,8 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		const protocol = Healthcheck({ manager });
 		const { router, getHandlers } = createMockRouter();
 
-		protocol.register(router, createMockContext(["svc.v1.Foo"]));
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
 		manager.update(ServingStatus.SERVING, "svc.v1.Foo");
 
 		const response = getHandlers().check!({ service: "svc.v1.Foo" });
@@ -164,7 +167,8 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		const protocol = Healthcheck({ manager });
 		const { router, getHandlers } = createMockRouter();
 
-		protocol.register(router, createMockContext(["svc.v1.Foo"]));
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
 
 		assert.throws(
 			() => getHandlers().check!({ service: "nonexistent.v1.Bar" }),
@@ -175,13 +179,29 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		);
 	});
 
-	it("register() initializes manager with service names from context.registry", () => {
+	// The server replays register() for every router it builds; if register
+	// re-initialized the manager, the first in-process call would reset health.
+	it("register() leaves the manager untouched", () => {
+		const manager = createHealthcheckManager();
+		const protocol = Healthcheck({ manager });
+
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		manager.update(ServingStatus.SERVING);
+		protocol.register(createMockRouter().router);
+		protocol.register(createMockRouter().router);
+
+		assert.deepStrictEqual([...manager.getAllStatuses().keys()], ["svc.v1.Foo"]);
+		assert.strictEqual(manager.areAllHealthy(), true);
+	});
+
+	it("setup() initializes manager with service names from context.registry", () => {
 		const manager = createHealthcheckManager();
 		const protocol = Healthcheck({ manager });
 		const { router } = createMockRouter();
 
 		const serviceNames = ["svc.v1.Alpha", "svc.v1.Beta", "svc.v1.Gamma"];
-		protocol.register(router, createMockContext(serviceNames));
+		protocol.setup?.(createMockContext(serviceNames));
+		protocol.register(router);
 
 		// All services should be initialized in the manager
 		const statuses = manager.getAllStatuses();

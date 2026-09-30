@@ -13,9 +13,10 @@
 
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
+import type { Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import type { Server } from "@connectum/core";
-import { createServer } from "@connectum/core";
+import { createLocalTransport, createServer } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { ServerReflectionClient } from "@lambdalisue/connectrpc-grpcreflect/client";
 import { Reflection } from "../../src/Reflection.ts";
@@ -123,5 +124,25 @@ describe("Reflection Integration", () => {
 		} finally {
 			await client.close();
 		}
+	});
+
+	// The in-process router must serve the descriptor set built once for the
+	// server, not one rebuilt from the by-then larger registry (which by then
+	// also holds reflection's own files) — otherwise in-process and HTTP
+	// clients see different listings.
+	it("should list the same services in-process as over HTTP", async () => {
+		const list = async (transport: Transport) => {
+			const client = new ServerReflectionClient(transport);
+			try {
+				return (await client.listServices()).sort();
+			} finally {
+				await client.close();
+			}
+		};
+
+		const overHttp = await list(createGrpcTransport({ baseUrl: serverUrl }));
+		const inProcess = await list(createLocalTransport(server));
+
+		assert.deepStrictEqual(inProcess, overHttp);
 	});
 });
