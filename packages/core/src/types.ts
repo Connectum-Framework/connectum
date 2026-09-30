@@ -205,8 +205,9 @@ export interface ShutdownOptions {
      * When true, all connections of every transport (HTTP/2 sessions, HTTP/1.1
      * and TLS sockets) are destroyed after the timeout, aborting requests still
      * in flight, so no client connection can keep the process alive; other
-     * resources (timers, broker or database connections) still can, and are
-     * released by shutdown hooks. When false, nothing is destroyed: shutdown
+     * resources (timers, broker or database connections) still can. Release
+     * them in your shutdown hooks; `stop()` runs the hooks but does not verify
+     * that they released anything. When false, nothing is destroyed: shutdown
      * continues after the timeout and hooks run, but open connections stay open
      * and keep the process alive until their clients close them.
      *
