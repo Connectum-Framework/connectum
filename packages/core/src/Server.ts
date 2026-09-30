@@ -458,6 +458,9 @@ class ServerImpl extends EventEmitter implements Server {
                 // serialization (otherwise jsonOptions would be silently
                 // dropped on the lazy-built route materialization).
                 ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
+                // Admission defaults for the HTTP adapter; the in-process
+                // routers receive the same values via _getAdmissionOptions().
+                ...this._getAdmissionOptions(),
                 // Mount only the locally-enabled services; the rest are remote.
                 ...(this._options.enabledServices ? { enabledServices: this._options.enabledServices } : {}),
             });
@@ -487,6 +490,24 @@ class ServerImpl extends EventEmitter implements Server {
      */
     _getServerInterceptors(): Interceptor[] {
         return [...this._interceptors];
+    }
+
+    /**
+     * The server-level `requestGate` / `readMaxBytes` defaults, containing
+     * only the keys the user set. Shared by the HTTP adapter and every
+     * in-process router so both transports admit requests identically, and
+     * an unset option never appears as an own `undefined` key (which would
+     * change nothing upstream today, but keeps the router options exactly as
+     * they were for servers that do not opt in).
+     *
+     * @internal
+     */
+    _getAdmissionOptions(): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
+        const { requestGate, readMaxBytes } = this._options;
+        return {
+            ...(requestGate !== undefined ? { requestGate } : {}),
+            ...(readMaxBytes !== undefined ? { readMaxBytes } : {}),
+        };
     }
 
     /**

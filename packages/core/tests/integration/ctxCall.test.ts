@@ -366,6 +366,46 @@ describe("ctx.call — header propagation", () => {
     });
 });
 
+describe("ctx.call — a local target's request gate applies to internal calls", () => {
+    // The server-level gate has no transport exemption: an in-process ctx.call
+    // is admitted exactly like an external call, so it carries only the headers
+    // the caller forwards. A credential gate therefore rejects internal calls
+    // unless the credential is propagated.
+    const CREDENTIAL = "authorization";
+
+    function makeGatedServer(propagateHeaders: readonly string[] | undefined) {
+        const base: Parameters<typeof createServer>[0] = {
+            services: [
+                makeCaller(async (req, ctx) => {
+                    const inner = await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: req.message }));
+                    return create(EchoResponseSchema, { message: `outer:${inner.message}`, timestamp: 0n });
+                }),
+            ],
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+            requestGate: (ctx) => {
+                if (!ctx.requestHeader.get(CREDENTIAL)) {
+                    throw new ConnectError("unauthenticated", Code.Unauthenticated);
+                }
+            },
+        };
+        return createServer(propagateHeaders ? { ...base, propagateHeaders } : base);
+    }
+
+    it("rejects the internal call when the credential is not forwarded", async () => {
+        const server = makeGatedServer(undefined);
+        await assert.rejects(
+            server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [CREDENTIAL]: "Bearer t" } }),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated,
+        );
+    });
+
+    it("admits the internal call when the credential is propagated", async () => {
+        const server = makeGatedServer([CREDENTIAL]);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [CREDENTIAL]: "Bearer t" } });
+        assert.strictEqual(res.message, "outer:echo:x");
+    });
+});
+
 describe("ctx.call — open items (escalated, not yet locked)", () => {
     // Q15 / task 4.10: ctx.call is structurally impossible outside a handler —
     // a Context only exists where a HandlerContext exists. There is no
