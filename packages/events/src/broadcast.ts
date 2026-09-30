@@ -15,6 +15,7 @@
  * @module broadcast
  */
 
+// biome-ignore lint/correctness/useImportExtensions: workspace package, not a relative import
 import type { EventBusLike } from "@connectum/core";
 import { createEventBus } from "./EventBus.ts";
 import type { EventAdapter, EventAdapterFactory, EventBus, EventRoute, MiddlewareConfig } from "./types.ts";
