@@ -105,7 +105,8 @@ const PEER_COMPLAINT = {
  * - `complaintAbout`: the library the manager must visibly complain about (see
  *   PEER_COMPLAINT); for in-range cells, NO contract library may be complained about;
  * - `contract`: true = single copy + peer ranges honored + installed pins as requested;
- *   false = the installed tree must show the violation the complaint announced.
+ *   false = if the manager installs at all, the tree must hold ONE copy — the consumer's
+ *   pin — with the framework's peer ranges on it unmet (no silent in-range second copy).
  * Candidate provenance (installed manifests equal the tarballs) is checked on every
  * successful `pack` install regardless.
  *
@@ -269,22 +270,36 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
         }
     }
 
-    let contractProblems = [];
+    // Three kinds of finding, kept apart because the out-of-range cells expect exactly
+    // one of them: a second copy, a copy other than the consumer's pin, and a peer range
+    // the installed copy does not satisfy.
+    let copyProblems = [];
+    const pinProblems = [];
+    let rangeProblems = [];
     if (installed) {
         const participants = collectParticipants(dir);
-        contractProblems = [...singleCopyProblems(participants), ...peerRangeProblems(participants, semver)];
+        copyProblems = singleCopyProblems(participants);
+        rangeProblems = peerRangeProblems(participants, semver);
         for (const [name, pin] of Object.entries(SCENARIOS[scenario])) {
             const copies = [...(participants.packages.get(name)?.values() ?? [])];
             if (copies.some((c) => c.version !== pin)) {
-                contractProblems.push(`${name}: pinned ${pin}, runtime participants use ${copies.map((c) => c.version).join(", ")}`);
+                pinProblems.push(`${name}: pinned ${pin}, runtime participants use ${copies.map((c) => c.version).join(", ")}`);
             }
         }
         if (opts.source === "pack") problems.push(...candidateProblems(participants, expectedManifests));
     }
-    if (expected.contract && contractProblems.length > 0) {
+    const contractProblems = [...copyProblems, ...pinProblems, ...rangeProblems];
+    if (expected.contract) {
         problems.push(...contractProblems);
-    } else if (!expected.contract && installed && contractProblems.length === 0) {
-        problems.push("the out-of-range pin installed with no contract violation — expected the pin to be visibly outside the peer range");
+    } else if (installed) {
+        // A manager that accepts an out-of-range pin must still keep ONE copy — the
+        // consumer's — and leave the framework's peer ranges visibly unmet. A package that
+        // slipped back to a regular dependency would instead get its own in-range copy
+        // nested beside the pin, which is exactly the silent split peers exist to prevent.
+        problems.push(...copyProblems, ...pinProblems);
+        if (rangeProblems.length === 0) {
+            problems.push("the out-of-range pin installed without any unmet peer range — expected the framework's peers to reject it");
+        }
     }
 
     return { pm, scenario, ok: problems.length === 0, ms: Date.now() - started, problems, contractProblems, output, signal };
