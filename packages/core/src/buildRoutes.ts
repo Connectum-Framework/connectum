@@ -116,6 +116,10 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
     let userFileCount = 0;
+    // Protocol `setup` is one-time work (health manager initialization,
+    // reflection descriptor set) and must not run again for the routers
+    // built later by in-process transports.
+    let protocolsSetUp = false;
 
     // Setup routes with registry interceptor.
     // Note: `routes` may be invoked more than once against different ConnectRouter
@@ -147,11 +151,21 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         // descriptors added below belong to protocols.
         userFileCount = registry.length;
 
-        // Register protocols
-        const context: ProtocolContext = { registry };
+        // Register protocols. On the first materialization each protocol is set
+        // up right before its own registration, so it sees the application
+        // files plus the files of the protocols before it — Healthcheck does
+        // not track itself, Reflection lists the protocols registered earlier.
+        // The snapshot keeps that view fixed even though `registry` keeps
+        // growing.
+        const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
-            protocol.register(router, context);
+            if (settingUp) {
+                const context: ProtocolContext = { registry: Object.freeze([...registry]) };
+                protocol.setup?.(context);
+            }
+            protocol.register(router);
         }
+        protocolsSetUp = true;
     };
 
     // Collect HTTP handlers from protocols
