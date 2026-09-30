@@ -53,7 +53,7 @@ function firstServiceAndMethod(catalog: ServiceCatalog): { service: DescService;
 }
 
 /**
- * Create a {@link Context} whose `ctx.call` / `ctx.stream` resolve against the
+ * Create a {@link @connectum/core!Context | Context} whose `ctx.call` / `ctx.stream` resolve against the
  * given mocks. Pass it as the second argument to a handler under test.
  *
  * @example

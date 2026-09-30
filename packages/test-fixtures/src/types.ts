@@ -4,13 +4,17 @@
  * @module
  */
 
+// The factories these options configure live in the package's main entry, a
+// sibling module, so links to them are written as `index.<name>`: a bare name
+// cannot be resolved from this module, where the factories are not in scope.
+
 import type { DescMessage } from "@bufbuild/protobuf";
 
 // ============================================================
 // Mock Request
 // ============================================================
 
-/** Options for {@link createMockRequest}. */
+/** Options for {@link index.createMockRequest | createMockRequest}. */
 export interface MockRequestOptions {
     /** Service type name. Default: `'test.TestService'` */
     service?: string;
@@ -30,7 +34,7 @@ export interface MockRequestOptions {
 // Mock Next
 // ============================================================
 
-/** Options for {@link createMockNext} and {@link createMockNextSlow}. */
+/** Options for {@link index.createMockNext | createMockNext} and {@link index.createMockNextSlow | createMockNextSlow}. */
 export interface MockNextOptions {
     /** Response message. Default: `{ result: 'success' }` */
     message?: unknown;
@@ -42,7 +46,7 @@ export interface MockNextOptions {
 // Mock Protobuf Descriptors
 // ============================================================
 
-/** Options for {@link createMockDescMessage}. */
+/** Options for {@link index.createMockDescMessage | createMockDescMessage}. */
 export interface MockDescMessageOptions {
     /** Field definitions. Default: `[]` */
     fields?: Array<{
@@ -54,7 +58,7 @@ export interface MockDescMessageOptions {
     oneofs?: string[];
 }
 
-/** Options for {@link createMockDescField}. */
+/** Options for {@link index.createMockDescField | createMockDescField}. */
 export interface MockDescFieldOptions {
     /** Mark field as sensitive (for redact interceptor). Default: `false` */
     isSensitive?: boolean;
@@ -64,7 +68,7 @@ export interface MockDescFieldOptions {
     type?: string;
 }
 
-/** Options for {@link createMockDescMethod}. */
+/** Options for {@link index.createMockDescMethod | createMockDescMethod}. */
 export interface MockDescMethodOptions {
     /** Input message descriptor. */
     input?: DescMessage;
@@ -80,7 +84,7 @@ export interface MockDescMethodOptions {
 // Mock Stream
 // ============================================================
 
-/** Options for {@link createMockStream}. */
+/** Options for {@link index.createMockStream | createMockStream}. */
 export interface MockStreamOptions {
     /** Delay in milliseconds between yielded items. */
     delayMs?: number;
@@ -90,7 +94,7 @@ export interface MockStreamOptions {
 // Fake Service / Method
 // ============================================================
 
-/** Options for {@link createFakeService}. */
+/** Options for {@link index.createFakeService | createFakeService}. */
 export interface FakeServiceOptions {
     /** Service type name. Default: `'test.v1.TestService'` */
     typeName?: string;
@@ -98,7 +102,7 @@ export interface FakeServiceOptions {
     name?: string;
 }
 
-/** Options for {@link createFakeMethod}. */
+/** Options for {@link index.createFakeMethod | createFakeMethod}. */
 export interface FakeMethodOptions {
     /** Method kind. Default: `'unary'` */
     methodKind?: "unary" | "server_streaming" | "client_streaming" | "bidi_streaming";

@@ -140,7 +140,7 @@ export interface FakeAmqpControl {
     deliver(eventType: string, payload: Uint8Array, options?: { readonly metadata?: Record<string, string>; readonly attempt?: number }): Promise<FakeDeliveryResult>;
 }
 
-/** The fake adapter: a drop-in {@link EventAdapter} plus its {@link FakeAmqpControl}. */
+/** The fake adapter: a drop-in {@link @connectum/events!EventAdapter | EventAdapter} plus its {@link FakeAmqpControl}. */
 export interface FakeAmqpAdapterInstance extends EventAdapter {
     readonly control: FakeAmqpControl;
 }
