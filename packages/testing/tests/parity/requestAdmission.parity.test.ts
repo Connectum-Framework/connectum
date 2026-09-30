@@ -78,6 +78,24 @@ async function callEcho(transport: Parameters<typeof createClient>[1], message: 
 
 {
     const calls = { count: 0 };
+    transportParityTest("request admission parity: a gate throwing a plain Error ends the call as Internal without its text", {
+        services: [countedEchoRoutes(calls)],
+        requestGate: () => {
+            throw new Error("db password=hunter2");
+        },
+        scenario: async ({ transport }) => callEcho(transport, create(EchoRequestSchema, { message: "a" })),
+        compare: (http, local) => {
+            // Connect replaces a non-ConnectError with a generic Internal error on
+            // every protocol; the original message must reach neither client.
+            assert.deepStrictEqual(http.error, { code: Code.Internal, message: "internal error", metadata: {} });
+            defaultCompare(http, local);
+            assert.strictEqual(calls.count, 0);
+        },
+    });
+}
+
+{
+    const calls = { count: 0 };
     const gated: string[] = [];
     transportParityTest("request admission parity: an admitting gate lets the call through identically", {
         services: [countedEchoRoutes(calls)],

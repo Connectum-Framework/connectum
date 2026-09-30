@@ -19,7 +19,7 @@ import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type HandlerContext, type Interceptor } from "@connectrpc/connect";
-import { createGrpcTransport } from "@connectrpc/connect-node";
+import { connectNodeAdapter, createGrpcTransport } from "@connectrpc/connect-node";
 import { buildRoutes } from "../../src/buildRoutes.ts";
 import type { RegisterContext, ServiceOptions } from "../../src/defineService.ts";
 import { defineService } from "../../src/defineService.ts";
@@ -263,12 +263,146 @@ describe("readMaxBytes — server default on both transports", () => {
         }
     });
 
-    it("rejects an out-of-range value when the server starts, with Code.Internal", async () => {
-        const server = createServer({ services: [makeEchoRoutes({ count: 0 })], port: 0, readMaxBytes: 0 });
-        server.on("error", () => {});
-        const err = await captureError(() => server.start());
-        assert.strictEqual(err.code, Code.Internal);
-        assert.match(err.rawMessage, /readMaxBytes 0 must be >= 1/);
+    // A limit that is not a whole number of bytes in Connect's range must fail
+    // at createServer(), naming the option. Left to Connect, NaN passes its
+    // range check (every comparison with NaN is false) and silently disables
+    // the limit, 1.5 silently behaves as 1, and 0 / Infinity / negatives fail
+    // only later, at route build, as an opaque ConnectError(Internal).
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, 0, 0x1_0000_0000]) {
+        it(`rejects readMaxBytes ${String(invalid)} at createServer() with a RangeError naming the option`, () => {
+            assert.throws(
+                () => createServer({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: invalid }),
+                (err: unknown) => err instanceof RangeError && /readMaxBytes/.test(err.message) && err.message.includes(String(invalid)),
+            );
+        });
+    }
+
+    it("rejects a non-number readMaxBytes (untyped JavaScript) at createServer() with a TypeError", () => {
+        assert.throws(
+            () => createServer({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: "1024" as unknown as number }),
+            (err: unknown) => err instanceof TypeError && /readMaxBytes/.test(err.message),
+        );
+    });
+
+    it("accepts the bounds 1 and 4294967295 (Connect's maximum)", async () => {
+        for (const bound of [1, 0xffff_ffff]) {
+            const server = createServer({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: bound });
+            // Building the in-process router runs Connect's own range check.
+            const res = await server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "" }));
+            assert.strictEqual(res.message, "echo:");
+        }
+    });
+
+    it("rejects a non-function requestGate (untyped JavaScript) at createServer() with a TypeError", () => {
+        assert.throws(
+            () => createServer({ services: [makeEchoRoutes({ count: 0 })], requestGate: "deny" as unknown as () => void }),
+            (err: unknown) => err instanceof TypeError && /requestGate/.test(err.message),
+        );
+    });
+});
+
+// A gate runs before errorHandler, so nothing in Connectum's interceptor chain
+// can sanitise what it throws. Connect itself replaces any non-ConnectError
+// with ConnectError("internal error", Internal) on every protocol, keeping the
+// original only as a server-side cause. Connectum relies on that rather than
+// wrapping the gate a second time; these tests fail if an upgrade of Connect
+// ever lets the original text through on either transport.
+describe("requestGate — errors that are not ConnectError are sanitised", () => {
+    const SECRET = "db password=hunter2 at 10.0.0.5";
+
+    it("turns a plain Error into Internal with a generic message, over HTTP and in-process", async () => {
+        const calls = { count: 0 };
+        const leaky = (): void => {
+            throw new Error(SECRET, { cause: new Error("nested secret") });
+        };
+        const { server, transport } = await startH2c({ services: [makeEchoRoutes(calls)], requestGate: leaky });
+        try {
+            const httpErr = await captureError(() => createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "a" })));
+            const localErr = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
+            for (const err of [httpErr, localErr]) {
+                assert.strictEqual(err.code, Code.Internal);
+                assert.strictEqual(err.rawMessage, "internal error");
+                assert.ok(!JSON.stringify({ m: err.message, d: err.details, c: String(err.cause ?? "") }).includes("hunter2"), "no original text may reach the client");
+                assert.ok(!String(err.stack).includes("hunter2"));
+            }
+            assert.strictEqual(calls.count, 0);
+        } finally {
+            await server.stop();
+        }
+    });
+
+    it("sanitises a thrown non-Error value and a rejected promise alike", async () => {
+        for (const gate of [
+            (): void => {
+                throw SECRET;
+            },
+            async (): Promise<void> => {
+                await Promise.resolve();
+                throw new TypeError(SECRET);
+            },
+        ]) {
+            const server = createServer({ services: [makeEchoRoutes({ count: 0 })], requestGate: gate });
+            const err = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
+            assert.strictEqual(err.code, Code.Internal);
+            assert.strictEqual(err.rawMessage, "internal error");
+        }
+    });
+
+    it("passes a ConnectError through unchanged, including metadata", async () => {
+        const gate = (): void => {
+            throw new ConnectError("slow down", Code.ResourceExhausted, { "x-retry-after": "5" });
+        };
+        const { server, transport } = await startH2c({ services: [makeEchoRoutes({ count: 0 })], requestGate: gate });
+        try {
+            const httpErr = await captureError(() => createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "a" })));
+            const localErr = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
+            for (const err of [httpErr, localErr]) {
+                assert.strictEqual(err.code, Code.ResourceExhausted);
+                assert.strictEqual(err.rawMessage, "slow down");
+                assert.strictEqual(err.metadata.get("x-retry-after"), "5");
+            }
+        } finally {
+            await server.stop();
+        }
+    });
+});
+
+describe("requestGate — concurrent calls get their own verdicts", () => {
+    it("admits and rejects 20 parallel calls per request header, over HTTP and in-process, without cross-talk", async () => {
+        const calls = { count: 0 };
+        // Async with a varying delay so verdicts interleave rather than run in order.
+        const gate = async (ctx: HandlerContext): Promise<void> => {
+            const id = Number(ctx.requestHeader.get("x-id"));
+            await new Promise((resolve) => setTimeout(resolve, (id * 7) % 11));
+            if (ctx.requestHeader.get("x-allow") !== "yes") {
+                throw new ConnectError(`denied ${id}`, Code.PermissionDenied);
+            }
+        };
+        const { server, transport } = await startH2c({ services: [makeEchoRoutes(calls)], requestGate: gate });
+        try {
+            for (const client of [createClient(EchoService, transport), server.localClient(EchoService)]) {
+                const ids = Array.from({ length: 20 }, (_, i) => i);
+                const results = await Promise.all(
+                    ids.map(async (id) => {
+                        const allow = id % 3 !== 0;
+                        const headers = { "x-id": String(id), "x-allow": allow ? "yes" : "no" };
+                        try {
+                            const res = await client.echo(create(EchoRequestSchema, { message: `m${id}` }), { headers });
+                            return { id, allow, outcome: res.message };
+                        } catch (err) {
+                            return { id, allow, outcome: ConnectError.from(err).rawMessage };
+                        }
+                    }),
+                );
+                for (const { id, allow, outcome } of results) {
+                    assert.strictEqual(outcome, allow ? `echo:m${id}` : `denied ${id}`, `call ${id} must get its own verdict`);
+                }
+            }
+            // 13 admitted calls per transport (ids not divisible by 3).
+            assert.strictEqual(calls.count, 26);
+        } finally {
+            await server.stop();
+        }
     });
 });
 
@@ -433,6 +567,50 @@ describe("gate cancellation is cooperative", () => {
 });
 
 describe("a forged internal transport marker is invisible to gates over HTTP", () => {
+    /**
+     * Proves the forged-marker assertions below can fail. The same routes are
+     * served twice over HTTP/1.1: once through a bare `connectNodeAdapter`
+     * (Connect alone, no Connectum request wrapper) and once through the handler
+     * `buildRoutes` returns. With identical routes and gate, only the wrapper
+     * differs — and only through it does the gate stop seeing the forgery.
+     */
+    it("a bare Connect adapter shows the gate the forged marker; the buildRoutes handler does not", async () => {
+        const seen: Array<string | null> = [];
+        const requestGate = (ctx: HandlerContext) => {
+            seen.push(ctx.requestHeader.get(LOCAL_TRANSPORT_HEADER));
+        };
+        const registerContext: RegisterContext = {
+            wrapHandlers: ((_descriptor: unknown, handlers: unknown) => handlers) as RegisterContext["wrapHandlers"],
+        };
+        const built = buildRoutes({
+            services: [makeEchoRoutes({ count: 0 })],
+            protocols: [],
+            interceptors: [],
+            shutdownSignal: new AbortController().signal,
+            registerContext,
+            requestGate,
+        });
+        const bare = connectNodeAdapter({ routes: built.routes, requestGate }) as (req: NodeRequest, res: NodeResponse) => void;
+
+        for (const handler of [bare, built.handler]) {
+            const http = createHttpServer((req, res) => handler(req as NodeRequest, res as NodeResponse));
+            await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+            try {
+                const { port } = http.address() as AddressInfo;
+                const res = await fetch(`http://127.0.0.1:${port}/echo.v1.EchoService/Echo`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json", [LOCAL_TRANSPORT_HEADER]: LOCAL_TRANSPORT_VALUE },
+                    body: JSON.stringify({ message: "spoof" }),
+                });
+                assert.strictEqual(res.status, 200);
+                await res.text();
+            } finally {
+                await new Promise<void>((resolve) => http.close(() => resolve()));
+            }
+        }
+        assert.deepStrictEqual(seen, [LOCAL_TRANSPORT_VALUE, null], "only the Connectum handler hides the forged marker from the gate");
+    });
+
     it("server-level gate over HTTP/1.1 does not see the forged marker", async () => {
         const seen: Array<string | null> = [];
         const server = createServer({

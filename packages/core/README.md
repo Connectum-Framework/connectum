@@ -558,7 +558,8 @@ const server = createServer({
 What to rely on:
 
 - **Both transports.** The gate and the limit apply identically over HTTP and in-process (`server.localClient()`, `createLocalTransport()`, `ctx.call` to a local service). There is no in-process exemption: an internal `ctx.call` carries only the headers you forward with `propagateHeaders` or `outgoingInterceptors`.
-- **Safe errors.** A gate runs before the server interceptors, so its error reaches the client as thrown: `errorHandler` does not sanitise it. Throw a fixed, client-safe message.
+- **Safe errors.** A gate runs before the server interceptors, so `errorHandler` never sees its error. A thrown `ConnectError` reaches the client as thrown: give it a fixed, client-safe message. Anything else is replaced by Connect with `internal error` (`Code.Internal`), so its text never reaches the client.
+- **Valid limits only.** `readMaxBytes` must be an integer from 1 to 4294967295; `createServer()` throws a `RangeError` naming the option otherwise.
 - **No server-side telemetry.** A rejected call runs no server interceptor, so it produces no server span, metric or log entry. To audit rejections, wrap the gate: catch, record, rethrow.
 - **Defaults, not ceilings.** A service's own `requestGate` or `readMaxBytes` in `ServiceOptions` replaces the server value for that service.
 - **Coverage.** Every RPC on the router is gated, including gRPC Health and Reflection. HTTP endpoints served by protocol HTTP handlers, such as `/healthz`, are not.

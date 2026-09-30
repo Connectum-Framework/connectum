@@ -423,9 +423,14 @@ export interface CreateServerOptions {
      *   `outgoingInterceptors`), so a header-based gate rejects it unless the
      *   credential is forwarded.
      * - **Client-safe errors only.** A gate runs before the server
-     *   interceptor chain, so its error reaches the client exactly as thrown —
-     *   an `errorHandler` interceptor does not sanitise it. Throw a fixed,
-     *   non-revealing message.
+     *   interceptor chain, so an `errorHandler` interceptor never sees its
+     *   error. A thrown `ConnectError` reaches the client exactly as thrown
+     *   (code, message, metadata, details) — throw a fixed, non-revealing
+     *   message. Anything else (a plain `Error`, a string, a rejected promise)
+     *   is replaced by Connect with `ConnectError("internal error",
+     *   Code.Internal)`; its text never reaches the client.
+     * - Must be a function; anything else throws a `TypeError` from
+     *   `createServer()`.
      * - **Invisible to server interceptors.** A rejected call never runs
      *   server-side interceptors: no server span, metric, or log entry from
      *   `@connectum/otel` or the logger. To audit rejections, wrap your gate
@@ -476,9 +481,11 @@ export interface CreateServerOptions {
      * This is a **default, not a ceiling**: a service that sets `readMaxBytes`
      * in its `ServiceOptions` uses its own value, larger or smaller.
      *
-     * A value below 1 or above Connect's maximum is rejected with a
-     * `ConnectError` (`Code.Internal`) when routes are materialized — at
-     * `server.start()` or at the first in-process access.
+     * Must be an integer from 1 to 4294967295 (Connect's maximum).
+     * `createServer()` throws a `RangeError` naming the option for anything
+     * else — `0`, negatives, fractions, `NaN`, `Infinity` — and a `TypeError`
+     * for a non-number. (Left to Connect, `NaN` would silently disable the
+     * limit.)
      *
      * @example
      * ```typescript

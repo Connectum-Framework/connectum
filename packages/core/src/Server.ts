@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { validateAdmissionOptions } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
@@ -78,6 +79,7 @@ class ServerImpl extends EventEmitter implements Server {
 
     constructor(options: CreateServerOptions) {
         super();
+        validateAdmissionOptions(options);
         this._options = options;
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
