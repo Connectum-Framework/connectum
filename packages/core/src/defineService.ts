@@ -87,12 +87,27 @@ export function defineService<S extends DescService>(descriptor: S, handlers: Co
  * it is in `enabledServices` (or `enabledServices` is `undefined`). A service
  * routed to a remote process never instantiates its local dependencies. Useful
  * for DI-heavy monoliths where wiring a service is expensive.
+ *
+ * `factory` runs once per server: the HTTP adapter, `server.localClient` and
+ * `ctx.call` all reach the same instance. The same definition mounted on two
+ * servers yields one instance per server.
  */
 export function defineLazyService<S extends DescService>(descriptor: S, factory: () => ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
+    // A server registers its services on every router it builds (HTTP adapter,
+    // each in-process transport) but passes the same register context each
+    // time, so the context identifies the server. Without this cache every
+    // router would get its own instance — diverging in-memory state and
+    // duplicated resources between HTTP and in-process callers.
+    const instances = new WeakMap<RegisterContext, ConnectumServiceImpl<S>>();
     return {
         descriptor,
         register(router, ctx) {
-            router.service(descriptor, ctx.wrapHandlers(descriptor, factory()), options);
+            let handlers = instances.get(ctx);
+            if (handlers === undefined) {
+                handlers = factory();
+                instances.set(ctx, handlers);
+            }
+            router.service(descriptor, ctx.wrapHandlers(descriptor, handlers), options);
         },
     };
 }

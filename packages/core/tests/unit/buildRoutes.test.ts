@@ -7,11 +7,14 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import type { DescFile } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
+import { createConnectRouter } from "@connectrpc/connect";
 import type { BuildRoutesOptions } from "../../src/buildRoutes.ts";
 import { buildRoutes } from "../../src/buildRoutes.ts";
 import type { RegisterContext } from "../../src/defineService.ts";
 import type { ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
+import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 /** Minimal RegisterContext: identity wrapper (these tests never invoke handlers). */
 const stubRegisterContext: RegisterContext = {
@@ -83,13 +86,60 @@ describe("buildRoutes()", () => {
         it("should accept protocols in options", () => {
             const protocol: ProtocolRegistration = {
                 name: "test-protocol",
-                register: mock.fn((_router: ConnectRouter, _context: ProtocolContext) => {}),
+                register: mock.fn((_router: ConnectRouter) => {}),
             };
 
             const result = buildRoutes(createOptions({ protocols: [protocol] }));
 
             assert.ok(result.handler);
             assert.ok(Array.isArray(result.registry));
+        });
+
+        // `routes` is replayed on every router the server builds (HTTP adapter,
+        // each in-process transport). One-time protocol work must not replay
+        // with it, or Healthcheck re-initializes and drops out of SERVING.
+        it("calls setup once and register once per router", () => {
+            const setup = mock.fn((_context: ProtocolContext) => {});
+            const register = mock.fn((_router: ConnectRouter) => {});
+            const protocol: ProtocolRegistration = { name: "counting", setup, register };
+
+            const result = buildRoutes(createOptions({ protocols: [protocol] }));
+            result.routes(createConnectRouter());
+            result.routes(createConnectRouter());
+
+            assert.strictEqual(setup.mock.callCount(), 1, "setup must run once across all routers");
+            assert.strictEqual(register.mock.callCount(), 3, "register must run for the HTTP adapter and both extra routers");
+        });
+
+        // Healthcheck must not track its own Health service and Reflection must
+        // list the protocols registered before it: each protocol sees the files
+        // registered ahead of it, fixed at that moment.
+        it("gives setup a frozen snapshot of the files registered before the protocol", () => {
+            const seen: Array<ReadonlyArray<DescFile>> = [];
+            const first: ProtocolRegistration = {
+                name: "first",
+                setup: (context) => {
+                    seen.push(context.registry);
+                },
+                register: (router) => {
+                    router.service(EchoService, {});
+                },
+            };
+            const second: ProtocolRegistration = {
+                name: "second",
+                setup: (context) => {
+                    seen.push(context.registry);
+                },
+                register: () => {},
+            };
+
+            const result = buildRoutes(createOptions({ protocols: [first, second] }));
+            result.routes(createConnectRouter());
+
+            assert.deepStrictEqual(seen[0], [], "the first protocol sees no files: no application services are mounted");
+            assert.deepStrictEqual(seen[1], [EchoService.file], "the second protocol sees the file the first one registered");
+            assert.ok(Object.isFrozen(seen[0]) && Object.isFrozen(seen[1]), "snapshots must be immutable");
+            assert.strictEqual(seen.length, 2, "replaying routes must not call setup again");
         });
 
         it("should accept multiple protocols", () => {
