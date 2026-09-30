@@ -21,7 +21,7 @@
 import assert from "node:assert/strict";
 import type { UnknownEnum } from "@bufbuild/protobuf";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { Color, Paint_Finish, PaintSchema } from "#gen/fixture/v1/enums_pb.ts";
+import { Color, ColorSchema, Paint_Finish, PaintSchema } from "#gen/fixture/v1/enums_pb.ts";
 
 // Values keep their literal types: a single value's type is `typeof Color.RED`.
 const red: typeof Color.RED = Color.RED;
@@ -40,6 +40,9 @@ assert.deepEqual(Object.keys(Paint_Finish), ["UNSPECIFIED", "MATTE", "GLOSS"]);
 // @ts-expect-error -- erasable enums have no reverse mapping from number to name.
 const reverse = Color[1];
 assert.equal(reverse, undefined);
+// The documented replacement for the reverse mapping: the generated enum descriptor.
+assert.equal(ColorSchema.value[1]?.localName, "RED");
+assert.equal(ColorSchema.value[1]?.name, "COLOR_RED");
 
 // The enum values round-trip through the binary wire format.
 const paint = fromBinary(PaintSchema, toBinary(PaintSchema, create(PaintSchema, { color: Color.GREEN, finish: Paint_Finish.GLOSS })));
