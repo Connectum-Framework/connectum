@@ -126,7 +126,7 @@ Manages the HTTP/2 server lifecycle:
 Route and protocol composition:
 - Registering user services on `ConnectRouter`
 - Intercepting `router.service()` to collect `DescFile[]` registry (used by reflection)
-- Registering protocols (healthcheck, reflection) with registry passing
+- Setting up each protocol (healthcheck, reflection) once per server with a snapshot of the registry, then registering its routes on every router the server builds (HTTP adapter and each in-process transport)
 - Creating `connectNodeAdapter` with fallback routing to HTTP protocol handlers
 
 ### gracefulShutdown
@@ -430,7 +430,7 @@ const trip = await client.call('trip.v1.TripService/StartTrip', { vehicleId: 've
 | Export | Kind | Description |
 |--------|------|-------------|
 | `defineService` | function | Define a mountable service from a descriptor + register closure |
-| `defineLazyService` | function | Define a service whose implementation is resolved lazily |
+| `defineLazyService` | function | Define a service whose implementation is resolved lazily, once per server (shared by HTTP, `localClient` and `ctx.call`) |
 | `defineCatalog` | function | Build a typed `ServiceCatalog` for cross-service calls |
 | `mergeCatalogs` | function | Merge multiple catalogs into one |
 | `CatalogConfigError` | class | Error thrown for invalid catalog configuration |

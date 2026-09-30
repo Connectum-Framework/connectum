@@ -35,8 +35,22 @@ describe("Reflection", () => {
 		};
 
 		assert.doesNotThrow(() => {
-			protocol.register(mockRouter as any, mockContext as any);
+			protocol.setup?.(mockContext as any);
+			protocol.register(mockRouter as any);
 		});
+	});
+
+	// An empty descriptor set would advertise "no services" instead of failing,
+	// hiding a server that skipped setup.
+	it("should throw when register is called before setup", () => {
+		const protocol = Reflection();
+
+		const mockRouter = {
+			service: mock.fn(),
+			rpc: mock.fn(),
+		};
+
+		assert.throws(() => protocol.register(mockRouter as any), /before setup/);
 	});
 
 	it("should call router.service when registering with service files", () => {
@@ -57,7 +71,8 @@ describe("Reflection", () => {
 			registry: [mockFile],
 		};
 
-		protocol.register(mockRouter as any, mockContext as any);
+		protocol.setup?.(mockContext as any);
+		protocol.register(mockRouter as any);
 
 		// registerServerReflectionFromFileDescriptorSet registers v1 + v1alpha
 		assert.ok(

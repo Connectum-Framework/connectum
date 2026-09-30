@@ -88,10 +88,15 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const protocol: ProtocolRegistration = {
         name: "healthcheck",
 
-        register(router: ConnectRouter, context: ProtocolContext): void {
+        // Once per server: re-initializing on every router would drop the
+        // tracked services and start tracking this protocol's own Health
+        // service as UNKNOWN, taking overall health out of SERVING.
+        setup(context: ProtocolContext): void {
             const serviceNames = context.registry.flatMap((file) => file.services.map((s) => s.typeName));
             manager.initialize(serviceNames);
+        },
 
+        register(router: ConnectRouter): void {
             router.service(Health, {
                 /**
                  * List all services with their health status
