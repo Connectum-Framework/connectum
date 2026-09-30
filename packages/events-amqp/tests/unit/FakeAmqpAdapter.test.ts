@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createEventBus } from "@connectum/events";
+import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
 import { FakeAmqpAdapter } from "../../src/testing.ts";
 import type { AmqpLifecycleEvent } from "../../src/types.ts";
@@ -135,19 +136,53 @@ describe("FakeAmqpAdapter lifecycle parity", () => {
 });
 
 describe("FakeAmqpAdapter state machine parity", () => {
-    it("double connect() throws 'already connected'; RECOVERING and DEAD also refuse (real: connection stays non-null)", async () => {
+    it("double connect() and connect() during recovery throw 'already connected'; after give-up and after disconnect() a fresh connect() works", async () => {
         const fake = FakeAmqpAdapter();
         await fake.connect();
         await assert.rejects(() => fake.connect(), /already connected/);
 
+        await fake.subscribe(["evt"], async () => undefined);
         fake.control.dropConnection();
         await assert.rejects(() => fake.connect(), /already connected/, "connect() during recovery mirrors the real non-null connection");
 
         fake.control.exhaustRecovery();
-        await assert.rejects(() => fake.connect(), /already connected/, "a plain retries-exhausted adapter requires disconnect() first");
+        await fake.connect(); // the real adapter drops the dead connection on give-up
+        const afterGiveUp = await fake.control.deliver("evt", new Uint8Array());
+        assert.equal(afterGiveUp.delivered, 0, "a connect() after give-up does not resurrect the old subscription");
 
         await fake.disconnect();
         await fake.connect(); // CLOSED → fresh connect works, like the real adapter
+    });
+
+    it("after give-up, subscribe() and publish() reject with the same class and message as the real adapter in that state", async () => {
+        // Oracle: a real adapter without a connection. Once recovery gives up,
+        // the real adapter drops its connection and takes exactly these
+        // branches; amqplib is only loaded inside connect(), so no broker is
+        // needed to observe them.
+        const real = AmqpAdapter({ url: "amqp://unused.invalid" });
+        const realWithRetry = AmqpAdapter({ url: "amqp://unused.invalid", publishRetry: { maxRetries: 3 } });
+        const failureOf = async (op: () => Promise<unknown>): Promise<{ readonly name: string; readonly message: string; readonly typed: boolean }> => {
+            try {
+                await op();
+            } catch (err) {
+                return { name: (err as Error).name, message: (err as Error).message, typed: err instanceof AmqpConnectionError };
+            }
+            throw new Error("expected the operation to reject");
+        };
+
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+        fake.control.dropConnection();
+        fake.control.exhaustRecovery();
+
+        const expectedSubscribe = await failureOf(() => real.subscribe(["evt"], async () => undefined));
+        const expectedPublish = await failureOf(() => real.publish("evt", new Uint8Array([1])));
+        const expectedRetryingPublish = await failureOf(() => realWithRetry.publish("evt", new Uint8Array([1])));
+        assert.equal(expectedSubscribe.typed, true, "the oracle itself is the typed connection error");
+        assert.deepEqual(expectedRetryingPublish, expectedPublish, "publishRetry does not change the dead-state error");
+
+        assert.deepEqual(await failureOf(() => fake.subscribe(["evt"], async () => undefined)), expectedSubscribe);
+        assert.deepEqual(await failureOf(() => fake.publish("evt", new Uint8Array([1]))), expectedPublish);
     });
 
     it("a mid-recovery subscribe PARKS and completes with the recovery (real waiter-queue parity)", async () => {
