@@ -151,7 +151,9 @@ for (const [label, [cmd, ...args]] of checks) {
     const problems = [...singleCopyProblems(participants), ...(mode === "pack" ? candidateProblems(participants, packedManifests) : [])];
     for (const p of problems) console.error(`  ${p}`);
     if (problems.length > 0) failed.push(label);
-    else console.log("  one copy of each; every @connectum/* participant is the build under test");
+    else if (mode === "pack") console.log("  one copy of each; every @connectum/* participant is the build under test");
+    // Preview tarballs are fetched by URL override, so provenance is not compared here.
+    else console.log("  one copy of each");
 }
 
 // --- 5. verdict ---
