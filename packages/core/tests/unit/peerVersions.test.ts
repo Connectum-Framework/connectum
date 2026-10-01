@@ -17,10 +17,11 @@
  */
 
 import assert from "node:assert";
+import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer, PeerDependencyVersionError } from "../../src/index.ts";
-import { checkPeerVersions, satisfiesCaret } from "../../src/peerVersions.ts";
+import { checkPeerVersions, satisfiesCaret, satisfiesPeerRange } from "../../src/peerVersions.ts";
 
 const FIXTURES = new URL("../fixtures/peer-versions/", import.meta.url);
 /** A module inside the fixture "@connectum/core" package. */
@@ -52,6 +53,8 @@ describe("checkPeerVersions — decision", () => {
         assert.strictEqual(report.status, "checked");
         assert.deepStrictEqual(report.status === "checked" ? report.problems : undefined, [
             {
+                kind: "range",
+                requiredBy: "@connectum/core",
                 packageName: "@bufbuild/protobuf",
                 loadedVersion: "2.12.1",
                 requiredRange: "^2.16.0",
@@ -124,14 +127,122 @@ describe("satisfiesCaret", () => {
 
 describe("PeerDependencyVersionError", () => {
     it("names the package, the loaded version, the required range and the fix", () => {
-        const error = new PeerDependencyVersionError([{ packageName: "@bufbuild/protobuf", loadedVersion: "2.12.1", requiredRange: "^2.16.0", loadedFrom: "/app/node_modules/@bufbuild/protobuf" }]);
+        const error = new PeerDependencyVersionError([
+            { kind: "range", packageName: "@bufbuild/protobuf", loadedVersion: "2.12.1", requiredRange: "^2.16.0", requiredBy: "@connectum/core", loadedFrom: "/app/node_modules/@bufbuild/protobuf" },
+        ]);
         assert.strictEqual(error.name, "PeerDependencyVersionError");
         assert.ok(error instanceof Error);
         assert.match(error.message, /@bufbuild\/protobuf: loaded 2\.12\.1 \(from \/app\/node_modules\/@bufbuild\/protobuf\), @connectum\/core requires \^2\.16\.0/);
         assert.match(error.message, /npm install @bufbuild\/protobuf@"\^2\.16\.0"/);
         assert.match(error.message, /overrides/);
         assert.strictEqual(error.problems.length, 1);
+        assert.doesNotMatch(error.message, /connect-node works only/);
     });
+
+    it("explains lockstep when connect-node's connect is the problem", () => {
+        const error = new PeerDependencyVersionError([
+            {
+                kind: "split",
+                packageName: "@connectrpc/connect",
+                loadedVersion: "2.2.0",
+                requiredRange: "2.2.0",
+                requiredBy: "@connectrpc/connect-node@2.2.0",
+                loadedFrom: "/app/node_modules/@connectrpc/connect-node/node_modules/@connectrpc/connect",
+                otherCopy: "/app/node_modules/@connectrpc/connect",
+            },
+        ]);
+        assert.match(error.message, /@connectrpc\/connect-node@2\.2\.0 loads 2\.2\.0 from .*, a different copy than @connectum\/core loads \(\/app\/node_modules\/@connectrpc\/connect\)/);
+        assert.match(error.message, /keep both on the same version, with a single copy/);
+    });
+
+    it("never advises installing connect-node's exact connect when it contradicts core's range", () => {
+        const error = new PeerDependencyVersionError([
+            { kind: "range", packageName: "@connectrpc/connect-node", loadedVersion: "2.1.2", requiredRange: "^2.2.0", requiredBy: "@connectum/core", loadedFrom: "/app/cn" },
+            { kind: "range", packageName: "@connectrpc/connect", loadedVersion: "2.2.0", requiredRange: "2.1.2", requiredBy: "@connectrpc/connect-node@2.1.2", loadedFrom: "/app/c" },
+        ]);
+        assert.match(error.message, /npm install @connectrpc\/connect-node@"\^2\.2\.0",/);
+        assert.doesNotMatch(error.message, /@connectrpc\/connect@"2\.1\.2"/);
+    });
+});
+
+/**
+ * A `resolveFrom` that answers "which @connectrpc/connect does connect-node load" with a
+ * chosen fixture copy, and fails loudly for any other question.
+ */
+function connectNodeLoads(copy: string): (fromUrl: string, specifier: string) => string {
+    return (fromUrl, specifier) => {
+        assert.match(fromUrl, /libs\/connect-node-[^/]+\/esm\/index\.js$/, "resolves from connect-node's own entry");
+        assert.strictEqual(specifier, "@connectrpc/connect");
+        return fileURLToPath(new URL(`libs/${copy}/esm/index.js`, FIXTURES));
+    };
+}
+
+describe("checkPeerVersions — connect / connect-node lockstep", () => {
+    it("passes when connect-node loads the exact connect it declares, and it is core's copy", () => {
+        const report = checkPeerVersions({ selfUrl: CORE_SELF, resolve: resolverFor(IN_RANGE), resolveFrom: connectNodeLoads("connect-2.2.0") });
+        assert.deepStrictEqual(report, { status: "checked", problems: [] });
+    });
+
+    it("fails when connect-node declares another exact connect, although both are inside core's ranges", () => {
+        // connect-node 2.2.5 requires connect exactly 2.2.5; core's ^2.2.0 accepts both,
+        // so only the lockstep check sees this pair — the case Bun and Yarn install silently.
+        const report = checkPeerVersions({
+            selfUrl: CORE_SELF,
+            resolve: resolverFor({ ...IN_RANGE, "@connectrpc/connect-node": "connect-node-2.2.5" }),
+            resolveFrom: connectNodeLoads("connect-2.2.0"),
+        });
+        assert.deepStrictEqual(report.status === "checked" ? report.problems : undefined, [
+            {
+                kind: "range",
+                packageName: "@connectrpc/connect",
+                loadedVersion: "2.2.0",
+                requiredRange: "2.2.5",
+                requiredBy: "@connectrpc/connect-node@2.2.5",
+                loadedFrom: fileURLToPath(new URL("libs/connect-2.2.0", FIXTURES)),
+            },
+        ]);
+    });
+
+    it("fails when connect-node loads a different connect copy than core, even at the same version", () => {
+        const report = checkPeerVersions({ selfUrl: CORE_SELF, resolve: resolverFor(IN_RANGE), resolveFrom: connectNodeLoads("connect-2.2.0-second-copy") });
+        assert.deepStrictEqual(report.status === "checked" ? report.problems : undefined, [
+            {
+                kind: "split",
+                packageName: "@connectrpc/connect",
+                loadedVersion: "2.2.0",
+                requiredRange: "2.2.0",
+                requiredBy: "@connectrpc/connect-node@2.2.0",
+                loadedFrom: fileURLToPath(new URL("libs/connect-2.2.0-second-copy", FIXTURES)),
+                otherCopy: fileURLToPath(new URL("libs/connect-2.2.0", FIXTURES)),
+            },
+        ]);
+    });
+
+    it("skips the lockstep part when connect-node's connect cannot be resolved or resolveFrom is missing", () => {
+        const throwing = () => {
+            throw new Error("Cannot find module '@connectrpc/connect'");
+        };
+        assert.deepStrictEqual(checkPeerVersions({ selfUrl: CORE_SELF, resolve: resolverFor(IN_RANGE), resolveFrom: throwing }), { status: "checked", problems: [] });
+        assert.deepStrictEqual(checkPeerVersions({ selfUrl: CORE_SELF, resolve: resolverFor(IN_RANGE) }), { status: "checked", problems: [] });
+    });
+});
+
+describe("satisfiesPeerRange", () => {
+    const cases: [string, string, boolean | undefined][] = [
+        ["2.2.0", "2.2.0", true],
+        ["2.2.0+build.7", "2.2.0", true],
+        ["2.2.1", "2.2.0", false],
+        ["2.1.2", "2.2.0", false],
+        ["2.2.0-rc.1", "2.2.0", false],
+        ["2.2.0", "^2.2.0", true],
+        ["2.2.0", ">=2.2.0", undefined],
+        ["latest", "2.2.0", undefined],
+    ];
+    for (const [version, range, expected] of cases) {
+        it(`${version} vs ${range} -> ${expected}`, () => {
+            assert.strictEqual(satisfiesPeerRange(version, range), expected);
+        });
+    }
 });
 
 describe("createServer — real environment", () => {
@@ -141,6 +252,7 @@ describe("createServer — real environment", () => {
         const report = checkPeerVersions({
             selfUrl: new URL("../../src/peerVersions.ts", import.meta.url).href,
             resolve: (specifier) => import.meta.resolve(specifier),
+            resolveFrom: (fromUrl, specifier) => createRequire(fromUrl).resolve(specifier),
         });
         assert.deepStrictEqual(report, { status: "checked", problems: [] });
     });

@@ -22,6 +22,10 @@
  *                      (ERESOLVE); pnpm and Bun install but print a peer warning naming it.
  * - `connect-below`  — `@connectrpc/connect` pinned below the floor, `connect-node` left
  *                      to the manager: the same visible failure / warning.
+ * - `connect-node-below` — connect 2.2.0 next to connect-node 2.1.2, whose exact peer is
+ *                      connect 2.1.2: out of lockstep. npm refuses the tree; on pnpm and
+ *                      Bun `createServer()` must report the lockstep line
+ *                      (`@connectrpc/connect-node@2.1.2 requires 2.1.2`).
  * The expected per-manager outcomes are the EXPECTATIONS table below; a run that differs
  * from it fails, whichever way it differs.
  *
@@ -107,6 +111,21 @@ const SCENARIOS = {
     "peers-omitted": {},
     "protobuf-below": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.2.0" },
     "connect-below": { "@connectrpc/connect": "2.1.2" },
+    // connect / connect-node out of lockstep: connect-node 2.1.2 declares connect EXACTLY
+    // 2.1.2 next to an in-range connect 2.2.0. No published pair is both inside core's
+    // ranges and out of lockstep (2.2.0 is the only 2.2.x), so connect-node is also below
+    // core's floor here; the runtime assertion requires the lockstep line specifically.
+    "connect-node-below": { "@bufbuild/protobuf": "2.16.0", "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.1.2" },
+};
+
+/**
+ * Lines `createServer()` must print in `PeerDependencyVersionError` for an out-of-range
+ * cell that installed (pnpm, Bun). Each names one requirement the loaded copies break.
+ */
+const RUNTIME_FAILURE = {
+    "protobuf-below": ["@bufbuild/protobuf: loaded 2.12.1", "@connectum/core requires ^2.16.0"],
+    "connect-below": ["@connectrpc/connect: loaded 2.1.2", "@connectum/core requires ^2.2.0"],
+    "connect-node-below": ["@connectrpc/connect-node: loaded 2.1.2", "@connectrpc/connect: loaded 2.2.0", "@connectrpc/connect-node@2.1.2 requires 2.1.2"],
 };
 
 /**
@@ -159,6 +178,12 @@ const EXPECTATIONS = {
         npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
         pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
         bun: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+    },
+    "connect-node-below": {
+        // npm names the conflicting edge: `peer @connectrpc/connect@"2.1.2" from @connectrpc/connect-node@2.1.2`.
+        npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
+        pnpm: { install: "ok", complaintAbout: "@connectrpc/connect-node", contract: false },
+        bun: { install: "ok", complaintAbout: "@connectrpc/connect-node", contract: false },
     },
 };
 
@@ -396,9 +421,11 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
         if (expected.contract) {
             if (runtime.direct.verdict !== "ok") problems.push(`createServer() failed in range: ${runtime.direct.name}\n${runtime.direct.output.trim()}`);
         } else {
-            const wanted = `${expected.complaintAbout}: loaded ${SCENARIOS[scenario][expected.complaintAbout]}`;
-            if (runtime.direct.name !== "PeerDependencyVersionError" || !runtime.direct.output.includes(wanted)) {
-                problems.push(`createServer() did not fail with PeerDependencyVersionError naming "${wanted}" (got ${runtime.direct.verdict} ${runtime.direct.name})`);
+            const missing = RUNTIME_FAILURE[scenario].filter((line) => !runtime.direct.output.includes(line));
+            if (runtime.direct.name !== "PeerDependencyVersionError" || missing.length > 0) {
+                problems.push(
+                    `createServer() did not fail with PeerDependencyVersionError containing ${JSON.stringify(missing)} (got ${runtime.direct.verdict} ${runtime.direct.name})`,
+                );
             }
         }
         // Bundled, core cannot see its own package.json, so the check is skipped by
