@@ -1,0 +1,5 @@
+# Test-only module: descriptors served by the reflection tests. Not a contract,
+# never linted for style or pushed anywhere.
+version: v2
+modules:
+  - path: .

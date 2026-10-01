@@ -7,34 +7,28 @@
  * @module buildRoutes
  */
 
-import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
+import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
-import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
+import type { CreateServerOptions, NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
 
 /**
- * Server-side interceptor applied ONLY on the HTTP entry path (via
- * `connectNodeAdapter`). Strips the `connectum-internal-transport` request
- * header before it reaches the user interceptor chain or the OTel
- * server-side interceptor.
+ * Second line of defense against a forged `connectum-internal-transport`
+ * header on the HTTP entry path; the first line is the request wrapper in
+ * {@link buildRoutes}, which deletes the header before `connectNodeAdapter`
+ * ever builds the request.
  *
- * Rationale (security finding F1, CWE-345): the header is set by
- * `createLocalTransport`'s client-side marker interceptor to disambiguate
- * the in-memory pipe from HTTP transport. The marker is consumed by
- * `@connectum/otel` to tag spans/metrics with `connectum.transport=in-process`.
- * Because the constant name is published, a remote HTTP caller could forge
- * the header and poison telemetry. Stripping inbound HTTP-side ensures the
- * marker can only originate from a legitimate in-process pipe (whose path
- * never traverses this HTTP-only interceptor).
+ * Why the header matters (CWE-345): `createLocalTransport` sets it to tell the
+ * in-memory pipe apart from HTTP, and `@connectum/otel` and the logger use it
+ * to attribute calls to `connectum.transport=in-process`. A remote caller who
+ * knows the name could forge it and poison that attribution. This interceptor
+ * keeps the guarantee for the interceptor chain even if a future change
+ * bypasses the request wrapper.
  *
- * The in-process path (`createLocalTransport`) does NOT pass through this
- * interceptor: it builds its own `createRouterTransport` directly over the
- * route callback, with the marker interceptor prepended on the client side.
- * Therefore legitimate in-process calls still carry the marker into the
- * server interceptor chain (and OTel observes it correctly), while forged
- * HTTP calls have the header neutralised here.
+ * The in-process path never traverses `connectNodeAdapter`, so legitimate
+ * local calls keep the marker end-to-end.
  *
  * @internal
  */
@@ -58,6 +52,10 @@ export interface BuildRoutesOptions {
     registerContext: RegisterContext;
     /** Connect JSON serialization options applied server-wide (passed to connectNodeAdapter). */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+    /** Server-level request gate default (passed to connectNodeAdapter). See {@link CreateServerOptions.requestGate}. */
+    requestGate?: CreateServerOptions["requestGate"];
+    /** Server-level per-message read limit default (passed to connectNodeAdapter). See {@link CreateServerOptions.readMaxBytes}. */
+    readMaxBytes?: number;
     /**
      * Proto `typeName`s to mount locally. A service whose `typeName` is not in
      * the set is skipped (treated as remote). `undefined` mounts every service.
@@ -91,13 +89,14 @@ export interface BuildRoutesResult {
      */
     registeredServiceTypeNames: Set<string>;
     /**
-     * The prefix of `registry` contributed by user services (before protocol
-     * registration). Transport validation runs against this slice only:
+     * The services mounted by the application (before protocol registration),
+     * in registration order. Transport validation runs against these only:
      * protocol-contributed services (e.g. gRPC Reflection, whose
      * ServerReflectionInfo is bidi) own their documented transport
-     * limitations and must not fail the user's startup.
+     * limitations and must not fail the user's startup, and services that are
+     * declared in a mounted file but not mounted cannot be called at all.
      */
-    userRegistry: DescFile[];
+    userServices: DescService[];
 }
 
 /**
@@ -111,11 +110,14 @@ export interface BuildRoutesResult {
  * @returns The HTTP handler and collected DescFile registry
  */
 export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
-    const { services, protocols, interceptors, shutdownSignal, jsonOptions, enabledServices, registerContext } = options;
+    const { services, protocols, interceptors, shutdownSignal, jsonOptions, requestGate, readMaxBytes, enabledServices, registerContext } = options;
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
-    let userFileCount = 0;
+    // Every mounted service in registration order. `registry` holds their
+    // files, and a file may also declare services that are not mounted.
+    const mountedServices: DescService[] = [];
+    let userServiceCount = 0;
     // Protocol `setup` is one-time work (health manager initialization,
     // reflection descriptor set) and must not run again for the routers
     // built later by in-process transports.
@@ -134,6 +136,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             if (!registry.includes(service.file)) {
                 registry.push(service.file);
             }
+            if (!registeredServiceTypeNames.has(service.typeName)) {
+                mountedServices.push(service);
+            }
             registeredServiceTypeNames.add(service.typeName);
             return originalService.apply(router, args);
         }) as typeof originalService;
@@ -148,19 +153,22 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             definition.register(router, registerContext);
         }
         // Everything registered up to here came from user services;
-        // descriptors added below belong to protocols.
-        userFileCount = registry.length;
+        // services added below belong to protocols.
+        userServiceCount = mountedServices.length;
 
         // Register protocols. On the first materialization each protocol is set
         // up right before its own registration, so it sees the application
-        // files plus the files of the protocols before it — Healthcheck does
-        // not track itself, Reflection lists the protocols registered earlier.
-        // The snapshot keeps that view fixed even though `registry` keeps
-        // growing.
+        // services and files plus those of the protocols before it —
+        // Healthcheck does not track itself, Reflection lists the protocols
+        // registered earlier. The snapshots keep that view fixed even though
+        // `registry` and `mountedServices` keep growing.
         const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
             if (settingUp) {
-                const context: ProtocolContext = { registry: Object.freeze([...registry]) };
+                const context: ProtocolContext = {
+                    registry: Object.freeze([...registry]),
+                    services: Object.freeze([...mountedServices]),
+                };
                 protocol.setup?.(context);
             }
             protocol.register(router);
@@ -171,19 +179,18 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     // Collect HTTP handlers from protocols
     const httpHandlers = protocols.map((p) => p.httpHandler).filter((h) => h != null);
 
-    // Create HTTP/2 server adapter.
-    //
-    // SECURITY: prepend the HTTP-only strip interceptor so that any forged
-    // `connectum-internal-transport` header arriving over the wire is
-    // neutralised before downstream interceptors (including OTel) observe it.
-    // The in-process path bypasses `connectNodeAdapter` entirely and reuses
-    // the route callback via `createRouterTransport`, so this interceptor
-    // does NOT affect legitimate local invocations.
-    const handler = connectNodeAdapter({
+    // Create HTTP/2 server adapter. Unset admission options are left out of the
+    // object entirely, so a server without them builds exactly the adapter it
+    // built before these options existed. `!== undefined` (not truthiness) so
+    // an invalid `readMaxBytes: 0` reaches Connect's range check and fails
+    // loudly instead of silently meaning "no limit".
+    const adapter = connectNodeAdapter({
         routes,
         interceptors: [stripLocalTransportHeaderOnHttp, ...interceptors],
         shutdownSignal,
         ...(jsonOptions ? { jsonOptions } : {}),
+        ...(requestGate !== undefined ? { requestGate } : {}),
+        ...(readMaxBytes !== undefined ? { readMaxBytes } : {}),
         fallback(req, res) {
             // Delegate to protocol HTTP handlers
             for (const httpHandler of httpHandlers) {
@@ -198,13 +205,25 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
         },
     });
 
+    // SECURITY: delete a forged `connectum-internal-transport` header before
+    // the adapter sees the request. Connect runs `requestGate` (server-level
+    // AND per-service) before any interceptor, on a copy of the headers the
+    // adapter builds from `req.headers` — so the strip interceptor above comes
+    // too late for gates. Node lowercases incoming header names, so one key
+    // covers every casing. Legitimate in-process calls never reach this
+    // handler and keep the marker.
+    const handler = (req: NodeRequest, res: NodeResponse): void => {
+        delete req.headers[LOCAL_TRANSPORT_HEADER];
+        (adapter as (req: NodeRequest, res: NodeResponse) => void)(req, res);
+    };
+
     // connectNodeAdapter invokes routes() synchronously, so both the full
-    // registry and the user-service prefix are populated at this point.
+    // registry and the user services are populated at this point.
     return {
-        handler: handler as (req: NodeRequest, res: NodeResponse) => void,
+        handler,
         registry,
         routes,
         registeredServiceTypeNames,
-        userRegistry: registry.slice(0, userFileCount),
+        userServices: mountedServices.slice(0, userServiceCount),
     };
 }

@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+# proto/grpc holds the upstream gRPC reflection protos, vendored verbatim from
+# grpc/grpc-proto. They are not ours to restyle or to version, so lint and
+# breaking checks skip them.
+lint:
+  use:
+    - STANDARD
+  ignore:
+    - proto/grpc
+breaking:
+  use:
+    - FILE
+  ignore:
+    - proto/grpc

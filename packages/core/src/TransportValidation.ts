@@ -25,7 +25,7 @@
  * @module TransportValidation
  */
 
-import type { DescFile } from "@bufbuild/protobuf";
+import type { DescFile, DescService } from "@bufbuild/protobuf";
 
 /**
  * Stable error code for the streaming-vs-transport startup diagnostic.
@@ -99,14 +99,19 @@ export class TransportValidationError extends Error {
 }
 
 /**
- * Collect bidi-streaming methods from a DescFile registry (built during
- * route registration). Client-streaming is NOT collected — the Connect
- * protocol supports it over HTTP/1.1.
+ * Collect bidi-streaming methods. Client-streaming is NOT collected — the
+ * Connect protocol supports it over HTTP/1.1.
+ *
+ * Pass the mounted services (`DescService`) to check what a server actually
+ * serves; that is what `Server.start()` does. A file (`DescFile`) contributes
+ * every service it declares, including services that are not mounted, so a
+ * file-based check can report methods nobody can call.
  */
-export function collectStreamingMethods(registry: readonly DescFile[]): StreamingMethodInfo[] {
+export function collectStreamingMethods(source: ReadonlyArray<DescService | DescFile>): StreamingMethodInfo[] {
     const result: StreamingMethodInfo[] = [];
-    for (const file of registry) {
-        for (const service of file.services) {
+    for (const entry of source) {
+        const services = entry.kind === "service" ? [entry] : entry.services;
+        for (const service of services) {
             for (const method of service.methods) {
                 if (method.methodKind === "bidi_streaming") {
                     result.push({ service: service.typeName, method: method.name, kind: method.methodKind });
@@ -167,7 +172,7 @@ export function formatTlsHttp1WarningMessage(methods: readonly StreamingMethodIn
  * mode) / doing nothing (`mode: "off"`, an HTTP/2-only transport, or no bidi
  * methods).
  */
-export function validateTransport(options: { registry: readonly DescFile[]; transport: EffectiveTransport; mode: TransportValidationMode }): TransportValidationError | null {
+export function validateTransport(options: { services: readonly DescService[]; transport: EffectiveTransport; mode: TransportValidationMode }): TransportValidationError | null {
     if (options.mode === TransportValidationMode.OFF) {
         return null;
     }
@@ -176,7 +181,7 @@ export function validateTransport(options: { registry: readonly DescFile[]; tran
         return null;
     }
 
-    const methods = collectStreamingMethods(options.registry);
+    const methods = collectStreamingMethods(options.services);
     if (methods.length === 0) {
         return null;
     }

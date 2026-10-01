@@ -1,0 +1,12 @@
+# Regenerate with `pnpm --filter @connectum/reflection gen:fixtures` (run from the
+# package directory, which is what `out` is relative to).
+# erasable_syntax: the tests run the generated code natively (type stripping),
+# which rejects TypeScript `enum`.
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: tests/fixtures
+    opt:
+      - target=ts
+      - import_extension=.ts
+      - erasable_syntax=true

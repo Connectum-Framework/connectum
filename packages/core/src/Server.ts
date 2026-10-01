@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { validateAdmissionOptions } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
@@ -79,6 +80,7 @@ class ServerImpl extends EventEmitter implements Server {
 
     constructor(options: CreateServerOptions) {
         super();
+        validateAdmissionOptions(options);
         this._options = options;
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
@@ -179,10 +181,10 @@ class ServerImpl extends EventEmitter implements Server {
 
             // Lazy-built path: routes may already have been materialized via
             // localClient()/client() before start(). _ensureRoutesBuilt()
-            // memoizes the full BuildRoutesResult (including userRegistry and
+            // memoizes the full BuildRoutesResult (including userServices and
             // jsonOptions) so transport validation below runs against the same
             // user-service slice regardless of when routes were built.
-            const { handler, registry, userRegistry } = this._ensureRoutesBuilt();
+            const { handler, registry, userServices } = this._ensureRoutesBuilt();
             // Only push registry entries not already collected (lazy build may
             // have populated it before start()).
             if (this._registry.length === 0) {
@@ -195,11 +197,12 @@ class ServerImpl extends EventEmitter implements Server {
             // residual risk for HTTP/1.1-negotiating clients → one-time warn.
             // Protocol-contributed services (gRPC Reflection's
             // ServerReflectionInfo is bidi) are excluded: their transport
-            // limitations are documented, not a user misconfiguration.
+            // limitations are documented, not a user misconfiguration; so are
+            // services declared in a mounted file but not mounted themselves.
             // The thrown error and the 'error' event below carry the SAME
             // object; the framework itself prints nothing (no double reporting).
             const validationError = validateTransport({
-                registry: userRegistry,
+                services: userServices,
                 // Boolean() mirrors TransportManager's truthy TLS check, so a
                 // falsy-but-defined tls (e.g. null from untyped JS) is treated
                 // as plaintext consistently with the actual transport selection.
@@ -459,6 +462,9 @@ class ServerImpl extends EventEmitter implements Server {
                 // serialization (otherwise jsonOptions would be silently
                 // dropped on the lazy-built route materialization).
                 ...(this._options.jsonOptions ? { jsonOptions: this._options.jsonOptions } : {}),
+                // Admission defaults for the HTTP adapter; the in-process
+                // routers receive the same values via _getAdmissionOptions().
+                ...this._getAdmissionOptions(),
                 // Mount only the locally-enabled services; the rest are remote.
                 ...(this._options.enabledServices ? { enabledServices: this._options.enabledServices } : {}),
             });
@@ -488,6 +494,24 @@ class ServerImpl extends EventEmitter implements Server {
      */
     _getServerInterceptors(): Interceptor[] {
         return [...this._interceptors];
+    }
+
+    /**
+     * The server-level `requestGate` / `readMaxBytes` defaults, containing
+     * only the keys the user set. Shared by the HTTP adapter and every
+     * in-process router so both transports admit requests identically, and
+     * an unset option never appears as an own `undefined` key (which would
+     * change nothing upstream today, but keeps the router options exactly as
+     * they were for servers that do not opt in).
+     *
+     * @internal
+     */
+    _getAdmissionOptions(): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
+        const { requestGate, readMaxBytes } = this._options;
+        return {
+            ...(requestGate !== undefined ? { requestGate } : {}),
+            ...(readMaxBytes !== undefined ? { readMaxBytes } : {}),
+        };
     }
 
     /**

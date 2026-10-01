@@ -10,7 +10,7 @@
 
 import type { Interceptor, Transport } from "@connectrpc/connect";
 import { createRouterTransport } from "@connectrpc/connect";
-import type { Server } from "./types.ts";
+import type { CreateServerOptions, Server } from "./types.ts";
 
 /**
  * Internal request-header marker used by `@connectum/otel` (and any other
@@ -22,10 +22,15 @@ import type { Server } from "./types.ts";
  * and the server interceptor chain. It is stripped/normalised by parity
  * tests when diffing observable behaviour.
  *
- * SECURITY: this header is stripped from inbound HTTP requests by an
- * interceptor in `buildRoutes` (HTTP path only). Legitimate in-process
- * calls bypass `connectNodeAdapter` entirely, so the marker remains
- * intact for them. Treat this constant as framework-internal — it is
+ * SECURITY: inbound HTTP requests have this header deleted before
+ * `connectNodeAdapter` builds the request (see `buildRoutes`), so neither a
+ * `requestGate` nor a server interceptor can observe a forged value; an
+ * HTTP-only interceptor strips it again as defense in depth. Legitimate
+ * in-process calls bypass `connectNodeAdapter` entirely, so the marker
+ * remains intact for them. It exists for logging and telemetry attribution
+ * only and must not be used to exempt calls from a gate or authorization:
+ * the in-process path deliberately admits requests exactly like HTTP.
+ * Treat this constant as framework-internal — it is
  * deliberately not re-exported from `@connectum/core`'s public `index.ts`.
  *
  * @internal
@@ -70,11 +75,12 @@ const localTransportMarkerInterceptor: Interceptor = (next) => (req) => {
 interface ServerInternals {
     _getRoutesCallback(): Parameters<typeof createRouterTransport>[0];
     _getServerInterceptors(): Interceptor[];
+    _getAdmissionOptions(): Pick<CreateServerOptions, "requestGate" | "readMaxBytes">;
 }
 
 function asInternals(server: Server): ServerInternals {
     const candidate = server as unknown as Partial<ServerInternals>;
-    if (typeof candidate._getRoutesCallback !== "function" || typeof candidate._getServerInterceptors !== "function") {
+    if (typeof candidate._getRoutesCallback !== "function" || typeof candidate._getServerInterceptors !== "function" || typeof candidate._getAdmissionOptions !== "function") {
         throw new TypeError("createLocalTransport: argument is not a Connectum Server instance (missing internal accessors).");
     }
     return candidate as ServerInternals;
@@ -122,9 +128,19 @@ export function createLocalTransport(server: Server, options?: CreateLocalTransp
         router: {
             // Apply server-side interceptors identically to how the HTTP
             // path applies them via connectNodeAdapter — this preserves the
-            // cross-transport parity invariant required by Phase 4-A
-            // (interceptors compatibility, error mapping, coexistence).
+            // cross-transport parity invariant (interceptors, error mapping,
+            // coexistence).
             interceptors: serverInterceptors,
+            // The same shutdown signal the HTTP adapter gets: `server.stop()`
+            // aborts `context.signal` of in-flight local calls (handlers,
+            // pending request gates, streams) exactly as it does for HTTP
+            // calls, so cooperative cleanup code runs on both transports.
+            shutdownSignal: server.shutdownSignal,
+            // The same server-level `requestGate` / `readMaxBytes` defaults
+            // the HTTP adapter gets: a request is admitted or rejected the
+            // same way whichever transport carries it, and service-level
+            // options override both identically.
+            ...internals._getAdmissionOptions(),
         },
     });
 }

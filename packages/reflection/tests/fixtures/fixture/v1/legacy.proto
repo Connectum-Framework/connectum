@@ -1,0 +1,20 @@
+syntax = "proto2";
+
+package fixture.v1;
+
+message Extendable {
+  optional string id = 1;
+  extensions 100 to 199;
+}
+
+// Extension declared at file scope: fixture.v1.top_ext.
+extend Extendable {
+  optional int32 top_ext = 100;
+}
+
+message Scope {
+  // Extension declared inside a message: fixture.v1.Scope.nested_ext.
+  extend Extendable {
+    optional string nested_ext = 101;
+  }
+}

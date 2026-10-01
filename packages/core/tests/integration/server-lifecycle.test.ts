@@ -294,6 +294,9 @@ describe("Server lifecycle integration", () => {
                 Array.isArray(context.registry),
                 "context should have a registry array",
             );
+            // The mock service's `register` mounts nothing, so no service is
+            // listed even though its descriptor names EchoService.
+            assert.deepStrictEqual(context.services, [], "context should list only services actually mounted");
         });
 
         it("should store all protocols on server.protocols", () => {

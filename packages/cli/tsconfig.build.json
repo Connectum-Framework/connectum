@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": "./gen",
+    "rootDir": "./gen-ts",
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": false,
+    "verbatimModuleSyntax": false,
+    "strict": false,
+    "skipLibCheck": true,
+    "removeComments": false,
+    "preserveConstEnums": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["gen-ts/**/*.ts"],
+  "exclude": ["node_modules"]
+}

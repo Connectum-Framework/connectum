@@ -16,10 +16,10 @@
 
 import assert from "node:assert";
 import { test } from "node:test";
-import type { Interceptor, Transport } from "@connectrpc/connect";
+import { Code, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
+import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 
 /**
@@ -89,6 +89,10 @@ export interface TransportParityTestOptions {
     clientInterceptors?: Interceptor[];
     /** Protocol extensions applied identically on both servers. */
     protocols?: ProtocolRegistration[];
+    /** Server-level request gate applied identically on both servers (see `CreateServerOptions.requestGate`). */
+    requestGate?: CreateServerOptions["requestGate"];
+    /** Server-level per-message read limit applied identically on both servers (see `CreateServerOptions.readMaxBytes`). */
+    readMaxBytes?: number;
     /**
      * The scenario under test. Invoked once per transport with a fresh
      * server, transport, and OTEL collector pair.
@@ -125,14 +129,57 @@ function maskSpanIds(spans: NormalizedSpan[] | undefined): unknown {
 }
 
 /**
+ * Connect's read-limit diagnostic, with or without the observed size.
+ * Connect includes the size only when it knows the message's total length up
+ * front — the gRPC envelope over HTTP does, the in-process unary body does
+ * not — so the same rejection reads differently on the two transports.
+ */
+const READ_MAX_BYTES_MESSAGE = /^message size (?:\d+ )?is larger than configured readMaxBytes (\d+)$/;
+
+/**
+ * The single documented exception to literal message equality: two
+ * `ResourceExhausted` read-limit rejections that name the same configured
+ * limit are equal even if only one of them reports the observed size.
+ * Returns the messages unchanged in every other case, so any other
+ * `ResourceExhausted` text, or a different limit, is still compared
+ * literally.
+ */
+function normalizeReadLimitMessages(http: ParityScenarioResult["error"], local: ParityScenarioResult["error"]): [string | undefined, string | undefined] {
+    const httpMessage = http?.message;
+    const localMessage = local?.message;
+    if (!isResourceExhausted(http?.code) || !isResourceExhausted(local?.code) || httpMessage === undefined || localMessage === undefined) {
+        return [httpMessage, localMessage];
+    }
+    const httpLimit = READ_MAX_BYTES_MESSAGE.exec(httpMessage)?.[1];
+    const localLimit = READ_MAX_BYTES_MESSAGE.exec(localMessage)?.[1];
+    if (httpLimit === undefined || httpLimit !== localLimit) {
+        return [httpMessage, localMessage];
+    }
+    const normalized = `message size is larger than configured readMaxBytes ${httpLimit}`;
+    return [normalized, normalized];
+}
+
+/** Scenarios report either the numeric `Code` or its string name. */
+function isResourceExhausted(code: number | string | undefined): boolean {
+    return code === Code.ResourceExhausted || code === "resource_exhausted" || code === "ResourceExhausted";
+}
+
+/**
  * Default structural diff for two scenario results.
+ *
+ * Error messages are compared literally, with exactly one documented
+ * exception: a `readMaxBytes` rejection (`ResourceExhausted`) whose diagnostic
+ * text includes the observed message size on one transport and omits it on
+ * the other, for the same configured limit. The code, the limit, metadata and
+ * details are still compared as-is.
  */
 export function defaultCompare(http: ParityScenarioResult, local: ParityScenarioResult): void {
     assert.deepStrictEqual(local.response, http.response, "response payload mismatch between HTTP and local transports");
     if (http.error || local.error) {
+        const [httpMessage, localMessage] = normalizeReadLimitMessages(http.error, local.error);
         assert.deepStrictEqual(
-            { code: local.error?.code, message: local.error?.message, details: local.error?.details, metadata: local.error?.metadata },
-            { code: http.error?.code, message: http.error?.message, details: http.error?.details, metadata: http.error?.metadata },
+            { code: local.error?.code, message: localMessage, details: local.error?.details, metadata: local.error?.metadata },
+            { code: http.error?.code, message: httpMessage, details: http.error?.details, metadata: http.error?.metadata },
             "error shape mismatch between HTTP and local transports",
         );
     }
@@ -159,11 +206,24 @@ interface RunHarness {
     cleanup: () => Promise<void>;
 }
 
+/**
+ * The admission options both harness servers receive, containing only the
+ * keys the scenario set — so a scenario without them builds exactly the
+ * servers it built before these options existed.
+ */
+function admissionOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
+    return {
+        ...(opts.requestGate !== undefined ? { requestGate: opts.requestGate } : {}),
+        ...(opts.readMaxBytes !== undefined ? { readMaxBytes: opts.readMaxBytes } : {}),
+    };
+}
+
 async function setupHttpHarness(opts: TransportParityTestOptions): Promise<RunHarness> {
     const server = createServer({
         services: opts.services,
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
+        ...admissionOptions(opts),
         port: 0,
         allowHTTP1: false,
     });
@@ -185,7 +245,10 @@ async function setupHttpHarness(opts: TransportParityTestOptions): Promise<RunHa
         metrics,
         cleanup: async () => {
             try {
-                await server.stop();
+                // A scenario may already have stopped the server itself.
+                if (server.isRunning) {
+                    await server.stop();
+                }
             } finally {
                 await spans.dispose();
                 await metrics.dispose();
@@ -199,6 +262,11 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         services: opts.services,
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
+        ...admissionOptions(opts),
+        // Never bound unless a scenario calls `server.start()` itself (for
+        // example to exercise `server.stop()` on in-process calls); an
+        // ephemeral port keeps such scenarios from colliding.
+        port: 0,
     });
     const transport = createLocalTransport(server, { interceptors: opts.clientInterceptors ?? [] });
     const spans = new InMemorySpanCollector();
@@ -210,10 +278,16 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         spans,
         metrics,
         cleanup: async () => {
-            // Local server was never started — no HTTP socket to close.
-            // Calling `server.stop()` in the "created" state throws by design.
-            await spans.dispose();
-            await metrics.dispose();
+            try {
+                // Normally never started; `stop()` outside the running state
+                // throws by design, so only a scenario-started server is stopped.
+                if (server.isRunning) {
+                    await server.stop();
+                }
+            } finally {
+                await spans.dispose();
+                await metrics.dispose();
+            }
         },
     };
 }
