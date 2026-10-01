@@ -40,12 +40,10 @@
  * `storeDir` / `cacheDir`, Bun `BUN_INSTALL_CACHE_DIR`). Measured with Bun 1.4.2: the
  * same consumer resolved differently on a cold cache than after other cells had warmed
  * it, so a shared cache made the verdict depend on cell order. `--reverse` runs the cells
- * backwards to show it no longer does.
- *
- * KNOWN EXCEPTION: `@lambdalisue/connectrpc-grpcreflect` keeps protobuf / Connect as
- * regular dependencies and may get its own copy (EXCUSED_REQUIRERS in
- * scripts/lib/runtime-participants.mjs). Its copy is printed as a note and not counted;
- * the exception ends with Connectum's own gRPC reflection.
+ * backwards to show it no longer does. (The cold-cache difference was a nested
+ * `@bufbuild/protobuf` under a third-party reflection library that declared it as a
+ * regular dependency; Connectum's own reflection replaced that library, and every
+ * participant is now held to one copy with no exception.)
  *
  * Sources (`--source`):
  * - `pack` (default) — build the workspace and `pnpm pack` every package, then install
@@ -87,15 +85,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import semver from "semver";
 import { listPublishablePackages, packWorkspace, readPackedManifest } from "../lib/pack-workspace.mjs";
-import {
-    CONTRACT_LIBRARIES,
-    candidateProblems,
-    collectParticipants,
-    excusedSplitNotes,
-    peerRangeProblems,
-    singleCopyProblems,
-    TOOL_PACKAGES,
-} from "../lib/runtime-participants.mjs";
+import { CONTRACT_LIBRARIES, candidateProblems, collectParticipants, peerRangeProblems, singleCopyProblems, TOOL_PACKAGES } from "../lib/runtime-participants.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRATCH_ROOT = join(REPO_ROOT, ".tmp");
@@ -395,11 +385,9 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
     let copyProblems = [];
     const pinProblems = [];
     let rangeProblems = [];
-    let notes = [];
     let runtime;
     if (installed) {
         const participants = collectParticipants(dir);
-        notes = excusedSplitNotes(participants);
         copyProblems = singleCopyProblems(participants);
         rangeProblems = peerRangeProblems(participants, semver);
         for (const [name, pin] of Object.entries(SCENARIOS[scenario])) {
@@ -448,7 +436,7 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
         }
     }
 
-    return { pm, scenario, ok: problems.length === 0, ms: Date.now() - started, problems, contractProblems, output, signal, notes, runtime };
+    return { pm, scenario, ok: problems.length === 0, ms: Date.now() - started, problems, contractProblems, output, signal, runtime };
 }
 
 function main() {
@@ -508,7 +496,6 @@ function main() {
                 }
                 if (r.runtime.bundle) console.log(line("bundled", r.runtime.bundle));
             }
-            for (const note of r.notes) console.log(`        note: ${note}`);
             // Out-of-range cells print what the consumer sees, so the log documents the
             // exact visible failure or warning rather than only a pass mark.
             if (EXPECTATIONS[scenario][pm].contract === false) {

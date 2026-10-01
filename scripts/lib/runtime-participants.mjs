@@ -31,23 +31,10 @@ export const TOOL_PACKAGES = new Set(["@connectum/cli", "@connectum/protoc-gen-c
 
 /**
  * Third-party packages that hand protobuf or Connect values to the framework at runtime:
- * the validation interceptor's engine and the reflection service implementation.
+ * the validation interceptor and its engine. Every participant, with no exception, must
+ * share one copy of each contract library.
  */
-const THIRD_PARTY_PARTICIPANTS = new Set([...CONTRACT_LIBRARIES, "@connectrpc/validate", "@bufbuild/protovalidate", "@lambdalisue/connectrpc-grpcreflect"]);
-
-/**
- * Known third-party exception, named so it cannot widen silently:
- * `@lambdalisue/connectrpc-grpcreflect` (behind `@connectum/reflection`) declares protobuf
- * and Connect as REGULAR dependencies (`^2.10.1` / `^2.1.1`), so a manager may give it its
- * own copy next to the application's — measured with Bun 1.4.2 on a cold cache, where it
- * received `@bufbuild/protobuf` 2.16.0 beside a 2.12.1 pin. No manifest of ours can
- * prevent that. Its dependency edges are therefore not followed: whatever IT resolves is
- * reported under `excused`, not counted as a copy. Every other participant still must
- * share one copy. The exception goes away with Connectum's own gRPC Server Reflection
- * implementation, which removes this package; delete the entry then, and the single-copy
- * assertion covers the reflection service again.
- */
-export const EXCUSED_REQUIRERS = new Set(["@lambdalisue/connectrpc-grpcreflect"]);
+const THIRD_PARTY_PARTICIPANTS = new Set([...CONTRACT_LIBRARIES, "@connectrpc/validate", "@bufbuild/protovalidate"]);
 
 /** @param {string} name */
 export function isParticipant(name) {
@@ -86,9 +73,7 @@ function readManifest(dir) {
  * @returns {{
  *   packages: Map<string, Map<string, { version: string, manifest: Record<string, any>, requiredBy: Set<string> }>>,
  *   unresolved: { from: string, name: string, kind: "dependency" | "peer" }[],
- *   excused: { from: string, name: string, version: string, dir: string }[],
- * }} `packages`: participant name -> real directory -> the copy found there;
- *   `excused`: what an EXCUSED_REQUIRERS package resolved (reported, not counted)
+ * }} `packages`: participant name -> real directory -> the copy found there
  */
 export function collectParticipants(consumerDir) {
     const rootDir = realpathSync(consumerDir);
@@ -96,20 +81,11 @@ export function collectParticipants(consumerDir) {
     /** @type {Map<string, Map<string, { version: string, manifest: Record<string, any>, requiredBy: Set<string> }>>} */
     const packages = new Map();
     const unresolved = [];
-    const excused = [];
     const visited = new Set([rootDir]);
     const queue = [{ dir: rootDir, manifest: rootManifest, label: "(consumer)", isRoot: true }];
 
     while (queue.length > 0) {
         const { dir, manifest, label, isRoot } = queue.shift();
-        if (EXCUSED_REQUIRERS.has(manifest.name)) {
-            for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies })) {
-                if (!CONTRACT_LIBRARIES.includes(name)) continue;
-                const target = resolvePackageDir(dir, name);
-                if (target !== undefined) excused.push({ from: label, name, version: readManifest(target).version, dir: target });
-            }
-            continue;
-        }
         const edges = [
             ...Object.keys(manifest.dependencies ?? {}).map((name) => ({ name, kind: "dependency" })),
             ...(isRoot ? Object.keys(manifest.devDependencies ?? {}).map((name) => ({ name, kind: "dependency" })) : []),
@@ -141,24 +117,7 @@ export function collectParticipants(consumerDir) {
             }
         }
     }
-    return { packages, unresolved, excused };
-}
-
-/**
- * Human-readable notes for the excused edges whose copy is NOT the one the rest of the
- * runtime shares — the split the exception tolerates, printed so it stays visible.
- *
- * @param {ReturnType<typeof collectParticipants>} participants
- * @returns {string[]}
- */
-export function excusedSplitNotes(participants) {
-    const notes = [];
-    for (const e of participants.excused) {
-        const shared = participants.packages.get(e.name);
-        if (shared?.has(e.dir)) continue;
-        notes.push(`${e.from} has its own ${e.name}@${e.version} (known exception: its protobuf / Connect are regular dependencies; removed with native gRPC reflection)`);
-    }
-    return notes;
+    return { packages, unresolved };
 }
 
 /**
