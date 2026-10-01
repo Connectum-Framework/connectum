@@ -66,7 +66,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 // The floors come from the CLI's own table (read from source through native type
 // stripping), so this check and `connectum init` cannot disagree about them.
 import { CONNECTUM_SLICE_FLOOR, connectumSliceViolations, meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
@@ -264,9 +264,11 @@ function assertConnectumSlice(target) {
 
 /**
  * After `buf generate`: the project holds no generated copy of Connectum's option
- * protos, its generated code imports them from the package subpath, and that subpath
- * resolves from the project at runtime. Any of the three failing means the project is
- * back to evaluating its own copy of the descriptors, or cannot load the package's.
+ * protos, its generated code imports them from the package subpath, and at runtime the
+ * generated file's dependency IS the package's descriptor — for auth also the one
+ * `@connectum/auth/proto` (what the authorization interceptor reads) hands out. Any of
+ * these failing means the project is back to evaluating its own copy of the
+ * descriptors, or holds a second copy of the package.
  */
 function assertOptionImports(target, packages) {
     const gen = join(target, "gen");
@@ -275,17 +277,30 @@ function assertOptionImports(target, packages) {
     if (local.length > 0) {
         throw new Error(`gen/ holds generated Connectum option protos the project should import instead: ${local.join(", ")}`);
     }
-    const sources = files.map((file) => readFileSync(join(gen, file), "utf8"));
     for (const name of packages) {
         const short = name.slice("@connectum/".length);
         const specifier = `${name}/gen/connectum/${short}/v1/options_pb.js`;
-        if (!sources.some((source) => source.includes(`from "${specifier}";`))) {
+        const importer = files.find((file) => readFileSync(join(gen, file), "utf8").includes(`from "${specifier}";`));
+        if (importer === undefined) {
             throw new Error(`no generated file in gen/ imports ${specifier}`);
         }
-        // Resolved from the project directory, the way its generated code resolves it.
+        const fileExport = /export const (file_\w+): GenFile/.exec(readFileSync(join(gen, importer), "utf8"))?.[1];
+        // Run from the project directory with plain `node`, so both modules resolve the
+        // way the project's own code resolves them.
         const symbol = `file_connectum_${short}_v1_options`;
-        const probe = `const m = await import(${JSON.stringify(specifier)}); if (!m.${symbol}) throw new Error(${JSON.stringify(`${specifier} does not export ${symbol}`)});`;
-        run(process.execPath, ["--input-type=module", "-e", probe], target);
+        const lines = [
+            `const options = await import(${JSON.stringify(specifier)});`,
+            `const generated = await import(${JSON.stringify(pathToFileURL(join(gen, importer)).href)});`,
+            `const dependency = generated[${JSON.stringify(fileExport)}].dependencies.find((f) => f.name === "connectum/${short}/v1/options");`,
+            `if (dependency === undefined || dependency !== options.${symbol}) throw new Error("gen/${importer} does not use the descriptor of ${specifier}");`,
+        ];
+        if (name === "@connectum/auth") {
+            lines.push(
+                `const proto = await import("@connectum/auth/proto");`,
+                `if (proto.method_auth.file !== dependency) throw new Error("@connectum/auth/proto hands out another descriptor than gen/${importer} uses");`,
+            );
+        }
+        run(process.execPath, ["--input-type=module", "-e", lines.join("\n")], target);
     }
 }
 
