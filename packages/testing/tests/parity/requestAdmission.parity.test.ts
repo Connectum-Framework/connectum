@@ -143,6 +143,43 @@ async function callEcho(transport: Parameters<typeof createClient>[1], message: 
     });
 }
 
+{
+    // server.stop() aborts context.signal of in-flight calls on both
+    // transports; a handler that waits on it ends the call with Canceled.
+    let onEnter: () => void = () => {};
+    let entered = new Promise<void>((resolve) => {
+        onEnter = resolve;
+    });
+    const wait = (ctx: HandlerContext) =>
+        new Promise<never>((_resolve, reject) => {
+            onEnter();
+            ctx.signal.addEventListener("abort", () => reject(ConnectError.from(ctx.signal.reason)), { once: true });
+        });
+    transportParityTest("shutdown parity: server.stop() aborts an in-flight call identically on both transports", {
+        services: [defineService(EchoService, { echo: (_r, ctx) => wait(ctx), secureEcho: (_r, ctx) => wait(ctx), rateLimitedEcho: (_r, ctx) => wait(ctx) })],
+        scenario: async ({ transport, server, transportKind }) => {
+            entered = new Promise<void>((resolve) => {
+                onEnter = resolve;
+            });
+            if (transportKind === "local") {
+                // The local harness never binds a socket on its own; start it
+                // so it can be stopped like the HTTP one.
+                await server.start();
+            }
+            const pending = callEcho(transport, create(EchoRequestSchema, { message: "a" }));
+            await entered;
+            await server.stop();
+            return pending;
+        },
+        compare: (http, local) => {
+            // The message is the runtime's AbortError text, so only the code
+            // is pinned here; defaultCompare still requires both to match.
+            assert.strictEqual(http.error?.code, Code.Canceled);
+            defaultCompare(http, local);
+        },
+    });
+}
+
 // ---------------------------------------------------------------------------
 // The read-limit carve-out in defaultCompare is narrow: these self-tests fail
 // if it ever starts hiding a real difference.

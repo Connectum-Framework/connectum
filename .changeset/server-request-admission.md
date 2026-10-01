@@ -15,7 +15,7 @@ feat(core): server-level `requestGate` and `readMaxBytes` in `createServer()`
 - **Invalid values fail fast.** `createServer()` throws a `RangeError` naming the option when `readMaxBytes` is not an integer from 1 to 4294967295 (`0`, negatives, fractions, `NaN`, `Infinity`), and a `TypeError` for a non-number `readMaxBytes` or a non-function `requestGate`. Left to Connect, `NaN` would silently disable the limit.
 - **No server-side telemetry for rejections.** A rejected call produces no server span, metric or log entry. Wrap the gate yourself to audit rejections.
 - **What the gate covers.** Every RPC on the router is gated, including gRPC Health and Reflection. HTTP endpoints served by protocol HTTP handlers, such as `/healthz`, are not.
-- **Cancellation is cooperative.** `context.signal` aborts on the call's deadline and on client cancellation, and on server shutdown for HTTP calls only. In-process calls are still not aborted by `server.stop()`.
+- **Cancellation is cooperative.** `context.signal` aborts on the call's deadline, on client cancellation, and when `server.stop()` begins, on both transports.
 - **Security fix.** HTTP requests now have a forged `connectum-internal-transport` header deleted before Connect builds the request. Previously it was removed only by an interceptor, which runs after a gate. Any gate, server-level or per-service, could therefore observe a forged in-process marker.
 - **`@connectum/testing`:**
   - `transportParityTest()` accepts `requestGate` and `readMaxBytes` and applies them to both servers.

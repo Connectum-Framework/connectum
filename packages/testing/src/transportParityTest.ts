@@ -245,7 +245,10 @@ async function setupHttpHarness(opts: TransportParityTestOptions): Promise<RunHa
         metrics,
         cleanup: async () => {
             try {
-                await server.stop();
+                // A scenario may already have stopped the server itself.
+                if (server.isRunning) {
+                    await server.stop();
+                }
             } finally {
                 await spans.dispose();
                 await metrics.dispose();
@@ -260,6 +263,10 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
         ...admissionOptions(opts),
+        // Never bound unless a scenario calls `server.start()` itself (for
+        // example to exercise `server.stop()` on in-process calls); an
+        // ephemeral port keeps such scenarios from colliding.
+        port: 0,
     });
     const transport = createLocalTransport(server, { interceptors: opts.clientInterceptors ?? [] });
     const spans = new InMemorySpanCollector();
@@ -271,10 +278,16 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         spans,
         metrics,
         cleanup: async () => {
-            // Local server was never started — no HTTP socket to close.
-            // Calling `server.stop()` in the "created" state throws by design.
-            await spans.dispose();
-            await metrics.dispose();
+            try {
+                // Normally never started; `stop()` outside the running state
+                // throws by design, so only a scenario-started server is stopped.
+                if (server.isRunning) {
+                    await server.stop();
+                }
+            } finally {
+                await spans.dispose();
+                await metrics.dispose();
+            }
         },
     };
 }

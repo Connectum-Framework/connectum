@@ -8,8 +8,8 @@
  * - a gate's error reaches the client verbatim, bypassing server interceptors;
  * - service options replace the server defaults (no composition, no ceiling);
  * - HTTP endpoints served by protocol HTTP handlers sit outside the gate;
- * - cancellation of a pending gate is cooperative, and in-process calls are not
- *   aborted by server shutdown;
+ * - cancellation of a pending gate is cooperative, and server shutdown aborts
+ *   it on both transports;
  * - a forged internal transport marker is invisible to every gate on HTTP.
  */
 
@@ -546,23 +546,17 @@ describe("gate cancellation is cooperative", () => {
         assert.strictEqual(err.code, Code.Canceled);
     });
 
-    it("does not abort a pending in-process gate on server shutdown; the client's cancellation releases it", async () => {
+    it("releases a pending in-process gate when the server stops, exactly like an HTTP one", async () => {
         const parking = makeParkingGate();
         const server: Server = createServer({ services: [makeEchoRoutes({ count: 0 })], requestGate: parking.gate, port: 0 });
         await server.start();
-        const controller = new AbortController();
-        const pending = captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" }), { signal: controller.signal }));
+        const pending = captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
         await parking.entered;
         await server.stop();
-        assert.strictEqual(parking.state.lastSignal?.aborted, false, "server shutdown must not abort an in-process gate");
-        assert.strictEqual(parking.state.aborted, 0);
-        controller.abort();
+        assert.strictEqual(parking.state.lastSignal?.aborted, true, "server shutdown must abort an in-process gate's signal");
+        assert.strictEqual(parking.state.aborted, 1);
         const err = await pending;
         assert.strictEqual(err.code, Code.Canceled);
-        for (let i = 0; i < 50 && parking.state.aborted < 1; i++) {
-            await new Promise((resolve) => setImmediate(resolve));
-        }
-        assert.strictEqual(parking.state.aborted, 1, "client cancellation must reach the in-process gate");
     });
 });
 

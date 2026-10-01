@@ -445,9 +445,8 @@ export interface CreateServerOptions {
      *   service; the two are not composed. An own `requestGate: undefined`
      *   key in the service options also removes it.
      * - **Cooperative cancellation.** The server awaits the gate. Watch
-     *   `context.signal`: it aborts on the call's deadline and on client
-     *   cancellation on both transports, and on server shutdown for HTTP
-     *   calls only.
+     *   `context.signal`: it aborts on the call's deadline, on client
+     *   cancellation, and when `server.stop()` begins — on both transports.
      * - The parameter is Connect's `HandlerContext`, not the Connectum
      *   `Context`: `ctx.call` / `ctx.stream` do not exist yet at gate time.
      *

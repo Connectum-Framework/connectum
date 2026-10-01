@@ -495,9 +495,9 @@ interface ShutdownOptions {
 When `server.stop()` is called or a signal is received (with `autoShutdown: true`):
 
 1. The `stopping` event is emitted -- healthcheck can be updated to NOT_SERVING
-2. `AbortController.abort()` -- signals streaming RPCs and long-running operations to terminate
+2. `AbortController.abort()` -- aborts `context.signal` of every in-flight RPC, over HTTP and in-process (`server.localClient()`, `ctx.call`), so handlers and streams can terminate
 3. Transport sends GOAWAY and stops accepting new connections
-4. **Timeout race**: waits for in-flight requests to complete or for `timeout` to expire
+4. **Timeout race**: waits for in-flight HTTP requests to complete or for `timeout` to expire. In-process calls ride no connection, so `stop()` neither waits for them nor force-closes them; a handler that ignores the signal keeps running
 5. On timeout with `forceCloseOnTimeout: true` -- forcefully destroys all HTTP/2 sessions
 6. Executes shutdown hooks (respecting dependencies)
 7. Cleans up internal state
@@ -563,7 +563,7 @@ What to rely on:
 - **No server-side telemetry.** A rejected call runs no server interceptor, so it produces no server span, metric or log entry. To audit rejections, wrap the gate: catch, record, rethrow.
 - **Defaults, not ceilings.** A service's own `requestGate` or `readMaxBytes` in `ServiceOptions` replaces the server value for that service.
 - **Coverage.** Every RPC on the router is gated, including gRPC Health and Reflection. HTTP endpoints served by protocol HTTP handlers, such as `/healthz`, are not.
-- **Cancellation.** A pending gate is awaited. `context.signal` aborts on the deadline and on client cancellation, and also on server shutdown for HTTP calls.
+- **Cancellation.** A pending gate is awaited. `context.signal` aborts on the deadline, on client cancellation, and when `server.stop()` begins — on both transports.
 
 The request's `connectum-internal-transport` header is removed from HTTP requests before any gate runs, so a remote caller cannot forge the in-process marker.
 

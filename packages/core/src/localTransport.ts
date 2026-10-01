@@ -131,13 +131,15 @@ export function createLocalTransport(server: Server, options?: CreateLocalTransp
             // cross-transport parity invariant (interceptors, error mapping,
             // coexistence).
             interceptors: serverInterceptors,
+            // The same shutdown signal the HTTP adapter gets: `server.stop()`
+            // aborts `context.signal` of in-flight local calls (handlers,
+            // pending request gates, streams) exactly as it does for HTTP
+            // calls, so cooperative cleanup code runs on both transports.
+            shutdownSignal: server.shutdownSignal,
             // The same server-level `requestGate` / `readMaxBytes` defaults
             // the HTTP adapter gets: a request is admitted or rejected the
             // same way whichever transport carries it, and service-level
-            // options override both identically. The server's shutdown
-            // signal is deliberately NOT passed: in-flight local calls have
-            // never been aborted by `server.stop()`, and changing that would
-            // alter every existing server.
+            // options override both identically.
             ...internals._getAdmissionOptions(),
         },
     });
