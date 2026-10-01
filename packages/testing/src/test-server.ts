@@ -75,7 +75,7 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
 /**
  * Run a test function with an auto-managed test server.
  *
- * Creates a test server, passes it to {@link testFn}, and guarantees
+ * Creates a test server, passes it to `testFn`, and guarantees
  * cleanup via `finally` — even if the test throws.
  *
  * @param options - Server configuration (services, interceptors, protocols, port)

@@ -122,13 +122,40 @@ export function buildResourceAttributes(inputs: ResourceAttributeInputs): Record
 }
 
 /**
- * OpenTelemetry Provider
+ * The process-wide OpenTelemetry provider returned by {@link getProvider}.
  *
  * Manages OTLP exporters for traces, metrics, and logs.
  * Supports console, OTLP/HTTP, OTLP/gRPC exporters, and no-op mode
  * based on environment configuration or explicit options.
+ *
+ * Only an interface is exported: the package keeps exactly one instance per
+ * process, created by {@link initProvider} or lazily by {@link getProvider},
+ * so there is deliberately no public constructor. The type lets callers name
+ * the value `getProvider()` returns (to store it or pass it on).
  */
-class OtelProvider {
+export interface OtelProvider {
+    /** Tracer bound to the configured service name and version. */
+    readonly tracer: Tracer;
+    /** Meter bound to the configured service name and version. */
+    readonly meter: Meter;
+    /** OpenTelemetry Logs API logger bound to the configured service name and version. */
+    readonly logger: Logger;
+    /**
+     * Gracefully shutdown all OTLP providers
+     *
+     * Does not clear the process-wide instance: {@link getProvider} keeps
+     * returning this (now shut down) provider. Use {@link shutdownProvider} to
+     * shut down and allow a fresh provider to be created.
+     *
+     * @returns Promise that resolves when shutdown is complete
+     */
+    shutdown(): Promise<void>;
+}
+
+// Not exported: a second instance would start its own exporters and try to
+// register the global tracer, meter and logger providers again, so only
+// `initProvider` and `getProvider` construct it.
+class OtelProviderImpl implements OtelProvider {
     readonly tracer: Tracer;
     readonly meter: Meter;
     readonly logger: Logger;
@@ -321,11 +348,6 @@ class OtelProvider {
         return this.loggerProvider.getLogger(this.serviceName, this.serviceVersion);
     }
 
-    /**
-     * Gracefully shutdown all OTLP providers
-     *
-     * @returns Promise that resolves when shutdown is complete
-     */
     async shutdown(): Promise<void> {
         console.debug("OTel provider shutdown...");
         await this.traceProvider?.shutdown();
@@ -356,7 +378,7 @@ let provider: OtelProvider | undefined;
  */
 export function initProvider(options?: ProviderOptions): void {
     if (provider === undefined) {
-        provider = new OtelProvider(options);
+        provider = new OtelProviderImpl(options);
     }
 }
 
@@ -370,7 +392,7 @@ export function initProvider(options?: ProviderOptions): void {
  */
 export function getProvider(): OtelProvider {
     if (provider === undefined) {
-        provider = new OtelProvider();
+        provider = new OtelProviderImpl();
     }
     return provider;
 }

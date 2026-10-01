@@ -44,6 +44,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The TypeDoc config treats every warning as an error: a broken {@link},
+      # or a public signature that names a type the docs cannot show. The
+      # reference is rendered into a throwaway directory because link validation
+      # only runs as part of rendering (`--emit none` would skip it).
+      - name: API reference (TypeDoc)
+        run: pnpm exec typedoc --out "$RUNNER_TEMP/typedoc/api" --docsRoot "$RUNNER_TEMP/typedoc"
+
       - name: Lint
         run: pnpm lint
 
