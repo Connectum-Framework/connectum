@@ -366,6 +366,84 @@ describe("ctx.call — header propagation", () => {
     });
 });
 
+describe("ctx.call — server shutdown reaches every hop of a local chain", () => {
+    // ctx.call to a local service runs over the in-process transport, which
+    // carries the server's shutdown signal: stop() aborts the inner handler
+    // directly (not only via the outer call's signal), so the whole chain ends.
+    it("aborts the inner local handler on stop() and ends the outer call with Canceled", async () => {
+        let onInner: () => void = () => {};
+        const innerEntered = new Promise<void>((resolve) => {
+            onInner = resolve;
+        });
+        const inner: { signal: AbortSignal | null } = { signal: null };
+        const server = createServer({
+            services: [
+                defineService(EchoService, {
+                    echo: (_req, ctx) =>
+                        new Promise((_resolve, reject) => {
+                            inner.signal = ctx.signal;
+                            onInner();
+                            ctx.signal.addEventListener("abort", () => reject(ConnectError.from(ctx.signal.reason)), { once: true });
+                        }),
+                    secureEcho: async (req, ctx) => {
+                        const res = await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: req.message }));
+                        return create(EchoResponseSchema, { message: res.message, timestamp: 0n });
+                    },
+                    rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+                }),
+            ],
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+            port: 0,
+        });
+        await server.start();
+        const pending = server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        await innerEntered;
+        await server.stop();
+        assert.strictEqual(inner.signal?.aborted, true, "the inner hop must see the shutdown");
+        await assert.rejects(pending, (err: unknown) => err instanceof ConnectError && err.code === Code.Canceled);
+    });
+});
+
+describe("ctx.call — a local target's request gate applies to internal calls", () => {
+    // The server-level gate has no transport exemption: an in-process ctx.call
+    // is admitted exactly like an external call, so it carries only the headers
+    // the caller forwards. A credential gate therefore rejects internal calls
+    // unless the credential is propagated.
+    const CREDENTIAL = "authorization";
+
+    function makeGatedServer(propagateHeaders: readonly string[] | undefined) {
+        const base: Parameters<typeof createServer>[0] = {
+            services: [
+                makeCaller(async (req, ctx) => {
+                    const inner = await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: req.message }));
+                    return create(EchoResponseSchema, { message: `outer:${inner.message}`, timestamp: 0n });
+                }),
+            ],
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+            requestGate: (ctx) => {
+                if (!ctx.requestHeader.get(CREDENTIAL)) {
+                    throw new ConnectError("unauthenticated", Code.Unauthenticated);
+                }
+            },
+        };
+        return createServer(propagateHeaders ? { ...base, propagateHeaders } : base);
+    }
+
+    it("rejects the internal call when the credential is not forwarded", async () => {
+        const server = makeGatedServer(undefined);
+        await assert.rejects(
+            server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [CREDENTIAL]: "Bearer t" } }),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated,
+        );
+    });
+
+    it("admits the internal call when the credential is propagated", async () => {
+        const server = makeGatedServer([CREDENTIAL]);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }), { headers: { [CREDENTIAL]: "Bearer t" } });
+        assert.strictEqual(res.message, "outer:echo:x");
+    });
+});
+
 describe("ctx.call — open items (escalated, not yet locked)", () => {
     // Q15 / task 4.10: ctx.call is structurally impossible outside a handler —
     // a Context only exists where a HandlerContext exists. There is no

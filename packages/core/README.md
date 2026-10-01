@@ -127,7 +127,8 @@ Route and protocol composition:
 - Registering user services on `ConnectRouter`
 - Intercepting `router.service()` to collect `DescFile[]` registry (used by reflection)
 - Setting up each protocol (healthcheck, reflection) once per server with a snapshot of the registry, then registering its routes on every router the server builds (HTTP adapter and each in-process transport)
-- Creating `connectNodeAdapter` with fallback routing to HTTP protocol handlers
+- Creating `connectNodeAdapter` with fallback routing to HTTP protocol handlers, and the server-level `requestGate` / `readMaxBytes` defaults when set
+- Removing a forged `connectum-internal-transport` header from each HTTP request before the adapter sees it
 
 ### gracefulShutdown
 
@@ -166,6 +167,8 @@ function createServer(options: CreateServerOptions): Server
 | `allowHTTP1` | `boolean` | `true` | Allow HTTP/1.1 connections |
 | `handshakeTimeout` | `number` | `30000` | Handshake timeout (ms) |
 | `http2Options` | `SecureServerOptions` | - | Additional HTTP/2 options |
+| `requestGate` | `(context: HandlerContext) => void \| Promise<void>` | - | Server-wide Connect request gate: runs before the request body is read; throw a `ConnectError` to reject. See [Request admission](#request-admission) |
+| `readMaxBytes` | `number` | Connect default (~4 GiB) | Server-wide per-message read limit; larger messages end with `ResourceExhausted`. See [Request admission](#request-admission) |
 
 **Returns:** `Server` - server instance (not started)
 
@@ -492,9 +495,9 @@ interface ShutdownOptions {
 When `server.stop()` is called or a signal is received (with `autoShutdown: true`):
 
 1. The `stopping` event is emitted -- healthcheck can be updated to NOT_SERVING
-2. `AbortController.abort()` -- signals streaming RPCs and long-running operations to terminate
+2. `AbortController.abort()` -- aborts `context.signal` of every in-flight RPC, over HTTP and in-process (`server.localClient()`, `ctx.call`), so handlers and streams can terminate
 3. Transport sends GOAWAY and stops accepting new connections
-4. **Timeout race**: waits for in-flight requests to complete or for `timeout` to expire
+4. **Timeout race**: waits for in-flight HTTP requests to complete or for `timeout` to expire. In-process calls ride no connection, so `stop()` neither waits for them nor force-closes them; a handler that ignores the signal keeps running
 5. On timeout with `forceCloseOnTimeout: true` -- forcefully destroys all HTTP/2 sessions
 6. Executes shutdown hooks (respecting dependencies)
 7. Cleans up internal state
@@ -531,6 +534,40 @@ const server = createServer({
 ```
 
 See `@connectum/interceptors` package for `DefaultInterceptorOptions` and full documentation.
+
+### Request admission
+
+Two opt-in options reject a request before its body is read. Both are unset by default.
+
+```typescript
+import { Code, ConnectError } from '@connectrpc/connect';
+
+const server = createServer({
+  services: [routes],
+  // Runs after the headers arrive, before any message is received or parsed.
+  requestGate: (context) => {
+    if (!context.requestHeader.get('authorization')) {
+      throw new ConnectError('unauthenticated', Code.Unauthenticated);
+    }
+  },
+  // Per request message; larger messages end with Code.ResourceExhausted.
+  readMaxBytes: 1024 * 1024,
+});
+```
+
+What to rely on:
+
+- **Both transports.** The gate and the limit apply identically over HTTP and in-process (`server.localClient()`, `createLocalTransport()`, `ctx.call` to a local service). There is no in-process exemption: an internal `ctx.call` carries only the headers you forward with `propagateHeaders` or `outgoingInterceptors`.
+- **Safe errors.** A gate runs before the server interceptors, so `errorHandler` never sees its error. A thrown `ConnectError` reaches the client as thrown: give it a fixed, client-safe message. Anything else is replaced by Connect with `internal error` (`Code.Internal`), so its text never reaches the client.
+- **Valid limits only.** `readMaxBytes` must be an integer from 1 to 4294967295; `createServer()` throws a `RangeError` naming the option otherwise.
+- **No server-side telemetry.** A rejected call runs no server interceptor, so it produces no server span, metric or log entry. To audit rejections, wrap the gate: catch, record, rethrow.
+- **Defaults, not ceilings.** A service's own `requestGate` or `readMaxBytes` in `ServiceOptions` replaces the server value for that service.
+- **Coverage.** Every RPC on the router is gated, including gRPC Health and Reflection. HTTP endpoints served by protocol HTTP handlers, such as `/healthz`, are not.
+- **Cancellation.** A pending gate is awaited. `context.signal` aborts on the deadline, on client cancellation, and when `server.stop()` begins — on both transports.
+
+The request's `connectum-internal-transport` header is removed from HTTP requests before any gate runs, so a remote caller cannot forge the in-process marker.
+
+The full guide is [Request admission](https://connectum.dev/en/guide/security/request-admission).
 
 ## Environment Variables
 
@@ -721,6 +758,7 @@ None — `@connectum/core` is Layer 0 with zero internal dependencies.
 - [Interceptors Guide](https://connectum.dev/en/guide/interceptors) - Working with interceptors
 - [Observability Guide](https://connectum.dev/en/guide/observability) - Setting up OpenTelemetry
 - [TLS Configuration](https://connectum.dev/en/guide/security/tls) - Production TLS setup
+- [Request Admission](https://connectum.dev/en/guide/security/request-admission) - Reject requests before the body is read
 
 ## License
 

@@ -10,11 +10,13 @@
  * and metrics as if the call originated from the in-memory pipe, poisoning
  * telemetry.
  *
- * Fix: `buildRoutes` prepends an HTTP-only interceptor (passed to
- * `connectNodeAdapter.interceptors`) that strips this header. The
- * in-process path (`createLocalTransport` -> `createRouterTransport`) does
- * NOT pass through `connectNodeAdapter`, so legitimate local calls retain
- * the marker end-to-end.
+ * Fix: the HTTP handler built by `buildRoutes` deletes this header from the
+ * node request before `connectNodeAdapter` sees it (so request gates never
+ * observe it either — see `requestAdmission.test.ts`), and an HTTP-only
+ * interceptor strips it again as defense in depth. The in-process path
+ * (`createLocalTransport` -> `createRouterTransport`) does NOT pass through
+ * `connectNodeAdapter`, so legitimate local calls retain the marker
+ * end-to-end.
  *
  * These tests pin the invariants:
  *   F1.1 — Forged header on inbound HTTP request is invisible to the

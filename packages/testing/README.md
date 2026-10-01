@@ -418,6 +418,34 @@ The default comparator (`defaultCompare`) diffs `response`, `error`,
 `responseHeaders`, `trailers`, normalized `spans`, and normalized `metrics`.
 Pass `opts.compare` to override.
 
+Error messages are compared literally, with one documented exception: a
+`readMaxBytes` rejection (`ResourceExhausted`) may include the observed
+message size on one transport and omit it on the other. Connect adds the size
+only when it knows the message length up front. For the same configured limit
+the two texts count as equal; any other message difference still fails.
+
+`opts.requestGate` and `opts.readMaxBytes` configure both servers the same way
+as the `createServer()` options of the same names, so admission scenarios run
+under identical settings on both transports:
+
+```typescript
+transportParityTest("a rejecting gate behaves the same on both transports", {
+  services: [greeterRoutes],
+  requestGate: () => {
+    throw new ConnectError("unauthenticated", Code.Unauthenticated);
+  },
+  scenario: async ({ transport }) => {
+    try {
+      await createClient(GreeterService, transport).sayHello({ name: "x" });
+      return {};
+    } catch (err) {
+      const e = ConnectError.from(err);
+      return { error: { code: e.code, message: e.rawMessage } };
+    }
+  },
+});
+```
+
 ### `InMemorySpanCollector` / `InMemoryMetricCollector`
 
 Fresh per-run OTEL collectors are injected into the scenario context
