@@ -154,7 +154,7 @@ import { executeProtoSync } from "@connectum/cli/commands/proto-sync";
 // Fetch service and file information
 const result = await fetchReflectionData("http://localhost:5000");
 console.log(result.services);  // ["grpc.health.v1.Health", ...]
-console.log(result.fileNames); // ["grpc/health/v1/health.proto", ...]
+console.log(result.fileNames); // ["grpc/health/v1/health", ...] (protobuf-es file names, no ".proto")
 
 // Fetch binary FileDescriptorSet for custom processing
 const binpb = await fetchFileDescriptorSetBinary("http://localhost:5000");
@@ -172,7 +172,6 @@ await executeProtoSync({
 ```
 @connectum/cli (Layer 2)
   depends on:
-    @lambdalisue/connectrpc-grpcreflect  -- reflection client
     @bufbuild/protobuf                    -- protobuf serialization
     @connectrpc/connect                   -- ConnectRPC core types
     @connectrpc/connect-node              -- gRPC transport (HTTP/2)
@@ -180,10 +179,11 @@ await executeProtoSync({
     citty                                 -- CLI framework
 ```
 
+The gRPC Server Reflection client (`utils/reflection`) is implemented in this package on code generated from the `grpc.reflection.v1` and `v1alpha` protos vendored in `proto/`. It speaks v1 and falls back to v1alpha when a server answers v1 with `UNIMPLEMENTED`.
+
 ## Related
 
 - [ADR-020: Reflection-based Proto Synchronization](https://connectum.dev/en/contributing/adr/020-reflection-proto-sync)
-- [@lambdalisue/connectrpc-grpcreflect](https://www.npmjs.com/package/@lambdalisue/connectrpc-grpcreflect)
 - [Buf Inputs Reference](https://buf.build/docs/reference/inputs/)
 
 ## License

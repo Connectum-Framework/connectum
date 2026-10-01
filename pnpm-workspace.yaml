@@ -47,9 +47,8 @@ catalog:
   zod: ^4.4.3
 overrides:
   # Pin a single @bufbuild/protobuf across the graph. Transitive consumers
-  # (@lambdalisue/connectrpc-grpcreflect, @bufbuild/protovalidate) otherwise
-  # peer-resolve to an older 2.12.x, which splits @connectrpc/connect's protobuf
-  # peer into two incompatible instances and breaks the reflection DTS build.
+  # (@bufbuild/protovalidate) otherwise peer-resolve to an older 2.12.x, which
+  # splits @connectrpc/connect's protobuf peer into two incompatible instances.
   '@bufbuild/protobuf': ^2.16.0
   # @exodus/test lists puppeteer-core as an optional dependency for its browser
   # engines. No test here runs a browser engine (only node, bun:pure, esbuild),

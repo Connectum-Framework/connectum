@@ -10,6 +10,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { DescFile } from "@bufbuild/protobuf";
+import { MountedService, UnmountedPeerService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
 import { collectStreamingMethods, EffectiveTransport, formatTransportValidationMessage, resolveEffectiveTransport, TRANSPORT_VALIDATION_ERROR_CODE, TransportValidationError, validateTransport } from "../../src/TransportValidation.ts";
 
 /**
@@ -34,7 +35,7 @@ function captureWarnings(fn: () => void): unknown[][] {
 /** Structural mock of a DescFile with the given service methods. */
 function mockDescFile(service: string, methods: Array<{ name: string; methodKind: string }>): DescFile {
     return {
-        services: [{ typeName: service, methods }],
+        services: [{ kind: "service", typeName: service, methods }],
     } as unknown as DescFile;
 }
 
@@ -60,6 +61,15 @@ describe("collectStreamingMethods", () => {
     it("returns empty for unary/server-streaming-only registry", () => {
         assert.deepStrictEqual(collectStreamingMethods([UNARY_ONLY]), []);
     });
+
+    // multi.proto declares a unary MountedService and an UnmountedPeerService
+    // with a bidi method. A file contributes every service it declares; the
+    // mounted service alone has nothing to report.
+    it("reports the bidi method of every declared service for a file, none for the unary service alone", () => {
+        assert.deepStrictEqual(collectStreamingMethods([MountedService.file]), [{ service: "fixture.v1.UnmountedPeerService", method: "Chat", kind: "bidi_streaming" }]);
+        assert.deepStrictEqual(collectStreamingMethods([MountedService]), []);
+        assert.deepStrictEqual(collectStreamingMethods([UnmountedPeerService]), [{ service: "fixture.v1.UnmountedPeerService", method: "Chat", kind: "bidi_streaming" }]);
+    });
 });
 
 describe("resolveEffectiveTransport", () => {
@@ -74,7 +84,7 @@ describe("resolveEffectiveTransport", () => {
 
 describe("validateTransport", () => {
     it("mode error + plaintext-h1 + bidi → returns TransportValidationError", () => {
-        const err = validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" });
+        const err = validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" });
 
         assert.ok(err instanceof TransportValidationError);
         assert.strictEqual(err.code, TRANSPORT_VALIDATION_ERROR_CODE);
@@ -82,15 +92,15 @@ describe("validateTransport", () => {
     });
 
     it("never fires on HTTP/2-only transports (h2c, TLS without HTTP/1.1)", () => {
-        assert.strictEqual(validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.H2C, mode: "error" }), null);
-        assert.strictEqual(validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.TLS_H2_ONLY, mode: "error" }), null);
+        assert.strictEqual(validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.H2C, mode: "error" }), null);
+        assert.strictEqual(validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.TLS_H2_ONLY, mode: "error" }), null);
     });
 
     it("TLS with HTTP/1.1 + bidi → one-time warn, never an error", () => {
         let result: TransportValidationError | null = null;
         // Even with mode "error" the TLS-h1 case is only a warning
         const warnings = captureWarnings(() => {
-            result = validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.TLS_H1_NEGOTIABLE, mode: "error" });
+            result = validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.TLS_H1_NEGOTIABLE, mode: "error" });
         });
 
         assert.strictEqual(result, null);
@@ -102,24 +112,24 @@ describe("validateTransport", () => {
     it("TLS with HTTP/1.1 + mode off → no warning", () => {
         let result: TransportValidationError | null = null;
         const warnings = captureWarnings(() => {
-            result = validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.TLS_H1_NEGOTIABLE, mode: "off" });
+            result = validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.TLS_H1_NEGOTIABLE, mode: "off" });
         });
         assert.strictEqual(result, null);
         assert.strictEqual(warnings.length, 0);
     });
 
     it("never fires for unary/server-streaming-only services on any transport", () => {
-        assert.strictEqual(validateTransport({ registry: [UNARY_ONLY], transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" }), null);
+        assert.strictEqual(validateTransport({ services: UNARY_ONLY.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" }), null);
     });
 
     it("mode off skips the check entirely", () => {
-        assert.strictEqual(validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.PLAINTEXT_H1, mode: "off" }), null);
+        assert.strictEqual(validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "off" }), null);
     });
 
     it("mode warn logs exactly once and returns null", () => {
         let result: TransportValidationError | null = null;
         const warnings = captureWarnings(() => {
-            result = validateTransport({ registry: [WITH_BIDI], transport: EffectiveTransport.PLAINTEXT_H1, mode: "warn" });
+            result = validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "warn" });
         });
 
         assert.strictEqual(result, null);
@@ -127,7 +137,7 @@ describe("validateTransport", () => {
     });
 
     it("client-streaming alone does NOT trigger validation (works over HTTP/1.1)", () => {
-        assert.strictEqual(validateTransport({ registry: [WITH_CLIENT_STREAM], transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" }), null);
+        assert.strictEqual(validateTransport({ services: WITH_CLIENT_STREAM.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" }), null);
     });
 });
 
@@ -151,4 +161,25 @@ describe("formatTransportValidationMessage", () => {
         // Escape hatch
         assert.ok(message.includes('transportValidation: "warn" | "off"'));
     });
+});
+
+// Every diagnosing path — plaintext HTTP/1.1 in "error" and "warn" mode, and
+// TLS that also negotiates HTTP/1.1 — sees only the mounted services passed
+// in. A unary service whose file also declares an unmounted bidi service is
+// clean on all of them.
+describe("validateTransport with a mounted service of a mixed file", () => {
+    for (const [transport, mode] of [
+        [EffectiveTransport.PLAINTEXT_H1, "error"],
+        [EffectiveTransport.PLAINTEXT_H1, "warn"],
+        [EffectiveTransport.TLS_H1_NEGOTIABLE, "error"],
+    ] as const) {
+        it(`neither fails nor warns on ${transport} in ${mode} mode`, () => {
+            let result: TransportValidationError | null = null;
+            const warnings = captureWarnings(() => {
+                result = validateTransport({ services: [MountedService], transport, mode });
+            });
+            assert.strictEqual(result, null);
+            assert.deepStrictEqual(warnings, []);
+        });
+    }
 });

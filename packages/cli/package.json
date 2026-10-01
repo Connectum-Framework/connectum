@@ -8,6 +8,10 @@
   "bin": {
     "connectum": "./dist/index.js"
   },
+  "imports": {
+    "#gen/*": "./gen/*",
+    "#*": "./src/*"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,7 +40,9 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "gen",
+    "proto"
   ],
   "repository": {
     "type": "git",
@@ -45,6 +51,10 @@
   },
   "scripts": {
     "start": "node dist/index.js",
+    "buf:generate": "buf generate",
+    "buf:lint": "buf lint",
+    "build:proto": "pnpm run buf:generate && pnpm run build:proto:compile",
+    "build:proto:compile": "tsc --project tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "exodus-test --typescript tests/**/*.test.ts",
     "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
@@ -54,7 +64,7 @@
     "lint": "biome check src",
     "format": "biome check --write src",
     "build": "tsup",
-    "clean": "rm -rf coverage dist"
+    "clean": "rm -rf coverage dist gen gen-ts"
   },
   "keywords": [
     "cli",
@@ -77,13 +87,13 @@
     "@clack/prompts": "^1.8.1",
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
-    "@lambdalisue/connectrpc-grpcreflect": "^0.5.0",
     "citty": "^0.2.2",
     "giget": "^3.3.1"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
+    "@bufbuild/protoc-gen-es": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/healthcheck": "workspace:^",
     "@connectum/reflection": "workspace:^",

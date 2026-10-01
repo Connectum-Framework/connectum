@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package fixture.v1;
+
+import "fixture/v1/common.proto";
+import "fixture/v1/legacy.proto";
+import "fixture/v1/options.proto";
+import "google/protobuf/empty.proto";
+
+message GetRequest {
+  oneof key {
+    string id = 1;
+    int64 number = 2;
+  }
+  Extendable payload = 3;
+}
+
+service FixtureService {
+  rpc Get(GetRequest) returns (Meta) {
+    option (fixture.v1.audit) = "read";
+  }
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}

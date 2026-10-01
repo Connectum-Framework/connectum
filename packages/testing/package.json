@@ -63,7 +63,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@connectum/healthcheck": "workspace:^",
     "@connectum/interceptors": "workspace:^",
+    "@connectum/reflection": "workspace:^",
     "@exodus/test": "catalog:",
     "c8": "catalog:",
     "tsup": "catalog:",

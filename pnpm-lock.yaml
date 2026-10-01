@@ -234,9 +234,6 @@ importers:
       '@connectrpc/connect-node':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
-      '@lambdalisue/connectrpc-grpcreflect':
-        specifier: ^0.5.0
-        version: 0.5.0
       citty:
         specifier: ^0.2.2
         version: 0.2.2
@@ -250,6 +247,9 @@ importers:
       '@bufbuild/buf':
         specifier: 'catalog:'
         version: 1.72.0
+      '@bufbuild/protoc-gen-es':
+        specifier: 'catalog:'
+        version: 2.16.0(@bufbuild/protobuf@2.16.0)
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -617,13 +617,16 @@ importers:
       '@connectrpc/connect':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)
-      '@lambdalisue/connectrpc-grpcreflect':
-        specifier: ^0.5.0
-        version: 0.5.0
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@bufbuild/buf':
+        specifier: 'catalog:'
+        version: 1.72.0
+      '@bufbuild/protoc-gen-es':
+        specifier: 'catalog:'
+        version: 2.16.0(@bufbuild/protobuf@2.16.0)
       '@connectrpc/connect-node':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
@@ -698,9 +701,15 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@connectum/healthcheck':
+        specifier: workspace:^
+        version: link:../healthcheck
       '@connectum/interceptors':
         specifier: workspace:^
         version: link:../interceptors
+      '@connectum/reflection':
+        specifier: workspace:^
+        version: link:../reflection
       '@exodus/test':
         specifier: 'catalog:'
         version: 1.0.0-rc.116
@@ -1410,9 +1419,6 @@ packages:
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
-
-  '@lambdalisue/connectrpc-grpcreflect@0.5.0':
-    resolution: {integrity: sha512-OisIo84Kmv4sTIFSC8v6sFxlj7H22g8uvRScqFz8ZIWEhNdg7rJK60G05EdQo5juNSK0KzG+x31TieikgQotog==}
 
   '@manypkg/find-root@3.1.0':
     resolution: {integrity: sha512-BcSqCyKhBVZ5YkSzOiheMCV41kqAFptW6xGqYSTjkVTl9XQpr+pqHhwgGCOHQtjDCv7Is6EFyA14Sm5GVbVABA==}
@@ -4100,11 +4106,6 @@ snapshots:
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
-
-  '@lambdalisue/connectrpc-grpcreflect@0.5.0':
-    dependencies:
-      '@bufbuild/protobuf': 2.16.0
-      '@connectrpc/connect': 2.2.0(@bufbuild/protobuf@2.16.0)
 
   '@manypkg/find-root@3.1.0':
     dependencies:

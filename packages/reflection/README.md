@@ -6,7 +6,7 @@ gRPC Server Reflection protocol for Connectum.
 
 ## Features
 
-- **gRPC Server Reflection v1 + v1alpha**: Full protocol support via [@lambdalisue/connectrpc-grpcreflect](https://github.com/lambdalisue/connectrpc-grpcreflect)
+- **gRPC Server Reflection v1 + v1alpha**: Native implementation of every request kind, including transitive import closure and symbol lookup down to methods, fields and enum values
 - **Zero Configuration**: No arguments required, works out of the box
 - **Automatic Descriptor Collection**: Recursively collects all proto file descriptors with transitive dependencies
 - **Client Compatibility**: Works with grpcurl, Postman, buf curl, and any gRPC reflection-aware client
@@ -53,7 +53,7 @@ import { Reflection } from '@connectum/reflection';
 function Reflection(): ProtocolRegistration;
 ```
 
-The function takes no arguments. It automatically collects the registered service file descriptors from the `ProtocolContext` — every application service plus the services of protocols listed before it — and builds a `FileDescriptorSet` for the reflection service.
+The function takes no arguments. It reads the mounted services and their file descriptors from the `ProtocolContext` — every application service plus the services of protocols listed before it — and indexes them for the reflection service.
 
 Pass the result to `createServer({ protocols: [...] })`.
 
@@ -74,11 +74,26 @@ This is primarily used internally by `Reflection()` but is exported for advanced
 
 Once per server, in `setup`, the `Reflection` protocol:
 
-1. Receives the registered service file descriptors via `ProtocolContext.registry`
+1. Receives the mounted services via `ProtocolContext.services` and their file descriptors via `ProtocolContext.registry`
 2. Recursively collects all proto file descriptors and their dependencies using `collectFileProtos()`
-3. Builds a `FileDescriptorSet` from the collected protos
+3. Indexes them by file name, by fully-qualified symbol and by extension
 
-Then, for every router the server builds (the HTTP adapter and each in-process transport), `register` mounts the `ServerReflection` service (v1 and v1alpha) with that same descriptor set via `registerServerReflectionFromFileDescriptorSet`. HTTP and in-process clients therefore see the same listing.
+Then, for every router the server builds (the HTTP adapter and each in-process transport), `register` mounts `grpc.reflection.v1.ServerReflection` and `grpc.reflection.v1alpha.ServerReflection` on that same index. HTTP and in-process clients therefore see the same answers.
+
+### Protocol behavior
+
+| Request | Answer |
+|---------|--------|
+| `list_services` | Services mounted before `Reflection()`: every application service and the protocols listed earlier in `protocols`. The reflection service does not list itself; services that are declared (in an imported file, or next to a mounted service) but not mounted are not listed. |
+| `file_by_filename`, `file_containing_symbol`, `file_containing_extension` | The requested file first, then each of its transitive imports (well-known types included) not yet sent on the same stream. |
+| `file_containing_symbol` | Resolves services, methods (`pkg.Service.Method`), messages, fields, oneofs, enums, enum values (named in their enum's parent scope) and extensions. |
+| `all_extension_numbers_of_type` | `base_type_name` set to the requested type, numbers in ascending order. |
+| Unknown file, symbol, extension or type | `error_response` with `NOT_FOUND` (5), naming what was not found. |
+| Request with no query set | `error_response` with `INVALID_ARGUMENT` (3). |
+
+Errors are answered per request: the stream stays open for the next request. Every response echoes `valid_host` and `original_request`.
+
+The reflection protos (`proto/grpc/reflection/`) are vendored verbatim from [grpc/grpc-proto](https://github.com/grpc/grpc-proto/tree/master/grpc/reflection).
 
 ## Usage with grpcurl
 
@@ -155,7 +170,6 @@ await server.start();
 
 - `@bufbuild/protobuf` -- Protocol Buffers runtime
 - `@connectrpc/connect` -- ConnectRPC core
-- `@lambdalisue/connectrpc-grpcreflect` -- gRPC Server Reflection implementation
 
 ## Requirements
 

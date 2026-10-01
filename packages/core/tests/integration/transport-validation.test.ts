@@ -1,61 +1,39 @@
 /**
  * Server.start() transport-validation integration tests
  *
- * A USER-registered bidi-streaming method on the default plaintext HTTP/1.1
+ * A USER-mounted bidi-streaming method on the default plaintext HTTP/1.1
  * server must fail startup (TransportValidationError, stable code); the same
- * registry on an h2c server must start cleanly. Protocol-contributed bidi
- * descriptors (the gRPC Reflection case — ServerReflectionInfo is bidi) must
+ * service on an h2c server must start cleanly. Protocol-contributed bidi
+ * services (the gRPC Reflection case — ServerReflectionInfo is bidi) must
  * NOT fail the user's startup: their transport limitations are documented.
+ * Neither must a bidi service that is only declared next to a mounted one.
  */
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { DescFile } from "@bufbuild/protobuf";
-import type { ServiceDefinition } from "../../src/defineService.ts";
+import { MountedService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
+import { defineService, type ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { TRANSPORT_VALIDATION_ERROR_CODE, TransportValidationError } from "../../src/TransportValidation.ts";
 import type { ProtocolRegistration } from "../../src/types.ts";
+import { StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
-const BIDI_FILE = {
-    services: [
-        {
-            typeName: "acme.v1.ScannerService",
-            methods: [{ name: "StreamCodes", methodKind: "bidi_streaming" }],
-        },
-    ],
-} as unknown as DescFile;
-
-/**
- * User service definition contributing a bidi descriptor. buildRoutes intercepts
- * router.service() and records service.file BEFORE delegating to the real
- * Connect router — which rejects the structural mock, so the register closure
- * swallows that error: the registry entry is what the test needs.
- */
+/** User service with a bidi method (`streaming.v1.StreamingService.Bidi`). */
 function bidiUserService(): ServiceDefinition {
     return {
-        descriptor: { file: BIDI_FILE } as never,
+        descriptor: StreamingService,
         register(router) {
-            try {
-                router.service({ file: BIDI_FILE } as never, {} as never);
-            } catch {
-                // Connect router rejects the structural mock — irrelevant here:
-                // the descriptor has already been recorded in the registry.
-            }
+            router.service(StreamingService, {});
         },
     };
 }
 
-/** Protocol contributing the same bidi descriptor (the Reflection scenario). */
+/** Protocol mounting the same bidi service (the Reflection scenario). */
 function bidiDescriptorProtocol(): ProtocolRegistration {
     return {
         name: "bidi-fixture",
         register(router): void {
-            try {
-                router.service({ file: BIDI_FILE } as never, {} as never);
-            } catch {
-                // Same structural mock as bidiUserService: the descriptor is
-                // recorded in the registry before Connect rejects it.
-            }
+            router.service(StreamingService, {});
         },
     };
 }
@@ -80,7 +58,7 @@ describe("Server.start() transport validation", () => {
             (err: unknown) => {
                 assert.ok(err instanceof TransportValidationError, `expected TransportValidationError, got ${err}`);
                 assert.strictEqual(err.code, TRANSPORT_VALIDATION_ERROR_CODE);
-                assert.ok(err.message.includes("acme.v1.ScannerService.StreamCodes"));
+                assert.ok(err.message.includes("streaming.v1.StreamingService.Bidi"));
                 assert.strictEqual(emitted, err, "error event must deliver the identical error instance");
                 return true;
             },
@@ -106,6 +84,22 @@ describe("Server.start() transport validation", () => {
             port: 0,
             interceptors: [],
             transportValidation: "warn",
+        });
+
+        await server.start();
+        assert.ok(server.isRunning);
+        await server.stop();
+    });
+
+    // The check is about methods the server serves. A mounted unary service
+    // whose .proto file also declares an unmounted bidi service must not be
+    // rejected for a method nobody can call.
+    it("ignores a bidi method of an unmounted service declared in a mounted file", async () => {
+        const server = createServer({
+            services: [defineService(MountedService, { ping: () => ({}) })],
+            port: 0,
+            interceptors: [],
+            // defaults: plaintext HTTP/1.1 — a mounted bidi method would fail here
         });
 
         await server.start();

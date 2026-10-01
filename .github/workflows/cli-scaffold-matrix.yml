@@ -81,7 +81,8 @@ jobs:
       - name: Install + build the CLI
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter @connectum/cli build
+          # Through turbo so `build:proto` (generated reflection code) runs first.
+          pnpm turbo run build --filter @connectum/cli
       # Scaffold -> install -> typecheck (runs buf generate first) -> test.
       # `base-drift` scaffolds from examples@main instead of the pinned tag: a red cell
       # means the pinned base and the live example diverged. Fix the scaffold fragment,
