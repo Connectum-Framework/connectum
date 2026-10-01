@@ -14,6 +14,6 @@ Responses now follow the reflection protocol where the previous implementation d
 - `all_extension_numbers_of_type` fills `base_type_name` and lists numbers in ascending order; an unknown type is `NOT_FOUND` instead of an empty list.
 - A not-found extension names the type and number instead of `File not found: [object Object]`.
 - A request with no query set gets an `INVALID_ARGUMENT` error response instead of an empty one; the stream stays open.
-- `list_services` lists the mounted services only, not services declared in a file that is merely imported.
+- `list_services` lists the mounted services only: not services declared in a file that is merely imported, nor the unmounted services of a file that also declares a mounted one.
 
 `connectum proto sync` and `@connectum/cli/utils/reflection` return the same file order and descriptor-set bytes as before (the service list changes only as described above), and still fall back to v1alpha for servers without v1.

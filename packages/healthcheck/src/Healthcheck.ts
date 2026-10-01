@@ -92,7 +92,8 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
         // tracked services and start tracking this protocol's own Health
         // service as UNKNOWN, taking overall health out of SERVING.
         setup(context: ProtocolContext): void {
-            const serviceNames = context.registry.flatMap((file) => file.services.map((s) => s.typeName));
+            // The mounted services, not every service of their files.
+            const serviceNames = context.services.map((service) => service.typeName);
             manager.initialize(serviceNames);
         },
 

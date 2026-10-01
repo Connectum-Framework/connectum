@@ -63,7 +63,7 @@
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
     "lint": "biome check src",
     "format": "biome check --write src",
-    "build": "pnpm run build:proto && tsup",
+    "build": "tsup",
     "clean": "rm -rf coverage dist gen gen-ts"
   },
   "keywords": [

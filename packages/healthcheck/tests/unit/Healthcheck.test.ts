@@ -108,12 +108,14 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 	 * that contain the given service type names.
 	 */
 	function createMockContext(serviceTypeNames: string[]) {
+		const services = serviceTypeNames.map((typeName) => ({ typeName }));
 		return {
 			registry: [
 				{
-					services: serviceTypeNames.map((typeName) => ({ typeName })),
+					services,
 				},
 			],
+			services,
 		} as any;
 	}
 

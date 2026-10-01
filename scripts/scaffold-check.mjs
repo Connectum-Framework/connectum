@@ -163,7 +163,9 @@ function main() {
 
     if (!existsSync(CLI_ENTRY)) {
         console.log("Building @connectum/cli (dist/ is missing)...");
-        run("pnpm", ["--filter", "@connectum/cli", "build"], REPO_ROOT);
+        // Through turbo, not `pnpm --filter ... build`: the CLI build needs the
+        // generated reflection code, and only turbo runs `build:proto` before `build`.
+        run("pnpm", ["turbo", "run", "build", "--filter", "@connectum/cli"], REPO_ROOT);
     }
 
     let selected = DEFAULT_COMBOS;

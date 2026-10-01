@@ -7,7 +7,7 @@
  * @module buildRoutes
  */
 
-import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
+import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
@@ -113,6 +113,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
+    // Every mounted service in registration order. `registry` holds their
+    // files, and a file may also declare services that are not mounted.
+    const mountedServices: DescService[] = [];
     let userFileCount = 0;
     // Protocol `setup` is one-time work (health manager initialization,
     // reflection descriptor set) and must not run again for the routers
@@ -131,6 +134,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             const [service] = args;
             if (!registry.includes(service.file)) {
                 registry.push(service.file);
+            }
+            if (!registeredServiceTypeNames.has(service.typeName)) {
+                mountedServices.push(service);
             }
             registeredServiceTypeNames.add(service.typeName);
             return originalService.apply(router, args);
@@ -151,14 +157,17 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
 
         // Register protocols. On the first materialization each protocol is set
         // up right before its own registration, so it sees the application
-        // files plus the files of the protocols before it — Healthcheck does
-        // not track itself, Reflection lists the protocols registered earlier.
-        // The snapshot keeps that view fixed even though `registry` keeps
-        // growing.
+        // services and files plus those of the protocols before it —
+        // Healthcheck does not track itself, Reflection lists the protocols
+        // registered earlier. The snapshots keep that view fixed even though
+        // `registry` and `mountedServices` keep growing.
         const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
             if (settingUp) {
-                const context: ProtocolContext = { registry: Object.freeze([...registry]) };
+                const context: ProtocolContext = {
+                    registry: Object.freeze([...registry]),
+                    services: Object.freeze([...mountedServices]),
+                };
                 protocol.setup?.(context);
             }
             protocol.register(router);

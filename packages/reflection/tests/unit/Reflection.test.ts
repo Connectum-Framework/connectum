@@ -33,6 +33,7 @@ describe("Reflection", () => {
 		};
 		const mockContext = {
 			registry: [],
+			services: [],
 		};
 
 		assert.doesNotThrow(() => {
@@ -65,7 +66,7 @@ describe("Reflection", () => {
 			rpc: mock.fn(),
 		};
 
-		protocol.setup?.({ registry: [file_fixture_v1_service] });
+		protocol.setup?.({ registry: [file_fixture_v1_service], services: file_fixture_v1_service.services });
 		protocol.register(mockRouter as any);
 
 		assert.deepStrictEqual(

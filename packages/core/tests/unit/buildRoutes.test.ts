@@ -10,6 +10,7 @@ import { describe, it, mock } from "node:test";
 import type { DescFile } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { createConnectRouter } from "@connectrpc/connect";
+import { MountedService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
 import type { BuildRoutesOptions } from "../../src/buildRoutes.ts";
 import { buildRoutes } from "../../src/buildRoutes.ts";
 import type { RegisterContext } from "../../src/defineService.ts";
@@ -140,6 +141,43 @@ describe("buildRoutes()", () => {
             assert.deepStrictEqual(seen[1], [EchoService.file], "the second protocol sees the file the first one registered");
             assert.ok(Object.isFrozen(seen[0]) && Object.isFrozen(seen[1]), "snapshots must be immutable");
             assert.strictEqual(seen.length, 2, "replaying routes must not call setup again");
+        });
+
+        // A file may declare more services than are mounted. Protocols that
+        // report served services (health, reflection) need the mounted ones,
+        // with the same "registered before this protocol" view as `registry`.
+        it("gives setup a frozen snapshot of the services mounted before the protocol", () => {
+            const seen: Array<{ services: string[]; files: string[]; frozen: boolean }> = [];
+            const record = (context: ProtocolContext): void => {
+                seen.push({
+                    services: context.services.map((s) => s.typeName),
+                    files: context.registry.map((f) => f.name),
+                    frozen: Object.isFrozen(context.services),
+                });
+            };
+            const first: ProtocolRegistration = {
+                name: "first",
+                setup: record,
+                register: (router) => {
+                    router.service(EchoService, {});
+                },
+            };
+            const second: ProtocolRegistration = { name: "second", setup: record, register: () => {} };
+            const mounted = {
+                descriptor: MountedService,
+                register: (router: ConnectRouter) => {
+                    router.service(MountedService, {});
+                },
+            };
+
+            const result = buildRoutes(createOptions({ services: [mounted], protocols: [first, second] }));
+            result.routes(createConnectRouter());
+
+            assert.deepStrictEqual(seen, [
+                // The mounted file also declares fixture.v1.UnmountedPeerService.
+                { services: ["fixture.v1.MountedService"], files: ["fixture/v1/multi"], frozen: true },
+                { services: ["fixture.v1.MountedService", EchoService.typeName], files: ["fixture/v1/multi", EchoService.file.name], frozen: true },
+            ]);
         });
 
         it("should accept multiple protocols", () => {

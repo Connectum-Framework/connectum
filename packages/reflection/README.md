@@ -53,7 +53,7 @@ import { Reflection } from '@connectum/reflection';
 function Reflection(): ProtocolRegistration;
 ```
 
-The function takes no arguments. It automatically collects the registered service file descriptors from the `ProtocolContext` — every application service plus the services of protocols listed before it — and indexes them for the reflection service.
+The function takes no arguments. It reads the mounted services and their file descriptors from the `ProtocolContext` — every application service plus the services of protocols listed before it — and indexes them for the reflection service.
 
 Pass the result to `createServer({ protocols: [...] })`.
 
@@ -74,7 +74,7 @@ This is primarily used internally by `Reflection()` but is exported for advanced
 
 Once per server, in `setup`, the `Reflection` protocol:
 
-1. Receives the registered service file descriptors via `ProtocolContext.registry`
+1. Receives the mounted services via `ProtocolContext.services` and their file descriptors via `ProtocolContext.registry`
 2. Recursively collects all proto file descriptors and their dependencies using `collectFileProtos()`
 3. Indexes them by file name, by fully-qualified symbol and by extension
 
@@ -84,7 +84,7 @@ Then, for every router the server builds (the HTTP adapter and each in-process t
 
 | Request | Answer |
 |---------|--------|
-| `list_services` | Services mounted before `Reflection()`: every application service and the protocols listed earlier in `protocols`. The reflection service does not list itself; services declared only in imported files are not listed. |
+| `list_services` | Services mounted before `Reflection()`: every application service and the protocols listed earlier in `protocols`. The reflection service does not list itself; services that are declared (in an imported file, or next to a mounted service) but not mounted are not listed. |
 | `file_by_filename`, `file_containing_symbol`, `file_containing_extension` | The requested file first, then each of its transitive imports (well-known types included) not yet sent on the same stream. |
 | `file_containing_symbol` | Resolves services, methods (`pkg.Service.Method`), messages, fields, oneofs, enums, enum values (named in their enum's parent scope) and extensions. |
 | `all_extension_numbers_of_type` | `base_type_name` set to the requested type, numbers in ascending order. |

@@ -59,7 +59,7 @@ export function Reflection(): ProtocolRegistration {
         setup(context: ProtocolContext): void {
             pool = createDescriptorPool({
                 files: collectFileProtos(context.registry),
-                services: context.registry.flatMap((file) => file.services.map((service) => service.typeName)),
+                services: context.services.map((service) => service.typeName),
             });
         },
 

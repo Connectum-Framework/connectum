@@ -38,6 +38,7 @@ import {
 import { Reflection } from "../../src/Reflection.ts";
 import { collectFileProtos } from "../../src/utils.ts";
 import { MetaSchema } from "../fixtures/fixture/v1/common_pb.ts";
+import { MountedService } from "../fixtures/fixture/v1/multi_pb.ts";
 import { FixtureService, file_fixture_v1_service } from "../fixtures/fixture/v1/service_pb.ts";
 
 type RequestInit = MessageInitShape<typeof ServerReflectionRequestSchema>;
@@ -343,4 +344,48 @@ describe("gRPC Server Reflection conformance", () => {
             v1.map((r) => toBinary(ServerReflectionResponseSchema, r)),
         );
     });
+});
+
+// A file that declares two services, of which only one is mounted: the
+// listing must follow what is mounted, not what the mounted file declares.
+// Both services' file is still served, so the unmounted one resolves as a
+// symbol — it is a declaration, just not a served service.
+describe("gRPC Server Reflection with a partly mounted file", () => {
+    let server: Server;
+    let baseUrl: string;
+
+    before(async () => {
+        const mounted = defineService(MountedService, { ping: () => ({}) });
+        server = createServer({ services: [mounted], port: 0, protocols: [Reflection()], interceptors: [], allowHTTP1: false });
+        await server.start();
+        assert.ok(server.address?.port);
+        baseUrl = `http://localhost:${server.address.port}`;
+    });
+
+    after(async () => {
+        await server?.stop();
+    });
+
+    const transports: Record<string, () => Transport> = {
+        http: () => createGrpcTransport({ baseUrl }),
+        "in-process": () => createLocalTransport(server),
+    };
+
+    for (const version of ["v1", "v1alpha"] as const) {
+        for (const [transportName, transport] of Object.entries(transports)) {
+            it(`${version} over ${transportName} lists only the mounted service of the file`, async () => {
+                const [list, peer] = await session(transport(), version, [
+                    { messageRequest: { case: "listServices", value: "" } },
+                    { messageRequest: { case: "fileContainingSymbol", value: "fixture.v1.UnmountedPeerService" } },
+                ]);
+                assert.ok(list && peer);
+                assert.strictEqual(list.messageResponse.case, "listServicesResponse");
+                assert.deepStrictEqual(
+                    list.messageResponse.value.service.map((s) => s.name),
+                    ["fixture.v1.MountedService"],
+                );
+                assert.strictEqual(fileNames(peer)[0], "fixture/v1/multi.proto");
+            });
+        }
+    }
 });
