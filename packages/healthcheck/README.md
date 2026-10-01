@@ -121,7 +121,7 @@ Class for managing service health statuses.
 | `getStatus(service)` | Get the status of a specific service or component. Returns `ServiceStatus \| undefined` (`undefined` for an unknown name -- it does not throw, unlike `update()`). |
 | `getAllStatuses()` | Get a Map of all statuses |
 | `areAllHealthy()` | Check if all services and components are in SERVING status |
-| `initialize(serviceNames)` | Initialize RPC service tracking (called once per server by the protocol) |
+| `initialize(serviceNames)` | Initialize RPC service tracking (called by the protocol's `setup`, not again for each router) |
 | `clear()` | Clear all services and components |
 
 #### Services vs components

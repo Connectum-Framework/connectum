@@ -88,7 +88,7 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const protocol: ProtocolRegistration = {
         name: "healthcheck",
 
-        // Once per server: re-initializing on every router would drop the
+        // In setup, not register: re-initializing on every router would drop the
         // tracked services and start tracking this protocol's own Health
         // service as UNKNOWN, taking overall health out of SERVING.
         setup(context: ProtocolContext): void {
