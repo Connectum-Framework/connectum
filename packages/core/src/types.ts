@@ -112,9 +112,9 @@ export interface ProtocolRegistration {
      * One-time initialization: called once per server, while its routes are
      * first materialized, immediately before this protocol's first
      * {@link ProtocolRegistration.register}. Routers built after that (one per
-     * in-process transport) reuse the materialized routes and do not call
-     * `setup`. The place for anything that reads the registry or has side
-     * effects.
+     * in-process transport) call `register` again for their own routes and
+     * reuse whatever `setup` prepared; they do not call `setup`. The place for
+     * anything that reads the registry or has side effects.
      *
      * If route materialization fails, the next attempt calls `setup` again, so
      * any side effects it has run again too. Keep them idempotent, or undo them
