@@ -23,6 +23,7 @@ import {
     ServerReflectionResponseSchema as V1alphaResponseSchema,
     ServerReflection as V1alphaServerReflection,
 } from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
+import { reflectionErrorCode } from "./reflectionErrorCode.ts";
 
 /**
  * Result of fetching proto descriptors from a running server.
@@ -74,7 +75,7 @@ function askV1alpha(transport: Transport): Ask {
 function errorOf(response: ServerReflectionResponse): ConnectError {
     if (response.messageResponse.case === "errorResponse") {
         const { errorCode, errorMessage } = response.messageResponse.value;
-        return new ConnectError(errorMessage, errorCode as Code);
+        return new ConnectError(errorMessage, reflectionErrorCode(errorCode));
     }
     return new ConnectError(`unexpected reflection response: ${response.messageResponse.case ?? "empty"}`, Code.Internal);
 }
