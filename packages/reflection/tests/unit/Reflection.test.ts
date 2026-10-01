@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Reflection } from "../../src/Reflection.ts";
+import { file_fixture_v1_service } from "../fixtures/fixture/v1/service_pb.ts";
 
 describe("Reflection", () => {
 	it("should return a ProtocolRegistration", () => {
@@ -53,7 +54,9 @@ describe("Reflection", () => {
 		assert.throws(() => protocol.register(mockRouter as any), /before setup/);
 	});
 
-	it("should call router.service when registering with service files", () => {
+	// Both protocol versions must be mounted: grpcurl and buf curl try v1
+	// first, older clients only know v1alpha.
+	it("registers the v1 and v1alpha reflection services", () => {
 		const protocol = Reflection();
 
 		const serviceFn = mock.fn();
@@ -62,22 +65,12 @@ describe("Reflection", () => {
 			rpc: mock.fn(),
 		};
 
-		const mockFile = {
-			name: "test.proto",
-			proto: { name: "test.proto" },
-			dependencies: [],
-		};
-		const mockContext = {
-			registry: [mockFile],
-		};
-
-		protocol.setup?.(mockContext as any);
+		protocol.setup?.({ registry: [file_fixture_v1_service] });
 		protocol.register(mockRouter as any);
 
-		// registerServerReflectionFromFileDescriptorSet registers v1 + v1alpha
-		assert.ok(
-			serviceFn.mock.calls.length >= 1,
-			`Expected router.service to be called at least once, got ${serviceFn.mock.calls.length} calls`,
+		assert.deepStrictEqual(
+			serviceFn.mock.calls.map((call) => (call.arguments[0] as { typeName: string }).typeName),
+			["grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"],
 		);
 	});
 });

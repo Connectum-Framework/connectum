@@ -1,8 +1,8 @@
 /**
  * Reflection protocol registration factory
  *
- * Creates a ProtocolRegistration for gRPC Server Reflection (v1 + v1alpha)
- * via @lambdalisue/connectrpc-grpcreflect.
+ * Creates a ProtocolRegistration for the gRPC Server Reflection Protocol
+ * (v1 + v1alpha).
  *
  * Allows clients (grpcurl, Postman, buf curl) to discover services,
  * methods, and message types at runtime.
@@ -10,12 +10,11 @@
  * @module @connectum/reflection/Reflection
  */
 
-import { create } from "@bufbuild/protobuf";
-import { type FileDescriptorSet, FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import type { ConnectRouter } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { ProtocolContext, ProtocolRegistration } from "@connectum/core";
-import { registerServerReflectionFromFileDescriptorSet } from "@lambdalisue/connectrpc-grpcreflect/server";
+import { createDescriptorPool, type DescriptorPool } from "./descriptorPool.ts";
+import { registerServerReflection } from "./serverReflection.ts";
 import { collectFileProtos } from "./utils.ts";
 
 /**
@@ -24,7 +23,12 @@ import { collectFileProtos } from "./utils.ts";
  * Returns a ProtocolRegistration that implements gRPC Server Reflection
  * Protocol (v1 + v1alpha). Pass it to createServer({ protocols: [...] }).
  *
- * The returned registration holds the descriptor set of the server it was
+ * The listing contains the services mounted before this protocol: every
+ * application service and the protocols that precede `Reflection()` in the
+ * `protocols` array. File answers carry the requested file and its transitive
+ * imports, without repeating files already sent on the same stream.
+ *
+ * The returned registration holds the descriptors of the server it was
  * set up for, so each server needs its own `Reflection()` call: a shared
  * instance would list the services of whichever server ran `setup` last.
  *
@@ -47,23 +51,24 @@ import { collectFileProtos } from "./utils.ts";
 export function Reflection(): ProtocolRegistration {
     // Built once from the registry snapshot and shared by every router, so the
     // HTTP and in-process listings are identical.
-    let fileDescriptorSet: FileDescriptorSet | undefined;
+    let pool: DescriptorPool | undefined;
 
     return {
         name: "reflection",
 
         setup(context: ProtocolContext): void {
-            fileDescriptorSet = create(FileDescriptorSetSchema, {
-                file: collectFileProtos(context.registry),
+            pool = createDescriptorPool({
+                files: collectFileProtos(context.registry),
+                services: context.registry.flatMap((file) => file.services.map((service) => service.typeName)),
             });
         },
 
         register(router: ConnectRouter): void {
-            if (fileDescriptorSet === undefined) {
+            if (pool === undefined) {
                 // An empty listing would be indistinguishable from "no services".
                 throw new Error("Reflection: register() called before setup(); the server must call setup() first.");
             }
-            registerServerReflectionFromFileDescriptorSet(router, fileDescriptorSet);
+            registerServerReflection(router, pool);
         },
     };
 }

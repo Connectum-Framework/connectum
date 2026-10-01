@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package fixture.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Top-level enum: its values live in the package scope (fixture.v1.LEVEL_HIGH).
+enum Level {
+  LEVEL_UNSPECIFIED = 0;
+  LEVEL_HIGH = 1;
+}
+
+message Meta {
+  // Nested enum: its values live in the message scope (fixture.v1.Meta.STATE_OPEN).
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_OPEN = 1;
+  }
+
+  message Note {
+    string text = 1;
+  }
+
+  google.protobuf.Timestamp created = 1;
+  // Synthesizes the map-entry message fixture.v1.Meta.LabelsEntry.
+  map<string, string> labels = 2;
+  Level level = 3;
+  State state = 4;
+  repeated Note notes = 5;
+}
+
+// Declared in an imported file but never mounted: reflection must not list it.
+service UnmountedService {
+  rpc Noop(google.protobuf.Empty) returns (google.protobuf.Empty);
+}

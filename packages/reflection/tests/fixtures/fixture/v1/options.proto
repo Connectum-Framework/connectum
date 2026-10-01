@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package fixture.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Custom method option: the usual way proto3 code declares extensions.
+extend google.protobuf.MethodOptions {
+  string audit = 50001;
+}
