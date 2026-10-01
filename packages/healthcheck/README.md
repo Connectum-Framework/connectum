@@ -121,7 +121,7 @@ Class for managing service health statuses.
 | `getStatus(service)` | Get the status of a specific service or component. Returns `ServiceStatus \| undefined` (`undefined` for an unknown name -- it does not throw, unlike `update()`). |
 | `getAllStatuses()` | Get a Map of all statuses |
 | `areAllHealthy()` | Check if all services and components are in SERVING status |
-| `initialize(serviceNames)` | Initialize RPC service tracking (called once per server by the protocol) |
+| `initialize(serviceNames)` | Initialize RPC service tracking (called by the protocol's `setup`, not again for each router) |
 | `clear()` | Clear all services and components |
 
 #### Services vs components
@@ -129,10 +129,11 @@ Class for managing service health statuses.
 The registry tracks two kinds of entries:
 
 - **Services** -- Connect RPC services, owned by the Healthcheck protocol.
-  `initialize()` adds, preserves, and removes these once, when the server
-  first builds its routes (on `start()`, or earlier on the first in-process
-  client). Later in-process transports (`server.localClient()`, `ctx.call`)
-  do not re-run it, so statuses set by the application survive them.
+  `initialize()` adds, preserves, and removes these when the server first
+  builds its routes (on `start()`, or earlier on the first in-process
+  client); if that route materialization fails, the retry runs it again.
+  Later in-process transports (`server.localClient()`, `ctx.call`) do not
+  re-run it, so statuses set by the application survive them.
 - **Components** -- application-defined readiness gates (`process`, `amqp`,
   a database connection, ...), owned by the application via
   `register()`/`set()`/`unregister()`. `initialize()` never touches them.

@@ -121,11 +121,17 @@ export interface ProtocolRegistration {
     readonly name: string;
 
     /**
-     * One-time initialization, called exactly once per server immediately
-     * before this protocol's first {@link ProtocolRegistration.register}.
-     * The place for anything that reads the registry or has side effects.
+     * Initialization: called while the server's routes are materialized,
+     * immediately before this protocol's first
+     * {@link ProtocolRegistration.register}. Routers built after that (one per
+     * in-process transport) call `register` again for their own routes and
+     * reuse whatever `setup` prepared; they do not call `setup`. The place for
+     * anything that reads the registry or has side effects.
      *
-     * If route materialization fails, the next attempt calls `setup` again.
+     * If the initial route materialization fails, the next attempt calls
+     * `setup` again, so any side effects it has run again too. Keep them
+     * idempotent, or undo them when a later step of the same materialization
+     * fails. A failure on a router built after that does not call `setup`.
      */
     setup?(context: ProtocolContext): void;
 

@@ -88,9 +88,11 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const protocol: ProtocolRegistration = {
         name: "healthcheck",
 
-        // Once per server: re-initializing on every router would drop the
-        // tracked services and start tracking this protocol's own Health
-        // service as UNKNOWN, taking overall health out of SERVING.
+        // In setup, not register: a router built later sees mounted services that
+        // already include this protocol's own Health service, so initializing
+        // there would start tracking it as UNKNOWN and take overall health out
+        // of SERVING. initialize keeps the status of every service it already
+        // tracks, so the application's statuses are not what is at stake.
         setup(context: ProtocolContext): void {
             // The mounted services, not every service of their files.
             const serviceNames = context.services.map((service) => service.typeName);

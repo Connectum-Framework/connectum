@@ -68,7 +68,7 @@ This is primarily used internally by `Reflection()` but is exported for advanced
 
 ## How It Works
 
-Once per server, in `setup`, the `Reflection` protocol:
+In `setup`, before its first `register` and not again for the routers built later, the `Reflection` protocol:
 
 1. Receives the mounted services via `ProtocolContext.services` and their file descriptors via `ProtocolContext.registry`
 2. Recursively collects all proto file descriptors and their dependencies using `collectFileProtos()`

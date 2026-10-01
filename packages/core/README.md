@@ -128,7 +128,7 @@ Manages the HTTP/2 server lifecycle:
 Route and protocol composition:
 - Registering user services on `ConnectRouter`
 - Intercepting `router.service()` to collect `DescFile[]` registry (used by reflection)
-- Setting up each protocol (healthcheck, reflection) once per server with a snapshot of the registry, then registering its routes on every router the server builds (HTTP adapter and each in-process transport)
+- Setting up each protocol (healthcheck, reflection) once per server with a snapshot of the registry (again only if route materialization failed), then registering its routes on every router the server builds (HTTP adapter and each in-process transport)
 - Creating `connectNodeAdapter` with fallback routing to HTTP protocol handlers, and the server-level `requestGate` / `readMaxBytes` defaults when set
 - Removing a forged `connectum-internal-transport` header from each HTTP request before the adapter sees it
 
