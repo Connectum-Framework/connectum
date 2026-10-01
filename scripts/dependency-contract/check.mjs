@@ -25,6 +25,24 @@
  * The expected per-manager outcomes are the EXPECTATIONS table below; a run that differs
  * from it fails, whichever way it differs.
  *
+ * RUNTIME: every cell that installed also runs `createServer()` from the installed
+ * `@connectum/core` (Node for npm / pnpm, Bun for Bun). In range it must start; below
+ * the floor it must fail with `PeerDependencyVersionError` naming the library — the
+ * visible failure on managers that only warn (pnpm) or stay silent (Bun). Bun cells also
+ * run the probe as a `bun build` bundle, where core cannot see its own package.json: the
+ * check is skipped by design, so the bundle must start in every scenario.
+ *
+ * CELL ISOLATION: each cell installs with its own package cache (npm `--cache`, pnpm
+ * `storeDir` / `cacheDir`, Bun `BUN_INSTALL_CACHE_DIR`). Measured with Bun 1.4.2: the
+ * same consumer resolved differently on a cold cache than after other cells had warmed
+ * it, so a shared cache made the verdict depend on cell order. `--reverse` runs the cells
+ * backwards to show it no longer does.
+ *
+ * KNOWN EXCEPTION: `@lambdalisue/connectrpc-grpcreflect` keeps protobuf / Connect as
+ * regular dependencies and may get its own copy (EXCUSED_REQUIRERS in
+ * scripts/lib/runtime-participants.mjs). Its copy is printed as a note and not counted;
+ * the exception ends with Connectum's own gRPC reflection.
+ *
  * Sources (`--source`):
  * - `pack` (default) — build the workspace and `pnpm pack` every package, then install
  *   those tarballs. Every installed `@connectum/*` copy is compared with the manifest in
@@ -62,10 +80,18 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import semver from "semver";
 import { listPublishablePackages, packWorkspace, readPackedManifest } from "../lib/pack-workspace.mjs";
-import { CONTRACT_LIBRARIES, candidateProblems, collectParticipants, peerRangeProblems, singleCopyProblems, TOOL_PACKAGES } from "../lib/runtime-participants.mjs";
+import {
+    CONTRACT_LIBRARIES,
+    candidateProblems,
+    collectParticipants,
+    excusedSplitNotes,
+    peerRangeProblems,
+    singleCopyProblems,
+    TOOL_PACKAGES,
+} from "../lib/runtime-participants.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRATCH_ROOT = join(REPO_ROOT, ".tmp");
@@ -146,7 +172,7 @@ function escapeRegExp(text) {
 }
 
 function parseArgs(argv) {
-    const opts = { pms: MANAGERS, scenarios: Object.keys(SCENARIOS), source: "pack", version: undefined, keep: false, ignoreReleaseAge: false, help: false };
+    const opts = { pms: MANAGERS, scenarios: Object.keys(SCENARIOS), source: "pack", version: undefined, keep: false, ignoreReleaseAge: false, reverse: false, help: false };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === "--pm") opts.pms = (argv[++i] ?? "").split(",").filter(Boolean);
@@ -154,6 +180,7 @@ function parseArgs(argv) {
         else if (arg === "--source") opts.source = argv[++i];
         else if (arg === "--version") opts.version = argv[++i];
         else if (arg === "--keep") opts.keep = true;
+        else if (arg === "--reverse") opts.reverse = true;
         else if (arg === "--ignore-release-age") opts.ignoreReleaseAge = true;
         else if (arg === "--help" || arg === "-h") opts.help = true;
         else throw new Error(`dependency-contract: unknown argument "${arg}" (try --help)`);
@@ -184,7 +211,7 @@ function connectumSpecs(opts, tarballs) {
 }
 
 /** Write a consumer project for one cell. */
-function writeConsumer(dir, pm, scenario, specs, opts) {
+function writeConsumer(dir, pm, scenario, specs, opts, cacheDir) {
     mkdirSync(dir, { recursive: true });
     const pins = SCENARIOS[scenario];
     const manifest = {
@@ -203,11 +230,26 @@ function writeConsumer(dir, pm, scenario, specs, opts) {
         manifest.overrides = sortKeys(specs.all);
     }
     writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    // Bun applies the `paths` of the nearest tsconfig.json to bare imports, and the repo's
+    // root tsconfig maps every `@connectum/*` to `packages/*/src`. Without a tsconfig of
+    // its own, a consumer under the repo's .tmp/ would run the WORKSPACE SOURCE under Bun
+    // instead of the installed tarball (measured: import.meta.resolve("@connectum/core")
+    // returned packages/core/src/index.ts).
+    writeFileSync(join(dir, "tsconfig.json"), '{\n  "compilerOptions": {}\n}\n');
     if (pm === "pnpm") {
         // A pnpm-workspace.yaml makes this directory its own root (the repo's workspace,
         // with its protobuf override, must not apply) and is where pnpm 11 reads
         // `overrides` and build approvals from.
-        const lines = ["packages:", "  - '.'", "allowBuilds:", "  esbuild: true", "  protobufjs: true"];
+        // storeDir / cacheDir: this cell's own, see CELL ISOLATION in the module doc.
+        const lines = [
+            "packages:",
+            "  - '.'",
+            `storeDir: '${join(cacheDir, "store")}'`,
+            `cacheDir: '${join(cacheDir, "cache")}'`,
+            "allowBuilds:",
+            "  esbuild: true",
+            "  protobufjs: true",
+        ];
         if (opts.source === "pack") {
             lines.push("overrides:", ...Object.entries(specs.all).map(([n, s]) => `  '${n}': '${s}'`));
         }
@@ -220,16 +262,66 @@ function sortKeys(obj) {
 }
 
 /**
+ * The install command, with this cell's own package cache (see CELL ISOLATION): npm via
+ * `--cache`, Bun via `BUN_INSTALL_CACHE_DIR`; pnpm reads `storeDir` / `cacheDir` from the
+ * cell's pnpm-workspace.yaml.
+ *
  * @param {string} pm
  * @param {{ ignoreReleaseAge: boolean }} opts
+ * @param {string} cacheDir
+ * @returns {[string, string[], Record<string, string>]}
  */
-function installCommand(pm, opts) {
-    if (pm === "npm") return ["npm", ["install", "--no-audit", "--no-fund"]];
+function installCommand(pm, opts, cacheDir) {
+    if (pm === "npm") return ["npm", ["install", "--no-audit", "--no-fund", "--cache", cacheDir], {}];
     // A host-wide minimum-release-age policy (pnpm `minimumReleaseAge`, Bun
     // `install.minimumReleaseAge`) blocks the fresh releases the peer floors point at.
     // Only an explicit --ignore-release-age lifts it, and only for this throwaway install.
-    if (pm === "pnpm") return ["pnpm", ["install", ...(opts.ignoreReleaseAge ? ["--config.minimumReleaseAge=0"] : [])]];
-    return ["bun", ["install", ...(opts.ignoreReleaseAge ? ["--minimum-release-age=0"] : [])]];
+    if (pm === "pnpm") return ["pnpm", ["install", ...(opts.ignoreReleaseAge ? ["--config.minimumReleaseAge=0"] : [])], {}];
+    return ["bun", ["install", ...(opts.ignoreReleaseAge ? ["--minimum-release-age=0"] : [])], { BUN_INSTALL_CACHE_DIR: cacheDir }];
+}
+
+/**
+ * What the consumer's own code observes: `createServer()` from the installed
+ * `@connectum/core`, which checks the protobuf / Connect copies it loaded against its
+ * peer ranges. Printed markers keep the verdict independent of log formatting.
+ */
+const RUNTIME_PROBE = [
+    'import { createServer } from "@connectum/core";',
+    // Where the runtime took core from: the cell asserts it is the installed copy.
+    'console.log("CONNECTUM_PROBE core " + (import.meta.resolve?.("@connectum/core") ?? "bundled"));',
+    "try {",
+    "    createServer({ services: [] });",
+    '    console.log("CONNECTUM_PROBE ok");',
+    "} catch (error) {",
+    '    console.log("CONNECTUM_PROBE failed " + error?.name);',
+    "    console.log(String(error?.message));",
+    "    process.exitCode = 3;",
+    "}",
+    "",
+].join("\n");
+
+/**
+ * Run the probe in the cell's runtime (Node for npm / pnpm, Bun for Bun), and for Bun
+ * also as a `bun build` bundle — a bundle carries no package.json for core, so the check
+ * must skip there rather than fail falsely.
+ *
+ * @returns {{ direct: { verdict: "ok" | "failed", name: string, output: string }, bundle?: { verdict: "ok" | "failed", name: string, output: string } }}
+ */
+function runRuntimeProbe(pm, dir) {
+    writeFileSync(join(dir, "contract-probe.mjs"), RUNTIME_PROBE);
+    const runtime = pm === "bun" ? "bun" : process.execPath;
+    const read = (r) => {
+        const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+        const failed = /CONNECTUM_PROBE failed (\S+)/.exec(output);
+        if (/CONNECTUM_PROBE ok/.test(output) && r.status === 0) return { verdict: "ok", name: "", output };
+        return { verdict: "failed", name: failed?.[1] ?? `exit ${r.status}`, output };
+    };
+    const direct = read(spawnSync(runtime, ["contract-probe.mjs"], { cwd: dir, encoding: "utf8" }));
+    if (pm !== "bun") return { direct };
+    const build = spawnSync("bun", ["build", "contract-probe.mjs", "--target=node", "--outfile=bundle/contract-probe.mjs"], { cwd: dir, encoding: "utf8" });
+    if (build.status !== 0) return { direct, bundle: { verdict: "failed", name: "bun build failed", output: `${build.stdout ?? ""}${build.stderr ?? ""}` } };
+    const bundle = read(spawnSync("bun", ["bundle/contract-probe.mjs"], { cwd: dir, encoding: "utf8" }));
+    return { direct, bundle };
 }
 
 /**
@@ -245,10 +337,12 @@ function peerSignal(pm, dir, installOutput) {
 /** Run one cell and compare it with its expectation. */
 function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
     const dir = join(workdir, `${pm}-${scenario}`);
-    writeConsumer(dir, pm, scenario, specs, opts);
-    const [cmd, args] = installCommand(pm, opts);
+    const cacheDir = join(workdir, "caches", `${pm}-${scenario}`);
+    mkdirSync(cacheDir, { recursive: true });
+    writeConsumer(dir, pm, scenario, specs, opts, cacheDir);
+    const [cmd, args, env] = installCommand(pm, opts, cacheDir);
     const started = Date.now();
-    const result = spawnSync(cmd, args, { cwd: dir, encoding: "utf8", env: { ...process.env, CI: "true" } });
+    const result = spawnSync(cmd, args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...env, CI: "true" } });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     const installed = result.status === 0;
     const expected = EXPECTATIONS[scenario][pm];
@@ -276,8 +370,11 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
     let copyProblems = [];
     const pinProblems = [];
     let rangeProblems = [];
+    let notes = [];
+    let runtime;
     if (installed) {
         const participants = collectParticipants(dir);
+        notes = excusedSplitNotes(participants);
         copyProblems = singleCopyProblems(participants);
         rangeProblems = peerRangeProblems(participants, semver);
         for (const [name, pin] of Object.entries(SCENARIOS[scenario])) {
@@ -287,6 +384,28 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
             }
         }
         if (opts.source === "pack") problems.push(...candidateProblems(participants, expectedManifests));
+
+        // The application's view: in range, createServer() starts; out of range, it must
+        // fail with PeerDependencyVersionError naming the library — on every manager,
+        // including the ones that only warned (pnpm) or stayed silent (Bun) at install.
+        runtime = runRuntimeProbe(pm, dir);
+        const loadedCore = /CONNECTUM_PROBE core (\S+)/.exec(runtime.direct.output)?.[1] ?? "";
+        if (!loadedCore.startsWith(pathToFileURL(join(dir, "node_modules")).href)) {
+            problems.push(`the runtime did not load the installed @connectum/core (loaded ${loadedCore || "nothing"})`);
+        }
+        if (expected.contract) {
+            if (runtime.direct.verdict !== "ok") problems.push(`createServer() failed in range: ${runtime.direct.name}\n${runtime.direct.output.trim()}`);
+        } else {
+            const wanted = `${expected.complaintAbout}: loaded ${SCENARIOS[scenario][expected.complaintAbout]}`;
+            if (runtime.direct.name !== "PeerDependencyVersionError" || !runtime.direct.output.includes(wanted)) {
+                problems.push(`createServer() did not fail with PeerDependencyVersionError naming "${wanted}" (got ${runtime.direct.verdict} ${runtime.direct.name})`);
+            }
+        }
+        // Bundled, core cannot see its own package.json, so the check is skipped by
+        // design — it must neither crash nor report a false failure.
+        if (runtime.bundle && runtime.bundle.verdict !== "ok") {
+            problems.push(`bundled createServer() did not start (the check must skip in a bundle): ${runtime.bundle.name}\n${runtime.bundle.output.trim()}`);
+        }
     }
     const contractProblems = [...copyProblems, ...pinProblems, ...rangeProblems];
     if (expected.contract) {
@@ -302,7 +421,7 @@ function runCell({ pm, scenario, workdir, specs, expectedManifests, opts }) {
         }
     }
 
-    return { pm, scenario, ok: problems.length === 0, ms: Date.now() - started, problems, contractProblems, output, signal };
+    return { pm, scenario, ok: problems.length === 0, ms: Date.now() - started, problems, contractProblems, output, signal, notes, runtime };
 }
 
 function main() {
@@ -318,6 +437,7 @@ function main() {
                 "  --source published --version <x.y.z>   install a published version instead",
                 "  --keep              keep the consumer projects for inspection",
                 "  --ignore-release-age  lift a host minimum-release-age policy (pnpm, Bun) for these installs only",
+                "  --reverse           run the cells in reverse order (each cell has its own caches, so the verdict must not change)",
             ].join("\n"),
         );
         return;
@@ -345,23 +465,33 @@ function main() {
             console.log(`  ${pm} ${probe.stdout.trim()}`);
         }
         console.log("");
-        for (const pm of opts.pms) {
-            for (const scenario of opts.scenarios) {
-                process.stdout.write(`  ${pm.padEnd(5)} ${scenario.padEnd(15)} `);
-                const r = runCell({ pm, scenario, workdir, specs, expectedManifests, opts });
-                results.push(r);
-                console.log(`${r.ok ? "ok  " : "FAIL"} (${(r.ms / 1000).toFixed(1)}s)`);
-                // Out-of-range cells print what the consumer sees, so the log documents the
-                // exact visible failure or warning rather than only a pass mark.
-                if (EXPECTATIONS[scenario][pm].contract === false) {
-                    const visible = r.signal
-                        .split("\n")
-                        .filter((l) => /ERESOLVE|npm error peer|unmet peer|incorrect peer dependency|Issues with peer dependencies/.test(l))
-                        .slice(0, 6);
-                    if (visible.length === 0) console.log(`        | (${pm} printed no peer complaint)`);
-                    for (const line of visible) console.log(`        | ${line.trimEnd()}`);
-                    for (const p of r.contractProblems) console.log(`        > ${p}`);
+        const cells = opts.pms.flatMap((pm) => opts.scenarios.map((scenario) => ({ pm, scenario })));
+        if (opts.reverse) cells.reverse();
+        for (const { pm, scenario } of cells) {
+            process.stdout.write(`  ${pm.padEnd(5)} ${scenario.padEnd(15)} `);
+            const r = runCell({ pm, scenario, workdir, specs, expectedManifests, opts });
+            results.push(r);
+            console.log(`${r.ok ? "ok  " : "FAIL"} (${(r.ms / 1000).toFixed(1)}s)`);
+            if (r.runtime) {
+                const line = (label, p) => `        ${label} createServer(): ${p.verdict === "ok" ? "starts" : `fails — ${p.name}`}`;
+                console.log(line("runtime", r.runtime.direct));
+                if (r.runtime.direct.verdict !== "ok") {
+                    const first = r.runtime.direct.output.split("\n").find((l) => /: loaded /.test(l));
+                    if (first) console.log(`        ${first.trim()}`);
                 }
+                if (r.runtime.bundle) console.log(line("bundled", r.runtime.bundle));
+            }
+            for (const note of r.notes) console.log(`        note: ${note}`);
+            // Out-of-range cells print what the consumer sees, so the log documents the
+            // exact visible failure or warning rather than only a pass mark.
+            if (EXPECTATIONS[scenario][pm].contract === false) {
+                const visible = r.signal
+                    .split("\n")
+                    .filter((l) => /ERESOLVE|npm error peer|unmet peer|incorrect peer dependency|Issues with peer dependencies/.test(l))
+                    .slice(0, 6);
+                if (visible.length === 0) console.log(`        | (${pm} printed no peer complaint)`);
+                for (const line of visible) console.log(`        | ${line.trimEnd()}`);
+                for (const p of r.contractProblems) console.log(`        > ${p}`);
             }
         }
     } finally {
