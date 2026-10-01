@@ -47,7 +47,7 @@ const tagMockResponse: Interceptor = (next) => async (req) => {
 };
 
 /**
- * Build a {@link RemoteResolver} that serves the given mocks in-process. Returns
+ * Build a {@link @connectum/core!RemoteResolver | RemoteResolver} that serves the given mocks in-process. Returns
  * `null` for any service not in the mock set (so it composes with real
  * resolvers via `mapResolver`-style fallbacks).
  */
