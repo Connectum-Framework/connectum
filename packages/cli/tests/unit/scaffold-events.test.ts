@@ -109,18 +109,35 @@ describe("transformBase with events", () => {
         assert.match(out.get("tests/e2e/events.test.ts") ?? "", /MemoryAdapter/);
     });
 
-    it("adds @connectum/events + the adapter package to dependencies", () => {
+    // The base declares ^1.2.0, below the release that exports the events option
+    // descriptors the generated code imports, so the whole slice moves to ^1.3.0.
+    it("adds @connectum/events + the adapter package to dependencies, on the option-import slice floor", () => {
         const pkg = JSON.parse(transformBase(base, natsConfig).get("package.json") ?? "{}");
-        assert.equal(pkg.dependencies["@connectum/events"], "^1.2.0");
-        assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.2.0");
+        assert.equal(pkg.dependencies["@connectum/events"], "^1.3.0");
+        assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.3.0");
+        assert.equal(pkg.dependencies["@connectum/core"], "^1.3.0");
+        assert.equal(pkg.devDependencies["@connectum/testing"], "^1.3.0");
     });
 
     it("adds module deps even when the base package.json has no dependencies block", () => {
         const noDeps = new Map(base);
         noDeps.set("package.json", JSON.stringify({ name: "@connectum/example-getting-started", devDependencies: {} }));
         const pkg = JSON.parse(transformBase(noDeps, natsConfig).get("package.json") ?? "{}");
-        assert.equal(pkg.dependencies["@connectum/events"], "^1.0.0");
-        assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.0.0");
+        assert.equal(pkg.dependencies["@connectum/events"], "^1.3.0");
+        assert.equal(pkg.dependencies["@connectum/events-nats"], "^1.3.0");
+    });
+
+    it("keeps a base slice that is already at or above the floor", () => {
+        const newer = new Map(base);
+        newer.set(
+            "package.json",
+            JSON.stringify({ name: "x", dependencies: { "@connectum/core": "^1.4.0", "@connectum/healthcheck": "^1.4.0" }, devDependencies: {} }),
+        );
+        const pkg = JSON.parse(transformBase(newer, natsConfig).get("package.json") ?? "{}");
+        for (const name of ["@connectum/core", "@connectum/healthcheck", "@connectum/events", "@connectum/events-nats"]) {
+            assert.equal(pkg.dependencies[name], "^1.4.0", name);
+        }
+        assert.equal(pkg.devDependencies["@connectum/testing"], "^1.4.0");
     });
 
     it("regenerates buf.yaml with the lint excepts", () => {

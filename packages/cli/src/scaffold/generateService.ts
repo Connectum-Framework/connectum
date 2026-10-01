@@ -8,7 +8,7 @@
  * @module scaffold/generateService
  */
 
-import { generateEventsOptionsProto } from "./eventsFragment.ts";
+import { EVENTS_OPTIONS_PROTO_PATH, generateEventsOptionsProto } from "./eventsFragment.ts";
 
 /** Proto/package-safe lowercase identifier (strips non-alphanumerics). */
 export function packageName(name: string): string {
@@ -116,7 +116,7 @@ export function buildServiceFiles(name: string, withEvents: boolean): Map<string
     ]);
     if (withEvents) {
         // The event proto imports the vendored option proto; emit it (skipped if present).
-        files.set("proto/connectum/events/v1/options.proto", generateEventsOptionsProto());
+        files.set(EVENTS_OPTIONS_PROTO_PATH, generateEventsOptionsProto());
     }
     return files;
 }

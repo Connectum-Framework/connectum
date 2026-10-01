@@ -18,11 +18,19 @@
 
 import { applyAuthProtoAnnotations, GREETER_PROTO_PATH, generateAuthFile } from "./authFragment.ts";
 import { generateBufGenYaml, generateBufYaml } from "./bufConfig.ts";
-import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateEventsOptionsProto, generateEventsProto, generateEventsTest } from "./eventsFragment.ts";
+import {
+    adapterPackage,
+    EVENTS_OPTIONS_PROTO_PATH,
+    generateEventBusFile,
+    generateEventRouteFile,
+    generateEventsOptionsProto,
+    generateEventsProto,
+    generateEventsTest,
+} from "./eventsFragment.ts";
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
-import { applyVersionFloors } from "./versionFloors.ts";
+import { alignConnectumSlice, applyVersionFloors, connectumSliceFloorApplies, connectumSliceRange } from "./versionFloors.ts";
 
 /** Sort keys for a stable, diff-friendly package.json. */
 function sortedByKey(deps: Record<string, string>): Record<string, string> {
@@ -130,26 +138,37 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     pkg.description = `A Connectum gRPC/ConnectRPC service (${config.name})`;
     pkg.engines = config.runtime === "bun" ? { node: ">=22.13.0" } : { node: nodeEngineFloor(config.nodeExec) };
 
-    // Version to pin @connectum/testing to: match the slice already used by the base
-    // (keep the whole @connectum/* stack on one minor — see reference_examples_connectum_slice).
-    const connectumVersion = pkg.dependencies?.["@connectum/core"] ?? "^1.0.0";
+    // The base's @connectum/* range: the modules' packages join the slice the base already
+    // uses, because mixed @connectum/* minors install two protobuf runtimes.
+    const baseConnectumVersion = pkg.dependencies?.["@connectum/core"] ?? "^1.0.0";
 
     // Additive module runtime deps (kept on the same @connectum slice, then sorted).
     const extraDeps: Record<string, string> = {};
     if (config.modules.otel) {
-        extraDeps["@connectum/otel"] = connectumVersion;
+        extraDeps["@connectum/otel"] = baseConnectumVersion;
     }
     if (config.modules.events) {
-        extraDeps["@connectum/events"] = connectumVersion;
-        extraDeps[adapterPackage(config.modules.events.adapter)] = connectumVersion;
+        extraDeps["@connectum/events"] = baseConnectumVersion;
+        extraDeps[adapterPackage(config.modules.events.adapter)] = baseConnectumVersion;
     }
     if (config.modules.auth) {
-        extraDeps["@connectum/auth"] = connectumVersion;
+        extraDeps["@connectum/auth"] = baseConnectumVersion;
     }
+    let dependencies: Record<string, string> = { ...(pkg.dependencies ?? {}), ...extraDeps };
+
+    // With auth or events the generated code imports option descriptors from those
+    // packages, which only exist from the slice floor on — so the whole slice, including
+    // what the base declared, moves to one range at or above it (see versionFloors.ts).
+    // Without them the base's ranges are kept as they are.
+    const connectumVersion = connectumSliceRange(baseConnectumVersion, dependencies);
+    if (connectumSliceFloorApplies(dependencies)) {
+        dependencies = alignConnectumSlice(dependencies, connectumVersion);
+    }
+
     // A base without a `dependencies` block still receives the enabled modules' deps and
     // the floored runtime deps: `@bufbuild/protobuf` is raised to (or added at) the CLI's
     // floor because the generated code imports it, whatever version the base declared.
-    pkg.dependencies = sortedByKey(applyVersionFloors("dependencies", { ...(pkg.dependencies ?? {}), ...extraDeps }));
+    pkg.dependencies = sortedByKey(applyVersionFloors("dependencies", dependencies));
 
     pkg.scripts = buildScripts(config);
     pkg.devDependencies = buildDevDeps(pkg.devDependencies ?? {}, config, connectumVersion);
@@ -267,7 +286,7 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
 
     // events module: vendored option proto, demo event-handler proto, EventBus + route.
     if (config.modules.events) {
-        out.set("proto/connectum/events/v1/options.proto", generateEventsOptionsProto());
+        out.set(EVENTS_OPTIONS_PROTO_PATH, generateEventsOptionsProto());
         out.set("proto/greeter/v1/events.proto", generateEventsProto());
         out.set("src/greeterEventBus.ts", generateEventBusFile(config, config.modules.events.adapter));
         out.set("src/services/greeterEvents.ts", generateEventRouteFile());

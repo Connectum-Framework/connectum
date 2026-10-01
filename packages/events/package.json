@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./gen/connectum/events/v1/options_pb.js": {
+      "types": "./dist/gen/connectum/events/v1/options_pb.d.ts",
+      "default": "./dist/gen/connectum/events/v1/options_pb.js"
     }
   },
   "files": [

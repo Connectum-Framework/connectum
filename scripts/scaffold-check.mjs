@@ -8,6 +8,13 @@
  * A combination with a `fixture` also gets user-style files copied in after `init`
  * (see FIXTURES), a plain-`node` run of its check file, and a manifest check against
  * the CLI's version floors.
+ * A combination with auth or events imports Connectum's option descriptors from those
+ * packages instead of generating them, so it is also checked for that: one `@connectum/*`
+ * range at the slice floor (before install), and after generation no local
+ * `connectum/<p>/v1/options_pb.ts` in gen/, generated imports from the package subpath,
+ * and that subpath loading from the project. The floor is the release that first ships
+ * those subpaths, so until it is published these combinations cannot install the
+ * published packages.
  *
  * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
  * not restate it. That workflow calls `--list` to build its matrix and then runs one
@@ -39,12 +46,12 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // The floors come from the CLI's own table (read from source through native type
 // stripping), so this check and `connectum init` cannot disagree about them.
-import { meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
+import { CONNECTUM_SLICE_FLOOR, connectumSliceViolations, meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/dist/index.js");
@@ -156,6 +163,55 @@ function assertVersionFloors(target) {
     }
 }
 
+/**
+ * Connectum packages whose option descriptors the scaffolded project imports instead of
+ * generating: the slice floor's triggers its manifest depends on. Empty for a scaffold
+ * without auth and events, which keeps generating exactly as before.
+ */
+function optionImportPackages(target) {
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    return CONNECTUM_SLICE_FLOOR.triggers.filter((name) => name in (pkg.dependencies ?? {}));
+}
+
+/**
+ * Before install: a project that imports option descriptors from the packages must ask
+ * for one `@connectum/*` range that has them. Checked on the manifest because an install
+ * cannot show it — it resolves the highest version in range.
+ */
+function assertConnectumSlice(target) {
+    const problems = connectumSliceViolations(JSON.parse(readFileSync(join(target, "package.json"), "utf8")));
+    if (problems.length > 0) {
+        throw new Error(`scaffolded package.json does not meet the @connectum/* slice floor:\n${problems.join("\n")}`);
+    }
+}
+
+/**
+ * After `buf generate`: the project holds no generated copy of Connectum's option
+ * protos, its generated code imports them from the package subpath, and that subpath
+ * resolves from the project at runtime. Any of the three failing means the project is
+ * back to evaluating its own copy of the descriptors, or cannot load the package's.
+ */
+function assertOptionImports(target, packages) {
+    const gen = join(target, "gen");
+    const files = readdirSync(gen, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts"));
+    const local = files.filter((file) => /(^|\/)connectum\/[^/]+\/v1\/options_pb\.ts$/.test(file));
+    if (local.length > 0) {
+        throw new Error(`gen/ holds generated Connectum option protos the project should import instead: ${local.join(", ")}`);
+    }
+    const sources = files.map((file) => readFileSync(join(gen, file), "utf8"));
+    for (const name of packages) {
+        const short = name.slice("@connectum/".length);
+        const specifier = `${name}/gen/connectum/${short}/v1/options_pb.js`;
+        if (!sources.some((source) => source.includes(`from "${specifier}";`))) {
+            throw new Error(`no generated file in gen/ imports ${specifier}`);
+        }
+        // Resolved from the project directory, the way its generated code resolves it.
+        const symbol = `file_connectum_${short}_v1_options`;
+        const probe = `const m = await import(${JSON.stringify(specifier)}); if (!m.${symbol}) throw new Error(${JSON.stringify(`${specifier} does not export ${symbol}`)});`;
+        run(process.execPath, ["--input-type=module", "-e", probe], target);
+    }
+}
+
 /** Scaffold, install, typecheck and test one combination. Returns a result record. */
 function checkCombo(combo, workdir) {
     const started = process.hrtime.bigint();
@@ -166,9 +222,16 @@ function checkCombo(combo, workdir) {
         if (fixture !== undefined) {
             cpSync(fixture.dir, target, { recursive: true });
         }
+        const optionImports = optionImportPackages(target);
+        if (optionImports.length > 0) {
+            assertConnectumSlice(target);
+        }
         run(combo.pm, ["install"], target);
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
+        if (optionImports.length > 0) {
+            assertOptionImports(target, optionImports);
+        }
         if (fixture !== undefined) {
             // Plain `node`, no flags: the same strip-only load `node src/index.ts` uses.
             run(process.execPath, [fixture.nodeRun], target);

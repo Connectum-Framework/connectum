@@ -115,7 +115,10 @@ describe("transformBase with auth", () => {
         const out = transformBase(base, authConfig);
         assert.ok(out.has("src/auth.ts"));
         const pkg = JSON.parse(out.get("package.json") ?? "{}");
-        assert.equal(pkg.dependencies["@connectum/auth"], "^1.2.0");
+        // ^1.2.0 in the base is below the release that exports the auth option
+        // descriptors the generated code imports, so the slice moves to ^1.3.0.
+        assert.equal(pkg.dependencies["@connectum/auth"], "^1.3.0");
+        assert.equal(pkg.dependencies["@connectum/core"], "^1.3.0");
         assert.match(out.get("buf.yaml") ?? "", /node_modules\/@connectum\/auth\/proto/);
     });
 

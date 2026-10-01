@@ -77,6 +77,14 @@ When several interceptor-adding modules are selected, the composition root emits
 consistent order (outermost → innermost): **OpenTelemetry → error handler → auth →
 validation → resilience → custom**.
 
+With `--auth` or `--events`, the project does not generate Connectum's own option protos
+(`connectum/auth/v1/options.proto`, `connectum/events/v1/options.proto`). The generated
+`buf.gen.yaml` compiles them but keeps them out of generation, and points their imports at
+the packages (`map_imports=connectum/auth/v1/:@connectum/auth/gen`, and the same for
+events), so the generated code imports the descriptors that `@connectum/auth` and
+`@connectum/events` ship. Because those exports first appear in 1.3.0, every `@connectum/*`
+dependency of such a project is set to one range of `^1.3.0` or higher, also with `--ref`.
+
 ### `connectum generate service`
 
 Add a service to an existing project.
