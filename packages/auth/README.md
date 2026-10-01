@@ -865,6 +865,12 @@ const betterAuthInterceptor = createSessionAuthInterceptor({
 - `InterceptorFactory`
 - `AuthzDeniedDetails`
 
+### Generated option descriptors (`@connectum/auth/gen/connectum/auth/v1/options_pb.js`)
+
+Since 1.3.0. The generated code of `connectum/auth/v1/options.proto`: `file_connectum_auth_v1_options`, the `method_auth` / `service_auth` extensions, and the `MethodAuth`, `ServiceAuth` and `AuthRequirements` schemas and types. It is the same module `@connectum/auth/proto` uses, so the descriptors are the same objects through both.
+
+Import it from your own generated code instead of generating a local copy of the option proto: run protoc-gen-es (2.15.0 or later) with `map_imports=connectum/auth/v1/:@connectum/auth/gen`, and keep the auth option proto out of the generated inputs. `connectum init --auth` sets this up.
+
 ### Testing export (`@connectum/auth/testing`)
 
 - `createMockAuthContext` -- create AuthContext with defaults

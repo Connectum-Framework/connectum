@@ -8,6 +8,13 @@
  * A combination with a `fixture` also gets user-style files copied in after `init`
  * (see FIXTURES), a plain-`node` run of its check file, and a manifest check against
  * the CLI's version floors.
+ * A combination with auth or events imports Connectum's option descriptors from those
+ * packages instead of generating them, so it is also checked for that: one `@connectum/*`
+ * range at the slice floor (before install), and after generation no local
+ * `connectum/<p>/v1/options_pb.ts` in gen/, generated imports from the package subpath,
+ * and that subpath loading from the project. The floor is the release that first ships
+ * those subpaths, so until it is published these combinations run against the packed
+ * workspace (`pack: true` in COMBOS).
  *
  * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
  * not restate it. That workflow calls `--list` to build its matrix and then runs one
@@ -37,7 +44,9 @@
  * installed `@connectum/*` copy is compared with its tarball's manifest — an override
  * that silently fell back to the registry fails the cell — and the project must hold one
  * copy of `@bufbuild/protobuf` / `@connectrpc/connect` / `@connectrpc/connect-node` among
- * its runtime packages. The default mode is unchanged and is what CI runs.
+ * its runtime packages. Without `--pack`, only the combinations marked `pack` in COMBOS
+ * install the packed workspace (see there); every other combination installs the
+ * published packages, locally and in CI.
  *
  * Usage:
  *   pnpm scaffold:check                     # the default combos, pinned base
@@ -55,12 +64,12 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 // The floors come from the CLI's own table (read from source through native type
 // stripping), so this check and `connectum init` cannot disagree about them.
-import { meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
+import { CONNECTUM_SLICE_FLOOR, connectumSliceViolations, meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
 import { packWorkspace, readPackedManifest } from "./lib/pack-workspace.mjs";
 import { candidateProblems, collectParticipants, singleCopyProblems, TOOL_PACKAGES } from "./lib/runtime-participants.mjs";
 
@@ -93,17 +102,26 @@ const FIXTURES = {
  * PATH, and `base-drift` reaches for the live example branch — while still exposing it
  * to `--combo <name>` (which is how CI selects every cell) and to `--runtime bun` /
  * `--drift`.
+ *
+ * `pack: true` makes a combination install the packed workspace instead of the published
+ * packages, with or without `--pack`. It belongs to a combination exactly when `init`
+ * gives it a dependency range no published release satisfies yet: today, every one with
+ * auth or events, whose `@connectum/*` set is floored at the release that first exports
+ * the option-descriptor subpaths (versionFloors.ts). Kept here rather than in the
+ * workflow so the workflow keeps reading nothing but `--list`, and a local bare run
+ * behaves like its CI cell. Once that release is published, drop the property so these
+ * cells go back to proving the published surface.
  */
 const COMBOS = [
     { name: "base-node-pnpm", pm: "pnpm", args: [] },
     { name: "base-node-npm", pm: "npm", args: [] },
     { name: "otel", pm: "npm", args: ["--otel"] },
-    { name: "events-nats", pm: "npm", args: ["--events", "nats"] },
-    { name: "auth", pm: "npm", args: ["--auth"] },
+    { name: "events-nats", pm: "npm", args: ["--events", "nats"], pack: true },
+    { name: "auth", pm: "npm", args: ["--auth"], pack: true },
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     // The only default cell with the catalog generator and the auth option module, so it
     // also carries the enum fixture: erasable generation must coexist with both.
-    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums" },
+    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums", pack: true },
     { name: "enums", pm: "npm", args: [], fixture: "enums" },
     // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
     // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
@@ -117,13 +135,13 @@ const COMBOS = [
     // installs none of those modules. One kitchen-sink cell rather than a pnpm twin of
     // every module cell: it pulls in the union of the module dependencies at the cost of
     // a single extra parallel job.
-    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
+    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], pack: true },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
     // The two axes are independent, so both crossings are worth a cell: the one above
     // runs a Bun-runtime project installed with npm, this one installs with bun and
     // runs on Node. `bun install` lays out an ordinary node_modules either way.
     { name: "bun-pm", pm: "bun", args: [], optional: true, needsBun: true },
-    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
+    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true, pack: true },
 ];
 
 /** Combinations that need `bun` on PATH — the only selector for them, locally and in CI. */
@@ -222,6 +240,70 @@ function assertVersionFloors(target) {
     }
 }
 
+/**
+ * Connectum packages whose option descriptors the scaffolded project imports instead of
+ * generating: the slice floor's triggers its manifest depends on. Empty for a scaffold
+ * without auth and events, which keeps generating exactly as before.
+ */
+function optionImportPackages(target) {
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    return CONNECTUM_SLICE_FLOOR.triggers.filter((name) => name in (pkg.dependencies ?? {}));
+}
+
+/**
+ * Before install: a project that imports option descriptors from the packages must ask
+ * for one `@connectum/*` range that has them. Checked on the manifest because an install
+ * cannot show it — it resolves the highest version in range.
+ */
+function assertConnectumSlice(target) {
+    const problems = connectumSliceViolations(JSON.parse(readFileSync(join(target, "package.json"), "utf8")));
+    if (problems.length > 0) {
+        throw new Error(`scaffolded package.json does not meet the @connectum/* slice floor:\n${problems.join("\n")}`);
+    }
+}
+
+/**
+ * After `buf generate`: the project holds no generated copy of Connectum's option
+ * protos, its generated code imports them from the package subpath, and at runtime the
+ * generated file's dependency IS the package's descriptor — for auth also the one
+ * `@connectum/auth/proto` (what the authorization interceptor reads) hands out. Any of
+ * these failing means the project is back to evaluating its own copy of the
+ * descriptors, or holds a second copy of the package.
+ */
+function assertOptionImports(target, packages) {
+    const gen = join(target, "gen");
+    const files = readdirSync(gen, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts"));
+    const local = files.filter((file) => /(^|\/)connectum\/[^/]+\/v1\/options_pb\.ts$/.test(file));
+    if (local.length > 0) {
+        throw new Error(`gen/ holds generated Connectum option protos the project should import instead: ${local.join(", ")}`);
+    }
+    for (const name of packages) {
+        const short = name.slice("@connectum/".length);
+        const specifier = `${name}/gen/connectum/${short}/v1/options_pb.js`;
+        const importer = files.find((file) => readFileSync(join(gen, file), "utf8").includes(`from "${specifier}";`));
+        if (importer === undefined) {
+            throw new Error(`no generated file in gen/ imports ${specifier}`);
+        }
+        const fileExport = /export const (file_\w+): GenFile/.exec(readFileSync(join(gen, importer), "utf8"))?.[1];
+        // Run from the project directory with plain `node`, so both modules resolve the
+        // way the project's own code resolves them.
+        const symbol = `file_connectum_${short}_v1_options`;
+        const lines = [
+            `const options = await import(${JSON.stringify(specifier)});`,
+            `const generated = await import(${JSON.stringify(pathToFileURL(join(gen, importer)).href)});`,
+            `const dependency = generated[${JSON.stringify(fileExport)}].dependencies.find((f) => f.name === "connectum/${short}/v1/options");`,
+            `if (dependency === undefined || dependency !== options.${symbol}) throw new Error("gen/${importer} does not use the descriptor of ${specifier}");`,
+        ];
+        if (name === "@connectum/auth") {
+            lines.push(
+                `const proto = await import("@connectum/auth/proto");`,
+                `if (proto.method_auth.file !== dependency) throw new Error("@connectum/auth/proto hands out another descriptor than gen/${importer} uses");`,
+            );
+        }
+        run(process.execPath, ["--input-type=module", "-e", lines.join("\n")], target);
+    }
+}
+
 /** Scaffold, install, typecheck and test one combination. Returns a result record. */
 function checkCombo(combo, workdir, pack) {
     const started = process.hrtime.bigint();
@@ -232,11 +314,20 @@ function checkCombo(combo, workdir, pack) {
         if (fixture !== undefined) {
             cpSync(fixture.dir, target, { recursive: true });
         }
+        // Read before useLocalTarballs rewrites the @connectum/* specs to tarball paths:
+        // the slice floor is a property of the manifest `init` wrote.
+        const optionImports = optionImportPackages(target);
+        if (optionImports.length > 0) {
+            assertConnectumSlice(target);
+        }
         if (pack) useLocalTarballs(target, combo.pm, pack.tarballs);
         run(combo.pm, ["install"], target);
         if (pack) assertPackedInstall(target, pack.manifests);
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
+        if (optionImports.length > 0) {
+            assertOptionImports(target, optionImports);
+        }
         if (fixture !== undefined) {
             // Plain `node`, no flags: the same strip-only load `node src/index.ts` uses.
             run(process.execPath, [fixture.nodeRun], target);
@@ -324,18 +415,22 @@ function main() {
     const workdir = mkdtempSync(join(SCRATCH_ROOT, "scaffold-check-"));
     const results = [];
     try {
+        // A combination marked `pack` always runs against the packed workspace, so a bare
+        // run and its CI cell need no flag for it; `--pack` extends that to every
+        // selected combination. The workspace is packed once, and only when needed.
+        const packedCombos = selected.filter((c) => opts.pack || c.pack === true);
         let pack;
-        if (opts.pack) {
-            console.log("Building and packing the workspace (--pack)...");
+        if (packedCombos.length > 0) {
+            console.log(`Building and packing the workspace for ${packedCombos.map((c) => c.label).join(", ")}...`);
             const tarballs = packWorkspace({ repoRoot: REPO_ROOT, dest: join(workdir, "tarballs") });
             const manifests = new Map([...tarballs].filter(([name]) => !TOOL_PACKAGES.has(name)).map(([name, tarball]) => [name, readPackedManifest(tarball)]));
             pack = { tarballs, manifests };
         }
-        const source = opts.pack ? "packed workspace" : "published @connectum/*";
-        console.log(`Scaffold check: ${selected.length} combination(s) against the ${source} in ${workdir}\n`);
+        console.log(`Scaffold check: ${selected.length} combination(s) in ${workdir}\n`);
         for (const combo of selected) {
-            process.stdout.write(`  ${combo.label.padEnd(20)} `);
-            const result = checkCombo(combo, workdir, pack);
+            const packed = opts.pack || combo.pack === true;
+            process.stdout.write(`  ${combo.label.padEnd(20)} ${packed ? "[packed]    " : "[published] "}`);
+            const result = checkCombo(combo, workdir, packed ? pack : undefined);
             results.push(result);
             console.log(result.ok ? `ok   (${(result.ms / 1000).toFixed(1)}s)` : `FAIL (${(result.ms / 1000).toFixed(1)}s)`);
         }

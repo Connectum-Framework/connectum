@@ -1,7 +1,17 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-    entry: ["src/index.ts", "src/testing/index.ts", "src/proto/index.ts"],
+    entry: {
+        index: "src/index.ts",
+        "testing/index": "src/testing/index.ts",
+        "proto/index": "src/proto/index.ts",
+        // The option descriptors behind the `./gen/connectum/auth/v1/options_pb.js` export,
+        // which code generated with `map_imports` imports. A separate entry (not a copy of
+        // gen/) so that, with splitting on, this file and `proto/index` import ONE shared
+        // chunk: the package evaluates the descriptor once and both entries hand out the
+        // same objects.
+        "gen/connectum/auth/v1/options_pb": "gen/connectum/auth/v1/options_pb.js",
+    },
     format: ["esm"],
     dts: true,
     sourcemap: true,
