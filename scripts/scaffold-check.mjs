@@ -13,8 +13,8 @@
  * range at the slice floor (before install), and after generation no local
  * `connectum/<p>/v1/options_pb.ts` in gen/, generated imports from the package subpath,
  * and that subpath loading from the project. The floor is the release that first ships
- * those subpaths, so until it is published these combinations cannot install the
- * published packages.
+ * those subpaths, so until it is published these combinations run against the packed
+ * workspace (`pack: true` in COMBOS).
  *
  * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
  * not restate it. That workflow calls `--list` to build its matrix and then runs one
@@ -32,12 +32,30 @@
  * - `--ref main` (`--drift`) is deliberately NOT deterministic: it is the local twin of
  *   the `init base-drift` cell and tracks the live example on purpose.
  *
+ * PUBLISHED VS. PACKED FRAMEWORK (`--pack`):
+ * By default a scaffolded project installs the PUBLISHED `@connectum/*`, so this check
+ * proves the CLI against what users get today — and cannot see a packaging change (a new
+ * peer dependency, a moved export) until it is released. `--pack` builds the workspace,
+ * `pnpm pack`s every package and points the scaffolded project at those tarballs before
+ * installing: npm and Bun through the direct dependency specs plus root `overrides`
+ * (npm accepts an override of a direct dependency only with the identical spec, which is
+ * what is written), pnpm through `overrides` in the `pnpm-workspace.yaml` that `init`
+ * already writes (pnpm 11 reads no settings from package.json). After the install every
+ * installed `@connectum/*` copy is compared with its tarball's manifest — an override
+ * that silently fell back to the registry fails the cell — and the project must hold one
+ * copy of `@bufbuild/protobuf` / `@connectrpc/connect` / `@connectrpc/connect-node` among
+ * its runtime packages. Without `--pack`, only the combinations marked `pack` in COMBOS
+ * install the packed workspace (see there); every other combination installs the
+ * published packages, locally and in CI.
+ *
  * Usage:
  *   pnpm scaffold:check                     # the default combos, pinned base
  *   pnpm scaffold:check --combo auth,otel   # only the named combos
  *   pnpm scaffold:check --drift             # also run the kitchen sink against examples@main
  *   pnpm scaffold:check --keep              # keep the generated projects for inspection
  *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
+ *   pnpm scaffold:check --pack              # install locally packed tarballs of this workspace
+ *   pnpm scaffold:check --pack --combo kitchen-sink --pm pnpm   # a combo with another package manager
  *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
@@ -46,12 +64,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // The floors come from the CLI's own table (read from source through native type
 // stripping), so this check and `connectum init` cannot disagree about them.
 import { CONNECTUM_SLICE_FLOOR, connectumSliceViolations, meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
+import { packWorkspace, readPackedManifest } from "./lib/pack-workspace.mjs";
+import { candidateProblems, collectParticipants, singleCopyProblems, TOOL_PACKAGES } from "./lib/runtime-participants.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/dist/index.js");
@@ -82,17 +102,26 @@ const FIXTURES = {
  * PATH, and `base-drift` reaches for the live example branch — while still exposing it
  * to `--combo <name>` (which is how CI selects every cell) and to `--runtime bun` /
  * `--drift`.
+ *
+ * `pack: true` makes a combination install the packed workspace instead of the published
+ * packages, with or without `--pack`. It belongs to a combination exactly when `init`
+ * gives it a dependency range no published release satisfies yet: today, every one with
+ * auth or events, whose `@connectum/*` set is floored at the release that first exports
+ * the option-descriptor subpaths (versionFloors.ts). Kept here rather than in the
+ * workflow so the workflow keeps reading nothing but `--list`, and a local bare run
+ * behaves like its CI cell. Once that release is published, drop the property so these
+ * cells go back to proving the published surface.
  */
 const COMBOS = [
     { name: "base-node-pnpm", pm: "pnpm", args: [] },
     { name: "base-node-npm", pm: "npm", args: [] },
     { name: "otel", pm: "npm", args: ["--otel"] },
-    { name: "events-nats", pm: "npm", args: ["--events", "nats"] },
-    { name: "auth", pm: "npm", args: ["--auth"] },
+    { name: "events-nats", pm: "npm", args: ["--events", "nats"], pack: true },
+    { name: "auth", pm: "npm", args: ["--auth"], pack: true },
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     // The only default cell with the catalog generator and the auth option module, so it
     // also carries the enum fixture: erasable generation must coexist with both.
-    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums" },
+    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums", pack: true },
     { name: "enums", pm: "npm", args: [], fixture: "enums" },
     // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
     // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
@@ -106,13 +135,13 @@ const COMBOS = [
     // installs none of those modules. One kitchen-sink cell rather than a pnpm twin of
     // every module cell: it pulls in the union of the module dependencies at the cost of
     // a single extra parallel job.
-    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
+    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], pack: true },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
     // The two axes are independent, so both crossings are worth a cell: the one above
     // runs a Bun-runtime project installed with npm, this one installs with bun and
     // runs on Node. `bun install` lays out an ordinary node_modules either way.
     { name: "bun-pm", pm: "bun", args: [], optional: true, needsBun: true },
-    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
+    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true, pack: true },
 ];
 
 /** Combinations that need `bun` on PATH — the only selector for them, locally and in CI. */
@@ -123,7 +152,7 @@ const DEFAULT_COMBOS = COMBOS.filter((c) => c.optional !== true);
 
 /** Parse `--flag value` / `--flag` arguments without pulling in a dependency. */
 function parseArgs(argv) {
-    const opts = { combos: undefined, drift: false, keep: false, list: false, runtime: undefined };
+    const opts = { combos: undefined, drift: false, keep: false, list: false, runtime: undefined, pack: false, pm: undefined };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === "--drift") opts.drift = true;
@@ -131,6 +160,8 @@ function parseArgs(argv) {
         else if (arg === "--list") opts.list = true;
         else if (arg === "--combo") opts.combos = (argv[++i] ?? "").split(",").filter(Boolean);
         else if (arg === "--runtime") opts.runtime = argv[++i];
+        else if (arg === "--pack") opts.pack = true;
+        else if (arg === "--pm") opts.pm = argv[++i];
         else if (arg === "--help" || arg === "-h") opts.help = true;
         else throw new Error(`scaffold-check: unknown argument "${arg}" (try --help)`);
     }
@@ -145,6 +176,52 @@ function run(command, args, cwd) {
         const output = `${cause.stdout ?? ""}${cause.stderr ?? ""}`.trimEnd();
         const tail = output.split("\n").slice(-25).join("\n");
         throw new Error(`\`${command} ${args.join(" ")}\` failed in ${cwd}:\n${tail}`, { cause });
+    }
+}
+
+/**
+ * `--pack`: point a freshly scaffolded project at the local tarballs (see the module doc
+ * for why each manager needs its own mechanism).
+ *
+ * @param {string} target - the scaffolded project directory
+ * @param {string} pm - its package manager
+ * @param {Map<string, string>} tarballs - package name -> tarball path
+ */
+function useLocalTarballs(target, pm, tarballs) {
+    const specs = Object.fromEntries([...tarballs].map(([name, tarball]) => [name, `file:${tarball}`]));
+    const manifestPath = join(target, "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    for (const field of ["dependencies", "devDependencies"]) {
+        for (const name of Object.keys(manifest[field] ?? {})) {
+            if (name in specs) manifest[field][name] = specs[name];
+        }
+    }
+    if (pm === "pnpm") {
+        const workspaceFile = join(target, "pnpm-workspace.yaml");
+        if (!existsSync(workspaceFile)) {
+            throw new Error(`scaffold-check: ${workspaceFile} is missing — init writes it for pnpm, and the overrides must go there`);
+        }
+        const overrides = Object.entries(specs).map(([name, spec]) => `  '${name}': '${spec}'`);
+        appendFileSync(workspaceFile, `overrides:\n${overrides.join("\n")}\n`);
+    } else {
+        // Also covers names the project never lists: test-fixtures arrives via testing,
+        // and core can arrive as an auto-installed peer.
+        manifest.overrides = specs;
+    }
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/**
+ * `--pack`: prove the install used the tarballs and kept one copy of protobuf / Connect.
+ *
+ * @param {string} target
+ * @param {Map<string, Record<string, unknown>>} packedManifests
+ */
+function assertPackedInstall(target, packedManifests) {
+    const participants = collectParticipants(target);
+    const problems = [...candidateProblems(participants, packedManifests), ...singleCopyProblems(participants)];
+    if (problems.length > 0) {
+        throw new Error(`the installed project does not match the packed workspace:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     }
 }
 
@@ -213,7 +290,7 @@ function assertOptionImports(target, packages) {
 }
 
 /** Scaffold, install, typecheck and test one combination. Returns a result record. */
-function checkCombo(combo, workdir) {
+function checkCombo(combo, workdir, pack) {
     const started = process.hrtime.bigint();
     const target = join(workdir, combo.name);
     const fixture = combo.fixture === undefined ? undefined : FIXTURES[combo.fixture];
@@ -222,11 +299,15 @@ function checkCombo(combo, workdir) {
         if (fixture !== undefined) {
             cpSync(fixture.dir, target, { recursive: true });
         }
+        // Read before useLocalTarballs rewrites the @connectum/* specs to tarball paths:
+        // the slice floor is a property of the manifest `init` wrote.
         const optionImports = optionImportPackages(target);
         if (optionImports.length > 0) {
             assertConnectumSlice(target);
         }
+        if (pack) useLocalTarballs(target, combo.pm, pack.tarballs);
         run(combo.pm, ["install"], target);
+        if (pack) assertPackedInstall(target, pack.manifests);
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
         if (optionImports.length > 0) {
@@ -237,9 +318,9 @@ function checkCombo(combo, workdir) {
             run(process.execPath, [fixture.nodeRun], target);
             assertVersionFloors(target);
         }
-        return { name: combo.name, ok: true, ms: Number((process.hrtime.bigint() - started) / 1_000_000n) };
+        return { name: combo.label, combo: combo.name, ok: true, ms: Number((process.hrtime.bigint() - started) / 1_000_000n) };
     } catch (error) {
-        return { name: combo.name, ok: false, ms: Number((process.hrtime.bigint() - started) / 1_000_000n), error };
+        return { name: combo.label, combo: combo.name, ok: false, ms: Number((process.hrtime.bigint() - started) / 1_000_000n), error };
     }
 }
 
@@ -254,6 +335,8 @@ function main() {
                 "  --drift          also scaffold from examples@main (the base-drift cell)",
                 "  --runtime bun    include the Bun cells (requires bun on PATH)",
                 "  --keep           keep the generated projects instead of deleting them",
+                "  --pack           install locally packed tarballs of this workspace instead of the published packages",
+                "  --pm <npm|pnpm|bun>  run the selected combinations with this package manager (local runs; CI keeps each combination's own)",
                 "  --list           print every combination as JSON {name, needsBun} (CI builds its matrix from this)",
                 "",
                 `Default: ${DEFAULT_COMBOS.map((c) => c.name).join(", ")}`,
@@ -276,7 +359,9 @@ function main() {
 
     if (!existsSync(CLI_ENTRY)) {
         console.log("Building @connectum/cli (dist/ is missing)...");
-        run("pnpm", ["--filter", "@connectum/cli", "build"], REPO_ROOT);
+        // Through turbo, not `pnpm --filter ... build`: the CLI build needs the
+        // generated reflection code, and only turbo runs `build:proto` before `build`.
+        run("pnpm", ["turbo", "run", "build", "--filter", "@connectum/cli"], REPO_ROOT);
     }
 
     let selected = DEFAULT_COMBOS;
@@ -293,6 +378,15 @@ function main() {
         if (opts.drift) selected = [...selected, ...COMBOS.filter((c) => c.name === "base-drift")];
     }
 
+    // `--pm` re-runs a combination with another package manager without adding a
+    // combination (and so without adding a CI cell); the label keeps the two apart.
+    if (opts.pm !== undefined) {
+        if (!["npm", "pnpm", "bun"].includes(opts.pm)) throw new Error(`scaffold-check: --pm must be npm, pnpm or bun (got "${opts.pm}")`);
+        selected = selected.map((c) => ({ ...c, pm: opts.pm, label: `${c.name}[${opts.pm}]`, needsBun: c.needsBun === true || opts.pm === "bun" }));
+    } else {
+        selected = selected.map((c) => ({ ...c, label: c.name }));
+    }
+
     const needsBun = selected.some((c) => c.needsBun === true);
     if (needsBun) {
         try {
@@ -304,13 +398,24 @@ function main() {
 
     mkdirSync(SCRATCH_ROOT, { recursive: true });
     const workdir = mkdtempSync(join(SCRATCH_ROOT, "scaffold-check-"));
-    console.log(`Scaffold check: ${selected.length} combination(s) in ${workdir}\n`);
-
     const results = [];
     try {
+        // A combination marked `pack` always runs against the packed workspace, so a bare
+        // run and its CI cell need no flag for it; `--pack` extends that to every
+        // selected combination. The workspace is packed once, and only when needed.
+        const packedCombos = selected.filter((c) => opts.pack || c.pack === true);
+        let pack;
+        if (packedCombos.length > 0) {
+            console.log(`Building and packing the workspace for ${packedCombos.map((c) => c.label).join(", ")}...`);
+            const tarballs = packWorkspace({ repoRoot: REPO_ROOT, dest: join(workdir, "tarballs") });
+            const manifests = new Map([...tarballs].filter(([name]) => !TOOL_PACKAGES.has(name)).map(([name, tarball]) => [name, readPackedManifest(tarball)]));
+            pack = { tarballs, manifests };
+        }
+        console.log(`Scaffold check: ${selected.length} combination(s) in ${workdir}\n`);
         for (const combo of selected) {
-            process.stdout.write(`  ${combo.name.padEnd(18)} `);
-            const result = checkCombo(combo, workdir);
+            const packed = opts.pack || combo.pack === true;
+            process.stdout.write(`  ${combo.label.padEnd(20)} ${packed ? "[packed]    " : "[published] "}`);
+            const result = checkCombo(combo, workdir, packed ? pack : undefined);
             results.push(result);
             console.log(result.ok ? `ok   (${(result.ms / 1000).toFixed(1)}s)` : `FAIL (${(result.ms / 1000).toFixed(1)}s)`);
         }
@@ -329,7 +434,7 @@ function main() {
             console.log(`--- ${result.name} ---\n${result.error.message}\n`);
         }
         console.log(`${failed.length} of ${results.length} combination(s) failed: ${failed.map((r) => r.name).join(", ")}`);
-        if (failed.some((r) => r.name === "base-drift")) {
+        if (failed.some((r) => r.combo === "base-drift")) {
             console.log("\nbase-drift failed: the pinned base and examples@main have diverged. Fix the scaffold");
             console.log("fragment, then tag examples and bump DEFAULT_BASE_REF — do not bump the tag alone.");
         }

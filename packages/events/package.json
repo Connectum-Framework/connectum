@@ -66,14 +66,18 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
     "@connectum/core": "workspace:^"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectum/core": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

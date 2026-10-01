@@ -5,6 +5,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "imports": {
+    "#gen/*": "./gen/*",
+    "#*": "./src/*"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,7 +17,9 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "gen",
+    "proto"
   ],
   "repository": {
     "type": "git",
@@ -22,6 +28,11 @@
   },
   "scripts": {
     "dev": "node --watch src/index.ts",
+    "buf:generate": "buf generate",
+    "buf:lint": "buf lint",
+    "build:proto": "pnpm run buf:generate && pnpm run build:proto:compile",
+    "build:proto:compile": "tsc --project tsconfig.build.json",
+    "gen:fixtures": "buf generate tests/fixtures --template tests/fixtures/buf.gen.yaml && biome check --write tests/fixtures",
     "typecheck": "tsc --noEmit",
     "test": "exodus-test --typescript tests/**/*.test.ts",
     "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
@@ -31,7 +42,8 @@
     "lint": "biome check src",
     "format": "biome check --write src",
     "build": "tsup",
-    "clean": "rm -rf coverage dist"
+    "clean": "rm -rf coverage dist gen gen-ts",
+    "test:interop": "exodus-test --typescript tests/interop/*.interop.ts"
   },
   "keywords": [
     "reflection",
@@ -48,12 +60,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:",
-    "@lambdalisue/connectrpc-grpcreflect": "^0.5.0"
-  },
   "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
     "@connectum/core": "workspace:^"
   },
   "peerDependenciesMeta": {
@@ -63,6 +72,10 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/buf": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/healthcheck": "workspace:^",

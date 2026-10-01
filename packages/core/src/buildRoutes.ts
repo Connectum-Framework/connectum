@@ -7,7 +7,7 @@
  * @module buildRoutes
  */
 
-import type { DescFile, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
+import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
@@ -89,13 +89,14 @@ export interface BuildRoutesResult {
      */
     registeredServiceTypeNames: Set<string>;
     /**
-     * The prefix of `registry` contributed by user services (before protocol
-     * registration). Transport validation runs against this slice only:
+     * The services mounted by the application (before protocol registration),
+     * in registration order. Transport validation runs against these only:
      * protocol-contributed services (e.g. gRPC Reflection, whose
      * ServerReflectionInfo is bidi) own their documented transport
-     * limitations and must not fail the user's startup.
+     * limitations and must not fail the user's startup, and services that are
+     * declared in a mounted file but not mounted cannot be called at all.
      */
-    userRegistry: DescFile[];
+    userServices: DescService[];
 }
 
 /**
@@ -113,7 +114,10 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
 
     const registry: DescFile[] = [];
     const registeredServiceTypeNames = new Set<string>();
-    let userFileCount = 0;
+    // Every mounted service in registration order. `registry` holds their
+    // files, and a file may also declare services that are not mounted.
+    const mountedServices: DescService[] = [];
+    let userServiceCount = 0;
     // Protocol `setup` is one-time work (health manager initialization,
     // reflection descriptor set) and must not run again for the routers
     // built later by in-process transports.
@@ -132,6 +136,9 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             if (!registry.includes(service.file)) {
                 registry.push(service.file);
             }
+            if (!registeredServiceTypeNames.has(service.typeName)) {
+                mountedServices.push(service);
+            }
             registeredServiceTypeNames.add(service.typeName);
             return originalService.apply(router, args);
         }) as typeof originalService;
@@ -146,19 +153,22 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
             definition.register(router, registerContext);
         }
         // Everything registered up to here came from user services;
-        // descriptors added below belong to protocols.
-        userFileCount = registry.length;
+        // services added below belong to protocols.
+        userServiceCount = mountedServices.length;
 
         // Register protocols. On the first materialization each protocol is set
         // up right before its own registration, so it sees the application
-        // files plus the files of the protocols before it — Healthcheck does
-        // not track itself, Reflection lists the protocols registered earlier.
-        // The snapshot keeps that view fixed even though `registry` keeps
-        // growing.
+        // services and files plus those of the protocols before it —
+        // Healthcheck does not track itself, Reflection lists the protocols
+        // registered earlier. The snapshots keep that view fixed even though
+        // `registry` and `mountedServices` keep growing.
         const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
             if (settingUp) {
-                const context: ProtocolContext = { registry: Object.freeze([...registry]) };
+                const context: ProtocolContext = {
+                    registry: Object.freeze([...registry]),
+                    services: Object.freeze([...mountedServices]),
+                };
                 protocol.setup?.(context);
             }
             protocol.register(router);
@@ -208,12 +218,12 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     };
 
     // connectNodeAdapter invokes routes() synchronously, so both the full
-    // registry and the user-service prefix are populated at this point.
+    // registry and the user services are populated at this point.
     return {
         handler,
         registry,
         routes,
         registeredServiceTypeNames,
-        userRegistry: registry.slice(0, userFileCount),
+        userServices: mountedServices.slice(0, userServiceCount),
     };
 }

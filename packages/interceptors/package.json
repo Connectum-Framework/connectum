@@ -89,15 +89,21 @@
     "access": "public"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:",
+    "@bufbuild/protovalidate": "catalog:",
     "@connectrpc/validate": "catalog:",
-    "@connectum/core": "workspace:^",
     "cockatiel": "^4.0.0"
+  },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
+    "@connectum/core": "workspace:^"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
+    "@connectum/core": "workspace:^",
     "@connectum/test-fixtures": "workspace:^",
     "c8": "catalog:",
     "tsup": "catalog:",

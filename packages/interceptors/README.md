@@ -23,8 +23,11 @@ ConnectRPC interceptors for Connectum.
 pnpm add @connectum/interceptors
 ```
 
-`@connectrpc/connect` and `@bufbuild/protobuf` are direct dependencies of this
-package and are installed automatically — no separate install step is needed.
+**Peer dependencies:** `@connectum/core`, `@bufbuild/protobuf` `^2.16.0` and
+`@connectrpc/connect` `^2.2.0`. npm 7+, pnpm and Bun install missing peers
+automatically; with Yarn, add them yourself. The validation engine
+(`@bufbuild/protovalidate`) is a regular dependency and needs no install step. See
+[Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 ## Default interceptor chain
 

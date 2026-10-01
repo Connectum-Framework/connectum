@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package fixture.v1;
+
+import "google/protobuf/empty.proto";
+
+// Two services in one file. Tests mount only MountedService: protocols and
+// startup checks must consider the services actually mounted, not every
+// service of a mounted file. The unmounted one carries a bidi method so a
+// transport check that walks the whole file would flag it.
+service MountedService {
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+service UnmountedPeerService {
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Chat(stream google.protobuf.Empty) returns (stream google.protobuf.Empty);
+}

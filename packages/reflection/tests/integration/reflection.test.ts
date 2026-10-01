@@ -1,148 +1,93 @@
 /**
  * Integration tests for gRPC Server Reflection
  *
- * Tests the full reflection flow using the new protocols API:
- * 1. Start a real server with @connectum/healthcheck and @connectum/reflection
- * 2. Connect via ServerReflectionClient
- * 3. Verify listServices, getFileContainingSymbol, buildFileRegistry
- * 4. Stop the server
+ * Starts a real server with @connectum/healthcheck and @connectum/reflection
+ * and checks what a reflection client builds from the answers: the service
+ * list, and a FileRegistry rebuilt from a single file_containing_symbol answer
+ * (which must carry every import the file needs). Request-level protocol
+ * details are covered by conformance.test.ts.
  *
- * Uses @lambdalisue/connectrpc-grpcreflect client to query the custom @connectum/reflection server implementation.
  * Transport: createGrpcTransport (HTTP/2, required for bidirectional streaming).
  */
 
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
-import type { Transport } from "@connectrpc/connect";
+import { create, createFileRegistry, fromBinary } from "@bufbuild/protobuf";
+import { FileDescriptorProtoSchema, FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
+import { createClient, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import type { Server } from "@connectum/core";
 import { createLocalTransport, createServer } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
-import { ServerReflectionClient } from "@lambdalisue/connectrpc-grpcreflect/client";
+import { ServerReflection, type ServerReflectionResponse } from "#gen/grpc/reflection/v1/reflection_pb.js";
 import { Reflection } from "../../src/Reflection.ts";
 
+async function ask(transport: Transport, messageRequest: { case: "listServices" | "fileContainingSymbol"; value: string }): Promise<ServerReflectionResponse> {
+    const client = createClient(ServerReflection, transport);
+    async function* requests() {
+        yield { messageRequest };
+    }
+    for await (const response of client.serverReflectionInfo(requests())) {
+        return response;
+    }
+    throw new Error("the reflection stream ended without a response");
+}
+
+async function listServices(transport: Transport): Promise<string[]> {
+    const response = await ask(transport, { case: "listServices", value: "" });
+    assert.strictEqual(response.messageResponse.case, "listServicesResponse");
+    return response.messageResponse.value.service.map((s) => s.name);
+}
+
 describe("Reflection Integration", () => {
-	let server: Server;
-	let serverUrl: string;
+    let server: Server;
+    let serverUrl: string;
 
-	before(async () => {
-		server = createServer({
-			services: [],
-			port: 0,
-			protocols: [Healthcheck(), Reflection()],
-			interceptors: [],
-			allowHTTP1: false,
-		});
+    before(async () => {
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck(), Reflection()],
+            interceptors: [],
+            allowHTTP1: false,
+        });
 
-		await server.start();
-		const port = server.address?.port;
-		assert.ok(port, "Server should have an assigned port");
-		serverUrl = `http://localhost:${port}`;
-	});
+        await server.start();
+        const port = server.address?.port;
+        assert.ok(port, "Server should have an assigned port");
+        serverUrl = `http://localhost:${port}`;
+    });
 
-	after(async () => {
-		if (server?.isRunning) {
-			await server.stop();
-		}
-	});
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
 
-	it("should list services via reflection", async () => {
-		const transport = createGrpcTransport({ baseUrl: serverUrl });
+    it("lists the services of the protocols registered before reflection", async () => {
+        assert.deepStrictEqual(await listServices(createGrpcTransport({ baseUrl: serverUrl })), ["grpc.health.v1.Health"]);
+    });
 
-		const client = new ServerReflectionClient(transport);
-		try {
-			const services = await client.listServices();
+    it("answers a symbol with everything a client needs to rebuild the service", async () => {
+        const response = await ask(createGrpcTransport({ baseUrl: serverUrl }), { case: "fileContainingSymbol", value: "grpc.health.v1.Health" });
+        assert.strictEqual(response.messageResponse.case, "fileDescriptorResponse");
+        const files = response.messageResponse.value.fileDescriptorProto.map((bytes) => fromBinary(FileDescriptorProtoSchema, bytes));
+        assert.strictEqual(files[0]?.name, "grpc/health/v1/health.proto");
 
-			assert.ok(Array.isArray(services), "listServices should return an array");
-			assert.ok(services.length > 0, "Should have at least one service");
+        const registry = createFileRegistry(create(FileDescriptorSetSchema, { file: files }));
+        const health = registry.getService("grpc.health.v1.Health");
+        assert.ok(health, "the rebuilt registry should resolve the service");
+        assert.deepStrictEqual(health.methods.map((m) => m.name).sort(), ["Check", "List", "Watch"]);
+    });
 
-			// Health service should be registered (via Healthcheck protocol)
-			assert.ok(
-				services.includes("grpc.health.v1.Health"),
-				`Expected grpc.health.v1.Health in services, got: ${JSON.stringify(services)}`,
-			);
-		} finally {
-			await client.close();
-		}
-	});
+    // The in-process router must serve the descriptors built once for the
+    // server, not ones rebuilt from the by-then larger registry (which by then
+    // also holds reflection's own files) — otherwise in-process and HTTP
+    // clients see different listings.
+    it("lists the same services in-process as over HTTP", async () => {
+        const overHttp = await listServices(createGrpcTransport({ baseUrl: serverUrl }));
+        const inProcess = await listServices(createLocalTransport(server));
 
-	it("should get file descriptor for health service symbol", async () => {
-		const transport = createGrpcTransport({ baseUrl: serverUrl });
-
-		const client = new ServerReflectionClient(transport);
-		try {
-			const fileDescriptor = await client.getFileContainingSymbol("grpc.health.v1.Health");
-
-			assert.ok(fileDescriptor, "Should return a file descriptor");
-			assert.ok(fileDescriptor.name, "File descriptor should have a name");
-			assert.ok(
-				fileDescriptor.name.includes("health"),
-				`File name should contain 'health', got: ${fileDescriptor.name}`,
-			);
-		} finally {
-			await client.close();
-		}
-	});
-
-	it("should build full file registry via reflection", async () => {
-		const transport = createGrpcTransport({ baseUrl: serverUrl });
-
-		const client = new ServerReflectionClient(transport);
-		try {
-			const registry = await client.buildFileRegistry();
-
-			assert.ok(registry, "Should return a FileRegistry");
-
-			// Registry should contain files
-			const files = [...registry.files];
-			assert.ok(files.length > 0, `Expected at least one file in registry, got ${files.length}`);
-
-			// Should contain health proto file
-			const healthFile = files.find((f) => f.name.includes("health"));
-			assert.ok(healthFile, `Expected health proto file in registry, files: ${files.map((f) => f.name).join(", ")}`);
-		} finally {
-			await client.close();
-		}
-	});
-
-	it("should get service descriptor with methods", async () => {
-		const transport = createGrpcTransport({ baseUrl: serverUrl });
-
-		const client = new ServerReflectionClient(transport);
-		try {
-			const serviceDesc = await client.getServiceDescriptor("grpc.health.v1.Health");
-
-			assert.ok(serviceDesc, "Should return a service descriptor");
-			assert.strictEqual(serviceDesc.fullName, "grpc.health.v1.Health");
-			assert.ok(serviceDesc.methods.length > 0, "Health service should have methods");
-
-			// Check, List and Watch methods expected
-			const methodNames = serviceDesc.methods.map((m) => m.name);
-			assert.ok(methodNames.includes("Check"), `Expected Check method, got: ${JSON.stringify(methodNames)}`);
-			assert.ok(methodNames.includes("List"), `Expected List method, got: ${JSON.stringify(methodNames)}`);
-			assert.ok(methodNames.includes("Watch"), `Expected Watch method, got: ${JSON.stringify(methodNames)}`);
-		} finally {
-			await client.close();
-		}
-	});
-
-	// The in-process router must serve the descriptor set built once for the
-	// server, not one rebuilt from the by-then larger registry (which by then
-	// also holds reflection's own files) — otherwise in-process and HTTP
-	// clients see different listings.
-	it("should list the same services in-process as over HTTP", async () => {
-		const list = async (transport: Transport) => {
-			const client = new ServerReflectionClient(transport);
-			try {
-				return (await client.listServices()).sort();
-			} finally {
-				await client.close();
-			}
-		};
-
-		const overHttp = await list(createGrpcTransport({ baseUrl: serverUrl }));
-		const inProcess = await list(createLocalTransport(server));
-
-		assert.deepStrictEqual(inProcess, overHttp);
-	});
+        assert.deepStrictEqual(inProcess, overHttp);
+    });
 });

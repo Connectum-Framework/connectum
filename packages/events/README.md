@@ -25,11 +25,7 @@ Universal event adapter layer for Connectum: proto-first pub/sub with pluggable 
 pnpm add @connectum/events
 ```
 
-**Peer dependencies** (installed automatically):
-
-```bash
-pnpm add @bufbuild/protobuf
-```
+**Peer dependencies:** `@connectum/core`, `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 You also need a broker adapter:
 
