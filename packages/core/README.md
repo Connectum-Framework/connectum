@@ -31,7 +31,7 @@ pnpm add @connectum/core
 yarn add @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node
 ```
 
-Your application and every Connectum package share one copy of each library. If you pin them, keep the pins inside these ranges and `connect` / `connect-node` on the same version: npm refuses an out-of-range pin with `ERESOLVE`, pnpm and Bun warn. Whatever the package manager, `createServer()` checks the copies it loaded and throws `PeerDependencyVersionError` — naming the package, the loaded version, the required range and the fix — when one is outside its range. The check is skipped when `@connectum/core` is bundled into your application, because a bundle carries no package metadata to read. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
+Your application and every Connectum package share one copy of each library. If you pin them, keep the pins inside these ranges and `connect` / `connect-node` on the same version: npm refuses an out-of-range pin with `ERESOLVE`, pnpm and Bun warn. Whatever the package manager, `createServer()` checks the copies it loaded and throws `PeerDependencyVersionError` — naming the package, the loaded version, the required range and the fix — when one is outside its range, or when `@connectrpc/connect-node` runs with a `@connectrpc/connect` other than the exact version it declares. The check is skipped when `@connectum/core` is bundled into your application, because a bundle carries no package metadata to read. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 ## Quick Start
 
