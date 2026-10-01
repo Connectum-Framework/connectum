@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // Program for the API reference. Unlike the type-check tsconfig it leaves out
+  // `packages/*/tests`: test files declare `ConnectumCallMap` augmentations for
+  // fixture services, and with them in the program the fixture messages leak
+  // into the documented public interfaces.
+  "extends": "./tsconfig.json",
+  "include": ["packages/*/src/**/*.ts"]
+}

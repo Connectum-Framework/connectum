@@ -9,7 +9,7 @@ import type { Server as HttpServer, IncomingMessage, ServerResponse } from "node
 import type { Http2SecureServer, Http2Server, Http2ServerRequest, Http2ServerResponse, SecureServerOptions } from "node:http2";
 import type { AddressInfo } from "node:net";
 import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@bufbuild/protobuf";
-import type { Client, ConnectRouter, Interceptor } from "@connectrpc/connect";
+import type { Client, ConnectRouter, HandlerContext, Interceptor } from "@connectrpc/connect";
 import type { ServiceDefinition } from "./defineService.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
@@ -403,6 +403,98 @@ export interface CreateServerOptions {
      * ```
      */
     jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
+
+    /**
+     * Server-wide request gate: Connect's `requestGate`, applied to every RPC
+     * on this server. Opt-in; unset by default.
+     *
+     * The gate receives the call's `HandlerContext` after the request headers
+     * are available and **before any request message is received,
+     * decompressed, or parsed**. Return to admit the call; throw a
+     * `ConnectError` to end it without reading the body. It is the cheap place
+     * to reject, for example, a request without credentials.
+     *
+     * Contract:
+     * - **Both transports, no exemption.** The gate runs identically for HTTP
+     *   calls and for in-process calls (`server.localClient()`,
+     *   `server.client()` of a local service, `createLocalTransport()`, and
+     *   `ctx.call` / `ctx.stream` to a local service). An internal `ctx.call`
+     *   carries only the headers you forward (`propagateHeaders`,
+     *   `outgoingInterceptors`), so a header-based gate rejects it unless the
+     *   credential is forwarded.
+     * - **Client-safe errors only.** A gate runs before the server
+     *   interceptor chain, so an `errorHandler` interceptor never sees its
+     *   error. A thrown `ConnectError` reaches the client exactly as thrown
+     *   (code, message, metadata, details) — throw a fixed, non-revealing
+     *   message. Anything else (a plain `Error`, a string, a rejected promise)
+     *   is replaced by Connect with `ConnectError("internal error",
+     *   Code.Internal)`; its text never reaches the client.
+     * - Must be a function; anything else throws a `TypeError` from
+     *   `createServer()`.
+     * - **Invisible to server interceptors.** A rejected call never runs
+     *   server-side interceptors: no server span, metric, or log entry from
+     *   `@connectum/otel` or the logger. To audit rejections, wrap your gate
+     *   (catch, record, rethrow). Client-side interceptors of the caller still
+     *   observe the failure.
+     * - **Coverage.** Every RPC on the router, including protocol RPCs such as
+     *   gRPC Health and Reflection. Plain HTTP endpoints served by protocol
+     *   HTTP handlers (for example the HTTP health endpoints) are not gated.
+     * - **Server default, service override.** A service that sets
+     *   `requestGate` in its `ServiceOptions` (the third argument of
+     *   `defineService` / `defineLazyService`) replaces this gate for that
+     *   service; the two are not composed. An own `requestGate: undefined`
+     *   key in the service options also removes it.
+     * - **Cooperative cancellation.** The server awaits the gate. Watch
+     *   `context.signal`: it aborts on the call's deadline, on client
+     *   cancellation, and when `server.stop()` begins — on both transports.
+     * - The parameter is Connect's `HandlerContext`, not the Connectum
+     *   `Context`: `ctx.call` / `ctx.stream` do not exist yet at gate time.
+     *
+     * @example
+     * ```typescript
+     * import { Code, ConnectError } from '@connectrpc/connect';
+     *
+     * const server = createServer({
+     *   services: [routes],
+     *   requestGate: (context) => {
+     *     if (!context.requestHeader.get('authorization')) {
+     *       throw new ConnectError('unauthenticated', Code.Unauthenticated);
+     *     }
+     *   },
+     * });
+     * ```
+     */
+    requestGate?: (context: HandlerContext) => void | Promise<void>;
+
+    /**
+     * Server-wide per-message read limit in bytes: Connect's `readMaxBytes`.
+     * Opt-in; when unset, Connect's default (about 4 GiB) applies.
+     *
+     * A request message larger than the limit ends the call with
+     * `Code.ResourceExhausted` before the handler runs; a message exactly at
+     * the limit is accepted. Applies identically on the HTTP and in-process
+     * transports (the in-process transport serializes messages in binary
+     * form). Only the diagnostic text of the error may differ between them:
+     * over HTTP it can include the observed size.
+     *
+     * This is a **default, not a ceiling**: a service that sets `readMaxBytes`
+     * in its `ServiceOptions` uses its own value, larger or smaller.
+     *
+     * Must be an integer from 1 to 4294967295 (Connect's maximum).
+     * `createServer()` throws a `RangeError` naming the option for anything
+     * else — `0`, negatives, fractions, `NaN`, `Infinity` — and a `TypeError`
+     * for a non-number. (Left to Connect, `NaN` would silently disable the
+     * limit.)
+     *
+     * @example
+     * ```typescript
+     * const server = createServer({
+     *   services: [routes],
+     *   readMaxBytes: 1024 * 1024, // 1 MiB per request message
+     * });
+     * ```
+     */
+    readMaxBytes?: number;
 
     // ── Service catalog (optional; a plain monolith needs none of these) ──
 

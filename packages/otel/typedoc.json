@@ -12,7 +12,5 @@
     "src/attributes.ts",
     "src/metrics.ts",
     "src/provider.ts"
-  ],
-
-  "tsconfig": "../../tsconfig.json"
+  ]
 }

@@ -92,6 +92,14 @@ const COMBOS = [
     // It proves compatibility, not the floor — an install resolves the highest version in
     // range either way; the floor is proven by the manifest assertion and the unit tests.
     { name: "enums-base-v1.3.0", pm: "npm", args: ["--ref", "v1.3.0"], fixture: "enums" },
+    // The same modules installed with pnpm. Only pnpm (11+) fails an install over a
+    // dependency's build script that the generated pnpm-workspace.yaml neither approves
+    // nor denies, and the scripts arrive with the modules (protobufjs comes in through
+    // otel), so the npm cells above cannot see this class of failure and base-node-pnpm
+    // installs none of those modules. One kitchen-sink cell rather than a pnpm twin of
+    // every module cell: it pulls in the union of the module dependencies at the cost of
+    // a single extra parallel job.
+    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
     // The two axes are independent, so both crossings are worth a cell: the one above
     // runs a Bun-runtime project installed with npm, this one installs with bun and

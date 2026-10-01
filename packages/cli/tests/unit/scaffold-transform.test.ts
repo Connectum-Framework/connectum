@@ -248,14 +248,31 @@ describe("transformBase", () => {
 
     it("emits a standalone pnpm-workspace.yaml (build-approval) for pnpm only", () => {
         const pnpmOut = transformBase(base, nodePnpm);
-        // pnpm 11 honours `allowBuilds` (map), NOT `onlyBuiltDependencies` — see transform.ts.
-        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /allowBuilds:/);
-        assert.match(pnpmOut.get("pnpm-workspace.yaml") ?? "", /'@bufbuild\/buf': true/);
+        // The exact file, not a pattern: pnpm 11+ fails the install on any build script
+        // that is neither approved nor denied, so a silently dropped entry (protobufjs,
+        // pulled in by the otel module) is the regression this has to catch.
+        const expected = "allowBuilds:\n  '@bufbuild/buf': true\n  esbuild: true\n  protobufjs: false\n";
+        assert.equal(pnpmOut.get("pnpm-workspace.yaml"), expected);
 
         // Only pnpm exits non-zero on an unapproved build script — see transform.ts.
         for (const packageManager of ["npm", "bun"] as const) {
             const out = transformBase(base, { ...nodePnpm, packageManager });
             assert.equal(out.has("pnpm-workspace.yaml"), false, `${packageManager} must not get pnpm-workspace.yaml`);
+        }
+    });
+
+    it("writes the same build-approval list whatever modules and runtime are selected", () => {
+        // The list is deliberately static: every combination must get the entries for
+        // everything any combination can install (otel brings protobufjs, tsx brings
+        // esbuild), otherwise the combination that differs is the one whose install fails.
+        const expected = transformBase(base, nodePnpm).get("pnpm-workspace.yaml");
+        const variants: ScaffoldConfig[] = [
+            { ...nodePnpm, modules: { otel: true } },
+            { ...nodePnpm, nodeExec: "tsx", modules: { otel: true, catalog: true, resilience: ["retry", "timeout"] } },
+            { ...nodePnpm, runtime: "bun", modules: { otel: true, events: { adapter: "kafka" } } },
+        ];
+        for (const config of variants) {
+            assert.equal(transformBase(base, config).get("pnpm-workspace.yaml"), expected, JSON.stringify(config));
         }
     });
 

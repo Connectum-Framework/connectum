@@ -274,18 +274,45 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
         out.set("tests/e2e/events.test.ts", generateEventsTest(config.runtime));
     }
 
-    // pnpm 11 fails the install (exit 1, ERR_PNPM_IGNORED_BUILDS) when a dependency has
-    // an unapproved build script, and @bufbuild/buf declares a `postinstall` — a
-    // non-zero install breaks the scaffolded project's first command. The approval key
-    // is **`allowBuilds`** (a map); the `onlyBuiltDependencies` list named in pnpm's
-    // deprecation warning is NOT honoured by pnpm 11.0.4 — verified by CI. Only pnpm
-    // needs the file.
+    // Only pnpm needs the file: npm and bun do not fail an install over build scripts.
     if (config.packageManager === "pnpm") {
-        out.set("pnpm-workspace.yaml", "allowBuilds:\n  '@bufbuild/buf': true\n  esbuild: true\n");
+        out.set("pnpm-workspace.yaml", PNPM_WORKSPACE_YAML);
     }
 
     return out;
 }
+
+/**
+ * The standalone `pnpm-workspace.yaml` written for pnpm projects.
+ *
+ * Since pnpm 11 an install exits non-zero (`ERR_PNPM_IGNORED_BUILDS`) when ANY
+ * dependency in the tree has a build script that is neither approved nor denied, so an
+ * unlisted script breaks the scaffolded project's very first command. Every package
+ * with a build script must therefore be listed, one way or the other. The key is
+ * **`allowBuilds`** (a map of name → boolean); the `onlyBuiltDependencies` list named
+ * in pnpm's deprecation warning is not honoured by pnpm 11.
+ *
+ * One static list serves every module combination instead of one derived from the
+ * selected modules: an entry for a package that is not installed is inert, so listing
+ * everything any combination can pull in costs nothing and leaves no combination
+ * uncovered. The list is the complete set of build scripts found by installing every
+ * events adapter together with otel, auth, catalog and resilience, on the node, tsx
+ * and bun execution models.
+ *
+ * - `@bufbuild/buf` — approved. Its `postinstall` locates the `buf` binary shipped in
+ *   the platform-specific optional dependency, downloads it if that package was not
+ *   installed, and checks that it runs. Every script of the project starts with
+ *   `buf generate`, so the binary must be there.
+ * - `esbuild` — approved. Same pattern as buf (locate or download the platform binary,
+ *   then verify it). It reaches the tree only through `tsx`, i.e. with
+ *   `--node-exec tsx`, where `tsx` needs a working esbuild to run the service at all.
+ * - `protobufjs` — denied. It arrives with the OTLP gRPC exporters that
+ *   `@connectum/otel` depends on. Its `postinstall` only prints a warning when the
+ *   parent package pins it with an unexpected version prefix; it builds and changes
+ *   nothing, so skipping it has no runtime effect. It is listed explicitly as `false`
+ *   because an unlisted script is exactly what fails the install.
+ */
+const PNPM_WORKSPACE_YAML = "allowBuilds:\n  '@bufbuild/buf': true\n  esbuild: true\n  protobufjs: false\n";
 
 /**
  * Generate a short project README with the correct run commands for the chosen
