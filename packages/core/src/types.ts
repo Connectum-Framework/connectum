@@ -121,8 +121,8 @@ export interface ProtocolRegistration {
     readonly name: string;
 
     /**
-     * One-time initialization: called once per server, while its routes are
-     * first materialized, immediately before this protocol's first
+     * Initialization: called while the server's routes are materialized,
+     * immediately before this protocol's first
      * {@link ProtocolRegistration.register}. Routers built after that (one per
      * in-process transport) call `register` again for their own routes and
      * reuse whatever `setup` prepared; they do not call `setup`. The place for
