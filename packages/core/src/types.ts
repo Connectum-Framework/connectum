@@ -109,11 +109,14 @@ export interface ProtocolRegistration {
     readonly name: string;
 
     /**
-     * One-time initialization, called exactly once per server immediately
-     * before this protocol's first {@link ProtocolRegistration.register}.
-     * The place for anything that reads the registry or has side effects.
+     * One-time initialization, called once per successful route
+     * materialization of a server, immediately before this protocol's first
+     * {@link ProtocolRegistration.register}. The place for anything that reads
+     * the registry or has side effects.
      *
-     * If route materialization fails, the next attempt calls `setup` again.
+     * If route materialization fails, the next attempt calls `setup` again, so
+     * any side effects it has run again too. Keep them idempotent, or undo them
+     * when a later step of the same materialization fails.
      */
     setup?(context: ProtocolContext): void;
 
