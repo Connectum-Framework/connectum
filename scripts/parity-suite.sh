@@ -8,7 +8,8 @@
 # This script aggregates all parity tests that are driven through
 # `transportParityTest()` from `@connectum/testing/parity`:
 #   - packages/testing/tests/parity/*.parity.test.ts
-#       (interceptors, validation, authorization, streaming, errors, coexistence)
+#       (interceptors, validation, authorization, streaming, errors, coexistence,
+#        reflection)
 #   - packages/otel/tests/parity/*.parity.test.ts
 #       (OTEL tracing & metrics)
 #

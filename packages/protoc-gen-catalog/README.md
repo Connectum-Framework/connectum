@@ -93,6 +93,13 @@ The plugin parameter string accepts the following option (passed via `opt:` in
 - `@bufbuild/protobuf` — proto descriptors (`DescService`).
 - `@bufbuild/protoplugin` — plugin framework (`createEcmaScriptPlugin`, `runNodeJs`).
 
+Unlike the Connectum runtime packages, this plugin keeps `@bufbuild/protobuf` as a
+regular dependency, not a peer. It is an executable that runs at code-generation time,
+and `@bufbuild/protoplugin` pins `@bufbuild/protobuf` to one exact version, so its copy
+cannot be promised to be the one your application uses. It is therefore outside the
+single-copy guarantee of the runtime packages — including the `@bufbuild/protoplugin`
+`Plugin` value the package entry exports, whose types come from the plugin's own copy.
+
 ## Requirements
 
 - Node.js >=22.13.0

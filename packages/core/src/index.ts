@@ -54,6 +54,9 @@ export { defineCatalog, mergeCatalogs } from "./serviceCatalog.ts";
 // Error protocol
 export type { SanitizableError } from "./errors.ts";
 export { isSanitizableError } from "./errors.ts";
+// Loaded protobuf / Connect versions vs core's peer ranges (checked by createServer)
+export type { PeerVersionProblem } from "./peerVersions.ts";
+export { PeerDependencyVersionError } from "./peerVersions.ts";
 // TLS utilities
 export { getTLSPath, readTLSCertificates, tlsPath } from "./TLSConfig.ts";
 // Transport validation (streaming kinds vs transport)

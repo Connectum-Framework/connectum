@@ -3,7 +3,8 @@
  * (JWT authentication + proto-driven authorization). The auth option proto is resolved
  * from `node_modules/@connectum/auth/proto` as a **second buf module** (not vendored),
  * so `install` must run before `buf generate` — which the lifecycle-fix guarantees
- * (buf generate runs on test/start, after install).
+ * (buf generate runs on test/start, after install). buf only compiles that module;
+ * the generated code imports its descriptors from `@connectum/auth` (see bufConfig.ts).
  *
  * APIs verified against `@connectum/auth` / `@connectum/auth/proto`.
  *

@@ -53,7 +53,19 @@ export function adapterPackage(adapter: EventAdapter): string {
     return ADAPTERS[adapter].pkg;
 }
 
-/** Vendored option proto (proto2) — same content @connectum/events publishes. */
+/**
+ * Where the vendored events option proto lands in a project. `init --events` and
+ * `generate service --with-events` both write it here, and the generated `buf.gen.yaml`
+ * excludes its directory from generation, so one constant keeps the three in step.
+ */
+export const EVENTS_OPTIONS_PROTO_PATH = "proto/connectum/events/v1/options.proto";
+
+/**
+ * Vendored option proto (proto2) — the same declarations @connectum/events publishes.
+ * buf compiles it so project protos can use `(connectum.events.v1.event)`, but nothing
+ * is generated from it: the generated code imports the descriptor from
+ * `@connectum/events` (see bufConfig.ts), so its declarations must match the package's.
+ */
 export function generateEventsOptionsProto(): string {
     return `syntax = "proto2";
 

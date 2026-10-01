@@ -25,11 +25,7 @@ Universal event adapter layer for Connectum: proto-first pub/sub with pluggable 
 pnpm add @connectum/events
 ```
 
-**Peer dependencies** (installed automatically):
-
-```bash
-pnpm add @bufbuild/protobuf
-```
+**Peer dependencies:** `@connectum/core`, `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 You also need a broker adapter:
 
@@ -496,6 +492,12 @@ const bus = createEventBus({ adapter: MemoryAdapter(), routes: [eventRoutes] });
 | `MiddlewareConfig` | type | Middleware configuration |
 
 For the complete, always-current list of exported symbols and types, see the [API Reference](https://connectum.dev/en/api/).
+
+### Generated option descriptors (`@connectum/events/gen/connectum/events/v1/options_pb.js`)
+
+Since 1.3.0. The generated code of `connectum/events/v1/options.proto`: `file_connectum_events_v1_options`, the `event` extension, and the `EventOptions` schema and type. The package's own topic resolution uses this same module.
+
+Import it from your own generated code instead of generating a local copy of the option proto: run protoc-gen-es (2.15.0 or later) with `map_imports=connectum/events/v1/:@connectum/events/gen`, and exclude your copy of the option proto from the generated inputs (`exclude_paths`). `connectum init --events` sets this up.
 
 ## Dependencies
 

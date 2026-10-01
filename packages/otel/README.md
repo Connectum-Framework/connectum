@@ -37,6 +37,8 @@ pnpm add @connectum/otel
 
 The OpenTelemetry API and SDK packages are runtime dependencies of `@connectum/otel` and are installed automatically.
 
+**Peer dependencies:** `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`, shared with the rest of your application. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
+
 ## Quick Start
 
 ### Basic usage

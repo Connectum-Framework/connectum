@@ -19,6 +19,7 @@ import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
+import { assertPeerVersions } from "./peerVersions.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
@@ -180,10 +181,10 @@ class ServerImpl extends EventEmitter implements Server {
 
             // Lazy-built path: routes may already have been materialized via
             // localClient()/client() before start(). _ensureRoutesBuilt()
-            // memoizes the full BuildRoutesResult (including userRegistry and
+            // memoizes the full BuildRoutesResult (including userServices and
             // jsonOptions) so transport validation below runs against the same
             // user-service slice regardless of when routes were built.
-            const { handler, registry, userRegistry } = this._ensureRoutesBuilt();
+            const { handler, registry, userServices } = this._ensureRoutesBuilt();
             // Only push registry entries not already collected (lazy build may
             // have populated it before start()).
             if (this._registry.length === 0) {
@@ -196,11 +197,12 @@ class ServerImpl extends EventEmitter implements Server {
             // residual risk for HTTP/1.1-negotiating clients → one-time warn.
             // Protocol-contributed services (gRPC Reflection's
             // ServerReflectionInfo is bidi) are excluded: their transport
-            // limitations are documented, not a user misconfiguration.
+            // limitations are documented, not a user misconfiguration; so are
+            // services declared in a mounted file but not mounted themselves.
             // The thrown error and the 'error' event below carry the SAME
             // object; the framework itself prints nothing (no double reporting).
             const validationError = validateTransport({
-                registry: userRegistry,
+                services: userServices,
                 // Boolean() mirrors TransportManager's truthy TLS check, so a
                 // falsy-but-defined tls (e.g. null from untyped JS) is treated
                 // as plaintext consistently with the actual transport selection.
@@ -597,5 +599,8 @@ class ServerImpl extends EventEmitter implements Server {
  * ```
  */
 export function createServer(options: CreateServerOptions): Server {
+    // Fail at construction, before any route is built: an out-of-range protobuf or
+    // Connect would otherwise surface later as mismatched types or a broken handler.
+    assertPeerVersions();
     return new ServerImpl(options);
 }

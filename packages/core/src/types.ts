@@ -57,6 +57,18 @@ export interface ProtocolContext {
      * not change it.
      */
     readonly registry: ReadonlyArray<DescFile>;
+
+    /**
+     * Services mounted before this protocol, in registration order: every
+     * mounted application service, then the services of the protocols that
+     * precede this one in the `protocols` array. A frozen snapshot — later
+     * registrations do not change it.
+     *
+     * Use this, not `registry[].services`, to know which services the server
+     * serves: a file in `registry` may also declare services that are not
+     * mounted (for example under `enabledServices`).
+     */
+    readonly services: ReadonlyArray<DescService>;
 }
 
 /**
@@ -90,7 +102,7 @@ export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
  *   return {
  *     name: "my-protocol",
  *     setup(context) {
- *       serviceNames = context.registry.flatMap((file) => file.services.map((s) => s.typeName));
+ *       serviceNames = context.services.map((s) => s.typeName);
  *     },
  *     register(router) {
  *       router.service(MyService, { list: () => ({ services: serviceNames }) });
