@@ -34,7 +34,7 @@ export const BASE_SOURCE = "Connectum-Framework/examples/getting-started";
  * Default git ref to fetch: a pinned `examples` release tag, never a moving branch
  * (see the module note). Override per invocation with `connectum init --ref <ref>`.
  */
-export const DEFAULT_BASE_REF = "v1.3.0";
+export const DEFAULT_BASE_REF = "v1.3.1";
 
 /**
  * Downloads `source` (a `gh:owner/repo/subdir#ref` spec) into `dest`.

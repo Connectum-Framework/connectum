@@ -22,6 +22,32 @@ describe("generateBufGenYaml", () => {
         assert.match(y, /protoc-gen-es/);
         assert.doesNotMatch(y, /catalog/);
     });
+
+    // Split into one chunk per `- local:` plugin entry, keyed by the plugin name.
+    const pluginBlocks = (yaml: string): Map<string, string> =>
+        new Map(
+            yaml
+                .split("  - local: ")
+                .slice(1)
+                .map((block) => [block.slice(0, block.indexOf("\n")), block]),
+        );
+
+    it("generates erasable enums with protoc-gen-es, with or without the catalog", () => {
+        // A TypeScript `enum` in generated code breaks the scaffold's native `node` run
+        // (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX) and its `erasableSyntaxOnly` typecheck (TS1294).
+        for (const config of [catalogConfig, { ...catalogConfig, modules: {} }]) {
+            const es = pluginBlocks(generateBufGenYaml(config)).get("protoc-gen-es") ?? "";
+            assert.match(es, /\n {6}- erasable_syntax=true\n/);
+            assert.match(es, /- target=ts/);
+            assert.match(es, /- import_extension=\.ts/);
+        }
+    });
+
+    it("never passes erasable_syntax to the catalog plugin, which rejects unknown options", () => {
+        const catalog = pluginBlocks(generateBufGenYaml(catalogConfig)).get("protoc-gen-connectum-catalog") ?? "";
+        assert.match(catalog, /strategy: all/);
+        assert.doesNotMatch(catalog, /erasable_syntax/);
+    });
 });
 
 describe("generateServer with catalog", () => {

@@ -132,6 +132,46 @@ describe("transformPackageJson", () => {
         assert.equal(pkg.devDependencies["@connectum/testing"], "^1.2.0");
     });
 
+    it("raises protobuf-es from an older base (--ref) to the floor erasable enums need", () => {
+        // The v1.3.0 base declares ^2.11.0 for both; erasable output imports `UnknownEnum`,
+        // which @bufbuild/protobuf < 2.13.0 does not export.
+        const older = JSON.stringify({
+            name: "base",
+            dependencies: { "@bufbuild/protobuf": "^2.11.0", "@connectum/core": "^1.0.0" },
+            devDependencies: { "@bufbuild/protoc-gen-es": "^2.11.0", typescript: "^5.9.3" },
+        });
+        const pkg = JSON.parse(transformPackageJson(older, nodePnpm));
+        assert.equal(pkg.dependencies["@bufbuild/protobuf"], "^2.16.0");
+        assert.equal(pkg.devDependencies["@bufbuild/protoc-gen-es"], "^2.16.0");
+        // The generator is never promoted into runtime dependencies, nor the runtime into dev.
+        assert.equal(pkg.dependencies["@bufbuild/protoc-gen-es"], undefined);
+        assert.equal(pkg.devDependencies["@bufbuild/protobuf"], undefined);
+    });
+
+    it("keeps a newer base's protobuf-es ranges", () => {
+        const newer = JSON.stringify({
+            name: "base",
+            dependencies: { "@bufbuild/protobuf": "^2.17.0" },
+            devDependencies: { "@bufbuild/protoc-gen-es": "^2.17.0" },
+        });
+        const pkg = JSON.parse(transformPackageJson(newer, nodePnpm));
+        assert.equal(pkg.dependencies["@bufbuild/protobuf"], "^2.17.0");
+        assert.equal(pkg.devDependencies["@bufbuild/protoc-gen-es"], "^2.17.0");
+    });
+
+    it("adds protobuf-es when the base declares neither (and has no dependencies block)", () => {
+        const pkg = JSON.parse(transformPackageJson(JSON.stringify({ name: "base" }), nodePnpm));
+        assert.deepEqual(pkg.dependencies, { "@bufbuild/protobuf": "^2.16.0" });
+        assert.equal(pkg.devDependencies["@bufbuild/protoc-gen-es"], "^2.16.0");
+    });
+
+    it("keeps dependencies sorted after adding floored packages", () => {
+        const pkg = JSON.parse(transformPackageJson(raw, nodePnpm));
+        const keys = Object.keys(pkg.dependencies);
+        assert.deepEqual(keys, [...keys].sort());
+        assert.ok(keys.includes("@bufbuild/protobuf"));
+    });
+
     it("sets the node engine floor per exec model", () => {
         assert.equal(JSON.parse(transformPackageJson(raw, nodePnpm)).engines.node, ">=25.2.0");
         assert.equal(JSON.parse(transformPackageJson(raw, { ...nodePnpm, nodeExec: "tsx" })).engines.node, ">=22.13.0");

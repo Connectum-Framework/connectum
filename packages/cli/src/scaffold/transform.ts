@@ -22,6 +22,12 @@ import { adapterPackage, generateEventBusFile, generateEventRouteFile, generateE
 import { generateIndex, generateServer } from "./serverGen.ts";
 import type { NodeExec, PackageManager, Runtime, ScaffoldConfig } from "./types.ts";
 import { nodeEngineFloor } from "./types.ts";
+import { applyVersionFloors } from "./versionFloors.ts";
+
+/** Sort keys for a stable, diff-friendly package.json. */
+function sortedByKey(deps: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(Object.entries(deps).sort(([a], [b]) => (a < b ? -1 : 1)));
+}
 
 /** Files that are monorepo-only plumbing and never belong in a standalone project. */
 const MONOREPO_ONLY = new Set(["pnpm-workspace.yaml", ".pnpmfile.cjs"]);
@@ -81,6 +87,8 @@ export function buildScripts(config: ScaffoldConfig): ProjectScripts {
  * `typescript`, `@types/node`), adds `@connectum/testing` (for the in-process
  * `createLocalClient` e2e test, D-7), adds `tsx` only under the Node tsx model, and
  * drops `@connectrpc/connect-node` (unused now that the e2e test is in-process).
+ * `@bufbuild/protoc-gen-es` ends up at or above the CLI's version floor
+ * (see versionFloors.ts), whatever the base declared.
  */
 export function buildDevDeps(existing: Record<string, string>, config: ScaffoldConfig, connectumVersion: string): Record<string, string> {
     const keep = ["@bufbuild/buf", "@bufbuild/protoc-gen-es", "@types/node", "typescript"];
@@ -103,8 +111,9 @@ export function buildDevDeps(existing: Record<string, string>, config: ScaffoldC
         // that runs perfectly well (caught by the Bun matrix cell).
         devDeps["@types/bun"] = existing["@types/bun"] ?? "^1.3.6";
     }
-    // Sort keys for a stable, diff-friendly package.json.
-    return Object.fromEntries(Object.entries(devDeps).sort(([a], [b]) => (a < b ? -1 : 1)));
+    // protoc-gen-es is raised to the CLI's floor (or added if the base lacks it): the
+    // generated buf.gen.yaml always invokes it, with options older versions do not have.
+    return sortedByKey(applyVersionFloors("devDependencies", devDeps));
 }
 
 /**
@@ -137,11 +146,10 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     if (config.modules.auth) {
         extraDeps["@connectum/auth"] = connectumVersion;
     }
-    // Note: no `&& pkg.dependencies` guard — a base without a `dependencies` block must
-    // still receive the enabled modules' deps rather than silently dropping them.
-    if (Object.keys(extraDeps).length > 0) {
-        pkg.dependencies = Object.fromEntries(Object.entries({ ...(pkg.dependencies ?? {}), ...extraDeps }).sort(([a], [b]) => (a < b ? -1 : 1)));
-    }
+    // A base without a `dependencies` block still receives the enabled modules' deps and
+    // the floored runtime deps: `@bufbuild/protobuf` is raised to (or added at) the CLI's
+    // floor because the generated code imports it, whatever version the base declared.
+    pkg.dependencies = sortedByKey(applyVersionFloors("dependencies", { ...(pkg.dependencies ?? {}), ...extraDeps }));
 
     pkg.scripts = buildScripts(config);
     pkg.devDependencies = buildDevDeps(pkg.devDependencies ?? {}, config, connectumVersion);

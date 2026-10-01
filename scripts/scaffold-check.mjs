@@ -5,6 +5,9 @@
  * For each named module combination: scaffold a project with the freshly built CLI,
  * install it, then run `typecheck` (which runs `buf generate` first) and `test`. A
  * broken module fragment fails here instead of in CI — or, worse, in a user's `init`.
+ * A combination with a `fixture` also gets user-style files copied in after `init`
+ * (see FIXTURES), a plain-`node` run of its check file, and a manifest check against
+ * the CLI's version floors.
  *
  * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
  * not restate it. That workflow calls `--list` to build its matrix and then runs one
@@ -36,14 +39,29 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// The floors come from the CLI's own table (read from source through native type
+// stripping), so this check and `connectum init` cannot disagree about them.
+import { meetsFloor, SCAFFOLD_VERSION_FLOORS } from "../packages/cli/src/scaffold/versionFloors.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_ENTRY = join(REPO_ROOT, "packages/cli/dist/index.js");
 /** Scratch root: the repo's gitignored `.tmp/`, so `--keep` output is easy to find. */
 const SCRATCH_ROOT = join(REPO_ROOT, ".tmp");
+
+/**
+ * Files copied into a scaffolded project after `init`, laid out as they land in it.
+ * Each fixture names the extra step that proves it: `enums` adds a proto with a
+ * top-level and a nested enum plus a check file that is type-checked by the project's
+ * `typecheck` and then executed with plain `node` (native type stripping, no loader).
+ * A TypeScript `enum` in the generated code fails the first with TS1294 and the second
+ * with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
+ */
+const FIXTURES = {
+    enums: { dir: join(REPO_ROOT, "scripts/scaffold-check-fixtures/enums"), nodeRun: "tests/fixture/enums.check.ts" },
+};
 
 /**
  * **The single source of truth for what gets scaffold-checked.**
@@ -65,7 +83,15 @@ const COMBOS = [
     { name: "events-nats", pm: "npm", args: ["--events", "nats"] },
     { name: "auth", pm: "npm", args: ["--auth"] },
     { name: "catalog", pm: "npm", args: ["--catalog"] },
-    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
+    // The only default cell with the catalog generator and the auth option module, so it
+    // also carries the enum fixture: erasable generation must coexist with both.
+    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums" },
+    { name: "enums", pm: "npm", args: [], fixture: "enums" },
+    // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
+    // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
+    // It proves compatibility, not the floor — an install resolves the highest version in
+    // range either way; the floor is proven by the manifest assertion and the unit tests.
+    { name: "enums-base-v1.3.0", pm: "npm", args: ["--ref", "v1.3.0"], fixture: "enums" },
     // The same modules installed with pnpm. Only pnpm (11+) fails an install over a
     // dependency's build script that the generated pnpm-workspace.yaml neither approves
     // nor denies, and the scripts arrive with the modules (protobufjs comes in through
@@ -115,15 +141,39 @@ function run(command, args, cwd) {
     }
 }
 
+/**
+ * Assert the scaffolded manifest meets every CLI version floor. An install cannot show
+ * this — package managers resolve the highest version in range, so a range below the
+ * floor would still install a new enough version today — hence a direct manifest check.
+ */
+function assertVersionFloors(target) {
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    const violations = SCAFFOLD_VERSION_FLOORS.filter((floor) => !meetsFloor(pkg[floor.section]?.[floor.name], floor.version)).map(
+        (floor) => `${floor.section}["${floor.name}"] is ${JSON.stringify(pkg[floor.section]?.[floor.name])}, below the floor ${floor.version}`,
+    );
+    if (violations.length > 0) {
+        throw new Error(`scaffolded package.json is below the CLI version floors:\n${violations.join("\n")}`);
+    }
+}
+
 /** Scaffold, install, typecheck and test one combination. Returns a result record. */
 function checkCombo(combo, workdir) {
     const started = process.hrtime.bigint();
     const target = join(workdir, combo.name);
+    const fixture = combo.fixture === undefined ? undefined : FIXTURES[combo.fixture];
     try {
         run(process.execPath, [CLI_ENTRY, "init", combo.name, "--package-manager", combo.pm, "--yes", ...combo.args], workdir);
+        if (fixture !== undefined) {
+            cpSync(fixture.dir, target, { recursive: true });
+        }
         run(combo.pm, ["install"], target);
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
+        if (fixture !== undefined) {
+            // Plain `node`, no flags: the same strip-only load `node src/index.ts` uses.
+            run(process.execPath, [fixture.nodeRun], target);
+            assertVersionFloors(target);
+        }
         return { name: combo.name, ok: true, ms: Number((process.hrtime.bigint() - started) / 1_000_000n) };
     } catch (error) {
         return { name: combo.name, ok: false, ms: Number((process.hrtime.bigint() - started) / 1_000_000n), error };
@@ -198,7 +248,7 @@ function main() {
     const results = [];
     try {
         for (const combo of selected) {
-            process.stdout.write(`  ${combo.name.padEnd(16)} `);
+            process.stdout.write(`  ${combo.name.padEnd(18)} `);
             const result = checkCombo(combo, workdir);
             results.push(result);
             console.log(result.ok ? `ok   (${(result.ms / 1000).toFixed(1)}s)` : `FAIL (${(result.ms / 1000).toFixed(1)}s)`);
