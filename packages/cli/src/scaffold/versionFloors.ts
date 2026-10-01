@@ -127,15 +127,36 @@ export function connectumSliceFloorApplies(dependencies: Readonly<Record<string,
 }
 
 /**
- * The one range every `@connectum/*` entry of the project gets. `baseRange` (the base's
- * `@connectum/core` range) is kept when the floor does not apply or is already met, so a
- * newer base is never pulled down; otherwise it is `^<floor>`.
+ * The one range every `@connectum/*` entry of a project gets when
+ * {@link CONNECTUM_SLICE_FLOOR} applies: `^` + the highest version any `@connectum/*`
+ * entry of the base requires (its `dependencies` and `devDependencies` together), or
+ * the floor if that is higher. Taking the highest is what keeps a single set without
+ * lowering anything: a `--ref` base can pin one package above the others, and deriving
+ * the range from `@connectum/core` alone would rewrite that package down.
+ *
+ * Only `^X.Y.Z`, `~X.Y.Z` and an exact `X.Y.Z` are read (by their lower bound, as in
+ * {@link meetsFloor}). A range whose lower bound cannot be read — `>=`, `*`, a tag, a
+ * prerelease — does not raise the set; like every other entry it is replaced by the
+ * shared range. The result is always written as a caret range.
  */
-export function connectumSliceRange(baseRange: string, dependencies: Readonly<Record<string, string>>): string {
-    if (!connectumSliceFloorApplies(dependencies) || meetsFloor(baseRange, CONNECTUM_SLICE_FLOOR.version)) {
-        return baseRange;
+export function connectumSliceRange(base: {
+    readonly dependencies?: Readonly<Record<string, string>> | undefined;
+    readonly devDependencies?: Readonly<Record<string, string>> | undefined;
+}): string {
+    let highest = parseVersion(CONNECTUM_SLICE_FLOOR.version);
+    if (highest === undefined) {
+        throw new Error(`versionFloors: "${CONNECTUM_SLICE_FLOOR.version}" is not a major.minor.patch version`);
     }
-    return `^${CONNECTUM_SLICE_FLOOR.version}`;
+    for (const [name, range] of [...Object.entries(base.dependencies ?? {}), ...Object.entries(base.devDependencies ?? {})]) {
+        if (!name.startsWith(CONNECTUM_SLICE_FLOOR.scope)) {
+            continue;
+        }
+        const lower = parseVersion(range.replace(/^[\^~]/, ""));
+        if (lower !== undefined && compareVersions(lower, highest) > 0) {
+            highest = lower;
+        }
+    }
+    return `^${highest.join(".")}`;
 }
 
 /** Set every `@connectum/*` entry of `deps` to `range`. Returns a new object. */

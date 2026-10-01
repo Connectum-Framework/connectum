@@ -90,7 +90,8 @@ With `--auth` or `--events`, the project does not generate Connectum's own optio
 the packages (`map_imports=connectum/auth/v1/:@connectum/auth/gen`, and the same for
 events), so the generated code imports the descriptors that `@connectum/auth` and
 `@connectum/events` ship. Because those exports first appear in 1.3.0, every `@connectum/*`
-dependency of such a project is set to one range of `^1.3.0` or higher, also with `--ref`.
+dependency of such a project is set to one range, also with `--ref`: the highest `@connectum/*`
+requirement of the fetched base, or `^1.3.0` if that is higher.
 
 ### `connectum generate service`
 

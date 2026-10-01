@@ -185,6 +185,60 @@ describe("the Connectum slice floor follows the option imports", () => {
     });
 });
 
+describe("the shared @connectum/* range is the highest requirement of the base", () => {
+    /** Every @connectum/* entry of the scaffolded manifest, both sections. */
+    const connectumRanges = (base: Record<string, unknown>, modules: ModuleSelection): Map<string, string> => {
+        const files = new Map([
+            ["package.json", JSON.stringify({ name: "base", ...base })],
+            ["src/services/greeterService.ts", "export const greeterService = {};\n"],
+            ["proto/greeter/v1/greeter.proto", 'syntax = "proto3";\n\npackage greeter.v1;\n\nservice GreeterService {\n  rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {}\n}\n'],
+        ]);
+        const pkg = JSON.parse(transformBase(files, config(modules)).get("package.json") ?? "{}");
+        return new Map(
+            [...Object.entries(pkg.dependencies as Record<string, string>), ...Object.entries(pkg.devDependencies as Record<string, string>)].filter(([name]) =>
+                name.startsWith("@connectum/"),
+            ),
+        );
+    };
+    const allEqual = (ranges: Map<string, string>, expected: string): void => {
+        assert.ok(ranges.size >= 3, `expected several @connectum/* entries, got ${[...ranges.keys()].join(", ")}`);
+        for (const [name, range] of ranges) {
+            assert.equal(range, expected, name);
+        }
+    };
+
+    it("a --ref base with core ^1.2.0 and events ^1.4.0: every entry becomes ^1.4.0, none is lowered to the floor", () => {
+        // Deriving the range from @connectum/core alone would rewrite events down to ^1.3.0.
+        allEqual(connectumRanges({ dependencies: { "@connectum/core": "^1.2.0", "@connectum/events": "^1.4.0" } }, EVENTS), "^1.4.0");
+    });
+
+    it("a base entirely at the floor stays at the floor", () => {
+        allEqual(connectumRanges({ dependencies: { "@connectum/core": "^1.3.0", "@connectum/healthcheck": "^1.3.0" } }, AUTH), "^1.3.0");
+    });
+
+    it("one entry above the rest lifts the whole set to it", () => {
+        allEqual(
+            connectumRanges({ dependencies: { "@connectum/core": "^1.3.0", "@connectum/healthcheck": "^1.3.0", "@connectum/reflection": "^1.5.2" } }, AUTH),
+            "^1.5.2",
+        );
+    });
+
+    it("base devDependencies take part (e.g. @connectum/testing ^1.6.0)", () => {
+        allEqual(connectumRanges({ dependencies: { "@connectum/core": "^1.2.0" }, devDependencies: { "@connectum/testing": "^1.6.0" } }, ALL), "^1.6.0");
+    });
+
+    it("tilde and exact ranges count by their lower bound; the shared range is written as a caret range", () => {
+        allEqual(connectumRanges({ dependencies: { "@connectum/core": "~1.4.2", "@connectum/healthcheck": "1.3.0" } }, AUTH), "^1.4.2");
+    });
+
+    it("ranges whose lower bound cannot be read (>=, *, tags, prereleases) do not raise the set and are replaced by it", () => {
+        allEqual(
+            connectumRanges({ dependencies: { "@connectum/core": "^1.2.0", "@connectum/healthcheck": ">=1.9.0", "@connectum/reflection": "latest", "@connectum/interceptors": "^1.8.0-rc.1" } }, AUTH),
+            "^1.3.0",
+        );
+    });
+});
+
 describe("slice floor helpers", () => {
     it("connectumSliceFloorApplies only with a trigger in dependencies", () => {
         assert.equal(connectumSliceFloorApplies({ "@connectum/auth": "^1.0.0" }), true);
@@ -192,11 +246,15 @@ describe("slice floor helpers", () => {
         assert.equal(connectumSliceFloorApplies({ "@connectum/events-nats": "^1.0.0", "@connectum/core": "^1.0.0" }), false);
     });
 
-    it("connectumSliceRange raises a low base, keeps a newer one, ignores untriggered manifests", () => {
-        assert.equal(connectumSliceRange("^1.2.0", { "@connectum/auth": "^1.2.0" }), "^1.3.0");
-        assert.equal(connectumSliceRange("^1.4.1", { "@connectum/auth": "^1.4.1" }), "^1.4.1");
-        assert.equal(connectumSliceRange(">=1.0.0", { "@connectum/events": ">=1.0.0" }), "^1.3.0", "an unreadable range cannot be shown to meet the floor");
-        assert.equal(connectumSliceRange("^1.0.0", { "@connectum/core": "^1.0.0" }), "^1.0.0");
+    it("connectumSliceRange: the highest readable @connectum/* lower bound of both sections, never below the floor", () => {
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": "^1.2.0" } }), "^1.3.0");
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": "^1.4.1" } }), "^1.4.1");
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": "^1.2.0", "@connectum/events": "^1.4.0" } }), "^1.4.0");
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": "^1.2.0" }, devDependencies: { "@connectum/testing": "^1.6.0" } }), "^1.6.0");
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": "^1.10.0", "@connectum/auth": "^1.9.9" } }), "^1.10.0", "numeric, not lexical");
+        assert.equal(connectumSliceRange({ dependencies: { "@connectum/core": ">=1.9.0" } }), "^1.3.0", "an unreadable range does not raise the set");
+        assert.equal(connectumSliceRange({ dependencies: { "@bufbuild/protobuf": "^2.16.0" } }), "^1.3.0", "other scopes are ignored");
+        assert.equal(connectumSliceRange({}), "^1.3.0");
     });
 
     it("alignConnectumSlice rewrites only the @connectum/ scope and does not mutate its input", () => {

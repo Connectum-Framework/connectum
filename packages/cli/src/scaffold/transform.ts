@@ -159,9 +159,12 @@ export function transformPackageJson(raw: string, config: ScaffoldConfig): strin
     // With auth or events the generated code imports option descriptors from those
     // packages, which only exist from the slice floor on — so the whole slice, including
     // what the base declared, moves to one range at or above it (see versionFloors.ts).
+    // That range is read from the base manifest as fetched, both sections, before the
+    // module entries above (which carry the core range) can hide a higher requirement.
     // Without them the base's ranges are kept as they are.
-    const connectumVersion = connectumSliceRange(baseConnectumVersion, dependencies);
-    if (connectumSliceFloorApplies(dependencies)) {
+    const sliceApplies = connectumSliceFloorApplies(dependencies);
+    const connectumVersion = sliceApplies ? connectumSliceRange(pkg) : baseConnectumVersion;
+    if (sliceApplies) {
         dependencies = alignConnectumSlice(dependencies, connectumVersion);
     }
 
