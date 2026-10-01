@@ -13,13 +13,15 @@ import { file_google_protobuf_empty } from "@bufbuild/protobuf/wkt";
 export const file_fixture_v1_multi: GenFile =
     /*@__PURE__*/
     fileDesc(
-        "ChZmaXh0dXJlL3YxL211bHRpLnByb3RvEgpmaXh0dXJlLnYxMkgKDk1vdW50ZWRTZXJ2aWNlEjYKBFBpbmcSFi5nb29nbGUucHJvdG9idWYuRW1wdHkaFi5nb29nbGUucHJvdG9idWYuRW1wdHkyTgoUVW5tb3VudGVkUGVlclNlcnZpY2USNgoEUGluZxIWLmdvb2dsZS5wcm90b2J1Zi5FbXB0eRoWLmdvb2dsZS5wcm90b2J1Zi5FbXB0eWIGcHJvdG8z",
+        "ChZmaXh0dXJlL3YxL211bHRpLnByb3RvEgpmaXh0dXJlLnYxMkgKDk1vdW50ZWRTZXJ2aWNlEjYKBFBpbmcSFi5nb29nbGUucHJvdG9idWYuRW1wdHkaFi5nb29nbGUucHJvdG9idWYuRW1wdHkyigEKFFVubW91bnRlZFBlZXJTZXJ2aWNlEjYKBFBpbmcSFi5nb29nbGUucHJvdG9idWYuRW1wdHkaFi5nb29nbGUucHJvdG9idWYuRW1wdHkSOgoEQ2hhdBIWLmdvb2dsZS5wcm90b2J1Zi5FbXB0eRoWLmdvb2dsZS5wcm90b2J1Zi5FbXB0eSgBMAFiBnByb3RvMw",
         [file_google_protobuf_empty],
     );
 
 /**
- * Two services in one file. Tests mount only MountedService: protocols must
- * report the services actually mounted, not every service of a mounted file.
+ * Two services in one file. Tests mount only MountedService: protocols and
+ * startup checks must consider the services actually mounted, not every
+ * service of a mounted file. The unmounted one carries a bidi method so a
+ * transport check that walks the whole file would flag it.
  *
  * @generated from service fixture.v1.MountedService
  */
@@ -43,6 +45,14 @@ export const UnmountedPeerService: GenService<{
      */
     ping: {
         methodKind: "unary";
+        input: typeof EmptySchema;
+        output: typeof EmptySchema;
+    };
+    /**
+     * @generated from rpc fixture.v1.UnmountedPeerService.Chat
+     */
+    chat: {
+        methodKind: "bidi_streaming";
         input: typeof EmptySchema;
         output: typeof EmptySchema;
     };
