@@ -194,6 +194,21 @@ check("events option descriptors: the subpath exports the file descriptor and th
     assert.strictEqual(eventsOptions.file_connectum_events_v1_options.name, "connectum/events/v1/options");
     assert.strictEqual(eventsOptions.event.typeName, "connectum.events.v1.event");
 });
+/** The files of a package's `dist/` that evaluate a file descriptor (`fileDesc(`). */
+function descriptorFiles(dist: string): string[] {
+    return readdirSync(dist, { recursive: true, encoding: "utf8" })
+        .filter((file) => file.endsWith(".js"))
+        .map((file) => join(dist, file))
+        .filter((file) => readFileSync(file, "utf8").includes("fileDesc("));
+}
+// The option proto is the only proto these packages generate, so exactly one file of
+// each build may evaluate a descriptor. This also covers entries the identity checks
+// do not import: a build that inlined a second copy into `dist/index.js` fails here.
+check("auth option descriptors: exactly one file of the build evaluates them", () => {
+    const dist = dirname(fileURLToPath(import.meta.resolve("@connectum/auth")));
+    const holders = descriptorFiles(dist);
+    assert.strictEqual(holders.length, 1, `expected one file with fileDesc( in ${dist}, got ${holders.length}: ${holders.join(", ")}`);
+});
 // `@connectum/events` exports no descriptor from its entry, so object identity cannot
 // be compared there; module identity is read from the installed build instead (Node
 // 22.13 has no module.registerHooks to observe resolution).
@@ -201,16 +216,25 @@ check("events option descriptors: one file evaluates them, imported by index.js 
     const entry = fileURLToPath(import.meta.resolve("@connectum/events"));
     const subpath = fileURLToPath(import.meta.resolve("@connectum/events/gen/connectum/events/v1/options_pb.js"));
     const dist = dirname(entry);
-    const holders = readdirSync(dist, { recursive: true, encoding: "utf8" })
-        .filter((file) => file.endsWith(".js"))
-        .map((file) => join(dist, file))
-        .filter((file) => readFileSync(file, "utf8").includes("fileDesc("));
+    const holders = descriptorFiles(dist);
     assert.strictEqual(holders.length, 1, `expected one file with fileDesc( in ${dist}, got ${holders.length}: ${holders.join(", ")}`);
     for (const importer of [entry, subpath]) {
         const imported = [...readFileSync(importer, "utf8").matchAll(/(?:from\s+|import\s+)"(\.\.?\/[^"]+)"/g)].map((m) => resolve(dirname(importer), m[1] ?? ""));
         assert.ok(imported.includes(holders[0] ?? ""), `${importer} does not import ${holders[0]}`);
     }
 });
+
+// Only the explicit option-descriptor subpaths are public: the rest of the generated
+// tree, which the tarball also ships under gen/, must stay unimportable, or it becomes
+// contract by accident.
+for (const spec of ["@connectum/auth/gen/connectum/auth/v1/options_pb.ts", "@connectum/events/gen/connectum/events/v1/options_pb.ts"]) {
+    await checkAsync(`${spec} is not exported`, async () => {
+        await assert.rejects(
+            () => import(spec),
+            (e: unknown) => (e as { code?: string }).code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
+        );
+    });
+}
 
 // ---------- @connectum/testing: mocks ----------
 const testing = await import("@connectum/testing");
