@@ -10,7 +10,9 @@ Testing utilities for the Connectum framework. Provides mock factories, assertio
 pnpm add -D @connectum/testing
 ```
 
-**Dependencies** (installed automatically): `@connectum/core`, `@connectum/test-fixtures`, `@connectrpc/connect`, `@connectrpc/connect-node`, `@bufbuild/protobuf`, `@opentelemetry/api`, `@opentelemetry/sdk-metrics`, `@opentelemetry/sdk-trace-base`
+**Dependencies** (installed automatically): `@connectum/core`, `@connectum/test-fixtures`, `@opentelemetry/api`, `@opentelemetry/sdk-metrics`, `@opentelemetry/sdk-trace-base`
+
+**Peer dependencies:** `@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0` and `@connectrpc/connect-node` `^2.2.0`, shared with your application. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
 
 ## Quick Start
 

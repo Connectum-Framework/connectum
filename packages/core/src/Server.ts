@@ -19,6 +19,7 @@ import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
+import { assertPeerVersions } from "./peerVersions.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
@@ -598,5 +599,8 @@ class ServerImpl extends EventEmitter implements Server {
  * ```
  */
 export function createServer(options: CreateServerOptions): Server {
+    // Fail at construction, before any route is built: an out-of-range protobuf or
+    // Connect would otherwise surface later as mismatched types or a broken handler.
+    assertPeerVersions();
     return new ServerImpl(options);
 }

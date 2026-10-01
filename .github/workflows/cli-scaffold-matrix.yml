@@ -20,6 +20,7 @@ on:
     paths:
       - "packages/cli/**"
       - "scripts/scaffold-check.mjs"
+      - "scripts/lib/**"
       - "scripts/scaffold-check-fixtures/**"
       - ".github/workflows/cli-scaffold-matrix.yml"
   push:
@@ -27,6 +28,7 @@ on:
     paths:
       - "packages/cli/**"
       - "scripts/scaffold-check.mjs"
+      - "scripts/lib/**"
       - "scripts/scaffold-check-fixtures/**"
 
 concurrency:

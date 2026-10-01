@@ -52,17 +52,22 @@
     "access": "public"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/test-fixtures": "workspace:^",
-    "@connectrpc/connect": "catalog:",
-    "@connectrpc/connect-node": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:"
   },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
+    "@connectrpc/connect-node": "^2.2.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
+    "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
     "@connectum/healthcheck": "workspace:^",
     "@connectum/interceptors": "workspace:^",
     "@connectum/reflection": "workspace:^",

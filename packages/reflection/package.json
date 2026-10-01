@@ -60,11 +60,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "catalog:",
-    "@connectrpc/connect": "catalog:"
-  },
   "peerDependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
+    "@connectrpc/connect": "^2.2.0",
     "@connectum/core": "workspace:^"
   },
   "peerDependenciesMeta": {
@@ -75,7 +73,9 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@bufbuild/buf": "catalog:",
+    "@bufbuild/protobuf": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
+    "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/healthcheck": "workspace:^",

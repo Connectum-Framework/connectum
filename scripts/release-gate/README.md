@@ -10,7 +10,7 @@ unimportable subpaths, and catalog-codegen breakage.
 
 `run.mjs` builds a throwaway consumer from [`fixture/`](./fixture), installs every
 published `@connectum/*` package from the chosen source, generates the service
-catalog, then runs six publish-boundary checks plus the behavioral smoke:
+catalog, then runs six publish-boundary checks, the behavioral smoke and a single-copy check:
 
 1. **export-map** ([`checks/oracle.mjs`](./fixture/checks/oracle.mjs)) — every `exports` subpath resolves to a real file on disk.
 2. **`.d.ts` graph** ([`checks/oracle.mjs`](./fixture/checks/oracle.mjs)) —
@@ -34,6 +34,16 @@ catalog, then runs six publish-boundary checks plus the behavioral smoke:
    public functions not covered by the example e2e (catalog key-validation,
    resolvers, `defaultFailurePredicate` classification, opt-in interceptors, otel
    getters, auth helpers, healthcheck, events helpers, testing mocks, real `ctx.call`).
+8. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
+   fixture pins `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node`
+   inside the framework's peer ranges, and the consumer has no workspace override, so
+   every runtime participant must resolve one copy of each. In `pack` mode each installed
+   `@connectum/*` manifest must also equal the one in its tarball, so an override that
+   silently fell back to the registry fails.
+
+The out-of-range side of the dependency contract (npm refuses, pnpm and Bun warn) needs
+npm and Bun, so it is checked by `pnpm dependency-contract:check`
+([`scripts/dependency-contract/check.mjs`](../dependency-contract/check.mjs)), not here.
 
 The gate exits non-zero if any check fails.
 
