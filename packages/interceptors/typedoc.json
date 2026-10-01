@@ -11,7 +11,5 @@
     "src/fallback.ts",
     "src/defaults.ts",
     "src/method-filter.ts"
-  ],
-
-  "tsconfig": "../../tsconfig.json"
+  ]
 }

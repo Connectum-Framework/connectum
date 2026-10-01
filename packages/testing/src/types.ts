@@ -34,7 +34,7 @@ export interface TestServer {
     close(): Promise<void>;
 }
 
-/** Options for {@link createTestServer}. */
+/** Options for {@link index.createTestServer | createTestServer}. */
 export interface CreateTestServerOptions {
     /** ConnectRPC service route handlers. */
     services: unknown[];
