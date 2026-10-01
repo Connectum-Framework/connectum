@@ -128,9 +128,10 @@ export interface ProtocolRegistration {
      * reuse whatever `setup` prepared; they do not call `setup`. The place for
      * anything that reads the registry or has side effects.
      *
-     * If route materialization fails, the next attempt calls `setup` again, so
-     * any side effects it has run again too. Keep them idempotent, or undo them
-     * when a later step of the same materialization fails.
+     * If the initial route materialization fails, the next attempt calls
+     * `setup` again, so any side effects it has run again too. Keep them
+     * idempotent, or undo them when a later step of the same materialization
+     * fails. A failure on a router built after that does not call `setup`.
      */
     setup?(context: ProtocolContext): void;
 
