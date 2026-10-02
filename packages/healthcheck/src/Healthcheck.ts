@@ -91,8 +91,9 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
         // In setup, not register: a router built later sees mounted services that
         // already include this protocol's own Health service, so initializing
         // there would start tracking it as UNKNOWN and take overall health out
-        // of SERVING. initialize keeps the status of every service it already
-        // tracks, so the application's statuses are not what is at stake.
+        // of SERVING. It would also drop any service the application tracks
+        // without mounting it, because initialize keeps only the services in its
+        // input (with their status) and removes the rest.
         setup(context: ProtocolContext): void {
             // The mounted services, not every service of their files.
             const serviceNames = context.services.map((service) => service.typeName);
