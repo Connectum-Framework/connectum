@@ -28,6 +28,7 @@
     "scaffold:check": "node scripts/scaffold-check.mjs",
     "dependency-contract:check": "node scripts/dependency-contract/check.mjs",
     "release:gate": "node scripts/release-gate/run.mjs --mode pack",
+    "interop:tools": "node scripts/interop-tools.mjs",
     "release:gate:preview": "node scripts/release-gate/run.mjs --mode preview",
     "release:contract": "node --test scripts/release-contract/contract.test.mjs && node scripts/validate-release-contract.mjs",
     "dev": "turbo run dev --parallel",
