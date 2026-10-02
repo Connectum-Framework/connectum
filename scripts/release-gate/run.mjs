@@ -126,6 +126,7 @@ const checks = [
     ["export-map + .d.ts graph (oracle)", ["node", "checks/oracle.mjs"]],
     ["value-export completeness", ["node", "checks/completeness.mjs"]],
     ["runtime importability", ["node", "checks/runtime-import.mjs"]],
+    ["one module instance per package", ["node", "checks/module-identity.mjs"]],
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
     // Node 22.13 supports native type stripping behind an explicit flag. Keep

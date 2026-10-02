@@ -19,7 +19,12 @@ export default defineConfig({
     sourcemap: true,
     clean: true,
     minify: false,
-    splitting: false,
+    // Several entries share modules. Without splitting each entry inlines its own
+    // copy, so a factory imported from `@connectum/interceptors` and from its
+    // subpath would be two different functions over two copies of any module
+    // state. With splitting, every entry imports one shared chunk; the release
+    // gate's module-identity check keeps it that way.
+    splitting: true,
     // Keep the node: prefix on builtin imports — required for node:test/sqlite and portable to Deno/Bun.
     removeNodeProtocol: false,
 });
