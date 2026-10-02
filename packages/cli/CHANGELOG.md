@@ -1,5 +1,91 @@
 # @connectum/cli
 
+## 1.3.0
+
+### Minor Changes
+
+- [#284](https://github.com/Connectum-Framework/connectum/pull/284) [`b85184a`](https://github.com/Connectum-Framework/connectum/commit/b85184a1b3cd61833e52c8c8aabd880ee4b1f85b) Thanks [@intech](https://github.com/intech)! - Generated code can import Connectum's option descriptors from the packages, and `connectum init` no longer generates its own copies.
+  
+  - `@connectum/auth` exports `./gen/connectum/auth/v1/options_pb.js` (`file_connectum_auth_v1_options`, `method_auth`, `service_auth`, the `MethodAuth` / `ServiceAuth` / `AuthRequirements` schemas and types), and `@connectum/events` exports `./gen/connectum/events/v1/options_pb.js` (`file_connectum_events_v1_options`, `event`, the `EventOptions` schema and type). Each subpath is the module the package itself uses, so a package evaluates its option proto once and hands out the same descriptor objects through every entry. Point protoc-gen-es (2.15.0 or later) at them with `map_imports=connectum/auth/v1/:@connectum/auth/gen` / `map_imports=connectum/events/v1/:@connectum/events/gen`. `@connectum/events` is now built with code splitting, so its `dist/index.js` imports a shared chunk.
+  - `connectum init --auth` / `--events`: the generated `buf.gen.yaml` compiles Connectum's option protos without generating them (one `directory: proto` input, the vendored events option proto under `exclude_paths`) and maps their imports to the packages, so `gen/` no longer holds `connectum/{auth,events}/v1/options_pb.ts`. Every `@connectum/*` dependency of such a project is set to one range: the highest `@connectum/*` requirement of the fetched base, or `^1.3.0` if that is higher (also with `--ref`), so no base entry is lowered. Projects without auth or events are generated exactly as before. Existing projects keep working unchanged.
+
+- [#229](https://github.com/Connectum-Framework/connectum/pull/229) [`8ed62cf`](https://github.com/Connectum-Framework/connectum/commit/8ed62cfaaf96cb2f08cadf3db9d0ab9c1b70b236) Thanks [@intech](https://github.com/intech)! - feat: `connectum init` and `connectum generate service` — project scaffolding
+  
+  - **`connectum init`** scaffolds a production-ready standalone project, interactively (a `@clack/prompts` wizard) or fully from flags (`--yes` / CI / non-TTY). The base is fetched from the dogfooded `getting-started` example via a degit-style clone, so the starter layout stays in sync with a tested example instead of a drift-prone template copy; the selected modules are composed on top.
+  - **Modules:** OpenTelemetry (`--otel`), EventBus with an adapter (`--events nats|kafka|redpanda|redis|amqp`), auth (`--auth`, JWT + proto-driven authorization), service catalog (`--catalog`, typed `ctx.call`/`ctx.stream`), opt-in resilience interceptors (`--resilience timeout,retry,...`), and health/reflection toggles. Runtime (`node`/`bun`), package manager (`pnpm`/`npm`/`bun`) and the Node execution model (`raw` `.ts` >= 25.2 vs `tsx` >= 22.13) are all first-class choices.
+  - **Deterministic interceptor order.** When several interceptor-adding modules are selected the composition root emits one canonical chain (outermost → innermost): OpenTelemetry → error handler → auth → validation → resilience → custom, with exactly one error handler.
+  - **Lifecycle fix baked in.** `buf generate` is chained into the generated `start` / `test` / `typecheck` scripts (not a pnpm `pre*` hook, which silently no-ops), so a fresh clone never fails with an unresolved `#gen/...` import. Standalone pnpm projects also get the `buf` build-approval that pnpm 11 requires.
+  - **`connectum generate service <name>`** adds a service to an existing project: a starter proto plus a `defineService` skeleton whose rpc handlers throw `Code.Unimplemented` (a deliberate, documented trade-off — the handler-map key must still exist, so a later proto method addition remains a compile error). `--with-events` also scaffolds an event-handler service and an ack-by-default `EventRoute`. It never edits your `src/server.ts`; it prints the exact registration to add.
+  - **Generated tests are runtime-agnostic**: the e2e test uses the public in-process `createLocalClient` from `@connectum/testing` (no socket, identical on Node and Bun); event-enabled projects also get a broker-free `MemoryAdapter` smoke test.
+  - A CI scaffold matrix (`cli-scaffold-matrix`) scaffolds each named module combination and runs `buf generate` → typecheck → test, so a broken fragment fails CI.
+
+### Patch Changes
+
+- [#229](https://github.com/Connectum-Framework/connectum/pull/229) [`8ed62cf`](https://github.com/Connectum-Framework/connectum/commit/8ed62cfaaf96cb2f08cadf3db9d0ab9c1b70b236) Thanks [@intech](https://github.com/intech)! - Fetch the `init` base project with `giget` instead of `tiged`.
+  
+  `tiged` depends on `tar`, and the releases it pins (`^6.1.11`) carry a critical
+  decompression denial-of-service advisory and a high-severity arbitrary
+  file-overwrite advisory. `tiged@2.12.8` is its latest release, so upgrading does not
+  reach a fixed `tar` — the constraint is in `tiged` itself. That matters more here
+  than it would elsewhere: a scaffolder exists to download and unpack a remote
+  archive, so the extraction path is exactly the exposed one.
+  
+  `giget` is the maintained degit-style downloader from the same project family as
+  `citty`, which this CLI already uses, and it has **no dependencies at all**. The
+  change removes the critical and both high advisories from the CLI's production
+  dependency closure and drops nine transitive packages.
+  
+  The fetcher was already injectable behind `CloneFn`, so the change is confined to
+  the default implementation. The only externally visible difference is the spec
+  format: giget needs its `gh:` provider prefix, so the base is now requested as
+  `gh:Connectum-Framework/examples/getting-started#<ref>`. `connectum init` was run
+  end to end against the real repository to confirm it.
+
+- [#279](https://github.com/Connectum-Framework/connectum/pull/279) [`7001ec7`](https://github.com/Connectum-Framework/connectum/commit/7001ec724118f6268923d873cd69d6953d44eebd) Thanks [@intech](https://github.com/intech)! - `connectum init --package-manager pnpm --otel` no longer produces a project whose first
+  `pnpm install` fails.
+  
+  pnpm 11 and later exit with `ERR_PNPM_IGNORED_BUILDS` when any dependency has a build
+  script that the project neither approves nor denies. The OpenTelemetry module pulls in
+  `protobufjs` (through the OTLP gRPC exporters), which declares a `postinstall`, and the
+  generated `pnpm-workspace.yaml` did not list it, so the install stopped with exit code 1.
+  
+  The generated `allowBuilds` map now lists every package with a build script that any
+  module combination installs: `@bufbuild/buf` and `esbuild` stay approved (their scripts
+  locate or download the platform binary the project needs), and `protobufjs` is denied
+  explicitly — its script only prints a version-prefix warning and has no runtime effect.
+  Projects already scaffolded can add `protobufjs: false` under `allowBuilds` in their
+  `pnpm-workspace.yaml`.
+
+- [#283](https://github.com/Connectum-Framework/connectum/pull/283) [`0cc15bb`](https://github.com/Connectum-Framework/connectum/commit/0cc15bb38fe23d8e9ac1a4b669b97c0b496d5e76) Thanks [@intech](https://github.com/intech)! - Serve gRPC Server Reflection with Connectum's own implementation and drop `@lambdalisue/connectrpc-grpcreflect`.
+  
+  That package declared `@bufbuild/protobuf` and `@connectrpc/connect` as regular dependencies, so a package manager could install a private protobuf copy for it next to the application's. `@connectum/reflection` and the reflection client behind `connectum proto sync` now use code generated from the upstream `grpc.reflection.v1` / `v1alpha` protos, with no third-party reflection package. The public API is unchanged.
+  
+  Responses now follow the reflection protocol where the previous implementation did not:
+  
+  - `grpcurl describe pkg.Service.Method` works: `file_containing_symbol` resolves methods, fields, oneofs, enum values, map entries and extensions, not only types and services.
+  - File answers carry the requested file and its transitive imports (well-known types included), without repeating files already sent on the same stream.
+  - `all_extension_numbers_of_type` fills `base_type_name` and lists numbers in ascending order; an unknown type is `NOT_FOUND` instead of an empty list.
+  - A not-found extension names the type and number instead of `File not found: [object Object]`.
+  - A request with no query set gets an `INVALID_ARGUMENT` error response instead of an empty one; the stream stays open.
+  - `list_services` lists the mounted services only: not services declared in a file that is merely imported, nor the unmounted services of a file that also declares a mounted one.
+  
+  `connectum proto sync` and `@connectum/cli/utils/reflection` return the same file order and descriptor-set bytes as before (the service list changes only as described above), and still fall back to v1alpha for servers without v1.
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
+- [#280](https://github.com/Connectum-Framework/connectum/pull/280) [`249616f`](https://github.com/Connectum-Framework/connectum/commit/249616fb3d5e3d0eae1ec6ee7c4eeb035ddb58a5) Thanks [@intech](https://github.com/intech)! - `connectum init`: projects with Protobuf enums now type-check and run under native type stripping.
+  
+  A scaffolded project runs `node src/index.ts` with Node's native type stripping and type-checks with `erasableSyntaxOnly`, and both reject a TypeScript `enum`. protoc-gen-es emitted one for every Protobuf enum, so the first enum a user added broke `start` (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`) and `typecheck` (TS1294).
+  
+  - The generated `buf.gen.yaml` passes `erasable_syntax=true` to protoc-gen-es (not to the catalog plugin, which rejects unknown options). An enum is generated as an `as const` object plus a type of the same name: `Color.RED` works as before, there is no reverse mapping (`Color[1]`), a single value's type is `typeof Color.RED`, and an open enum's type also admits `UnknownEnum`.
+  - The scaffolded `package.json` declares `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` at `^2.16.0` or higher, whatever the fetched base declares, so `connectum init --ref <older base>` also produces a project that can use the erasable output. A base that already declares a higher range keeps it.
+
+- [#292](https://github.com/Connectum-Framework/connectum/pull/292) [`b555978`](https://github.com/Connectum-Framework/connectum/commit/b5559789145656d823b9277f0406e51a14c6251a) Thanks [@intech](https://github.com/intech)! - Each package now evaluates its modules once, whichever subpath you import.
+  
+  These packages were built with one bundle per subpath, and every bundle carried its own copy of the modules it used. In `@connectum/otel` that meant one provider singleton per subpath: `getProvider()` from `@connectum/otel` and from `@connectum/otel/provider` returned different providers, and the second one's global registration failed with `Attempted duplicate registration of API: trace`, so a tracer or meter taken through a subpath belonged to a provider OpenTelemetry was not using. Likewise `ServerState` from `@connectum/core` and `@connectum/core/types` were two objects, and collectors created by `@connectum/testing/parity` were not `instanceof` the classes exported by `@connectum/testing`.
+  
+  The builds now share modules between subpaths, so every subpath hands out the same provider, classes and functions. The `exports` maps are unchanged; `dist` gains shared chunk files.
+
 ## 1.2.0
 
 ## 1.1.0

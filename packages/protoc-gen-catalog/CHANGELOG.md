@@ -1,5 +1,32 @@
 # @connectum/protoc-gen-catalog
 
+## 1.3.0
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Clear the remaining dependency advisories, and keep one `@bufbuild/protobuf` in the
+  workspace.
+  
+  `@bufbuild/buf` moves to 1.72.0. `@bufbuild/protoplugin` now moves together with
+  `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` under the single-instance pin: it
+  had lagged one release behind and pinned a second copy of `@bufbuild/protobuf`, which
+  is exactly the split the pin exists to prevent -- two instances break
+  `@connectrpc/connect`'s protobuf peer and the reflection DTS build. The protobuf-es and
+  connect-es versions this release requires are in the protobuf-es 2.16 / Connect 2.2
+  entry.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
 ## 1.2.0
 
 ## 1.1.0
