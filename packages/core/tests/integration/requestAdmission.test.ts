@@ -514,13 +514,20 @@ describe("gate cancellation is cooperative", () => {
         const parking = makeParkingGate();
         const { server, transport } = await startH2c({ services: [makeEchoRoutes({ count: 0 })], requestGate: parking.gate });
         try {
-            const httpErr = await captureError(() => createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "a" }), { timeoutMs: 50 }));
-            const localErr = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" }), { timeoutMs: 50 }));
+            // The deadline has to outlast the way to the gate: with a short one, a busy
+            // machine can expire the call before it reaches the gate, and the test then
+            // proves nothing about the gate. One second is far more than that path
+            // takes, and the two calls run side by side so the test still takes ~1 s.
+            const [httpErr, localErr] = await Promise.all([
+                captureError(() => createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "a" }), { timeoutMs: 1_000 })),
+                captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" }), { timeoutMs: 1_000 })),
+            ]);
             assert.strictEqual(httpErr.code, Code.DeadlineExceeded);
             assert.strictEqual(localErr.code, Code.DeadlineExceeded);
-            // Wait for both server-side deadline signals to reach the gate.
-            for (let i = 0; i < 50 && parking.state.aborted < 2; i++) {
-                await new Promise((resolve) => setImmediate(resolve));
+            // The client sees its deadline first; give both server-side deadline
+            // signals time to reach the gate, bounded so a missing abort still fails.
+            for (const until = Date.now() + 2_000; parking.state.aborted < 2 && Date.now() < until; ) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
             }
             assert.strictEqual(parking.state.entered, 2);
             assert.strictEqual(parking.state.aborted, 2, "the deadline must abort the gate's signal on both transports");
