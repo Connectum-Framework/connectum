@@ -10,7 +10,7 @@ unimportable subpaths, and catalog-codegen breakage.
 
 `run.mjs` builds a throwaway consumer from [`fixture/`](./fixture), installs every
 published `@connectum/*` package from the chosen source, generates the service
-catalog, then runs six publish-boundary checks, the behavioral smoke and a single-copy check:
+catalog, then runs seven publish-boundary checks, the behavioral smoke and a single-copy check:
 
 1. **export-map** ([`checks/oracle.mjs`](./fixture/checks/oracle.mjs)) — every `exports` subpath resolves to a real file on disk.
 2. **`.d.ts` graph** ([`checks/oracle.mjs`](./fixture/checks/oracle.mjs)) —
@@ -25,16 +25,21 @@ catalog, then runs six publish-boundary checks, the behavioral smoke and a singl
    every subpath `import()`s under Node ESM. Type-only subpaths (0 declared value
    exports) are expected to be empty; executable / buf-plugin entries are skipped
    with a documented reason ([`checks/allowlist.mjs`](./fixture/checks/allowlist.mjs)).
-5. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
+5. **one module instance per package** ([`checks/module-identity.mjs`](./fixture/checks/module-identity.mjs)) —
+   a name exported by two or more subpaths of one package must be the same runtime
+   value (`===`) from each. A multi-entry build without `splitting` copies shared
+   modules into every subpath, so singletons (the OpenTelemetry provider), classes
+   and module state would exist once per subpath.
+6. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
    no prefix-only builtin (`node:test`/`sqlite`/`sea`) ships with its `node:` prefix stripped.
-6. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
+7. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
    a cast-free fixture ([`src/usage.ts`](./fixture/src/usage.ts)) compiles documented
    signatures against the packed `.d.ts`, catching signature regressions.
-7. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
+8. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
    public functions not covered by the example e2e (catalog key-validation,
    resolvers, `defaultFailurePredicate` classification, opt-in interceptors, otel
    getters, auth helpers, healthcheck, events helpers, testing mocks, real `ctx.call`).
-8. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
+9. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
    fixture pins `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node`
    inside the framework's peer ranges, and the consumer has no workspace override, so
    every runtime participant must resolve one copy of each. In `pack` mode each installed

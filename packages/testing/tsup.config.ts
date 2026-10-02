@@ -7,7 +7,13 @@ export default defineConfig({
     sourcemap: true,
     clean: true,
     minify: false,
-    splitting: false,
+    // Both entries use the in-memory OpenTelemetry collectors: `.` exports the
+    // classes, and the `./parity` driver creates instances internally. Without
+    // splitting each entry inlines its own copy, so a collector made by the driver
+    // would not be an `instanceof` the class exported by `.`. With splitting, both
+    // import one shared chunk; the release gate's module-identity check keeps it
+    // that way.
+    splitting: true,
     // tsup strips the `node:` prefix from builtin imports by default
     // (removeNodeProtocol: true). For `node:test` that is fatal: the unprefixed
     // `test` has no bare builtin equivalent, so `dist/parity.js` shipped
