@@ -396,7 +396,7 @@ class ServerImpl extends EventEmitter implements Server {
      * @internal
      */
     private _resolveRemoteTransport(typeName: string, endpoint?: string): Transport | null {
-        const key = `${typeName} ${endpoint ?? ""}`;
+        const key = `${typeName}\0${endpoint ?? ""}`;
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
