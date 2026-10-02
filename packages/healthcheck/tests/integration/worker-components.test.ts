@@ -86,8 +86,10 @@ describe("RPC-less worker health components", () => {
         }
     });
 
-    it("component registered before start survives protocol initialization", () => {
-        assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.UNKNOWN);
+    it("component registered before start survives protocol initialization", async () => {
+        const client = createClient(Health, createGrpcTransport({ baseUrl: serverUrl }));
+        const byName = await client.check({ service: "process" });
+        assert.strictEqual(byName.status, ServingStatus.UNKNOWN, "a client must still find the component, with its initial status");
     });
 
     it("/healthz is 503 while the process component is UNKNOWN", async () => {

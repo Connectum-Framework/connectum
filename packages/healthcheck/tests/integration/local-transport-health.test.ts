@@ -63,7 +63,8 @@ describe("Healthcheck + in-process transport on a running server", () => {
 
         const overallAfter = await health.check({ service: "" });
         assert.strictEqual(overallAfter.status, ServingStatus.SERVING, "overall health must stay SERVING after a local call");
-        assert.deepStrictEqual([...manager.getAllStatuses().keys()], [APP_SERVICE], "creating a local transport must not change the tracked service set");
+        const listed = await health.list({});
+        assert.deepStrictEqual(Object.keys(listed.statuses), [APP_SERVICE], "creating a local transport must not change the service set a client sees");
     });
 });
 
@@ -98,7 +99,8 @@ describe("Healthcheck + first ctx.call on a running server", () => {
             assert.strictEqual(reply.message, "ping", "the ctx.call must reach the local echo");
 
             assert.strictEqual((await health.check({ service: "" })).status, ServingStatus.SERVING, "overall health must stay SERVING after the first ctx.call");
-            assert.deepStrictEqual([...manager.getAllStatuses().keys()], [EchoService.typeName], "only the application service is tracked");
+            const listed = await health.list({});
+            assert.deepStrictEqual(Object.keys(listed.statuses), [EchoService.typeName], "a client must see only the application service");
         } finally {
             await server.stop();
         }
