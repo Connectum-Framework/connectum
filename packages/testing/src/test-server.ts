@@ -8,7 +8,6 @@
  */
 
 import { createGrpcTransport } from "@connectrpc/connect-node";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier, not a relative import
 import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
 

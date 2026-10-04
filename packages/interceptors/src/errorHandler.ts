@@ -9,7 +9,6 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: workspace package import
 import { isSanitizableError } from "@connectum/core";
 import type { ErrorHandlerOptions } from "./types.ts";
 

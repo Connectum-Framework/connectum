@@ -12,7 +12,6 @@
 import type { DescService } from "@bufbuild/protobuf";
 import type { Interceptor, ServiceImpl, Transport } from "@connectrpc/connect";
 import { createRouterTransport } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { RemoteResolver } from "@connectum/core";
 
 /** Response header set on every mock-served response. */

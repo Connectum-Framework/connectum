@@ -33,11 +33,8 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { create } from "@bufbuild/protobuf";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createServer, defineService, type Server } from "@connectum/core";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { Healthcheck } from "@connectum/healthcheck";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { Reflection } from "@connectum/reflection";
 import { readFileDescriptorSet } from "../../../../tests/interop/descriptors.ts";
 import { OUT_DIR, runTool } from "../../../../tests/interop/tools.ts";

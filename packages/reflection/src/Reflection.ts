@@ -11,7 +11,6 @@
  */
 
 import type { ConnectRouter } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { ProtocolContext, ProtocolRegistration } from "@connectum/core";
 import { createDescriptorPool, type DescriptorPool } from "./descriptorPool.ts";
 import { registerServerReflection } from "./serverReflection.ts";

@@ -62,6 +62,18 @@
       "includes": ["**/packages/*/src/**/*.ts", "!**/packages/core/src/localTransport.ts", "!**/packages/testing/src/mockResolver.ts"]
     }
   ],
+  "overrides": [
+    {
+      "includes": ["**/packages/*/src/**", "**/packages/*/tests/interop/**"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useImportExtensions": "off"
+          }
+        }
+      }
+    }
+  ],
   "vcs": {
     "enabled": true,
     "clientKind": "git",

@@ -15,7 +15,6 @@
 
 import type { DescService } from "@bufbuild/protobuf";
 import type { Client } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { Server } from "@connectum/core";
 
 /**
