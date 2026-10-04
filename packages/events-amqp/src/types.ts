@@ -478,8 +478,10 @@ export interface AmqpRecoveryOptions {
  * - `settlement-skipped` reports an acknowledge, requeue or reject that the
  *   adapter skipped because the consumer channel was already closed. It is a
  *   diagnostic, not a failure: the broker requeues every delivery that was not
- *   acknowledged before the channel closed, so the message is redelivered.
- *   Union-only (no flat callback).
+ *   acknowledged before the channel closed, so the message is redelivered. On a
+ *   quorum queue each such return counts toward the queue's delivery limit
+ *   (default 20 since RabbitMQ 4.0); past it the broker drops the message or
+ *   dead-letters it. Union-only (no flat callback).
  * - `lifecycle-error` reports a lifecycle callback that threw or returned a
  *   promise that rejected. The failure is already isolated; the event only
  *   makes it visible. A failure while handling a `lifecycle-error` is dropped.

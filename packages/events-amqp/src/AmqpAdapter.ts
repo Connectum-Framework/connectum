@@ -356,9 +356,11 @@ export function dispatchLifecycle(lifecycle: AmqpLifecycleCallbacks | undefined,
             });
         };
         try {
-            const result = call();
-            if (result instanceof Promise) {
-                result.then(undefined, report);
+            const result: unknown = call();
+            // A callable `then` rather than `instanceof Promise`: a promise from
+            // another realm or a userland thenable must be isolated too.
+            if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+                (result as PromiseLike<unknown>).then(undefined, report);
             }
         } catch (error) {
             report(error);

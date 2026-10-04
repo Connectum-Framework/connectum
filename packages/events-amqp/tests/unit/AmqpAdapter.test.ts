@@ -888,6 +888,31 @@ describe("dispatchLifecycle exception isolation", () => {
         assert.equal(report.error.message, "boom");
     });
 
+    it("isolates a callback that returns a rejecting thenable which is not a native Promise", async () => {
+        const reports: AmqpLifecycleEvent[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => {
+                if (event.type === "lifecycle-error") {
+                    reports.push(event);
+                }
+            },
+            onConnected: (() => ({
+                then: (_onFulfilled: unknown, onRejected: (reason: unknown) => void) => {
+                    onRejected(new Error("thenable boom"));
+                },
+            })) as unknown as () => void,
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal(reports.length, 1);
+        const report = reports[0];
+        assert.ok(report?.type === "lifecycle-error");
+        assert.equal(report.callback, "onConnected");
+        assert.equal(report.error.message, "thenable boom");
+    });
+
     it("does not invoke onLifecycle a second time for an event whose flat callback failed", () => {
         const seen: string[] = [];
         const lifecycle: AmqpLifecycleCallbacks = {
