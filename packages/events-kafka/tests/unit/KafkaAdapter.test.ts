@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { Kafka } from "kafkajs";
 import { KafkaAdapter } from "../../src/KafkaAdapter.ts";
 
 describe("KafkaAdapter", () => {
@@ -75,6 +76,106 @@ describe("KafkaAdapter", () => {
         });
 
         assert.equal(adapter.name, "kafka");
+    });
+
+    it("accepts a redeliveryDelay up to the timer limit and rejects a negative, non-finite or larger one", () => {
+        for (const good of [0, 250, 2_147_483_647]) {
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: good } });
+            assert.equal(adapter.name, "kafka");
+        }
+
+        for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+            assert.throws(
+                () => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: bad } }),
+                { name: "RangeError", message: /redeliveryDelay must be a non-negative finite number/ },
+            );
+        }
+    });
+
+    describe("redeliveryDelay default", () => {
+        type EachBatch = (payload: unknown) => Promise<void>;
+
+        /**
+         * Subscribe through the real adapter against a stubbed KafkaJS client, hand the captured
+         * `eachBatch` one message that the handler leaves unsettled, and report how many partition
+         * pauses were requested and with which `setTimeout` delays.
+         */
+        async function unsettledMessage(redeliveryDelay?: number): Promise<{ pauses: number; delays: unknown[] }> {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalSetTimeout = globalThis.setTimeout;
+            let eachBatch: EachBatch | undefined;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = () => ({
+                connect: async () => undefined,
+                disconnect: async () => undefined,
+                subscribe: async () => undefined,
+                run: async (config: { eachBatch: EachBatch }) => {
+                    eachBatch = config.eachBatch;
+                },
+            });
+
+            const delays: unknown[] = [];
+            let pauses = 0;
+            const adapter = KafkaAdapter({
+                brokers: ["localhost:9092"],
+                ...(redeliveryDelay !== undefined && { consumerOptions: { redeliveryDelay } }),
+            });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(["orders.created"], async () => undefined);
+                assert.ok(eachBatch, "the adapter did not start the consumer");
+                globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+                    delays.push(args[1]);
+                    return originalSetTimeout(...args);
+                }) as typeof setTimeout;
+                await eachBatch({
+                    batch: {
+                        topic: "orders.created",
+                        partition: 0,
+                        messages: [{ offset: "0", key: null, value: Buffer.from("x"), timestamp: "1700000000000", headers: {}, attributes: 0 }],
+                        lastOffset: () => "0",
+                    },
+                    resolveOffset: () => undefined,
+                    commitOffsetsIfNecessary: async () => undefined,
+                    heartbeat: async () => undefined,
+                    isRunning: () => true,
+                    isStale: () => false,
+                    pause: () => {
+                        pauses++;
+                        return () => undefined;
+                    },
+                    uncommittedOffsets: () => ({ topics: [] }),
+                });
+                globalThis.setTimeout = originalSetTimeout;
+                await subscription.unsubscribe();
+            } finally {
+                globalThis.setTimeout = originalSetTimeout;
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                await adapter.disconnect();
+            }
+            return { pauses, delays };
+        }
+
+        it("pauses an unsettled message for 1000 ms when the option is not set", async () => {
+            const { pauses, delays } = await unsettledMessage();
+            assert.equal(pauses, 1);
+            assert.deepEqual(delays, [1000]);
+        });
+
+        it("takes an explicit value over the default", async () => {
+            const { pauses, delays } = await unsettledMessage(250);
+            assert.equal(pauses, 1);
+            assert.deepEqual(delays, [250]);
+        });
+
+        it("accepts 0 and then redelivers without pausing the partition", async () => {
+            const { pauses, delays } = await unsettledMessage(0);
+            assert.equal(pauses, 0);
+            assert.deepEqual(delays, []);
+        });
     });
 
     it("has all required EventAdapter methods", () => {

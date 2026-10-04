@@ -100,8 +100,9 @@ function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter
 | `producerOptions.compression` | `CompressionTypes` | `undefined` | Message compression type |
 | `consumerOptions` | `object` | `{}` | Consumer configuration |
 | `consumerOptions.sessionTimeout` | `number` | `30000` | Consumer session timeout in ms |
-| `consumerOptions.fromBeginning` | `boolean` | `false` | Start consuming from beginning |
+| `consumerOptions.fromBeginning` | `boolean` | `false` | Where a consumer group with no committed offset starts: the beginning of the topic (`true`) or its end (`false`). A group that has committed offsets always resumes from them |
 | `consumerOptions.allowAutoTopicCreation` | `boolean` | `false` | Allow automatic topic creation |
+| `consumerOptions.redeliveryDelay` | `number` | `1000` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately; the maximum is `2147483647` |
 
 ## How It Works
 
@@ -133,6 +134,42 @@ await bus.publish(OrderCreatedSchema, order, {
   key: order.customerId, // All orders for same customer go to same partition
 });
 ```
+
+### Acknowledgement and Redelivery
+
+Delivery is at-least-once. Offsets are committed only by the handler's outcome, never by
+the client library on a timer:
+
+| Handler outcome | Offset | What happens next |
+|-----------------|--------|-------------------|
+| `ack()` (EventBus calls it after a successful handler) | committed | next message |
+| `nack(false)` | committed | message is skipped (the DLQ middleware keeps a copy) |
+| `nack(true)` or `nack()` | not committed | the message and the rest of the batch are delivered again, in order |
+| handler throws | not committed | same as `nack(true)`; the error is logged with topic, partition and offset |
+| handler returns without settling | not committed | same as `nack(true)` |
+
+A Kafka offset means "everything before it is consumed", so settlement is ordered: the first
+message that is not committed ends the batch and is the first one fetched again. The first
+settlement of a message wins; an `ack()` called after the handler returned is ignored.
+
+An unsettled message is delivered again after `redeliveryDelay` (default `1000` ms): the
+adapter pauses the partition for that long. `redeliveryDelay: 0` redelivers immediately, and
+a handler that fails permanently then retries in a tight loop and writes one log line per
+attempt.
+
+A message that fails on every delivery blocks its partition indefinitely: nothing behind it is delivered until the handler succeeds, `nack(false)` is called, or the DLQ middleware moves it. `redeliveryDelay` only paces the loop; it does not end it. On an otherwise idle consumer the observed gap is a whole fetch cycle (5 s in KafkaJS) even for smaller values.
+
+Use the retry and DLQ middleware to bound a permanently failing message.
+
+`attempt` is always `1`: Kafka does not count deliveries.
+
+### Start Position
+
+A consumer group that has no committed offset starts at the end of the topic
+(`fromBeginning: false`, the default), so messages published before the group first
+commits an offset are not delivered. Once the group has committed, messages published while
+it is stopped are delivered on restart. Set `fromBeginning: true` to read a topic's history
+with a new group.
 
 ### Metadata
 

@@ -8,26 +8,17 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
-import type { Consumer, EachBatchPayload, IHeaders, Producer } from "kafkajs";
+import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import type { Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
+import { createBatchConsumer } from "./consumeBatch.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
- * Parse a timestamp from header string or Kafka numeric timestamp.
- * Returns current time if both are missing or invalid.
+ * Pause between redeliveries of an unsettled message when `consumerOptions.redeliveryDelay` is not set.
+ * Without a pause a permanently failing handler is retried at network speed, thousands of times a second.
  */
-function parseTimestamp(headerValue: string | undefined, kafkaTimestamp: string | undefined): Date {
-    if (headerValue) {
-        const d = new Date(headerValue);
-        if (Number.isFinite(d.getTime())) return d;
-    }
-    if (kafkaTimestamp) {
-        const n = Number(kafkaTimestamp);
-        if (Number.isFinite(n)) return new Date(n);
-    }
-    return new Date();
-}
+const defaultRedeliveryDelayMs = 1_000;
 
 /**
  * Convert NATS-style wildcard patterns to Kafka-compatible RegExp.
@@ -55,37 +46,6 @@ function patternToKafkaTopicMatcher(pattern: string): string | RegExp {
         .replace(/>/g, ".+");
 
     return new RegExp(`^${escaped}$`);
-}
-
-/**
- * Parse Kafka message headers into a Map<string, string>.
- *
- * KafkaJS headers can contain Buffer, string, or arrays thereof.
- * This normalizes all values to strings.
- */
-function parseHeaders(headers: IHeaders | undefined): Map<string, string> {
-    const result = new Map<string, string>();
-    if (!headers) {
-        return result;
-    }
-
-    for (const [key, value] of Object.entries(headers)) {
-        if (value === undefined) {
-            continue;
-        }
-
-        if (Array.isArray(value)) {
-            // Take the first element for simplicity
-            const [first] = value;
-            if (first !== undefined) {
-                result.set(key, Buffer.isBuffer(first) ? first.toString("utf-8") : String(first));
-            }
-        } else {
-            result.set(key, Buffer.isBuffer(value) ? value.toString("utf-8") : String(value));
-        }
-    }
-
-    return result;
 }
 
 /**
@@ -120,6 +80,15 @@ function encodeMetadata(metadata: Record<string, string>): IHeaders {
  * ```
  */
 export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
+    // Node.js replaces a timer delay above this value with 1 ms, which would turn a long pause into a hot redelivery loop.
+    const maxTimerDelayMs = 2_147_483_647;
+    const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? defaultRedeliveryDelayMs;
+    if (!Number.isFinite(redeliveryDelay) || redeliveryDelay < 0 || redeliveryDelay > maxTimerDelayMs) {
+        throw new RangeError(
+            `KafkaAdapter: consumerOptions.redeliveryDelay must be a non-negative finite number of milliseconds (at most ${maxTimerDelayMs}), got ${redeliveryDelay}`,
+        );
+    }
+
     let kafka: Kafka;
 
     let producer: Producer | null = null;
@@ -219,6 +188,9 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             await consumer.connect();
 
+            /** Pending partition resumes of this subscription, cleared on unsubscribe. */
+            const resumeTimers = new Set<NodeJS.Timeout>();
+
             try {
                 // Convert patterns to Kafka topic subscriptions
                 const topics: (string | RegExp)[] = patterns.map(patternToKafkaTopicMatcher);
@@ -226,62 +198,12 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
                 await consumer.subscribe({ topics, fromBeginning });
 
+                // `autoCommit: false` and `eachBatchAutoResolve: false` hand every offset
+                // decision to ack/nack(false); see createBatchConsumer.
                 await consumer.run({
                     autoCommit: false,
-                    eachBatch: async ({ batch, resolveOffset, commitOffsetsIfNecessary, heartbeat }: EachBatchPayload) => {
-                        for (const message of batch.messages) {
-                            const msgHeaders = parseHeaders(message.headers);
-
-                            // Extract event ID from headers or use message key/offset
-                            const eventId = msgHeaders.get("x-event-id") ?? message.key?.toString("utf-8") ?? randomUUID();
-
-                            const publishedAt = parseTimestamp(msgHeaders.get("x-published-at"), message.timestamp);
-
-                            // Kafka does not natively track delivery attempts across redeliveries.
-                            // Attempt defaults to 1; retry middleware tracks retries internally.
-                            const attempt = 1;
-
-                            // Remove internal headers from metadata
-                            msgHeaders.delete("x-event-id");
-                            msgHeaders.delete("x-published-at");
-
-                            const rawEvent: RawEvent = {
-                                eventId,
-                                eventType: batch.topic,
-                                payload: message.value ? new Uint8Array(message.value) : new Uint8Array(),
-                                publishedAt,
-                                attempt,
-                                metadata: msgHeaders,
-                            };
-
-                            // Real ack/nack wired through to EventBus (C-1)
-                            let nacked = false;
-                            const ack = async (): Promise<void> => {
-                                resolveOffset(message.offset);
-                                await commitOffsetsIfNecessary();
-                            };
-                            const nack = async (requeue?: boolean): Promise<void> => {
-                                if (requeue === false) {
-                                    // "Reject without requeue" — commit offset so the message
-                                    // won't be redelivered. DLQ middleware already saved a copy.
-                                    resolveOffset(message.offset);
-                                    await commitOffsetsIfNecessary();
-                                } else {
-                                    nacked = true;
-                                }
-                            };
-
-                            try {
-                                await handler(rawEvent, ack, nack);
-                            } catch {
-                                // Handler error — stop batch, KafkaJS will retry from this offset
-                                break;
-                            }
-
-                            if (nacked) break; // Stop processing, retry from this offset
-                            await heartbeat();
-                        }
-                    },
+                    eachBatchAutoResolve: false,
+                    eachBatch: createBatchConsumer({ handler, redeliveryDelay, resumeTimers }),
                 });
             } catch (err) {
                 await consumer.disconnect().catch(() => undefined);
@@ -296,6 +218,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                     if (idx !== -1) {
                         consumers.splice(idx, 1);
                     }
+                    for (const timer of resumeTimers) {
+                        clearTimeout(timer);
+                    }
+                    resumeTimers.clear();
                     await consumer.disconnect();
                 },
             };
