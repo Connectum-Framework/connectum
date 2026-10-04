@@ -15,7 +15,7 @@ import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, R
 import type amqp from "amqplib";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
-import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpLifecycleEvent, AmqpQueueOverride, AmqpRecoveryOptions } from "./types.ts";
+import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpLifecycleEvent, AmqpQueueOverride, AmqpRecoveryOptions, AmqpSettlementAction } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
 
 /** Default exchange name when none is provided. */
@@ -192,38 +192,78 @@ export function isAutoRetriablePublishError(err: unknown, options?: { readonly r
     return options?.retryOnTimeout === true && err instanceof AmqpPublishTimeoutError;
 }
 
-/** AMQP reply codes that identify DETERMINISTIC topology drift (vs a transient failure). */
-const FATAL_TOPOLOGY_REPLY_CODES: ReadonlySet<number> = new Set([404, 406]);
+/**
+ * Broker reply texts (by AMQP reply code) that identify DETERMINISTIC topology
+ * drift: the condition cannot heal without a configuration or topology change.
+ * Verified against RabbitMQ 3.13 and 4.2 (identical texts). A `404` the broker
+ * raises for a self-healing queue condition (home node down or inaccessible,
+ * queue process crashed / stopped by its supervisor, timeout, leader stopping
+ * or being demoted) and a `406` "exchange limit reached" (clears when
+ * exchanges are removed) are deliberately absent.
+ */
+const FATAL_TOPOLOGY_REPLY_TEXTS: ReadonlyMap<number, RegExp> = new Map([
+    [404, /no queue '|no exchange '/],
+    [406, /inequivalent arg|invalid arg|unknown exchange type|invalid exchange type/],
+]);
 
 /**
  * Decide whether a setup failure is deterministic topology drift.
  *
- * The gate reads the AMQP reply code of the CAUSE (amqplib sets `error.code`
- * to the reply code on channel/connection errors): `404` NOT_FOUND / `406`
- * PRECONDITION_FAILED are deterministic — retrying cannot succeed until the
- * config or broker topology changes. `instanceof AmqpTopologyError` alone is
- * NOT a valid gate: the adapter wraps ANY setup-pass cause into it, including
- * transient ones (320 connection-forced, 541 internal-error, 405 resource
- * locked, a mid-setup connection drop). Exported (not via the package barrel)
- * for direct cross-runtime unit testing.
+ * The gate reads the broker reply of the CAUSE: amqplib sets `error.code` to
+ * the AMQP reply code on channel/connection errors and ends the message with
+ * the reply text. Only a code AND a text from {@link FATAL_TOPOLOGY_REPLY_TEXTS}
+ * are fatal — retrying cannot succeed until the config or broker topology
+ * changes. A recognised code with an unrecognised text, and a reply without
+ * text, stay in recovery: that errs toward retrying (visible through
+ * `reconnecting` / `setup-failed`) rather than toward a silent permanent stop.
+ * `instanceof AmqpTopologyError` alone is NOT a valid gate: the adapter wraps
+ * ANY setup-pass cause into it, including transient ones (320 connection-forced,
+ * 541 internal-error, 405 resource locked, a mid-setup connection drop).
+ * Exported (not via the package barrel) for direct cross-runtime unit testing.
  */
 export function isDeterministicTopologyDrift(err: unknown): boolean {
     if (!(err instanceof AmqpTopologyError)) {
         return false;
     }
     const cause = err.cause as { code?: unknown; message?: unknown } | null | undefined;
-    if (typeof cause?.code !== "number" || !FATAL_TOPOLOGY_REPLY_CODES.has(cause.code)) {
+    if (typeof cause?.code !== "number" || typeof cause.message !== "string") {
         return false;
     }
-    // RabbitMQ cluster caveat: a classic queue whose home node is down rejects
-    // declare/check with 404 whose reply text names the condition ("home node
-    // ... is down or inaccessible"). That outage is TRANSIENT (the node can
-    // come back) — not config drift; it must stay in recovery. Text fallback,
-    // mirroring isConnectionLostError's defense-in-depth role.
-    if (cause.code === 404 && typeof cause.message === "string" && /down or inaccessible/i.test(cause.message)) {
+    return FATAL_TOPOLOGY_REPLY_TEXTS.get(cause.code)?.test(cause.message) ?? false;
+}
+
+/**
+ * Pick the error reported by `disconnected` when `recovery: false` loses its
+ * connection. An earlier connection `error` wins, then the error amqplib hands
+ * to `close` (a server-forced close carries its reply `code` there), then a
+ * synthetic error for a close that came with no cause at all.
+ * Exported (not via the package barrel) for direct cross-runtime unit testing.
+ */
+export function resolveDisconnectCause(lastConnError: Error | null, closeCause: unknown): Error {
+    return lastConnError ?? (closeCause instanceof Error ? closeCause : new Error("Connection closed"));
+}
+
+/**
+ * Whether the publish attempt that just failed hit a channel the broker closed
+ * with a reply code (404 missing exchange, 403 internal exchange, 406, 541, ...)
+ * and that channel is still the current one. The connection stays up, so
+ * recovery never recreates it and a retry would meet the same closed channel.
+ * Keyed on channel identity rather than a code list: any reply code kills a
+ * channel the same way, a connection loss closes channels with no reply code,
+ * and a code that arrived on a channel recovery has already replaced is
+ * retriable.
+ * Exported (not via the package barrel) for direct cross-runtime unit testing.
+ */
+export function isBrokerClosedCurrentChannel(
+    attemptChannel: amqp.ConfirmChannel | null,
+    currentChannel: amqp.ConfirmChannel | null,
+    channelErrors: WeakMap<amqp.ConfirmChannel, Error>,
+): boolean {
+    if (attemptChannel === null || attemptChannel !== currentChannel) {
         return false;
     }
-    return true;
+    const channelError = channelErrors.get(attemptChannel) as { code?: unknown } | undefined;
+    return typeof channelError?.code === "number";
 }
 
 /** Side effects the recovery-lifecycle wiring needs from the adapter closure. */
@@ -283,47 +323,82 @@ interface AmqpRecoveryEmitter {
  * 1.3.0). `blocked`/`unblocked` have no flat equivalent. Exported (not via the
  * package barrel) for direct cross-runtime unit testing.
  *
- * User callbacks MUST NOT throw; a thrown exception is isolated here. This is
- * a hard requirement, not politeness: dispatch runs inside amqplib's recovery
- * emitter handlers, where a synchronous throw would be caught by
- * `_connect()`'s try block (closing a just-established healthy connection and
- * scheduling a pointless reconnect — endless connect/close churn), or would
- * escape from the model `close` handler BEFORE `_scheduleReconnect` runs
- * (killing recovery entirely). Isolation also keeps the shim contract: a
- * throwing `onLifecycle` does not starve the flat callbacks, and vice versa.
+ * A callback failure is isolated here, whether it is a synchronous throw or a
+ * rejected returned promise. This is a hard requirement, not politeness:
+ * dispatch runs inside amqplib's recovery emitter handlers, where a
+ * synchronous throw would be caught by `_connect()`'s try block (closing a
+ * just-established healthy connection and scheduling a pointless reconnect —
+ * endless connect/close churn), or would escape from the model `close`
+ * handler BEFORE `_scheduleReconnect` runs (killing recovery entirely), and an
+ * unobserved rejection would crash the process via `unhandledRejection`.
+ * Isolation also keeps the shim contract: a failing `onLifecycle` does not
+ * starve the flat callbacks, and vice versa. A returned promise is attached to
+ * but never awaited — awaiting would let a slow callback delay recovery.
+ *
+ * Each isolated failure is reported to `onLifecycle` as a `lifecycle-error`
+ * event. A failure while handling `lifecycle-error` itself is dropped: the
+ * report path must not recurse.
  */
 export function dispatchLifecycle(lifecycle: AmqpLifecycleCallbacks | undefined, event: AmqpLifecycleEvent): void {
     if (!lifecycle) {
         return;
     }
-    try {
-        lifecycle.onLifecycle?.(event);
-    } catch {
-        // Isolated — see the JSDoc contract above.
-    }
-    try {
-        switch (event.type) {
-            case "connected":
-                lifecycle.onConnected?.();
-                break;
-            case "disconnected":
-                lifecycle.onDisconnected?.(event.error);
-                break;
-            case "reconnecting":
-                lifecycle.onReconnecting?.({ attempt: event.attempt, delay: event.delay, error: event.error });
-                break;
-            case "reconnect-failed":
-                lifecycle.onReconnectFailed?.(event.error);
-                break;
-            case "setup-failed":
-                lifecycle.onSetupFailed?.(event.error, { initial: event.initial, attempt: event.attempt });
-                break;
-            default:
-                // blocked / unblocked: union-only observability.
-                break;
+    const invoke = (callback: string, call: () => void | Promise<void>): void => {
+        const report = (error: unknown): void => {
+            if (event.type === "lifecycle-error") {
+                return;
+            }
+            dispatchLifecycle(lifecycle, {
+                type: "lifecycle-error",
+                callback,
+                event: event.type,
+                error: error instanceof Error ? error : new Error(String(error), { cause: error }),
+            });
+        };
+        try {
+            const result: unknown = call();
+            // A callable `then` rather than `instanceof Promise`: a promise from
+            // another realm or a userland thenable must be isolated too.
+            if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+                (result as PromiseLike<unknown>).then(undefined, report);
+            }
+        } catch (error) {
+            report(error);
         }
-    } catch {
-        // Isolated — see the JSDoc contract above.
+    };
+    const { onLifecycle } = lifecycle;
+    if (onLifecycle) {
+        invoke("onLifecycle", () => onLifecycle.call(lifecycle, event));
+    }
+    switch (event.type) {
+        case "connected":
+            if (lifecycle.onConnected) {
+                invoke("onConnected", () => lifecycle.onConnected?.());
+            }
+            break;
+        case "disconnected":
+            if (lifecycle.onDisconnected) {
+                invoke("onDisconnected", () => lifecycle.onDisconnected?.(event.error));
+            }
+            break;
+        case "reconnecting":
+            if (lifecycle.onReconnecting) {
+                invoke("onReconnecting", () => lifecycle.onReconnecting?.({ attempt: event.attempt, delay: event.delay, error: event.error }));
+            }
+            break;
+        case "reconnect-failed":
+            if (lifecycle.onReconnectFailed) {
+                invoke("onReconnectFailed", () => lifecycle.onReconnectFailed?.(event.error));
+            }
+            break;
+        case "setup-failed":
+            if (lifecycle.onSetupFailed) {
+                invoke("onSetupFailed", () => lifecycle.onSetupFailed?.(event.error, { initial: event.initial, attempt: event.attempt }));
+            }
+            break;
+        default:
+            // blocked / unblocked / settlement-skipped / lifecycle-error: union-only observability.
+            break;
     }
 }
 
@@ -419,6 +494,117 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
 }
 
 /** Internal record of an active subscription, replayable after recovery. */
+/** Channel surface a delivery needs to be settled. */
+interface DeliveryChannel {
+    ack(message: amqp.Message): void;
+    nack(message: amqp.Message, allUpTo: boolean, requeue: boolean): void;
+}
+
+/**
+ * Settle a delivery, treating a closed channel as a no-op.
+ *
+ * Once a channel is closed amqplib's `ack`/`nack` throw `IllegalOperationError`.
+ * That is not a failure: the broker requeues every delivery that was not
+ * acknowledged before the channel closed, so the message comes back on its own.
+ * Throwing would turn a handler that outlives its connection into an
+ * unhandled rejection (the requeue after a rejected handler runs in a `.catch`
+ * with nobody above it). The skipped settlement is reported as a
+ * `settlement-skipped` lifecycle event. Any other error is not ours to hide.
+ */
+function settleDelivery(
+    lifecycle: AmqpLifecycleCallbacks | undefined,
+    delivery: { readonly queue: string; readonly message: amqp.ConsumeMessage },
+    action: AmqpSettlementAction,
+    settle: () => void,
+): void {
+    try {
+        settle();
+    } catch (error) {
+        if (!(error instanceof Error) || error.name !== "IllegalOperationError") {
+            throw error;
+        }
+        dispatchLifecycle(lifecycle, {
+            type: "settlement-skipped",
+            action,
+            queue: delivery.queue,
+            routingKey: delivery.message.fields.routingKey,
+            deliveryTag: delivery.message.fields.deliveryTag,
+            error,
+        });
+    }
+}
+
+/**
+ * Turn one consumed AMQP message into a `RawEvent`, hand it to the handler and
+ * settle it. Exported (not via the package barrel) for direct cross-runtime
+ * unit testing with a channel double.
+ *
+ * - An undecodable payload is rejected without requeue (DLX or drop): it will
+ *   never succeed.
+ * - A rejected handler requeues the message for redelivery.
+ * - Every settlement tolerates a closed channel — see {@link settleDelivery}.
+ */
+export function handleDelivery(params: {
+    readonly channel: DeliveryChannel;
+    readonly message: amqp.ConsumeMessage;
+    readonly queue: string;
+    readonly handler: RawEventHandler;
+    readonly decode: ((data: Uint8Array) => Uint8Array) | undefined;
+    readonly lifecycle: AmqpLifecycleCallbacks | undefined;
+}): void {
+    const { channel, message: msg, queue, handler, decode, lifecycle } = params;
+    const delivery = { queue, message: msg };
+
+    const msgHeaders = parseHeaders(msg.properties.headers as Record<string, unknown> | undefined);
+
+    const eventId = msgHeaders.get("x-event-id") ?? msg.properties.messageId ?? randomUUID();
+
+    const publishedAtStr = msgHeaders.get("x-published-at");
+    const publishedAt = publishedAtStr ? new Date(publishedAtStr) : msg.properties.timestamp ? new Date(msg.properties.timestamp * 1000) : new Date();
+
+    // Remove internal headers from metadata
+    msgHeaders.delete("x-event-id");
+    msgHeaders.delete("x-published-at");
+    msgHeaders.delete(PUBLISH_ID_HEADER);
+
+    let payload: Uint8Array;
+    try {
+        payload = decode ? decode(new Uint8Array(msg.content)) : new Uint8Array(msg.content);
+    } catch {
+        settleDelivery(lifecycle, delivery, "reject", () => channel.nack(msg, false, false));
+        return;
+    }
+
+    // Attempt: redelivered = at least 2nd delivery
+    const attempt = msg.fields.redelivered ? 2 : 1;
+
+    const rawEvent: RawEvent = {
+        eventId,
+        eventType: msg.fields.routingKey,
+        payload,
+        publishedAt: Number.isFinite(publishedAt.getTime()) ? publishedAt : new Date(),
+        attempt,
+        metadata: msgHeaders,
+    };
+
+    const ack = async (): Promise<void> => {
+        settleDelivery(lifecycle, delivery, "ack", () => channel.ack(msg));
+    };
+    const nack = async (requeue?: boolean): Promise<void> => {
+        if (requeue === false) {
+            // Reject without requeue — goes to DLX or is discarded
+            settleDelivery(lifecycle, delivery, "reject", () => channel.nack(msg, false, false));
+        } else {
+            settleDelivery(lifecycle, delivery, "requeue", () => channel.nack(msg, false, true));
+        }
+    };
+
+    handler(rawEvent, ack, nack).catch(() => {
+        // Handler error — nack for redelivery
+        settleDelivery(lifecycle, delivery, "requeue", () => channel.nack(msg, false, true));
+    });
+}
+
 interface SubscriptionRecord {
     readonly patterns: string[];
     readonly handler: RawEventHandler;
@@ -862,57 +1048,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         return;
                     }
 
-                    const msgHeaders = parseHeaders(msg.properties.headers as Record<string, unknown> | undefined);
-
-                    const eventId = msgHeaders.get("x-event-id") ?? msg.properties.messageId ?? randomUUID();
-
-                    const publishedAtStr = msgHeaders.get("x-published-at");
-                    const publishedAt = publishedAtStr ? new Date(publishedAtStr) : msg.properties.timestamp ? new Date(msg.properties.timestamp * 1000) : new Date();
-
-                    // Remove internal headers from metadata
-                    msgHeaders.delete("x-event-id");
-                    msgHeaders.delete("x-published-at");
-                    msgHeaders.delete(PUBLISH_ID_HEADER);
-
-                    let payload: Uint8Array;
-                    try {
-                        payload = decode ? decode(new Uint8Array(msg.content)) : new Uint8Array(msg.content);
-                    } catch {
-                        // Decode failure — reject without requeue (DLX or drop):
-                        // a payload that cannot be decoded will never succeed.
-                        ch.nack(msg, false, false);
-                        return;
-                    }
-
-                    // Attempt: redelivered = at least 2nd delivery
-                    const attempt = msg.fields.redelivered ? 2 : 1;
-
-                    const rawEvent: RawEvent = {
-                        eventId,
-                        eventType: msg.fields.routingKey,
-                        payload,
-                        publishedAt: Number.isFinite(publishedAt.getTime()) ? publishedAt : new Date(),
-                        attempt,
-                        metadata: msgHeaders,
-                    };
-
-                    const ack = async (): Promise<void> => {
-                        ch.ack(msg);
-                    };
-                    const nack = async (requeue?: boolean): Promise<void> => {
-                        if (requeue === false) {
-                            // Reject without requeue — goes to DLX or is discarded
-                            ch.nack(msg, false, false);
-                        } else {
-                            // Reject with requeue
-                            ch.nack(msg, false, true);
-                        }
-                    };
-
-                    record.handler(rawEvent, ack, nack).catch(() => {
-                        // Handler error — nack for redelivery
-                        ch.nack(msg, false, true);
-                    });
+                    handleDelivery({ channel: ch, message: msg, queue: queueName, handler: record.handler, decode, lifecycle });
                 },
                 { noAck: false },
             );
@@ -1218,7 +1354,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 lastConnError = err;
             });
             wireFlowControlEvents(conn, lifecycle);
-            conn.on("close", () => {
+            conn.on("close", (closeCause?: unknown) => {
                 connection = null;
                 publishChannel = null;
                 failPendingReturns();
@@ -1226,7 +1362,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // or discarding a connection whose setup failed (the caller
                 // gets the thrown error instead).
                 if (!closing && !setupFailedClose) {
-                    dispatchLifecycle(lifecycle, { type: "disconnected", error: lastConnError ?? new Error("Connection closed") });
+                    dispatchLifecycle(lifecycle, {
+                        type: "disconnected",
+                        error: resolveDisconnectCause(lastConnError, closeCause),
+                    });
                 }
             });
 
@@ -1444,26 +1583,20 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     return doPublish(chAtEntry as amqp.ConfirmChannel);
                 }
                 for (let attempt = 0; ; attempt += 1) {
+                    let attemptChannel: amqp.ConfirmChannel | null = null;
                     try {
                         // Re-resolve the CURRENT channel per attempt (recovery
                         // may have swapped it between retries).
-                        const ch = publishChannel;
-                        if (!ch || closing) {
+                        attemptChannel = publishChannel;
+                        if (!attemptChannel || closing) {
                             throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
                         }
-                        return await doPublish(ch);
+                        return await doPublish(attemptChannel);
                     } catch (err) {
                         if (closing || attempt >= publishRetry.maxRetries || !isAutoRetriablePublishError(err, publishRetry)) {
                             throw err;
                         }
-                        // Deterministic channel-close: a broker reply with a
-                        // 404/406 code killed the CHANNEL (e.g. a publish to a
-                        // missing exchange under topologyMode "skip") — the
-                        // connection stays up, so recovery never recreates the
-                        // channel and retrying cannot heal. Same reply-code
-                        // philosophy as treatTopologyErrorAsFatal.
-                        const cause = err instanceof Error ? (err.cause as { code?: unknown } | null | undefined) : undefined;
-                        if (typeof cause?.code === "number" && FATAL_TOPOLOGY_REPLY_CODES.has(cause.code)) {
+                        if (isBrokerClosedCurrentChannel(attemptChannel, publishChannel, publishChannelErrors)) {
                             throw err;
                         }
                         // No connection object at all (fatal topology stop,
