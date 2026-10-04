@@ -77,11 +77,13 @@ describe("KafkaAdapter", () => {
         assert.equal(adapter.name, "kafka");
     });
 
-    it("accepts a redeliveryDelay and rejects a negative or non-finite one", () => {
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: 250 } });
-        assert.equal(adapter.name, "kafka");
+    it("accepts a redeliveryDelay up to the timer limit and rejects a negative, non-finite or larger one", () => {
+        for (const good of [0, 250, 2_147_483_647]) {
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: good } });
+            assert.equal(adapter.name, "kafka");
+        }
 
-        for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
             assert.throws(
                 () => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: bad } }),
                 { name: "RangeError", message: /redeliveryDelay must be a non-negative finite number/ },

@@ -74,9 +74,13 @@ function encodeMetadata(metadata: Record<string, string>): IHeaders {
  * ```
  */
 export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
+    // Node.js replaces a timer delay above this value with 1 ms, which would turn a long pause into a hot redelivery loop.
+    const maxTimerDelayMs = 2_147_483_647;
     const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? 0;
-    if (!Number.isFinite(redeliveryDelay) || redeliveryDelay < 0) {
-        throw new RangeError(`KafkaAdapter: consumerOptions.redeliveryDelay must be a non-negative finite number of milliseconds, got ${redeliveryDelay}`);
+    if (!Number.isFinite(redeliveryDelay) || redeliveryDelay < 0 || redeliveryDelay > maxTimerDelayMs) {
+        throw new RangeError(
+            `KafkaAdapter: consumerOptions.redeliveryDelay must be a non-negative finite number of milliseconds (at most ${maxTimerDelayMs}), got ${redeliveryDelay}`,
+        );
     }
 
     let kafka: Kafka;

@@ -44,7 +44,9 @@ export interface KafkaAdapterOptions {
          * returns without settling it. Kafka offers no per-message redelivery timer, so with
          * the default the same message is fetched and handled again at network speed until it
          * succeeds, is dead-lettered or is rejected with `nack(false)`. A positive value pauses
-         * the affected partition for that long before the redelivery.
+         * the affected partition for that long before the redelivery. Must be between 0 and
+         * 2147483647 (the longest delay a Node.js timer supports); `KafkaAdapter()` throws a
+         * `RangeError` otherwise.
          */
         readonly redeliveryDelay?: number;
     };

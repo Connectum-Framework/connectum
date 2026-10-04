@@ -102,7 +102,7 @@ function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter
 | `consumerOptions.sessionTimeout` | `number` | `30000` | Consumer session timeout in ms |
 | `consumerOptions.fromBeginning` | `boolean` | `false` | Where a consumer group with no committed offset starts: the beginning of the topic (`true`) or its end (`false`). A group that has committed offsets always resumes from them |
 | `consumerOptions.allowAutoTopicCreation` | `boolean` | `false` | Allow automatic topic creation |
-| `consumerOptions.redeliveryDelay` | `number` | `0` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately |
+| `consumerOptions.redeliveryDelay` | `number` | `0` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately; the maximum is `2147483647` |
 
 ## How It Works
 
