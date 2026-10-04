@@ -36,5 +36,16 @@ export interface KafkaAdapterOptions {
         readonly fromBeginning?: boolean;
         /** Whether Kafka should auto-create topics on subscribe (default: false) */
         readonly allowAutoTopicCreation?: boolean;
+        /**
+         * Milliseconds to wait before a message that was not committed is delivered again
+         * (default: 0 — delivered again immediately).
+         *
+         * A message stays uncommitted when the handler throws, calls `nack()` (requeue) or
+         * returns without settling it. Kafka offers no per-message redelivery timer, so with
+         * the default the same message is fetched and handled again at network speed until it
+         * succeeds, is dead-lettered or is rejected with `nack(false)`. A positive value pauses
+         * the affected partition for that long before the redelivery.
+         */
+        readonly redeliveryDelay?: number;
     };
 }

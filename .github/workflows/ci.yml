@@ -169,6 +169,67 @@ jobs:
           REDIS_TEST_URL: redis://localhost:6379
         run: pnpm --filter @connectum/events-redis test:integration
 
+  # ── Kafka broker integration (required) ────────────────────────────────
+  # Runs the events-kafka integration tests against a real single-node Kafka
+  # (KRaft) service container. The suite proves offset commits, redelivery
+  # order and restart behaviour, which no mock of KafkaJS can. The broker
+  # advertises the mapped host port so the test process on the runner can
+  # reach it. The tests skip silently without KAFKA_TEST_URL, so the step
+  # asserts that nothing was skipped.
+  test-kafka-broker:
+    name: Kafka broker integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      kafka:
+        image: apache/kafka:4.2.0
+        ports:
+          - 19094:19094
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:19094,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:19094
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19094"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 20s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Kafka adapter integration tests
+        env:
+          KAFKA_TEST_URL: localhost:19094
+        run: |
+          set -o pipefail
+          pnpm --filter @connectum/events-kafka test:integration 2>&1 | tee kafka-integration.log
+          if ! grep -Eq '^ℹ skipped 0$' kafka-integration.log; then
+            echo "::error::Kafka integration tests were skipped or the summary is missing"
+            exit 1
+          fi
+
   # ── AMQP connection recovery (testcontainers) ──────────────────────────
   # Recovery scenarios crash/drop the broker mid-test via testcontainers
   # (programmatic container control). This is the only suite that proves the
