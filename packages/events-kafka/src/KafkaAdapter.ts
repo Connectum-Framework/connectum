@@ -15,6 +15,12 @@ import { createBatchConsumer } from "./consumeBatch.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
+ * Pause between redeliveries of an unsettled message when `consumerOptions.redeliveryDelay` is not set.
+ * Without a pause a permanently failing handler is retried at network speed, thousands of times a second.
+ */
+const defaultRedeliveryDelayMs = 1_000;
+
+/**
  * Convert NATS-style wildcard patterns to Kafka-compatible RegExp.
  *
  * - `*` matches a single segment (between dots)
@@ -76,7 +82,7 @@ function encodeMetadata(metadata: Record<string, string>): IHeaders {
 export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
     // Node.js replaces a timer delay above this value with 1 ms, which would turn a long pause into a hot redelivery loop.
     const maxTimerDelayMs = 2_147_483_647;
-    const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? 0;
+    const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? defaultRedeliveryDelayMs;
     if (!Number.isFinite(redeliveryDelay) || redeliveryDelay < 0 || redeliveryDelay > maxTimerDelayMs) {
         throw new RangeError(
             `KafkaAdapter: consumerOptions.redeliveryDelay must be a non-negative finite number of milliseconds (at most ${maxTimerDelayMs}), got ${redeliveryDelay}`,

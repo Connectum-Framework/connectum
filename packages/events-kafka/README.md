@@ -102,7 +102,7 @@ function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter
 | `consumerOptions.sessionTimeout` | `number` | `30000` | Consumer session timeout in ms |
 | `consumerOptions.fromBeginning` | `boolean` | `false` | Where a consumer group with no committed offset starts: the beginning of the topic (`true`) or its end (`false`). A group that has committed offsets always resumes from them |
 | `consumerOptions.allowAutoTopicCreation` | `boolean` | `false` | Allow automatic topic creation |
-| `consumerOptions.redeliveryDelay` | `number` | `0` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately; the maximum is `2147483647` |
+| `consumerOptions.redeliveryDelay` | `number` | `1000` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately; the maximum is `2147483647` |
 
 ## How It Works
 
@@ -152,9 +152,14 @@ A Kafka offset means "everything before it is consumed", so settlement is ordere
 message that is not committed ends the batch and is the first one fetched again. The first
 settlement of a message wins; an `ack()` called after the handler returned is ignored.
 
-With the default `redeliveryDelay: 0` an unsettled message comes back immediately. A handler
-that fails permanently then retries in a tight loop and writes one log line per attempt;
-set `redeliveryDelay` (for example `1000`) or use the retry and DLQ middleware to bound it.
+An unsettled message is delivered again after `redeliveryDelay` (default `1000` ms): the
+adapter pauses the partition for that long. `redeliveryDelay: 0` redelivers immediately, and
+a handler that fails permanently then retries in a tight loop and writes one log line per
+attempt.
+
+A message that fails on every delivery blocks its partition indefinitely: nothing behind it is delivered until the handler succeeds, `nack(false)` is called, or the DLQ middleware moves it. `redeliveryDelay` only paces the loop; it does not end it. On an otherwise idle consumer the observed gap is a whole fetch cycle (5 s in KafkaJS) even for smaller values.
+
+Use the retry and DLQ middleware to bound a permanently failing message.
 
 `attempt` is always `1`: Kafka does not count deliveries.
 

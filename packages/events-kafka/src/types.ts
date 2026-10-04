@@ -38,15 +38,18 @@ export interface KafkaAdapterOptions {
         readonly allowAutoTopicCreation?: boolean;
         /**
          * Milliseconds to wait before a message that was not committed is delivered again
-         * (default: 0 — delivered again immediately).
+         * (default: 1000).
          *
          * A message stays uncommitted when the handler throws, calls `nack()` (requeue) or
-         * returns without settling it. Kafka offers no per-message redelivery timer, so with
-         * the default the same message is fetched and handled again at network speed until it
-         * succeeds, is dead-lettered or is rejected with `nack(false)`. A positive value pauses
-         * the affected partition for that long before the redelivery. Must be between 0 and
-         * 2147483647 (the longest delay a Node.js timer supports); `KafkaAdapter()` throws a
-         * `RangeError` otherwise.
+         * returns without settling it. Kafka offers no per-message redelivery timer, so the
+         * adapter pauses the affected partition for this long before the redelivery. `0`
+         * disables the pause: the same message is then fetched and handled again at network
+         * speed until it succeeds, is dead-lettered or is rejected with `nack(false)`.
+         *
+         * The pause only paces the redelivery loop; it does not end it. On an otherwise idle
+         * consumer the observed gap is a whole fetch cycle (5 s in KafkaJS) even for smaller
+         * values. Must be between 0 and 2147483647 (the longest delay a Node.js timer
+         * supports); `KafkaAdapter()` throws a `RangeError` otherwise.
          */
         readonly redeliveryDelay?: number;
     };

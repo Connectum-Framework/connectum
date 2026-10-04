@@ -86,14 +86,19 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         return name;
     }
 
-    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number }): EventAdapter {
+    /**
+     * Adapter for one scenario. A positive redelivery pause costs a whole KafkaJS fetch cycle (5 s)
+     * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
+     * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
+     */
+    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean }): EventAdapter {
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
             kafkaConfig,
             consumerOptions: {
                 fromBeginning: extra?.fromBeginning ?? true,
-                ...(extra?.redeliveryDelay !== undefined && { redeliveryDelay: extra.redeliveryDelay }),
+                ...(extra?.adapterDefaultRedelivery !== true && { redeliveryDelay: extra?.redeliveryDelay ?? 0 }),
             },
         });
     }
@@ -317,11 +322,11 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("a throwing handler stops the batch and the same message is redelivered before later ones",{ timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it("a throwing handler stops the batch and the same message is redelivered before later ones, after the default pause",{ timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const topic = await createTopic(uniqueName("it.redeliver-throw"));
         const group = uniqueName("group");
-        const deliveries: { payload: string; eventId: string }[] = [];
-        const adapter = newAdapter();
+        const deliveries: { payload: string; eventId: string; at: number }[] = [];
+        const adapter = newAdapter({ adapterDefaultRedelivery: true });
         let failedOnce = false;
 
         await adapter.connect();
@@ -334,7 +339,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             const subscription = await adapter.subscribe(
                 [topic],
                 async (event, ack) => {
-                    deliveries.push({ payload: text(event.payload), eventId: event.eventId });
+                    deliveries.push({ payload: text(event.payload), eventId: event.eventId, at: Date.now() });
                     if (text(event.payload) === "m2" && !failedOnce) {
                         failedOnce = true;
                         throw new Error("handler failure");
@@ -353,6 +358,8 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
                 );
                 const m2 = deliveries.filter((d) => d.payload === "m2");
                 assert.equal(m2[0]?.eventId, m2[1]?.eventId, "a redelivery carries the same event id");
+                const gap = (m2[1]?.at ?? 0) - (m2[0]?.at ?? 0);
+                assert.ok(gap >= 950, `m2 came back ${gap}ms after the failure, expected at least the default 1000ms pause`);
                 await waitFor(async () => (await committedOffset(group, topic)) === 3, "offset 3 committed once all are acked", async () => ({ committed: await committedOffset(group, topic) }));
             } finally {
                 await subscription.unsubscribe();
