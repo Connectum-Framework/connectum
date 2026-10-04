@@ -169,15 +169,16 @@ jobs:
           REDIS_TEST_URL: redis://localhost:6379
         run: pnpm --filter @connectum/events-redis test:integration
 
-  # ── AMQP connection recovery (testcontainers, non-blocking) ────────────
+  # ── AMQP connection recovery (testcontainers) ──────────────────────────
   # Recovery scenarios crash/drop the broker mid-test via testcontainers
-  # (programmatic container control). Non-blocking: broker-restart timing can
-  # be environment-sensitive, so a failure here must not gate merges.
+  # (programmatic container control). This is the only suite that proves the
+  # adapter reconnects, re-asserts topology and replays subscriptions after a
+  # broker outage, so a failing test fails this check; it must never report
+  # success regardless of the result.
   test-amqp-recovery:
     name: AMQP recovery (testcontainers)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

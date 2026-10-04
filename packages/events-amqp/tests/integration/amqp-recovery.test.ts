@@ -4,7 +4,7 @@
  * Unlike amqp-broker.test.ts (which only needs a reachable broker), these
  * scenarios drop client connections at the broker mid-test, so they manage a
  * RabbitMQ container programmatically (`container.exec` → rabbitmqctl). Gated
- * behind RUN_RECOVERY_TESTS=1 (set in the non-blocking CI job) so a plain
+ * behind RUN_RECOVERY_TESTS=1 (set in the dedicated CI job) so a plain
  * `pnpm test` without Docker stays green.
  *
  * Covers the recovery × ConfirmChannel gate from the
