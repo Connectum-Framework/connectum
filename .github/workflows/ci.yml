@@ -225,7 +225,8 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @connectum/events-kafka test:integration 2>&1 | tee kafka-integration.log
-          if ! grep -Eq '^ℹ skipped 0$' kafka-integration.log; then
+          # The runner colours the summary on CI; strip the escape codes before matching.
+          if ! sed -E 's/\x1b\[[0-9;]*m//g' kafka-integration.log | grep -Eq '^ℹ skipped 0$'; then
             echo "::error::Kafka integration tests were skipped or the summary is missing"
             exit 1
           fi
