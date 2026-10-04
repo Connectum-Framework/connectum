@@ -42,6 +42,7 @@ export type {
     AmqpQueueOverride,
     AmqpRecoveryOptions,
     AmqpSerializationOptions,
+    AmqpSettlementAction,
     AmqpTopology,
 } from "./types.ts";
 export { AmqpTopologyMode } from "./types.ts";

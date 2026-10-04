@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
+import type amqp from "amqplib";
 import {
     AmqpAdapter,
     classifyConfirmError,
     computeRecoveryDelay,
     dispatchLifecycle,
+    handleDelivery,
     isAutoRetriablePublishError,
+    isBrokerClosedCurrentChannel,
     isConnectionLostError,
     isDeterministicTopologyDrift,
+    resolveDisconnectCause,
     toAmqpPattern,
     trackChannelClose,
     wireRecoveryLifecycle,
@@ -701,26 +705,59 @@ describe("computeRecoveryDelay", () => {
 });
 
 describe("isDeterministicTopologyDrift", () => {
-    it("404/406 reply codes on the cause are fatal, everything else is not (#201)", () => {
-        const withCode = (code: number) => new AmqpTopologyError("x", { cause: Object.assign(new Error("y"), { code }) });
-        assert.equal(isDeterministicTopologyDrift(withCode(404)), true, "404 NOT_FOUND = deterministic drift");
-        assert.equal(isDeterministicTopologyDrift(withCode(406)), true, "406 PRECONDITION_FAILED = deterministic drift");
-        assert.equal(isDeterministicTopologyDrift(withCode(320)), false, "320 connection-forced is transient");
-        assert.equal(isDeterministicTopologyDrift(withCode(541)), false, "541 internal-error is transient");
-        assert.equal(isDeterministicTopologyDrift(withCode(405)), false, "405 resource-locked is transient");
-        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: new Error("no code") })), false, "cause without a reply code is not deterministic");
-        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x")), false, "no cause at all");
-        assert.equal(isDeterministicTopologyDrift(Object.assign(new Error("raw"), { code: 404 })), false, "a raw non-AmqpTopologyError never gates fatal");
-        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: Object.assign(new Error("y"), { code: "404" }) })), false, "string code is not a reply code");
+    const reply = (code: number | string, text: string) => new AmqpTopologyError("x", { cause: Object.assign(new Error(text), { code }) });
+
+    it("a missing queue or exchange (404) is fatal", () => {
+        assert.equal(isDeterministicTopologyDrift(reply(404, "Operation failed: QueueDeclare; NOT_FOUND - no queue 'q' in vhost '/'")), true);
+        assert.equal(isDeterministicTopologyDrift(reply(404, "Channel closed by server: 404 (NOT_FOUND) with message \"NOT_FOUND - no exchange 'ex' in vhost '/'\"")), true);
+    });
+
+    it("a redeclare with different or invalid arguments, or a bad exchange type (406), is fatal", () => {
         assert.equal(
             isDeterministicTopologyDrift(
-                new AmqpTopologyError("x", {
-                    cause: Object.assign(new Error("NOT_FOUND - home node 'rabbit@node1' of durable queue 'q' in vhost '/' is down or inaccessible"), { code: 404 }),
-                }),
+                reply(406, "PRECONDITION_FAILED - inequivalent arg 'durable' for queue 'q' in vhost '/': received 'false' but current is 'true'"),
             ),
-            false,
-            "cluster classic-queue home-node outage is a TRANSIENT 404 — must stay in recovery",
+            true,
         );
+        assert.equal(isDeterministicTopologyDrift(reply(406, "PRECONDITION_FAILED - invalid arg 'x-max-length' for queue 'q' in vhost '/'")), true);
+        assert.equal(isDeterministicTopologyDrift(reply(406, "PRECONDITION_FAILED - unknown exchange type 'bogus'")), true);
+        assert.equal(isDeterministicTopologyDrift(reply(406, "PRECONDITION_FAILED - invalid exchange type 'bogus'")), true);
+    });
+
+    it("every self-healing 404 keeps the cycle in recovery", () => {
+        const transient = [
+            "NOT_FOUND - home node 'rabbit@node1' of durable queue 'q' in vhost '/' is down or inaccessible",
+            "NOT_FOUND - queue 'q' in vhost '/' process is stopped by supervisor",
+            "NOT_FOUND - queue 'q' in vhost '/' crashed and failed to restart",
+            "NOT_FOUND - timed out while declaring queue 'q' in vhost '/'",
+            "NOT_FOUND - leader of queue 'q' in vhost '/' may be stopping or being demoted",
+        ];
+        for (const text of transient) {
+            assert.equal(isDeterministicTopologyDrift(reply(404, text)), false, text);
+        }
+    });
+
+    it("a 406 that clears on its own (exchange limit) is not fatal", () => {
+        assert.equal(isDeterministicTopologyDrift(reply(406, "PRECONDITION_FAILED - cannot declare exchange 'ex' in vhost '/': exchange limit of 10 reached")), false);
+    });
+
+    it("other reply codes are never fatal", () => {
+        for (const code of [320, 541, 405, 403]) {
+            assert.equal(isDeterministicTopologyDrift(reply(code, "no queue 'q' inequivalent arg")), false, `code ${code}`);
+        }
+    });
+
+    it("a recognised code without a recognised text, or without any text, is not fatal", () => {
+        assert.equal(isDeterministicTopologyDrift(reply(404, "y")), false, "unrecognised 404 text");
+        assert.equal(isDeterministicTopologyDrift(reply(406, "y")), false, "unrecognised 406 text");
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: { code: 404 } })), false, "cause object without a message");
+    });
+
+    it("malformed causes and non-topology errors never gate fatal", () => {
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x", { cause: new Error("no code") })), false, "cause without a reply code");
+        assert.equal(isDeterministicTopologyDrift(new AmqpTopologyError("x")), false, "no cause at all");
+        assert.equal(isDeterministicTopologyDrift(Object.assign(new Error("no queue 'q'"), { code: 404 })), false, "a raw non-AmqpTopologyError");
+        assert.equal(isDeterministicTopologyDrift(reply("404", "no queue 'q'")), false, "string code is not a reply code");
     });
 
 });
@@ -785,6 +822,414 @@ describe("dispatchLifecycle exception isolation", () => {
         };
 
         assert.doesNotThrow(() => dispatchLifecycle(lifecycle, { type: "disconnected", error: new Error("drop") }));
-        assert.deepEqual(union, ["disconnected"]);
+        assert.deepEqual(union, ["disconnected", "lifecycle-error"], "the original event is delivered first, then the isolated failure is reported");
+    });
+
+    it("isolates an async onLifecycle that rejects: no unhandledRejection, flat shim still fires, failure reported", async () => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            const reports: AmqpLifecycleEvent[] = [];
+            let flatFired = 0;
+            const lifecycle: AmqpLifecycleCallbacks = {
+                onLifecycle: async (event) => {
+                    if (event.type === "lifecycle-error") {
+                        reports.push(event);
+                        return;
+                    }
+                    throw new Error("async metrics bug");
+                },
+                onConnected: () => {
+                    flatFired += 1;
+                },
+            };
+
+            dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+
+            assert.equal(flatFired, 1);
+            assert.equal(unhandled.length, 0, "a rejected callback promise must not become an unhandledRejection");
+            assert.equal(reports.length, 1);
+            const report = reports[0];
+            assert.ok(report?.type === "lifecycle-error");
+            assert.equal(report.callback, "onLifecycle");
+            assert.equal(report.event, "connected");
+            assert.equal(report.error.message, "async metrics bug");
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+    });
+
+    it("isolates an async flat callback that rejects and reports it under the flat callback's name", async () => {
+        const reports: AmqpLifecycleEvent[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => {
+                if (event.type === "lifecycle-error") {
+                    reports.push(event);
+                }
+            },
+            onReconnecting: async () => {
+                throw new Error("boom");
+            },
+        };
+
+        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: 1, delay: 100, error: new Error("drop") });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal(reports.length, 1);
+        const report = reports[0];
+        assert.ok(report?.type === "lifecycle-error");
+        assert.equal(report.callback, "onReconnecting");
+        assert.equal(report.event, "reconnecting");
+        assert.equal(report.error.message, "boom");
+    });
+
+    it("does not invoke onLifecycle a second time for an event whose flat callback failed", () => {
+        const seen: string[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => {
+                seen.push(event.type);
+            },
+            onConnected: () => {
+                throw new Error("flat bug");
+            },
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+
+        assert.deepEqual(seen, ["connected", "lifecycle-error"], "exactly one original delivery plus one diagnostic");
+    });
+
+    it("drops a failure of the lifecycle-error handler itself instead of recursing", () => {
+        let calls = 0;
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: () => {
+                calls += 1;
+                throw new Error("always");
+            },
+        };
+
+        assert.doesNotThrow(() => dispatchLifecycle(lifecycle, { type: "connected", reconnected: false }));
+        assert.equal(calls, 2, "one call for the original event, one for its lifecycle-error — then the chain stops");
+    });
+
+    it("drops an async failure of the lifecycle-error handler instead of recursing", async () => {
+        let calls = 0;
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: async () => {
+                calls += 1;
+                throw new Error("always");
+            },
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal(calls, 2);
+    });
+
+    it("wraps a non-Error thrown value in an Error that keeps the original as cause", () => {
+        const reports: AmqpLifecycleEvent[] = [];
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onLifecycle: (event) => {
+                if (event.type === "lifecycle-error") {
+                    reports.push(event);
+                }
+            },
+            onConnected: () => {
+                throw "plain string";
+            },
+        };
+
+        dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+
+        const report = reports[0];
+        assert.ok(report?.type === "lifecycle-error");
+        assert.ok(report.error instanceof Error);
+        assert.equal(report.error.message, "plain string");
+        assert.equal(report.error.cause, "plain string");
+    });
+
+    it("never invokes a flat callback for lifecycle-error or settlement-skipped", () => {
+        let flat = 0;
+        const bump = (): void => {
+            flat += 1;
+        };
+        const lifecycle: AmqpLifecycleCallbacks = {
+            onConnected: bump,
+            onDisconnected: bump,
+            onReconnecting: bump,
+            onReconnectFailed: bump,
+            onSetupFailed: bump,
+        };
+
+        dispatchLifecycle(lifecycle, { type: "lifecycle-error", callback: "onLifecycle", event: "connected", error: new Error("x") });
+        dispatchLifecycle(lifecycle, { type: "settlement-skipped", action: "ack", queue: "q", routingKey: "r", deliveryTag: 1, error: new Error("x") });
+
+        assert.equal(flat, 0);
+    });
+});
+
+describe("resolveDisconnectCause", () => {
+    it("passes the broker's close error through with its reply code (forced close, 320)", () => {
+        const closeError = Object.assign(new Error("Connection closed: 320 (CONNECTION-FORCED)"), { code: 320 });
+        const resolved = resolveDisconnectCause(null, closeError);
+        assert.equal(resolved, closeError);
+        assert.equal((resolved as { code?: number }).code, 320);
+    });
+
+    it("prefers an earlier connection error over the close error", () => {
+        const early = new Error("ECONNRESET");
+        const closeError = Object.assign(new Error("Connection closed"), { code: 320 });
+        assert.equal(resolveDisconnectCause(early, closeError), early);
+    });
+
+    it("falls back to a generic error when the close carried no cause", () => {
+        assert.equal(resolveDisconnectCause(null, undefined).message, "Connection closed");
+    });
+
+    it("does not trust a close value that is not an Error", () => {
+        assert.equal(resolveDisconnectCause(null, "boom").message, "Connection closed");
+        assert.equal(resolveDisconnectCause(null, { code: 320 }).message, "Connection closed");
+    });
+});
+
+describe("isBrokerClosedCurrentChannel", () => {
+    const makeChannel = (): amqp.ConfirmChannel => ({}) as unknown as amqp.ConfirmChannel;
+    const closedWith = (channel: amqp.ConfirmChannel, code: unknown): WeakMap<amqp.ConfirmChannel, Error> =>
+        new WeakMap([[channel, Object.assign(new Error("Channel closed by server"), { code })]]);
+
+    it("stops on any broker reply code that closed the current channel: 403, 404, 406, 541", () => {
+        for (const code of [403, 404, 406, 541]) {
+            const channel = makeChannel();
+            assert.equal(isBrokerClosedCurrentChannel(channel, channel, closedWith(channel, code)), true, `code ${code}`);
+        }
+    });
+
+    it("keeps retrying when the channel recovery has already replaced produced the code", () => {
+        const attempted = makeChannel();
+        const replacement = makeChannel();
+        assert.equal(isBrokerClosedCurrentChannel(attempted, replacement, closedWith(attempted, 404)), false);
+    });
+
+    it("keeps retrying when the channel died with the connection and recorded no reply code", () => {
+        const channel = makeChannel();
+        const lost = new WeakMap<amqp.ConfirmChannel, Error>([[channel, new Error("channel closed")]]);
+        assert.equal(isBrokerClosedCurrentChannel(channel, channel, lost), false);
+        assert.equal(isBrokerClosedCurrentChannel(channel, channel, new WeakMap()), false, "no recorded error at all");
+    });
+
+    it("ignores a non-numeric code", () => {
+        const channel = makeChannel();
+        assert.equal(isBrokerClosedCurrentChannel(channel, channel, closedWith(channel, "404")), false);
+    });
+
+    it("has nothing to judge without an attempted channel", () => {
+        const channel = makeChannel();
+        assert.equal(isBrokerClosedCurrentChannel(null, channel, closedWith(channel, 404)), false);
+        assert.equal(isBrokerClosedCurrentChannel(null, null, new WeakMap()), false);
+    });
+});
+
+describe("handleDelivery settlement on a closed channel", () => {
+    const closedChannelError = (): Error => Object.assign(new Error("Channel closed"), { name: "IllegalOperationError" });
+
+    const makeMessage = (overrides?: { redelivered?: boolean; content?: Buffer }): amqp.ConsumeMessage =>
+        ({
+            content: overrides?.content ?? Buffer.from("payload"),
+            fields: { deliveryTag: 7, redelivered: overrides?.redelivered ?? false, exchange: "ex", routingKey: "orders.created", consumerTag: "ctag" },
+            properties: { headers: {}, messageId: "m1" },
+        }) as unknown as amqp.ConsumeMessage;
+
+    const closedChannel = (calls: string[]) => ({
+        ack: () => {
+            calls.push("ack");
+            throw closedChannelError();
+        },
+        nack: (_message: amqp.Message, _allUpTo: boolean, requeue: boolean) => {
+            calls.push(requeue ? "nack-requeue" : "nack-reject");
+            throw closedChannelError();
+        },
+    });
+
+    const collect = (): { events: AmqpLifecycleEvent[]; lifecycle: AmqpLifecycleCallbacks } => {
+        const events: AmqpLifecycleEvent[] = [];
+        return { events, lifecycle: { onLifecycle: (event) => events.push(event) } };
+    };
+
+    const settle = async (): Promise<void> => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+
+    it("a rejecting handler on a closed channel requeues quietly and reports settlement-skipped", async () => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            const calls: string[] = [];
+            const { events, lifecycle } = collect();
+
+            handleDelivery({
+                channel: closedChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => {
+                    throw new Error("handler failed");
+                },
+                decode: undefined,
+                lifecycle,
+            });
+            await settle();
+            await settle();
+
+            assert.deepEqual(calls, ["nack-requeue"]);
+            assert.equal(unhandled.length, 0, "the requeue after a rejected handler must not raise unhandledRejection on a closed channel");
+            assert.equal(events.length, 1);
+            const event = events[0];
+            assert.ok(event?.type === "settlement-skipped");
+            assert.equal(event.action, "requeue");
+            assert.equal(event.queue, "orders");
+            assert.equal(event.routingKey, "orders.created");
+            assert.equal(event.deliveryTag, 7);
+            assert.equal(event.error.name, "IllegalOperationError");
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+    });
+
+    it("an explicit ack() and nack() from the handler resolve on a closed channel", async () => {
+        const calls: string[] = [];
+        const { events, lifecycle } = collect();
+        const results: string[] = [];
+
+        handleDelivery({
+            channel: closedChannel(calls),
+            message: makeMessage(),
+            queue: "orders",
+            handler: async (_event, ack, nack) => {
+                await ack();
+                results.push("ack-resolved");
+                await nack(false);
+                results.push("reject-resolved");
+                await nack();
+                results.push("requeue-resolved");
+            },
+            decode: undefined,
+            lifecycle,
+        });
+        await settle();
+
+        assert.deepEqual(results, ["ack-resolved", "reject-resolved", "requeue-resolved"]);
+        assert.deepEqual(calls, ["ack", "nack-reject", "nack-requeue"]);
+        assert.deepEqual(
+            events.map((event) => (event.type === "settlement-skipped" ? event.action : event.type)),
+            ["ack", "reject", "requeue"],
+        );
+    });
+
+    it("an undecodable payload on a closed channel does not throw out of the consume callback", () => {
+        const calls: string[] = [];
+        const { events, lifecycle } = collect();
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: closedChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => undefined,
+                decode: () => {
+                    throw new Error("bad payload");
+                },
+                lifecycle,
+            }),
+        );
+
+        assert.deepEqual(calls, ["nack-reject"]);
+        const event = events[0];
+        assert.ok(event?.type === "settlement-skipped");
+        assert.equal(event.action, "reject");
+    });
+
+    it("an open channel settles without any diagnostic event", async () => {
+        const calls: string[] = [];
+        const { events, lifecycle } = collect();
+
+        handleDelivery({
+            channel: {
+                ack: () => {
+                    calls.push("ack");
+                },
+                nack: (_message, _allUpTo, requeue) => {
+                    calls.push(requeue ? "nack-requeue" : "nack-reject");
+                },
+            },
+            message: makeMessage(),
+            queue: "orders",
+            handler: async (_event, ack) => {
+                await ack();
+            },
+            decode: undefined,
+            lifecycle,
+        });
+        await settle();
+
+        assert.deepEqual(calls, ["ack"]);
+        assert.equal(events.length, 0);
+    });
+
+    it("an error that is not a closed channel is not hidden from an explicit ack()", async () => {
+        const { events, lifecycle } = collect();
+        let handlerSaw: unknown;
+
+        handleDelivery({
+            channel: {
+                ack: () => {
+                    throw new TypeError("not a channel problem");
+                },
+                nack: () => undefined,
+            },
+            message: makeMessage(),
+            queue: "orders",
+            handler: async (_event, ack) => {
+                try {
+                    await ack();
+                } catch (error) {
+                    handlerSaw = error;
+                }
+            },
+            decode: undefined,
+            lifecycle,
+        });
+        await settle();
+
+        assert.ok(handlerSaw instanceof TypeError);
+        assert.equal(events.length, 0, "only a closed channel is reported as a skipped settlement");
+    });
+
+    it("works without any lifecycle callbacks", async () => {
+        const calls: string[] = [];
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: closedChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => {
+                    throw new Error("handler failed");
+                },
+                decode: undefined,
+                lifecycle: undefined,
+            }),
+        );
+        await settle();
+
+        assert.deepEqual(calls, ["nack-requeue"]);
     });
 });
