@@ -472,9 +472,12 @@ export interface AmqpRecoveryOptions {
      *   number ≥ 0 (`NaN`, `Infinity`, a negative number, a numeric string)
      *   or a Promise (an `async` function) ends recovery for good — there is
      *   no fallback to the built-in schedule. During the initial connect,
-     *   `connect()` rejects; in steady state the terminal `reconnect-failed`
-     *   fires once and the adapter drops the dead connection, as after an
-     *   exhausted `maxRetries`. Either way the error is an
+     *   `connect()` rejects, and with `initialConnectMaxRetries` the terminal
+     *   `reconnect-failed` is reported first; without it the initial loop runs
+     *   before the lifecycle wiring attaches, so no event is reported. In
+     *   steady state the terminal `reconnect-failed` fires once and the
+     *   adapter drops the dead connection, as after an exhausted
+     *   `maxRetries`. Either way the error is an
      *   `AmqpConnectionError` whose `cause` is the hook's error (the thrown
      *   error, or one stating the invalid return or that the hook must be
      *   synchronous) and whose message names the last connection error —
@@ -514,8 +517,12 @@ export interface AmqpRecoveryOptions {
  *   the retry budget is exhausted (`maxRetries`), the fatal topology policy
  *   stopped the cycle (`treatTopologyErrorAsFatal`), the initial connect
  *   budget ran out (`initialConnectMaxRetries`), or the
- *   {@link AmqpRecoveryOptions.backoff} hook failed (the event then carries
- *   an `AmqpConnectionError` with the hook's error as `cause`). Once it fires, the adapter
+ *   {@link AmqpRecoveryOptions.backoff} hook failed in steady-state recovery
+ *   or in a bounded initial connect (the event then carries an
+ *   `AmqpConnectionError` with the hook's error as `cause`). Without
+ *   `initialConnectMaxRetries` a hook failure in the initial loop happens
+ *   before the lifecycle wiring attaches: `connect()` rejects and no event
+ *   is reported. Once it fires, the adapter
  *   has already dropped the dead connection and its subscriptions:
  *   `publish()` and `subscribe()` reject with `AmqpConnectionError`
  *   ("not connected"), and a new `connect()` starts from a clean state —
