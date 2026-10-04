@@ -20,7 +20,6 @@
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createServer, defineService, type Server } from "@connectum/core";
 import { PROTO_DIR, parseJsonStream, runTool, startTool } from "../../../../tests/interop/tools.ts";
 // The core package's test fixture: the healthcheck package ships no proto of

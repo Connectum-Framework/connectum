@@ -5,7 +5,6 @@
  * Disabled by default, enabled via HealthcheckOptions.httpEnabled.
  */
 
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import type { HttpHandler, NodeRequest, NodeResponse } from "@connectum/core";
 import type { HealthcheckManager } from "./HealthcheckManager.ts";
 import { ServingStatus } from "./types.ts";

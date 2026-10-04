@@ -5,7 +5,6 @@
  */
 
 import { Code, ConnectError } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: workspace package import
 import type { SanitizableError } from "@connectum/core";
 
 /**

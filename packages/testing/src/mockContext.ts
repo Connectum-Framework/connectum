@@ -14,7 +14,6 @@
 
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { createHandlerContext, type HandlerContext, type Interceptor } from "@connectrpc/connect";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { type Context, createServer, type ServiceCatalog } from "@connectum/core";
 import { type MockService, mockResolver } from "./mockResolver.ts";
 

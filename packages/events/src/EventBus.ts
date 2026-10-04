@@ -10,7 +10,6 @@
 import { hostname } from "node:os";
 import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-// biome-ignore lint/correctness/useImportExtensions: workspace package, not a relative import
 import type { EventBusLike } from "@connectum/core";
 import { createEventContext } from "./EventContext.ts";
 import { EventRouterImpl } from "./EventRouter.ts";

@@ -18,7 +18,6 @@ import assert from "node:assert";
 import { test } from "node:test";
 import { Code, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 

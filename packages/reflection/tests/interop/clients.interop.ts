@@ -24,9 +24,7 @@
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createServer, defineService, type Server } from "@connectum/core";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { Healthcheck } from "@connectum/healthcheck";
 import { readFileDescriptor } from "../../../../tests/interop/descriptors.ts";
 import { PROTO_DIR, parseJsonStream, runTool, type ToolResult } from "../../../../tests/interop/tools.ts";
