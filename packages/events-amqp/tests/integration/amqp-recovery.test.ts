@@ -29,6 +29,7 @@ import { connect } from "amqplib";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter, isConnectionLostError } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
+import type { AmqpLifecycleEvent } from "../../src/types.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -216,6 +217,125 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         // The adapter's own disconnect() is not a "loss" — no extra event.
         await sleep(300);
         assert.equal(events.filter((e) => e.type === "disconnected").length, 1, "own disconnect() must not emit disconnected");
+    });
+
+    it("non-recovery mode: disconnected carries the broker's close error with its reply code", { timeout: 60_000 }, async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.norec.code",
+            recovery: false,
+            lifecycle: { onLifecycle: (event) => events.push(event) },
+        });
+        await adapter.connect();
+        try {
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "disconnected"));
+
+            const event = events.find((e) => e.type === "disconnected");
+            assert.ok(event?.type === "disconnected");
+            assert.equal((event.error as { code?: number }).code, 320, "the broker's forced-close reply code reaches the caller instead of a generic message");
+            assert.match(event.error.message, /320/);
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("a handler that fails after the connection dropped neither raises unhandledRejection nor loses the message", { timeout: 60_000 }, async () => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        const events: AmqpLifecycleEvent[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.settle",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: { onLifecycle: (event) => events.push(event) },
+        });
+        await adapter.connect();
+        try {
+            const attempts: number[] = [];
+            let release: () => void = () => undefined;
+            const gate = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            let processed = false;
+            await adapter.subscribe(
+                ["rec.settle.evt"],
+                async (event, ack) => {
+                    attempts.push(event.attempt);
+                    if (attempts.length === 1) {
+                        await gate;
+                        throw new Error("handler failed after the channel was already gone");
+                    }
+                    await ack();
+                    processed = true;
+                },
+                { group: "g" },
+            );
+
+            await adapter.publish("rec.settle.evt", new TextEncoder().encode("held"));
+            await waitFor(() => attempts.length === 1);
+
+            await dropConnections();
+            await waitFor(() => events.some((e) => e.type === "disconnected"));
+            release();
+            await waitFor(() => events.some((e) => e.type === "settlement-skipped"));
+            await waitFor(() => processed);
+            await sleep(300);
+
+            const skipped = events.find((e) => e.type === "settlement-skipped");
+            assert.ok(skipped?.type === "settlement-skipped");
+            assert.equal(skipped.action, "requeue");
+            assert.equal(skipped.queue.length > 0, true);
+            assert.equal(skipped.routingKey, "rec.settle.evt");
+            assert.equal(unhandled.length, 0, "settling on a closed channel must not escape as an unhandled rejection");
+            assert.equal(attempts.length, 2, "the broker redelivered the held message after recovery");
+            assert.equal(attempts[1], 2, "the redelivery is marked as a later attempt");
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("publishRetry: a channel closed by the broker with an access refusal (403) is not retried and keeps the reply as cause", { timeout: 30_000 }, async () => {
+        const setup = await connect(url);
+        try {
+            const channel = await setup.createChannel();
+            await channel.assertExchange("rec.internal.gate", "topic", { internal: true });
+            await channel.close();
+        } finally {
+            await setup.close();
+        }
+
+        const retries: number[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.internal.gate",
+            topologyMode: "skip",
+            publishRetry: { initialDelay: 200, maxDelay: 400, jitter: 0, maxRetries: 10, onRetry: (info) => retries.push(info.attempt) },
+        });
+        await adapter.connect();
+        try {
+            const startedAt = Date.now();
+            await assert.rejects(
+                () => adapter.publish("rec.internal.gate.evt", new Uint8Array([1])),
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError, "surfaces as a connection-class error");
+                    assert.equal(((err as Error).cause as { code?: number } | undefined)?.code, 403, "the broker's access refusal is the root cause");
+                    return true;
+                },
+            );
+            assert.ok(Date.now() - startedAt < 2_000, "a refusal the broker will repeat must not burn the retry budget");
+
+            await assert.rejects(() => adapter.publish("rec.internal.gate.evt", new Uint8Array([2])));
+            assert.deepEqual(retries, [], "neither publish was retried");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
     });
 
     it("publish while disconnected fails fast with AmqpConnectionError (recovery disabled)", async () => {
