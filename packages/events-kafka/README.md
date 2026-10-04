@@ -145,7 +145,8 @@ the client library on a timer:
 | `ack()` (EventBus calls it after a successful handler) | committed | next message |
 | `nack(false)` | committed | message is skipped; `nack(false)` itself publishes no DLQ copy |
 | `nack(true)` or `nack()` | not committed | the message and the rest of the batch are delivered again, in order |
-| handler throws | not committed | same as `nack(true)`; the error is logged with topic, partition and offset |
+| handler throws while the message is still uncommitted | not committed | same as `nack(true)`; the error is logged with topic, partition and offset |
+| handler throws after `ack()` or `nack(false)` committed the offset | committed | the message is not redelivered; the error is still logged with topic, partition and offset |
 | adapter used directly, handler returns without settling | not committed | same as `nack(true)` |
 
 Through the EventBus a handler that returns normally without settling is acknowledged
