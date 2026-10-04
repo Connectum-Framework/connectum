@@ -75,8 +75,8 @@
   devDependencies for its unit tests (via `assertConnectError`, `createMockNext*`,
   `createMockRequest`), while `@connectum/testing` depended on
   `@connectum/interceptors` for parity tests — creating a workspace build cycle
-  that broke `turbo build` and forced `pack-all.sh` to fall back to
-  `pnpm -r --workspace-concurrency=1`.
+  that broke `turbo build` and forced the workspace build to fall back to
+  `pnpm -r --workspace-concurrency=1 build`.
 
   **What moved** (from `@connectum/testing` → `@connectum/test-fixtures`):
 
