@@ -143,10 +143,15 @@ the client library on a timer:
 | Handler outcome | Offset | What happens next |
 |-----------------|--------|-------------------|
 | `ack()` (EventBus calls it after a successful handler) | committed | next message |
-| `nack(false)` | committed | message is skipped (the DLQ middleware keeps a copy) |
+| `nack(false)` | committed | message is skipped; `nack(false)` itself publishes no DLQ copy |
 | `nack(true)` or `nack()` | not committed | the message and the rest of the batch are delivered again, in order |
 | handler throws | not committed | same as `nack(true)`; the error is logged with topic, partition and offset |
-| handler returns without settling | not committed | same as `nack(true)` |
+| adapter used directly, handler returns without settling | not committed | same as `nack(true)` |
+
+Through the EventBus a handler that returns normally without settling is acknowledged
+automatically, so call `nack(true)` when the message must be redelivered. The DLQ middleware
+publishes a copy only when the handler throws; it then acknowledges the original, so a message
+the DLQ middleware moved is not redelivered.
 
 A Kafka offset means "everything before it is consumed", so settlement is ordered: the first
 message that is not committed ends the batch and is the first one fetched again. The first
