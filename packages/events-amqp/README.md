@@ -220,7 +220,7 @@ queueOverrides: {
 | `factor` | `number` | `2` | Exponential backoff factor |
 | `jitter` | `number` | `0.2` | Symmetric jitter factor (0..1): the delay is drawn uniformly from `[base × (1 − jitter), base × (1 + jitter)]` around the capped base |
 | `maxRetries` | `number` | `Infinity` | Attempts per series before giving up. Governs **both** the initial connect and each later recovery series; the counter resets on every success. A finite value exhausted on the initial connect rejects `connect()` with `AmqpConnectionError` (`cause`: the last connection error). To bound only startup, use `initialConnectMaxRetries` |
-| `backoff` | `(attempt: number) => number` | unset | Custom reconnect delay in ms for every reconnect attempt (initial connect and steady state; not `publishRetry`). Synchronous; a failure ends recovery. Cannot be combined with `initialDelay`/`maxDelay`/`factor`/`jitter`. See [Custom backoff hook](#custom-backoff-hook-recoverybackoff). Since 1.4.0 |
+| `backoff` | `(attempt: number) => number` | unset | Custom reconnect delay in ms for every reconnect attempt (initial connect and steady state; not `publishRetry`). Synchronous; a failure ends recovery. Cannot be combined with `initialDelay`/`maxDelay`/`factor`/`jitter`. See [Custom backoff hook](#custom-backoff-hook-recoverybackoff). Since 1.3.0 |
 | `initialConnectMaxRetries` | `number` | unset | Bound the **initial** connect independently: a finite N gives at most `max(0, floor(N)) + 1` attempts; `Infinity`/`NaN` count as unset. amqplib runs the attempts on the connection the adapter keeps, with per-attempt lifecycle events (`reconnecting`, `setup-failed {initial: true}`), and `connect()` rejects typed on exhaustion (terminal `reconnect-failed`) — instead of blocking forever. See [Connection Recovery](#connection-recovery). Since 1.3.0 |
 
 ### AmqpLifecycleCallbacks
@@ -372,7 +372,7 @@ With `jitter: 1` the delay is uniform in `[0, 2 × base]`, and the base is cappe
 
 #### Custom backoff hook (`recovery.backoff`)
 
-Since 1.4.0, `recovery.backoff` replaces the built-in schedule with your own function. It receives the attempt number and returns the delay in milliseconds before that attempt; the adapter forwards it to amqplib's `calculateDelay`. Full jitter over an exponential schedule, capped at 30 s:
+Since 1.3.0, `recovery.backoff` replaces the built-in schedule with your own function. It receives the attempt number and returns the delay in milliseconds before that attempt; the adapter forwards it to amqplib's `calculateDelay`. Full jitter over an exponential schedule, capped at 30 s:
 
 ```typescript
 recovery: {

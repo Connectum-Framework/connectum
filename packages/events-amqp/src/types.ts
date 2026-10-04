@@ -457,7 +457,7 @@ export interface AmqpRecoveryOptions {
     /**
      * Custom reconnect delay: called with the attempt number, returns the
      * delay in milliseconds before that attempt. Forwarded to amqplib's
-     * `calculateDelay`. Since 1.4.0.
+     * `calculateDelay`. Since 1.3.0.
      *
      * - `attempt` is 1-based and restarts at 1 after every successful connect.
      * - Covers every reconnect attempt: steady-state recovery and the retries
