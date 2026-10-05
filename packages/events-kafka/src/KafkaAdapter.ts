@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type { Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
-import { createBatchConsumer } from "./consumeBatch.ts";
+import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
@@ -183,6 +183,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             const consumer = kafka.consumer({
                 groupId,
                 allowAutoTopicCreation: options.consumerOptions?.allowAutoTopicCreation ?? false,
+                heartbeatInterval: defaultHeartbeatIntervalMs,
                 ...(sessionTimeout !== undefined && { sessionTimeout }),
             });
 
@@ -203,7 +204,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 await consumer.run({
                     autoCommit: false,
                     eachBatchAutoResolve: false,
-                    eachBatch: createBatchConsumer({ handler, redeliveryDelay, resumeTimers }),
+                    eachBatch: createBatchConsumer({ handler, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
                 });
             } catch (err) {
                 await consumer.disconnect().catch(() => undefined);
