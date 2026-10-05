@@ -16,6 +16,7 @@
  */
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import type amqp from "amqplib";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
@@ -442,6 +443,64 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             await adapter.disconnect();
         }
     });
+
+    // A handler that settles the delivery itself and then throws must not make the
+    // adapter settle the same tag again: the broker answers a second settlement with
+    // `precondition_failed: unknown delivery tag` and closes the consumer channel,
+    // which would leave the queue without a consumer.
+    for (const settleWith of ["ack", "reject"] as const) {
+        it(`${settleWith}() followed by a throw leaves the consumer alive and does not redeliver`, async () => {
+            const run = randomUUID().slice(0, 8);
+            const unhandled: unknown[] = [];
+            const onUnhandled = (reason: unknown): void => {
+                unhandled.push(reason);
+            };
+            process.on("unhandledRejection", onUnhandled);
+            const lifecycleTypes: string[] = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange: `it.single.${run}`,
+                recovery: true,
+                lifecycle: { onLifecycle: (event) => lifecycleTypes.push(event.type) },
+            });
+            await adapter.connect();
+            try {
+                const seen: string[] = [];
+                const sub = await adapter.subscribe(
+                    ["it.single.*"],
+                    async (event, ack, nack) => {
+                        seen.push(`${event.eventType}#${event.attempt}`);
+                        if (settleWith === "ack") {
+                            await ack();
+                        } else {
+                            await nack(false);
+                        }
+                        throw new Error("failed after settling");
+                    },
+                    { group: `single-${run}` },
+                );
+
+                await adapter.publish("it.single.one", new Uint8Array([1]));
+                await waitFor(() => seen.length >= 1);
+                await adapter.publish("it.single.two", new Uint8Array([2]));
+                await waitFor(() => seen.length >= 2);
+                // Give a wrongly requeued copy time to come back before asserting.
+                await sleep(500);
+
+                assert.deepEqual(seen, ["it.single.one#1", "it.single.two#1"]);
+                assert.deepEqual(
+                    lifecycleTypes.filter((type) => type !== "connected"),
+                    [],
+                    "no diagnostic event: the second settlement is a silent no-op",
+                );
+                assert.equal(unhandled.length, 0);
+                await sub.unsubscribe();
+            } finally {
+                process.off("unhandledRejection", onUnhandled);
+                await adapter.disconnect();
+            }
+        });
+    }
 
     // Connection-recovery scenarios (broker drop/restart mid-test) are in
     // amqp-recovery.test.ts — they need programmatic container control.

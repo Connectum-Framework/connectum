@@ -1444,7 +1444,7 @@ describe("handleDelivery settlement on a closed channel", () => {
         }
     });
 
-    it("an explicit ack() and nack() from the handler resolve on a closed channel", async () => {
+    it("an explicit ack() on a closed channel resolves and reports one settlement-skipped; later settlements are silent no-ops", async () => {
         const calls: string[] = [];
         const { events, lifecycle } = collect();
         const results: string[] = [];
@@ -1467,10 +1467,10 @@ describe("handleDelivery settlement on a closed channel", () => {
         await settle();
 
         assert.deepEqual(results, ["ack-resolved", "reject-resolved", "requeue-resolved"]);
-        assert.deepEqual(calls, ["ack", "nack-reject", "nack-requeue"]);
+        assert.deepEqual(calls, ["ack"]);
         assert.deepEqual(
             events.map((event) => (event.type === "settlement-skipped" ? event.action : event.type)),
-            ["ack", "reject", "requeue"],
+            ["ack"],
         );
     });
 
@@ -1551,6 +1551,175 @@ describe("handleDelivery settlement on a closed channel", () => {
 
         assert.ok(handlerSaw instanceof TypeError);
         assert.equal(events.length, 0, "only a closed channel is reported as a skipped settlement");
+    });
+
+    it("a failed settlement that is not a closed channel does not count as settled, so the fallback requeue still runs", async () => {
+        const calls: string[] = [];
+        let failFirst = true;
+
+        handleDelivery({
+            channel: {
+                ack: () => {
+                    calls.push("ack");
+                    if (failFirst) {
+                        failFirst = false;
+                        throw new TypeError("not a channel problem");
+                    }
+                },
+                nack: (_message, _allUpTo, requeue) => {
+                    calls.push(requeue ? "nack-requeue" : "nack-reject");
+                },
+            },
+            message: makeMessage(),
+            queue: "orders",
+            handler: async (_event, ack) => {
+                await ack();
+            },
+            decode: undefined,
+            lifecycle: undefined,
+        });
+        await settle();
+        await settle();
+
+        assert.deepEqual(calls, ["ack", "nack-requeue"]);
+    });
+
+    describe("a delivery is settled at most once", () => {
+        const openChannel = (calls: string[]) => ({
+            ack: () => {
+                calls.push("ack");
+            },
+            nack: (_message: amqp.Message, _allUpTo: boolean, requeue: boolean) => {
+                calls.push(requeue ? "nack-requeue" : "nack-reject");
+            },
+        });
+
+        it("the first of ack(), nack(false) and nack() wins and the rest resolve without reaching the channel", async () => {
+            const calls: string[] = [];
+            const { events, lifecycle } = collect();
+            const results: string[] = [];
+
+            handleDelivery({
+                channel: openChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async (_event, ack, nack) => {
+                    await ack();
+                    await nack(false);
+                    results.push("reject-resolved");
+                    await nack();
+                    results.push("requeue-resolved");
+                    await ack();
+                    results.push("ack-resolved");
+                },
+                decode: undefined,
+                lifecycle,
+            });
+            await settle();
+
+            assert.deepEqual(calls, ["ack"]);
+            assert.deepEqual(results, ["reject-resolved", "requeue-resolved", "ack-resolved"]);
+            assert.equal(events.length, 0, "a repeated settlement is silent");
+        });
+
+        it("nack(false) first keeps the rejection when the handler then calls ack()", async () => {
+            const calls: string[] = [];
+
+            handleDelivery({
+                channel: openChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async (_event, ack, nack) => {
+                    await nack(false);
+                    await ack();
+                },
+                decode: undefined,
+                lifecycle: undefined,
+            });
+            await settle();
+
+            assert.deepEqual(calls, ["nack-reject"]);
+        });
+
+        for (const first of ["ack", "reject", "requeue"] as const) {
+            it(`a handler that settles with ${first} and then throws is not requeued again`, async () => {
+                const unhandled: unknown[] = [];
+                const onUnhandled = (reason: unknown): void => {
+                    unhandled.push(reason);
+                };
+                process.on("unhandledRejection", onUnhandled);
+                try {
+                    const calls: string[] = [];
+                    const { events, lifecycle } = collect();
+
+                    handleDelivery({
+                        channel: openChannel(calls),
+                        message: makeMessage(),
+                        queue: "orders",
+                        handler: async (_event, ack, nack) => {
+                            if (first === "ack") {
+                                await ack();
+                            } else {
+                                await nack(first === "requeue");
+                            }
+                            throw new Error("failed after settling");
+                        },
+                        decode: undefined,
+                        lifecycle,
+                    });
+                    await settle();
+                    await settle();
+
+                    const expected = { ack: "ack", reject: "nack-reject", requeue: "nack-requeue" }[first];
+                    assert.deepEqual(calls, [expected]);
+                    assert.equal(events.length, 0);
+                    assert.equal(unhandled.length, 0);
+                } finally {
+                    process.off("unhandledRejection", onUnhandled);
+                }
+            });
+        }
+
+        it("a handler that throws without settling is requeued exactly once", async () => {
+            const calls: string[] = [];
+
+            handleDelivery({
+                channel: openChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => {
+                    throw new Error("failed before settling");
+                },
+                decode: undefined,
+                lifecycle: undefined,
+            });
+            await settle();
+            await settle();
+
+            assert.deepEqual(calls, ["nack-requeue"]);
+        });
+
+        it("an ack() skipped on a closed channel is not retried by the requeue after a later throw", async () => {
+            const calls: string[] = [];
+            const { events, lifecycle } = collect();
+
+            handleDelivery({
+                channel: closedChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async (_event, ack) => {
+                    await ack();
+                    throw new Error("failed after settling");
+                },
+                decode: undefined,
+                lifecycle,
+            });
+            await settle();
+            await settle();
+
+            assert.deepEqual(calls, ["ack"]);
+            assert.equal(events.length, 1);
+        });
     });
 
     it("works without any lifecycle callbacks", async () => {

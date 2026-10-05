@@ -763,6 +763,18 @@ export function handleDelivery(params: {
     const { channel, message: msg, queue, handler, decode, lifecycle } = params;
     const delivery = { queue, message: msg };
 
+    // A second settlement of the same delivery tag makes the broker close the
+    // channel (`precondition_failed: unknown delivery tag`), which silently
+    // stops the consumer. The first settlement wins; later ones are no-ops.
+    let settled = false;
+    const settleOnce = (action: AmqpSettlementAction, settle: () => void): void => {
+        if (settled) {
+            return;
+        }
+        settleDelivery(lifecycle, delivery, action, settle);
+        settled = true;
+    };
+
     const msgHeaders = parseHeaders(msg.properties.headers as Record<string, unknown> | undefined);
 
     const eventId = msgHeaders.get("x-event-id") ?? msg.properties.messageId ?? randomUUID();
@@ -779,7 +791,7 @@ export function handleDelivery(params: {
     try {
         payload = decode ? decode(new Uint8Array(msg.content)) : new Uint8Array(msg.content);
     } catch {
-        settleDelivery(lifecycle, delivery, "reject", () => channel.nack(msg, false, false));
+        settleOnce("reject", () => channel.nack(msg, false, false));
         return;
     }
 
@@ -796,20 +808,21 @@ export function handleDelivery(params: {
     };
 
     const ack = async (): Promise<void> => {
-        settleDelivery(lifecycle, delivery, "ack", () => channel.ack(msg));
+        settleOnce("ack", () => channel.ack(msg));
     };
     const nack = async (requeue?: boolean): Promise<void> => {
         if (requeue === false) {
             // Reject without requeue — goes to DLX or is discarded
-            settleDelivery(lifecycle, delivery, "reject", () => channel.nack(msg, false, false));
+            settleOnce("reject", () => channel.nack(msg, false, false));
         } else {
-            settleDelivery(lifecycle, delivery, "requeue", () => channel.nack(msg, false, true));
+            settleOnce("requeue", () => channel.nack(msg, false, true));
         }
     };
 
     handler(rawEvent, ack, nack).catch(() => {
-        // Handler error — nack for redelivery
-        settleDelivery(lifecycle, delivery, "requeue", () => channel.nack(msg, false, true));
+        // Handler error — requeue for redelivery unless the handler already
+        // settled the delivery (its explicit choice stands)
+        settleOnce("requeue", () => channel.nack(msg, false, true));
     });
 }
 
