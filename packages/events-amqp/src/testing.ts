@@ -28,7 +28,8 @@
  *   adapter would keep retrying inside recovery); a NON-topology queued
  *   failure at `connect()` is consumed silently and the connect proceeds
  *   (the real adapter treats it as transient and blocks in recovery);
- * - broker-driven settlement: handler `ack`/`nack` calls are RECORDED (see
+ * - broker-driven settlement: handler `ack`/`nack` calls are RECORDED, at most
+ *   one per delivery per handler (the first wins, as in the real adapter; see
  *   the {@link FakeAmqpControl.deliver} result) but do not drive redelivery —
  *   re-deliver explicitly with a higher `attempt` to model it. Handler
  *   rejections are swallowed exactly like the real consumer (which nacks for
@@ -79,7 +80,7 @@ export interface FakeDeliveryResult {
     readonly acked: number;
     /** Handlers that called `nack(false)`. */
     readonly nacked: number;
-    /** Handlers that called `nack(true)` — model redelivery by delivering again with `attempt + 1`. */
+    /** Handlers that called `nack(true)` or a bare `nack()` — model redelivery by delivering again with `attempt + 1`. */
     readonly requeued: number;
     /** Handlers that rejected (swallowed, like the real consumer's nack-on-error path). */
     readonly failed: number;
@@ -352,21 +353,32 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
             // allSettled + swallowed rejections: the real consumer catches a
             // throwing handler and nacks for redelivery instead of propagating.
             const settlements = await Promise.allSettled(
-                targets.map((sub) =>
-                    sub.handler(
+                targets.map((sub) => {
+                    // Like the real consumer: one settlement per delivery, the
+                    // first wins. A bare nack() requeues, only nack(false) rejects.
+                    let settled = false;
+                    return sub.handler(
                         event,
                         async () => {
+                            if (settled) {
+                                return;
+                            }
+                            settled = true;
                             acked += 1;
                         },
                         async (requeue?: boolean) => {
-                            if (requeue) {
-                                requeued += 1;
-                            } else {
+                            if (settled) {
+                                return;
+                            }
+                            settled = true;
+                            if (requeue === false) {
                                 nacked += 1;
+                            } else {
+                                requeued += 1;
                             }
                         },
-                    ),
-                ),
+                    );
+                }),
             );
             for (const settlement of settlements) {
                 if (settlement.status === "rejected") {

@@ -291,6 +291,14 @@ Example: "order.>"  →  "order.#"
 | With `group` | `{exchange}.{group}` | Shared, durable, competing consumers |
 | Without `group` | `{exchange}.sub-{uuid}` | Exclusive, auto-delete (fan-out) |
 
+### Delivery Settlement
+
+Every delivery is settled **at most once**, and the first settlement wins: `ack()`, `nack(false)` (reject without requeue), `nack()` / `nack(true)` (requeue), the requeue the adapter sends after a handler rejects, and the reject after a `decode` failure all go through the same gate. A later call for the same delivery resolves without reaching the broker and without a lifecycle event.
+
+- A handler that settles and then throws keeps its settlement: after `await ack()` (or `nack(false)`) a thrown error does **not** requeue the message. A handler that throws without settling is requeued, as before.
+- This matters because the broker treats a second settlement of one delivery tag as a protocol violation (`PRECONDITION_FAILED - unknown delivery tag`) and closes the consumer channel.
+- It mirrors `ctx.ack()` / `ctx.nack()` in `@connectum/events`, which are idempotent per event.
+
 ### Metadata
 
 Event metadata is transmitted as AMQP message headers. Internal headers (`x-event-id`, `x-published-at`, `x-connectum-publish-id`) are set on publish and stripped from metadata on delivery. For an external contract that must not carry these, set `publisherOptions.externalContract: true` — see [External AMQP Contract](#external-amqp-contract).
@@ -510,7 +518,7 @@ const result = await fake.control.deliver('order.created', payload);
 
 Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
 
-Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`); handler `ack`/`nack` calls are recorded in the `deliver()` result but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
+Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 
 ## Dependencies
 

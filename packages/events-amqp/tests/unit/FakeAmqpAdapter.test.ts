@@ -287,6 +287,41 @@ describe("FakeAmqpAdapter delivery settlement", () => {
         assert.deepEqual(result, { delivered: 4, acked: 1, nacked: 1, requeued: 1, failed: 1 });
     });
 
+    it("counts one settlement per delivery per handler: the first wins, a bare nack() requeues", async () => {
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+
+        await fake.subscribe(
+            ["evt"],
+            async (_e, ack, nack) => {
+                await ack();
+                await nack(false);
+                await nack();
+            },
+            { group: "ack-first" },
+        );
+        await fake.subscribe(
+            ["evt"],
+            async (_e, ack, nack) => {
+                await nack(false);
+                await ack();
+            },
+            { group: "reject-first" },
+        );
+        await fake.subscribe(["evt"], async (_e, _ack, nack) => nack(), { group: "bare-nack" });
+        await fake.subscribe(
+            ["evt"],
+            async (_e, ack) => {
+                await ack();
+                throw new Error("failed after settling");
+            },
+            { group: "ack-then-throw" },
+        );
+
+        const result = await fake.control.deliver("evt", new Uint8Array());
+        assert.deepEqual(result, { delivered: 4, acked: 2, nacked: 1, requeued: 1, failed: 1 });
+    });
+
     it("strips internal envelope headers and honors x-published-at (real consumer parity)", async () => {
         const fake = FakeAmqpAdapter();
         await fake.connect();
