@@ -1,0 +1,10 @@
+---
+"@connectum/events-amqp": minor
+---
+
+feat: restore a consumer the broker ended, and report it as lifecycle events
+
+- A subscription whose consumer the broker ends while the connection stays up (its queue was deleted, the consumer was cancelled, or the broker closed the consumer channel with a channel exception, for example after an unknown delivery tag) used to go silent: no event, no consumption. The adapter now reports `consumer-lost { queue, cause, error?, willRestore }` once per loss and, with `recovery` enabled, restores the consumer on the live connection: `consumer-restored { queue, attempt }` on success, `consumer-restore-failed { queue, attempt, error, willRetry }` per failed attempt (`willRetry: false` when the failure is deterministic topology drift, such as a missing queue in `check` mode). `cause` is `"cancelled"` or `"channel-closed"`. With `recovery: false` the loss is reported with `willRestore: false` and nothing is restored. The events are part of the `onLifecycle` union only; a connection loss is not a consumer loss.
+- Restoration repeats the subscription's topology step, so in `assert` mode a queue an operator deleted on purpose is declared again (empty); unsubscribe, set `recovery: false` or use `topologyMode: "check"` to keep it gone. Attempts wait the same delay formula as reconnects (`initialDelay`, `factor`, `jitter`, `maxDelay`; the defaults when `recovery.backoff` is set), without an attempt limit; the counter restarts after the consumer has run for `maxDelay` without a new loss. The lost consumer's channel is closed, so a handler still running settles late as `settlement-skipped` and the broker redelivers the message.
+- A handler that throws synchronously is now treated as a rejection (the message is requeued) instead of escaping the consume callback, where amqplib closed the channel with 541 and the subscription went silent.
+- `FakeAmqpAdapter` (`@connectum/events-amqp/testing`): `control.loseConsumer({ queue?, cause?, error? })` and `control.restoreConsumers()` exercise the new handling without a broker; the new `recovery` option sets `willRestore`.

@@ -428,3 +428,148 @@ describe("FakeAmqpAdapter with the real EventBus", () => {
         await bus.stop();
     });
 });
+
+describe("FakeAmqpAdapter consumer loss", () => {
+    const noop: Parameters<ReturnType<typeof FakeAmqpAdapter>["subscribe"]>[1] = async () => undefined;
+
+    it("a lost consumer stops receiving deliveries and reports one consumer-lost with the recovery setting", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        const got: string[] = [];
+        await fake.subscribe(["evt"], async () => void got.push("g"), { group: "g" });
+
+        fake.control.loseConsumer();
+        const result = await fake.control.deliver("evt", new Uint8Array());
+
+        assert.equal(result.delivered, 0);
+        assert.equal(got.length, 0);
+        assert.deepEqual(
+            events.filter((e) => e.type !== "connected"),
+            [{ type: "consumer-lost", queue: "g", cause: "cancelled", willRestore: true }],
+        );
+    });
+
+    it("carries the cause and the channel exception, and targets one queue by name", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        const got: string[] = [];
+        await fake.subscribe(["evt"], async () => void got.push("a"), { group: "a" });
+        await fake.subscribe(["evt"], async () => void got.push("b"), { group: "b" });
+        const failure = new Error("PRECONDITION_FAILED");
+
+        fake.control.loseConsumer({ queue: "a", cause: "channel-closed", error: failure });
+        await fake.control.deliver("evt", new Uint8Array());
+
+        assert.deepEqual(got, ["b"], "only the other queue still receives");
+        const lost = events.filter((e) => e.type === "consumer-lost");
+        assert.deepEqual(lost, [{ type: "consumer-lost", queue: "a", cause: "channel-closed", error: failure, willRestore: true }]);
+    });
+
+    it("a subscription without a group is named fake.sub-N by registration order", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        await fake.subscribe(["evt"], noop, { group: "g" });
+        await fake.subscribe(["evt"], noop);
+
+        fake.control.loseConsumer({ queue: "fake.sub-2" });
+
+        assert.deepEqual(
+            events.filter((e) => e.type === "consumer-lost").map((e) => (e.type === "consumer-lost" ? e.queue : "")),
+            ["fake.sub-2"],
+        );
+    });
+
+    it("restoreConsumers resumes delivery and reports consumer-restored once per lost subscription", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        const got: string[] = [];
+        await fake.subscribe(["evt"], async () => void got.push("a"), { group: "a" });
+        await fake.subscribe(["evt"], async () => void got.push("b"), { group: "b" });
+        fake.control.loseConsumer();
+
+        fake.control.restoreConsumers();
+        await fake.control.deliver("evt", new Uint8Array());
+
+        assert.deepEqual(got.sort(), ["a", "b"]);
+        assert.deepEqual(
+            events.filter((e) => e.type === "consumer-restored"),
+            [
+                { type: "consumer-restored", queue: "a", attempt: 1 },
+                { type: "consumer-restored", queue: "b", attempt: 1 },
+            ],
+        );
+    });
+
+    it("recovery: false reports willRestore:false and refuses restoreConsumers", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ recovery: false, lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        await fake.subscribe(["evt"], noop, { group: "g" });
+
+        fake.control.loseConsumer();
+
+        const lost = events.find((e) => e.type === "consumer-lost");
+        assert.ok(lost?.type === "consumer-lost");
+        assert.equal(lost.willRestore, false);
+        assert.throws(() => fake.control.restoreConsumers(), /recovery is disabled/);
+    });
+
+    it("an unsubscribed subscription is neither lost nor restored", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        const sub = await fake.subscribe(["evt"], noop, { group: "g" });
+        await sub.unsubscribe();
+
+        assert.throws(() => fake.control.loseConsumer(), /no live subscription/);
+
+        const other = await fake.subscribe(["evt"], noop, { group: "h" });
+        fake.control.loseConsumer();
+        await other.unsubscribe();
+        assert.throws(() => fake.control.restoreConsumers(), /no lost consumer/);
+        assert.equal(events.filter((e) => e.type === "consumer-restored").length, 0);
+    });
+
+    it("a lost consumer is not lost twice, and a second restore without a loss throws", async () => {
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+        await fake.subscribe(["evt"], noop, { group: "g" });
+
+        fake.control.loseConsumer();
+        assert.throws(() => fake.control.loseConsumer(), /no live subscription/);
+        fake.control.restoreConsumers();
+        assert.throws(() => fake.control.restoreConsumers(), /no lost consumer/);
+    });
+
+    it("refuses to act on a disconnected or recovering adapter and on an unknown queue", async () => {
+        const fake = FakeAmqpAdapter();
+        assert.throws(() => fake.control.loseConsumer(), /not 'connected'/);
+        await fake.connect();
+        await fake.subscribe(["evt"], noop, { group: "g" });
+        assert.throws(() => fake.control.loseConsumer({ queue: "missing" }), /no live subscription on queue 'missing'/);
+
+        fake.control.dropConnection();
+        assert.throws(() => fake.control.loseConsumer(), /not 'connected'/);
+        assert.throws(() => fake.control.restoreConsumers(), /not 'connected'/);
+    });
+
+    it("connection recovery brings a lost consumer back silently", async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const fake = FakeAmqpAdapter({ lifecycle: { onLifecycle: (event) => events.push(event) } });
+        await fake.connect();
+        const got: string[] = [];
+        await fake.subscribe(["evt"], async () => void got.push("g"), { group: "g" });
+        fake.control.loseConsumer();
+
+        fake.control.dropConnection();
+        fake.control.completeRecovery();
+        await fake.control.deliver("evt", new Uint8Array());
+
+        assert.deepEqual(got, ["g"]);
+        assert.equal(events.filter((e) => e.type === "consumer-restored").length, 0);
+    });
+});

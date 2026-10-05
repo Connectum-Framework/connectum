@@ -15,7 +15,15 @@ import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, R
 import type amqp from "amqplib";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
-import type { AmqpAdapterOptions, AmqpLifecycleCallbacks, AmqpLifecycleEvent, AmqpQueueOverride, AmqpRecoveryOptions, AmqpSettlementAction } from "./types.ts";
+import type {
+    AmqpAdapterOptions,
+    AmqpConsumerLossCause,
+    AmqpLifecycleCallbacks,
+    AmqpLifecycleEvent,
+    AmqpQueueOverride,
+    AmqpRecoveryOptions,
+    AmqpSettlementAction,
+} from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
 
 /** Default exchange name when none is provided. */
@@ -123,6 +131,17 @@ export function trackChannelClose<C extends AmqpChannelCloseSource>(ch: C, close
     });
 }
 
+/** amqplib routes every recovery knob through `toFiniteNumber(value, fallback)`: NaN/Infinity fall back to the default. */
+function finiteOr(value: number | undefined, fallback: number): number {
+    return Number.isFinite(value as number) ? (value as number) : fallback;
+}
+
+/** The `maxDelay` the delay formula actually applies: the default when unset, never below `initialDelay`. */
+export function effectiveRecoveryMaxDelay(recovery: Pick<AmqpRecoveryOptions, "initialDelay" | "maxDelay">): number {
+    const initialDelay = Math.max(0, finiteOr(recovery.initialDelay, 100));
+    return Math.max(initialDelay, finiteOr(recovery.maxDelay, 30_000));
+}
+
 /**
  * Replicate amqplib's built-in recovery delay (amqplib ≥ 2.2.0
  * `lib/recovery.js`: `calculateBuiltinDelay` with the
@@ -145,13 +164,10 @@ export function computeRecoveryDelay(
     attempt: number,
     random: () => number = Math.random,
 ): number {
-    // amqplib routes every knob through toFiniteNumber(value, fallback):
-    // NaN/Infinity fall back to the defaults instead of propagating.
-    const finite = (value: number | undefined, fallback: number): number => (Number.isFinite(value as number) ? (value as number) : fallback);
-    const initialDelay = Math.max(0, finite(recovery.initialDelay, 100));
-    const maxDelay = Math.max(initialDelay, finite(recovery.maxDelay, 30_000));
-    const factor = Math.max(1, finite(recovery.factor, 2));
-    const jitter = Math.min(1, Math.max(0, finite(recovery.jitter, 0.2)));
+    const initialDelay = Math.max(0, finiteOr(recovery.initialDelay, 100));
+    const maxDelay = effectiveRecoveryMaxDelay(recovery);
+    const factor = Math.max(1, finiteOr(recovery.factor, 2));
+    const jitter = Math.min(1, Math.max(0, finiteOr(recovery.jitter, 0.2)));
     const cappedBase = maxDelay / (1 + jitter);
     const base = Math.min(cappedBase, initialDelay * factor ** (attempt - 1));
     const jitterPart = base * jitter;
@@ -576,7 +592,7 @@ export function dispatchLifecycle(lifecycle: AmqpLifecycleCallbacks | undefined,
             }
             break;
         default:
-            // blocked / unblocked / settlement-skipped / lifecycle-error: union-only observability.
+            // blocked / unblocked / settlement-skipped / consumer-lost / consumer-restored / consumer-restore-failed / lifecycle-error: union-only observability.
             break;
     }
 }
@@ -750,6 +766,9 @@ function settleDelivery(
  * - An undecodable payload is rejected without requeue (DLX or drop): it will
  *   never succeed.
  * - A rejected handler requeues the message for redelivery.
+ * - A handler that throws synchronously (or returns a non-promise) is treated
+ *   like a rejection: a throw that escaped the consume callback would make
+ *   amqplib close the channel with 541 and silence the subscription.
  * - Every settlement tolerates a closed channel — see {@link settleDelivery}.
  */
 export function handleDelivery(params: {
@@ -775,6 +794,20 @@ export function handleDelivery(params: {
         settled = true;
     };
 
+    // The adapter's own settlements (reject of an undecodable payload, requeue
+    // after a failed handler) have no caller to throw to: a failure other than a
+    // closed channel is reported instead of escaping the consume callback.
+    const reportSettlementFailure = (action: AmqpSettlementAction, error: unknown): void => {
+        dispatchLifecycle(lifecycle, {
+            type: "settlement-skipped",
+            action,
+            queue,
+            routingKey: msg.fields.routingKey,
+            deliveryTag: msg.fields.deliveryTag,
+            error: error instanceof Error ? error : new Error(String(error), { cause: error }),
+        });
+    };
+
     const msgHeaders = parseHeaders(msg.properties.headers as Record<string, unknown> | undefined);
 
     const eventId = msgHeaders.get("x-event-id") ?? msg.properties.messageId ?? randomUUID();
@@ -791,7 +824,11 @@ export function handleDelivery(params: {
     try {
         payload = decode ? decode(new Uint8Array(msg.content)) : new Uint8Array(msg.content);
     } catch {
-        settleOnce("reject", () => channel.nack(msg, false, false));
+        try {
+            settleOnce("reject", () => channel.nack(msg, false, false));
+        } catch (error) {
+            reportSettlementFailure("reject", error);
+        }
         return;
     }
 
@@ -819,23 +856,309 @@ export function handleDelivery(params: {
         }
     };
 
-    handler(rawEvent, ack, nack).catch(() => {
+    // The handler runs inside a promise executor so a synchronous throw is a
+    // rejection like any other: amqplib's channel has no `handler-error`
+    // listener, so a throw escaping this callback closes the channel with 541
+    // and the subscription silently stops consuming.
+    new Promise<void>((resolve) => {
+        resolve(handler(rawEvent, ack, nack));
+    }).catch(() => {
         // Handler error — requeue for redelivery unless the handler already
-        // settled the delivery (its explicit choice stands)
-        settleOnce("requeue", () => channel.nack(msg, false, true));
+        // settled the delivery (its explicit choice stands). Nothing may escape
+        // from here: there is no caller above this callback, so a throw would be
+        // an unhandled rejection. Any settlement failure is reported instead.
+        try {
+            settleOnce("requeue", () => channel.nack(msg, false, true));
+        } catch (error) {
+            reportSettlementFailure("requeue", error);
+        }
     });
 }
 
-interface SubscriptionRecord {
+interface SubscriptionRecord extends RestorableSubscription {
     readonly patterns: string[];
     readonly handler: RawEventHandler;
     readonly subOptions: RawSubscribeOptions | undefined;
     /** Channel of the CURRENT incarnation (replaced on recovery). */
     channel: amqp.Channel | null;
+    isAutoGroup: boolean;
+}
+
+/** A timer handle the restorer can hold without keeping the process alive. */
+export interface ConsumerTimer {
+    unref(): unknown;
+}
+
+/** Timer primitives of the restorer; replaceable so tests can fire timers by hand. */
+export interface ConsumerTimers {
+    set(callback: () => void, delayMs: number): ConsumerTimer;
+    clear(timer: ConsumerTimer): void;
+}
+
+const GLOBAL_TIMERS: ConsumerTimers = {
+    set: (callback, delayMs) => setTimeout(callback, delayMs),
+    clear: (timer) => clearTimeout(timer as NodeJS.Timeout),
+};
+
+/** Restoration bookkeeping of one subscription. */
+export interface ConsumerRestoreState {
+    /** Restore attempts since the last stable period; drives the backoff delay and is reported as `attempt`. */
+    attempt: number;
+    /** Pending backoff before the next attempt. */
+    timer: ConsumerTimer | null;
+    /** Zeroes `attempt` once a restored consumer has stayed up for the stability window. */
+    stabilityTimer: ConsumerTimer | null;
+    /** The consumer was lost while no live connection was known: restore once the connection is set up again. */
+    pending: boolean;
+}
+
+/** One run of `startConsumer`: the state its channel listeners and consume callback share. */
+export interface ConsumerIncarnation {
+    /** The consumer is registered with the broker; before that a channel failure belongs to setup, not to a loss. */
+    started: boolean;
+    /**
+     * A loss signalled before `started` was set: amqplib can deliver the
+     * `consume` reply and the broker's cancel in one socket read, ahead of the
+     * continuation that marks the consumer started. Replayed right after it.
+     */
+    earlyLoss: { readonly cause: AmqpConsumerLossCause; readonly error: Error | undefined } | null;
+    /** The loss of this consumer was already handled (cancel, null delivery and close all signal one loss). */
+    lost: boolean;
+    /** The channel exception that closed the channel, when the broker sent one (carries the reply `code`). */
+    channelError: Error | null;
+}
+
+/** The part of a subscription the restorer reads and writes. */
+export interface RestorableSubscription {
+    active: boolean;
+    /** Number of the newest consumer incarnation; events of older ones are ignored. */
+    generation: number;
+    channel: { close(): Promise<unknown> } | null;
     consumerTag: string | null;
     queueName: string;
-    isAutoGroup: boolean;
-    active: boolean;
+    /** Restoration of a consumer the broker ended on a live connection. */
+    readonly restore: ConsumerRestoreState;
+}
+
+/** Minimal channel surface the loss detection listens to. */
+export interface ConsumerChannelEvents {
+    on(event: "error", listener: (err: Error) => void): unknown;
+    on(event: "close" | "cancel", listener: () => void): unknown;
+}
+
+/**
+ * Listen to a consumer channel for the ways the broker ends a consumer.
+ *
+ * A channel exception arrives as `error` (carrying the broker's numeric reply
+ * code) and then `close`. A close with no preceding coded `error` is the
+ * adapter closing its own channel, or a lost connection taking it down, and is
+ * NOT a loss: connection recovery rebuilds those consumers. `cancel` is the
+ * broker cancelling the consumer on an open channel (its queue was deleted).
+ */
+export function watchConsumerChannel(channel: ConsumerChannelEvents, incarnation: ConsumerIncarnation, onLost: (cause: AmqpConsumerLossCause, error?: Error) => void): void {
+    channel.on("error", (err: Error) => {
+        if (typeof (err as { code?: unknown }).code === "number") {
+            incarnation.channelError = err;
+        }
+    });
+    channel.on("close", () => {
+        if (incarnation.channelError !== null) {
+            onLost("channel-closed", incarnation.channelError);
+        }
+    });
+    channel.on("cancel", () => {
+        onLost("cancelled");
+    });
+}
+
+/** What {@link createConsumerRestorer} needs from its adapter. */
+export interface ConsumerRestorerDeps<R extends RestorableSubscription, M> {
+    readonly lifecycle: AmqpLifecycleCallbacks | undefined;
+    /** `false` reports a loss (`willRestore: false`) and leaves the subscription ended. */
+    readonly enabled: boolean;
+    readonly backoff: Pick<AmqpRecoveryOptions, "initialDelay" | "maxDelay" | "factor" | "jitter">;
+    readonly isClosing: () => boolean;
+    /** The connection a consumer may be restored on right now, or `null` while connection recovery owns it. */
+    readonly liveModel: () => M | null;
+    /** Start a consumer incarnation of the subscription on the connection. */
+    readonly start: (model: M, record: R) => Promise<ConsumerIncarnation | null>;
+    readonly timers?: ConsumerTimers;
+    readonly random?: () => number;
+}
+
+/** One consumer loss, as the channel listeners and the consume callback report it. */
+export interface ConsumerLoss<R extends RestorableSubscription> {
+    readonly record: R;
+    readonly generation: number;
+    readonly incarnation: ConsumerIncarnation;
+    readonly channel: { close(): Promise<unknown> };
+    readonly queue: string;
+    readonly cause: AmqpConsumerLossCause;
+    readonly error?: Error | undefined;
+}
+
+export interface ConsumerRestorer<R extends RestorableSubscription> {
+    /** The broker ended a consumer: report it once and schedule the restoration. */
+    lost(loss: ConsumerLoss<R>): void;
+    /** Forget the restoration of one subscription: no pending attempt, no stability timer, a fresh backoff series. */
+    stop(record: R): void;
+    /** The connection is live again: restore the consumers lost while it was not. */
+    resume(records: Iterable<R>): void;
+}
+
+/**
+ * The restoration of consumers the broker ended on a live connection.
+ *
+ * A loss is reported once (`consumer-lost`); with `enabled` the consumer is
+ * started again after a backoff that grows with consecutive losses and
+ * restarts only after a consumer has stayed up for the longest delay the
+ * backoff can produce. A failure that cannot heal by retrying (the same
+ * replies that stop connection recovery on topology drift) ends the
+ * restoration; any other failure is retried. While `liveModel()` is `null`
+ * connection recovery owns the connection: nothing is restarted here, and the
+ * loss waits for `resume()`.
+ */
+export function createConsumerRestorer<R extends RestorableSubscription, M>(deps: ConsumerRestorerDeps<R, M>): ConsumerRestorer<R> {
+    const timers = deps.timers ?? GLOBAL_TIMERS;
+    const stabilityMs = effectiveRecoveryMaxDelay(deps.backoff);
+
+    function stop(record: R): void {
+        const state = record.restore;
+        if (state.timer !== null) {
+            timers.clear(state.timer);
+            state.timer = null;
+        }
+        if (state.stabilityTimer !== null) {
+            timers.clear(state.stabilityTimer);
+            state.stabilityTimer = null;
+        }
+        state.attempt = 0;
+        state.pending = false;
+    }
+
+    function schedule(record: R): void {
+        const state = record.restore;
+        if (!record.active || deps.isClosing()) {
+            return;
+        }
+        if (deps.liveModel() === null) {
+            state.pending = true;
+            return;
+        }
+        if (state.timer !== null) {
+            timers.clear(state.timer);
+        }
+        if (state.stabilityTimer !== null) {
+            timers.clear(state.stabilityTimer);
+            state.stabilityTimer = null;
+        }
+        state.attempt += 1;
+        const attempt = state.attempt;
+        state.timer = timers.set(
+            () => {
+                state.timer = null;
+                void run(record, attempt);
+            },
+            computeRecoveryDelay(deps.backoff, attempt, deps.random),
+        );
+        state.timer.unref();
+    }
+
+    async function run(record: R, attempt: number): Promise<void> {
+        const state = record.restore;
+        if (!record.active || deps.isClosing()) {
+            return;
+        }
+        const model = deps.liveModel();
+        if (model === null) {
+            state.pending = true;
+            return;
+        }
+
+        let incarnation: ConsumerIncarnation | null;
+        try {
+            incarnation = await deps.start(model, record);
+        } catch (err) {
+            if (!record.active || deps.isClosing() || deps.liveModel() !== model || err instanceof AmqpConnectionError) {
+                // The connection went down (or was replaced) under the attempt:
+                // connection recovery rebuilds the consumer, not a retry of
+                // this one. The connection is identified structurally, never by
+                // error text: a pending broker call that dies with the
+                // connection rejects with wording that varies and is wrapped
+                // into a topology error by the caller.
+                return;
+            }
+            const error = err instanceof Error ? err : new Error(String(err));
+            const willRetry = !isDeterministicTopologyDrift(err);
+            dispatchLifecycle(deps.lifecycle, { type: "consumer-restore-failed", queue: record.queueName, attempt, error, willRetry });
+            if (willRetry) {
+                schedule(record);
+            }
+            return;
+        }
+        if (incarnation === null || incarnation.lost) {
+            // Superseded, unsubscribed, or lost again at once (that loss has
+            // already scheduled the next attempt).
+            return;
+        }
+        if (!record.active || deps.isClosing() || deps.liveModel() !== model) {
+            // Unsubscribed, shut down, or the connection went down while the attempt was returning.
+            return;
+        }
+        dispatchLifecycle(deps.lifecycle, { type: "consumer-restored", queue: record.queueName, attempt });
+        // A consumer that vanishes right after every restore must see growing
+        // delays: the series restarts only after a full stability window.
+        state.stabilityTimer = timers.set(() => {
+            state.stabilityTimer = null;
+            state.attempt = 0;
+        }, stabilityMs);
+        state.stabilityTimer.unref();
+    }
+
+    return {
+        lost({ record, generation, incarnation, channel, queue, cause, error }: ConsumerLoss<R>): void {
+            if (incarnation.lost || generation !== record.generation || !record.active || deps.isClosing()) {
+                return;
+            }
+            if (!incarnation.started) {
+                incarnation.earlyLoss ??= { cause, error };
+                return;
+            }
+            incarnation.lost = true;
+            if (record.channel === channel) {
+                record.channel = null;
+                record.consumerTag = null;
+            }
+            // After a cancel the channel is still open and would stay a
+            // consumer-less channel holding its unacknowledged messages. Close
+            // it: the broker returns those messages to the queue at once, so the
+            // restored consumer receives them (a handler that never settles,
+            // as under `consumer_timeout`, would otherwise keep them forever).
+            // The price is a possible duplicate for a handler still running; a
+            // late settlement fails locally and is reported as skipped.
+            void channel.close().catch(() => undefined);
+
+            dispatchLifecycle(deps.lifecycle, {
+                type: "consumer-lost",
+                queue,
+                cause,
+                ...(error === undefined ? {} : { error }),
+                willRestore: deps.enabled,
+            });
+            if (deps.enabled) {
+                schedule(record);
+            }
+        },
+        stop,
+        resume(records: Iterable<R>): void {
+            for (const record of records) {
+                if (record.restore.pending) {
+                    record.restore.pending = false;
+                    schedule(record);
+                }
+            }
+        },
+    };
 }
 
 /** Pending mandatory publish awaiting its confirm, keyed by publish id. */
@@ -974,6 +1297,23 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
     /** Replayable registry of subscriptions (source of truth across recoveries). */
     const subscriptionRecords: SubscriptionRecord[] = [];
+
+    /**
+     * The raw connection handed to the recovery setup hook, valid from the end
+     * of that setup until the connection is lost again. Restoring a consumer
+     * opens its channel on THIS object, never on the recovering wrapper: the
+     * wrapper parks `createChannel` while the connection is down and would
+     * resolve it after connection recovery has already rebuilt the consumer.
+     */
+    let liveModel: amqp.ChannelModel | null = null;
+    const restorer = createConsumerRestorer<SubscriptionRecord, amqp.ChannelModel>({
+        lifecycle,
+        enabled: options.recovery !== false,
+        backoff: typeof options.recovery === "object" ? options.recovery : {},
+        isClosing: () => closing,
+        liveModel: () => liveModel,
+        start: (model, record) => startConsumer(model, record),
+    });
 
     /** Wrap a broker/channel error into AmqpTopologyError with context. */
     function topologyError(message: string, cause: unknown, object?: AmqpTopologyObject): AmqpTopologyError {
@@ -1121,10 +1461,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     function markCycleDead(): void {
         connection = null;
         publishChannel = null;
+        liveModel = null;
         for (const record of subscriptionRecords) {
             record.active = false;
             record.channel = null;
             record.consumerTag = null;
+            restorer.stop(record);
         }
         subscriptionRecords.length = 0;
         failPendingReturns();
@@ -1169,11 +1511,27 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         publishChannel = ch;
     }
 
-    /** Start (or re-start after recovery) a consumer for a subscription record. */
-    async function startConsumer(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<void> {
+    /**
+     * Start (or re-start after recovery or a consumer loss) a consumer for a
+     * subscription record.
+     *
+     * Resolves with the new incarnation once it consumes, or `null` when a
+     * newer incarnation took over or the subscription was dropped while this
+     * one was being set up; in that case the channel is closed and an
+     * auto-named queue this run already declared is deleted, because an
+     * auto-delete queue that never had a consumer is not removed on its own.
+     */
+    async function startConsumer(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<ConsumerIncarnation | null> {
         const group = record.subOptions?.group;
         const isAutoGroup = !group;
         const override: AmqpQueueOverride | undefined = group ? options.queueOverrides?.[group] : undefined;
+        const mine = ++record.generation;
+        const stillWanted = (): boolean => mine === record.generation && record.active && !closing;
+
+        // Resolve queue name: explicit override → external contract queue;
+        // named group → `${exchange}.${group}`; no group → exclusive auto queue.
+        const queueName = override?.queue ?? (group ? `${exchange}.${group}` : `${exchange}.sub-${randomUUID()}`);
+        const incarnation: ConsumerIncarnation = { started: false, earlyLoss: null, lost: false, channelError: null };
 
         let ch: amqp.Channel;
         try {
@@ -1194,17 +1552,24 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
             throw err;
         }
-        ch.on("error", () => {
-            // Prevent unhandled 'error' events on consumer channels; failures
-            // surface through recovery or through nacked deliveries.
+        watchConsumerChannel(ch, incarnation, (cause, error) => {
+            restorer.lost({ record, generation: mine, incarnation, channel: ch, queue: queueName, cause, error });
         });
+
+        // Abandon this run: it is no longer the subscription's consumer.
+        const abandon = async (declaredQueue: boolean): Promise<null> => {
+            if (declaredQueue && isAutoGroup) {
+                await ch.deleteQueue(queueName).catch(() => undefined);
+            }
+            await ch.close().catch(() => undefined);
+            return null;
+        };
 
         const prefetch = options.consumerOptions?.prefetch ?? DEFAULT_PREFETCH;
         await ch.prefetch(prefetch);
-
-        // Resolve queue name: explicit override → external contract queue;
-        // named group → `${exchange}.${group}`; no group → exclusive auto queue.
-        const queueName = override?.queue ?? (group ? `${exchange}.${group}` : `${exchange}.sub-${randomUUID()}`);
+        if (!stillWanted()) {
+            return abandon(false);
+        }
 
         // A queue declared in the explicit topology was already asserted with
         // its full arguments by applyTopology — re-asserting it here without
@@ -1280,6 +1645,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
         }
         // skip mode: no checks — a missing queue fails on consume below.
+        if (!stillWanted()) {
+            return abandon(topologyMode === AmqpTopologyMode.ASSERT);
+        }
 
         const decode = options.serialization?.decode;
 
@@ -1288,8 +1656,15 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             consumeResult = await ch.consume(
                 queueName,
                 (msg: amqp.ConsumeMessage | null) => {
+                    // A superseded incarnation hands nothing to the handler: its
+                    // unacknowledged messages return to the queue when its channel closes.
+                    if (mine !== record.generation) {
+                        return;
+                    }
                     if (!msg) {
-                        // Consumer cancelled by broker
+                        // The broker cancelled the consumer (its queue was deleted,
+                        // or the queue's node failed over).
+                        restorer.lost({ record, generation: mine, incarnation, channel: ch, queue: queueName, cause: "cancelled" });
                         return;
                     }
 
@@ -1302,10 +1677,19 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             throw topologyError(`Failed to consume from queue '${queueName}'`, err, { kind: "queue", name: queueName });
         }
 
+        if (!stillWanted()) {
+            return abandon(topologyMode === AmqpTopologyMode.ASSERT);
+        }
+
+        incarnation.started = true;
         record.channel = ch;
         record.consumerTag = consumeResult.consumerTag;
         record.queueName = queueName;
         record.isAutoGroup = isAutoGroup;
+        if (incarnation.earlyLoss !== null) {
+            restorer.lost({ record, generation: mine, incarnation, channel: ch, queue: queueName, ...incarnation.earlyLoss });
+        }
+        return incarnation;
     }
 
     /**
@@ -1320,9 +1704,23 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
         for (const record of subscriptionRecords) {
             if (record.active) {
+                // This setup rebuilds the consumer: a restore in progress is superseded.
+                restorer.stop(record);
                 await startConsumer(model, record);
             }
         }
+    }
+
+    /**
+     * Setup hook of the recovering connection: {@link onSetup}, then the
+     * connection counts as live for consumer restoration. A consumer lost while
+     * the setup was still running could not be restored then and is retried now.
+     */
+    async function onRecoverySetup(model: amqp.ChannelModel): Promise<void> {
+        liveModel = null;
+        await onSetup(model);
+        liveModel = model;
+        restorer.resume(subscriptionRecords);
     }
 
     function newRecoveryCycle(wrapper: RecoveryCycle["wrapper"], initialWindow: boolean, backoffGuard: BackoffGuard | null): RecoveryCycle {
@@ -1345,6 +1743,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         // socket-level cut (fixed in 1.3.0). The no-op listener must
         // stay: an unhandled EventEmitter `error` crashes the process.
         conn.on("error", () => undefined);
+        // From the loss on, a consumer cannot be restored on this connection:
+        // the next setup hook rebuilds every consumer.
+        conn.on("disconnect", () => {
+            liveModel = null;
+        });
 
         wireRecoveryLifecycle(conn, lifecycle, {
             clearPublishChannel: () => {
@@ -1456,7 +1859,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             if (recoveryEnabled) {
                 // amqplib opt-in recovery: reconnect with backoff+jitter; our
                 // setup hook re-creates channels/topology/subscriptions.
-                connectOptions.recovery = buildRecoveryConnectOptions({ recovery: recoveryOpts, setup: onSetup, initialBudget, calculateDelay: backoffGuard?.calculateDelay });
+                connectOptions.recovery = buildRecoveryConnectOptions({
+                    recovery: recoveryOpts,
+                    setup: onRecoverySetup,
+                    initialBudget,
+                    calculateDelay: backoffGuard?.calculateDelay,
+                });
             }
 
             // Optional fail-fast / observability probe: validate topology against
@@ -1654,6 +2062,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
         async disconnect(): Promise<void> {
             closing = true;
+            liveModel = null;
 
             // A connect() still inside its initial window owns a live
             // recovering connection that is not `connection` yet. Close it
@@ -1669,6 +2078,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
             // Unsubscribe all active subscriptions first (with error isolation).
             for (const record of subscriptionRecords) {
+                restorer.stop(record);
                 if (record.active && record.channel) {
                     if (record.consumerTag) {
                         await record.channel.cancel(record.consumerTag).catch(() => undefined);
@@ -1937,16 +2347,18 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 queueName: "",
                 isAutoGroup: !subOptions?.group,
                 active: true,
+                generation: 0,
+                restore: { attempt: 0, timer: null, stabilityTimer: null, pending: false },
             };
 
             const cycle = connection;
-            await startConsumer(cycle, record);
+            const incarnation = await startConsumer(cycle, record);
             // The cycle may have died while the consumer was being set up
             // (recovery gave up, fatal stop, disconnect). The dead-cycle
             // bookkeeping has then already cleared the subscription list, so
             // recording this subscription now would make a later connect()
             // replay it on a fresh cycle. Drop it and report the loss instead.
-            if (connection !== cycle) {
+            if (connection !== cycle || incarnation === null) {
                 const orphan = record.channel;
                 record.active = false;
                 record.channel = null;
@@ -1959,6 +2371,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             const subscription: EventSubscription = {
                 async unsubscribe(): Promise<void> {
                     record.active = false;
+                    restorer.stop(record);
 
                     const ch = record.channel;
                     if (ch) {
