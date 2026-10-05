@@ -349,14 +349,20 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
              * Messages that were nack'd (not XACK'd) remain in the PEL.
              * XREADGROUP with `>` only delivers *new* messages, so without
              * this reclaim step nack'd messages would never be retried.
+             *
+             * One call inspects at most COUNT * 10 pending entries, so the id
+             * XAUTOCLAIM returns is kept per stream and the next pass continues
+             * from it; `0-0` means the whole list was scanned and the next pass
+             * starts over.
              */
+            const reclaimCursors = new Map<string, string>();
             const reclaimPending = async (): Promise<void> => {
                 for (const key of streamKeys) {
                     try {
                         // XAUTOCLAIM key group consumer min-idle-time start [COUNT count]
                         // Returns: [next-start-id, [[id, [fields...]], ...], [deleted-ids...]]
                         const result = normalizeXAutoClaimReply(
-                            await blockingRedis.call("XAUTOCLAIM", key, group, consumer, String(PENDING_IDLE_MS), "0-0", "COUNT", String(count)),
+                            await blockingRedis.call("XAUTOCLAIM", key, group, consumer, String(PENDING_IDLE_MS), reclaimCursors.get(key) ?? "0-0", "COUNT", String(count)),
                             replyContext,
                         );
 
@@ -364,7 +370,8 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             continue;
                         }
 
-                        const [, entries] = result;
+                        const [nextStartId, entries] = result;
+                        reclaimCursors.set(key, nextStartId);
                         if (entries.length === 0) continue;
 
                         // Batch XPENDING: one round-trip instead of N (EFF-7).
@@ -389,7 +396,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             if (!subscriptionRunning) {
                                 return;
                             }
-                            await processEntry(key, entryId, fields, deliveryCounts.get(entryId) ?? 2);
+                            // A failing entry stays pending and is claimed again later; it must not
+                            // keep the entries claimed after it (already owned by this consumer) waiting.
+                            try {
+                                await processEntry(key, entryId, fields, deliveryCounts.get(entryId) ?? 2);
+                            } catch (err) {
+                                console.error("[RedisAdapter] handler error for entry", entryId, err);
+                            }
                         }
                     } catch (err) {
                         if (err instanceof RedisReplyShapeError) {
