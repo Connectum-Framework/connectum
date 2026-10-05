@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
+import { assertFitBase } from "../scaffold/baseCheck.ts";
 import { resolveConfig } from "../scaffold/config.ts";
 import type { CloneFn } from "../scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF, fetchBase, readTree } from "../scaffold/fetchBase.ts";
@@ -29,7 +30,7 @@ import { emitFiles } from "../utils/emit.ts";
  * Options for the `init` pipeline.
  */
 export interface InitOptions {
-    /** Project name / target directory. */
+    /** Destination path; the last segment of it is the package name. */
     name?: string | undefined;
     /** Target runtime: `node` (default) or `bun`. */
     runtime?: string | undefined;
@@ -86,14 +87,14 @@ export async function executeInit(options: InitOptions): Promise<void> {
     });
     const config = resolveConfig(raw);
 
-    const targetDir = resolve(process.cwd(), config.name);
+    const targetDir = resolve(process.cwd(), config.dir);
     if (existsSync(targetDir)) {
         // Guard before readdirSync: a path that exists but is a file would throw a raw ENOTDIR.
         if (!statSync(targetDir).isDirectory()) {
-            throw new Error(`connectum init: "${config.name}" already exists and is not a directory.`);
+            throw new Error(`connectum init: "${config.dir}" already exists and is not a directory.`);
         }
         if (!options.force && readdirSync(targetDir).length > 0) {
-            throw new Error(`connectum init: target directory "${config.name}" already exists and is not empty (use --force to overwrite).`);
+            throw new Error(`connectum init: target directory "${config.dir}" already exists and is not empty (use --force to overwrite).`);
         }
     }
 
@@ -103,17 +104,22 @@ export async function executeInit(options: InitOptions): Promise<void> {
         await fetchBase(tmp, { ref: options.ref, clone: options.clone });
 
         const baseFiles = readTree(tmp);
+        assertFitBase(baseFiles, { sample: config.sample }, options.ref ?? DEFAULT_BASE_REF);
         const finalFiles = transformBase(baseFiles, config);
         const result = emitFiles(targetDir, finalFiles, { force: options.force ?? false });
 
-        console.log(`Scaffolded ${result.written.length} files into ${config.name}/`);
+        console.log(`Scaffolded ${result.written.length} files into ${config.dir}/`);
         if (result.skipped.length > 0) {
             console.log(`Skipped ${result.skipped.length} existing file(s): ${result.skipped.join(", ")}`);
         }
         console.log("");
         console.log("Next steps:");
-        console.log(`  cd ${config.name}`);
+        console.log(`  cd ${config.dir}`);
         console.log(`  ${config.packageManager} install`);
+        if (!config.sample) {
+            // buf generate fails on a module without proto files, so the first service must exist before start/test.
+            console.log("  npx @connectum/cli generate service <name>   # creates the first service; register it as printed");
+        }
         console.log(`  ${config.packageManager} run start`);
     } finally {
         rmSync(tmp, { recursive: true, force: true });
@@ -131,7 +137,7 @@ export const initCommand = defineCommand({
     args: {
         name: {
             type: "positional",
-            description: "Project name / target directory",
+            description: "Destination path; its last segment is the package name (a valid new npm package name)",
             required: false,
         },
         runtime: {
@@ -148,7 +154,7 @@ export const initCommand = defineCommand({
         },
         sample: {
             type: "boolean",
-            description: "Emit a runnable sample service (default: true)",
+            description: "Emit the runnable sample Greeter service (default: true); --no-sample emits a config-only project (not combinable with --auth or --events)",
         },
         otel: {
             type: "boolean",

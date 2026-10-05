@@ -12,7 +12,7 @@ import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
 
-const natsConfig: ScaffoldConfig = { name: "orders", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { events: { adapter: "nats" } } };
+const natsConfig: ScaffoldConfig = { dir: "orders", name: "orders", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { events: { adapter: "nats" } } };
 
 describe("resolveConfig events flag", () => {
     it("parses a valid adapter", () => {

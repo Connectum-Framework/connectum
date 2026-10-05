@@ -231,6 +231,44 @@ ${secondCase}
 `;
 }
 
+/** Path of the smoke test emitted instead of the Greeter test when there is no sample. */
+const SMOKE_TEST_PATH = "tests/e2e/server.test.ts";
+
+/** Base files that belong to the sample Greeter service and are dropped with `--no-sample`. */
+function isSampleFile(relPath: string): boolean {
+    return relPath.startsWith("proto/greeter/") || relPath === "src/services/greeterService.ts";
+}
+
+/**
+ * Smoke test for a project that ships no service yet: it builds the real composition
+ * root and checks the server comes up in its initial state. Without it `node --test`
+ * passes on zero tests and `bun test` fails on finding none, so the project's own
+ * `test` command would prove nothing about the wiring.
+ */
+export function generateSmokeTest(config: ScaffoldConfig): string {
+    const runnerImport = config.runtime === "bun" ? 'import { describe, it } from "bun:test";' : 'import { describe, it } from "node:test";';
+    return `/**
+ * Smoke test for the composition root.
+ *
+ * Builds the real server (\`buildServer\`) with the configured interceptors and
+ * protocols and checks it is constructed without being started. Add a test per service
+ * once you have generated one with \`connectum generate service <name>\`.
+ */
+
+import assert from "node:assert/strict";
+${runnerImport}
+import { buildServer } from "#server.ts";
+
+describe("server", () => {
+    it("is built from the composition root and not started", () => {
+        // Port 0: the server is never started, so nothing is bound.
+        const server = buildServer(0);
+        assert.equal(server.state, "created");
+    });
+});
+`;
+}
+
 /**
  * Transform the fetched base file map into the final project file map.
  *
@@ -243,6 +281,9 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
 
     for (const [relPath, content] of files) {
         if (MONOREPO_ONLY.has(relPath)) {
+            continue;
+        }
+        if (!config.sample && isSampleFile(relPath)) {
             continue;
         }
         if (relPath === "README.md") {
@@ -272,7 +313,11 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
     out.set("src/index.ts", generateIndex(config));
     out.set("buf.yaml", generateBufYaml(config));
     out.set("buf.gen.yaml", generateBufGenYaml(config));
-    out.set(E2E_TEST_PATH, generateGreeterE2eTest(config));
+    if (config.sample) {
+        out.set(E2E_TEST_PATH, generateGreeterE2eTest(config));
+    } else {
+        out.set(SMOKE_TEST_PATH, generateSmokeTest(config));
+    }
     out.set("README.md", generateReadme(config));
 
     // auth module: JWT + proto-authz interceptor builder (buf.yaml adds the 2nd module).
@@ -349,6 +394,15 @@ export function generateReadme(config: ScaffoldConfig): string {
             : config.nodeExec === "tsx"
               ? "Runs on **Node.js >= 22.13.0** via `tsx`."
               : "Runs on **Node.js >= 25.2.0** (native TypeScript execution).";
+    const gettingStarted = config.sample
+        ? `${pm} install\n${run("start")}`
+        : `${pm} install\nnpx @connectum/cli generate service <name>   # buf needs at least one proto file\n${run("start")}`;
+    const nextSteps = config.sample
+        ? `Replace the sample \`Greeter\` service under \`proto/\` and \`src/services/\` with your
+own contract, then run \`buf generate\`.`
+        : `This project has no service yet. Run \`connectum generate service <name>\` to create
+the proto contract, the handler and a test, then register the service in
+\`src/server.ts\` as the command prints.`;
     return `# ${config.name}
 
 A Connectum gRPC/ConnectRPC service scaffolded with \`connectum init\`.
@@ -358,8 +412,7 @@ ${runtimeNote}
 ## Getting started
 
 \`\`\`bash
-${pm} install
-${run("start")}
+${gettingStarted}
 \`\`\`
 
 \`buf generate\` runs automatically before \`start\`, \`test\`, and \`typecheck\`, so the
@@ -375,8 +428,7 @@ generated code under \`gen/\` is always up to date.
 
 ## Next steps
 
-Replace the sample \`Greeter\` service under \`proto/\` and \`src/services/\` with your
-own contract, then run \`buf generate\`.
+${nextSteps}
 `;
 }
 

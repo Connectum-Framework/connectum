@@ -9,7 +9,7 @@ import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
 
-const catalogConfig: ScaffoldConfig = { name: "svc", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { catalog: true } };
+const catalogConfig: ScaffoldConfig = { dir: "svc", name: "svc", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { catalog: true } };
 
 describe("generateBufGenYaml", () => {
     it("adds the catalog plugin with strategy: all when enabled", () => {

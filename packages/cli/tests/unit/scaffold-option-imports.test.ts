@@ -24,7 +24,7 @@ import {
     connectumSliceViolations,
 } from "../../src/scaffold/versionFloors.ts";
 
-const config = (modules: ModuleSelection): ScaffoldConfig => ({ name: "svc", runtime: "node", packageManager: "npm", nodeExec: "raw", sample: true, modules });
+const config = (modules: ModuleSelection): ScaffoldConfig => ({ dir: "svc", name: "svc", runtime: "node", packageManager: "npm", nodeExec: "raw", sample: true, modules });
 
 const AUTH: ModuleSelection = { auth: true };
 const EVENTS: ModuleSelection = { events: { adapter: "nats" } };

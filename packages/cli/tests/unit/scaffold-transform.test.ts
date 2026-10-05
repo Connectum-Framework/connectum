@@ -18,12 +18,13 @@ import {
 } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
 
-const nodePnpm: ScaffoldConfig = { name: "payments", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: {} };
+const nodePnpm: ScaffoldConfig = { dir: "payments", name: "payments", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: {} };
 
 describe("resolveConfig", () => {
     it("applies defaults", () => {
         const cfg = resolveConfig({ name: "svc" });
         assert.deepEqual(cfg, {
+            dir: "svc",
             name: "svc",
             runtime: "node",
             packageManager: "pnpm",

@@ -7,6 +7,7 @@
  * @module scaffold/config
  */
 
+import { resolveProjectTarget } from "./projectName.ts";
 import type { EventAdapter, NodeExec, PackageManager, ResilienceInterceptor, Runtime, ScaffoldConfig } from "./types.ts";
 
 const RUNTIMES: readonly Runtime[] = ["node", "bun"];
@@ -46,13 +47,19 @@ function oneOf<T extends string>(value: string | undefined, allowed: readonly T[
 /**
  * Validate + default raw input into a resolved config.
  *
- * @throws Error if `name` is missing or any enum value is invalid.
+ * @param input - raw flags / prompt answers
+ * @param cwd - directory a relative or `.` project path is resolved against
+ * @throws Error if the project path is missing, its last segment is not a valid new npm
+ *   package name, an enum value is invalid, or `--no-sample` is combined with an option that
+ *   needs the sample service.
  */
-export function resolveConfig(input: RawInput): ScaffoldConfig {
-    const name = (input.name ?? "").trim();
-    if (name === "") {
+export function resolveConfig(input: RawInput, cwd: string = process.cwd()): ScaffoldConfig {
+    const typedPath = (input.name ?? "").trim();
+    if (typedPath === "") {
         throw new Error("connectum init: a project name is required (e.g. `connectum init my-service`)");
     }
+
+    const { dir, name } = resolveProjectTarget(typedPath, cwd);
 
     const runtime = oneOf(input.runtime, RUNTIMES, "runtime", "node");
     const packageManager = oneOf(input.packageManager, PACKAGE_MANAGERS, "package-manager", "pnpm");
@@ -73,12 +80,27 @@ export function resolveConfig(input: RawInput): ScaffoldConfig {
         .filter((s) => s.length > 0)
         .map((s) => oneOf(s, RESILIENCE, "resilience", "retry"));
 
+    const sample = input.sample ?? true;
+    if (!sample) {
+        for (const [flag, enabled] of [
+            ["--auth", input.auth === true],
+            ["--events", events !== undefined],
+        ] as const) {
+            if (enabled) {
+                throw new Error(
+                    `connectum init: --no-sample cannot be combined with ${flag}: its demonstration slice is built on the sample Greeter service. Scaffold with the sample, or leave ${flag} out.`,
+                );
+            }
+        }
+    }
+
     return {
+        dir,
         name,
         runtime,
         packageManager,
         nodeExec,
-        sample: input.sample ?? true,
+        sample,
         modules: {
             otel: input.otel ?? false,
             events,
