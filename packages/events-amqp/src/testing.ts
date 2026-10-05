@@ -26,8 +26,13 @@
  * - timing: there is no backoff — recovery advances only via explicit
  *   {@link FakeAmqpControl.completeRecovery} / {@link FakeAmqpControl.exhaustRecovery}
  *   calls, and `reconnecting.delay` is always `0`; a lost consumer comes back
- *   only through {@link FakeAmqpControl.restoreConsumers} (always attempt 1,
- *   never `consumer-restore-failed`, the queue name never changes);
+ *   through {@link FakeAmqpControl.restoreConsumers} (always attempt 1,
+ *   never `consumer-restore-failed`, the queue name never changes) or silently
+ *   through {@link FakeAmqpControl.completeRecovery}, as connection recovery does;
+ * - consumer loss is queue-wide: {@link FakeAmqpControl.loseConsumer} takes every
+ *   live subscription on the queue (a `group` shared by several subscriptions
+ *   loses all of them), whatever the `cause`; a real `channel-closed` ends one
+ *   subscription's channel only, a deleted queue ends every consumer on it;
  * - a queued topology `failSetup` at `connect()` WITHOUT fail-fast reports
  *   `setup-failed { initial: true }` and then connects anyway (the real
  *   adapter would keep retrying inside recovery); a NON-topology queued
@@ -145,7 +150,9 @@ export interface FakeAmqpControl {
      *
      * The fake has no exchange, so a subscription's queue is its `group`, or
      * `fake.sub-N` (N = 1-based order of registration) when it has none.
-     * Without `queue`, every live subscription is lost.
+     * Without `queue`, every live subscription is lost; with it, every live
+     * subscription on that queue is, even for `channel-closed` (see the
+     * divergence list above).
      *
      * Throws when the adapter is not `connected` (a connection loss is driven
      * by {@link dropConnection}) or when nothing matches, so a test cannot

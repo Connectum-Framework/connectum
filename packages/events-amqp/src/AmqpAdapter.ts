@@ -1101,8 +1101,8 @@ export function createConsumerRestorer<R extends RestorableSubscription, M>(deps
             // already scheduled the next attempt).
             return;
         }
-        if (!record.active || deps.isClosing()) {
-            // Unsubscribed or shut down while the attempt was returning.
+        if (!record.active || deps.isClosing() || deps.liveModel() !== model) {
+            // Unsubscribed, shut down, or the connection went down while the attempt was returning.
             return;
         }
         dispatchLifecycle(deps.lifecycle, { type: "consumer-restored", queue: record.queueName, attempt });

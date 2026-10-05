@@ -478,6 +478,27 @@ describe("createConsumerRestorer backoff and outcome", () => {
         );
         assert.equal(timers.live().length, 0);
     });
+
+    it("an attempt whose consumer is returned after the connection went down reports nothing and leaves no timer", async () => {
+        let live: object | null = {};
+        const { restorer, timers, events } = setup({
+            liveModel: () => live,
+            start: () => {
+                live = null;
+                return Promise.resolve(makeIncarnation());
+            },
+        });
+
+        lose(restorer, makeRecord(), makeIncarnation(), makeChannel());
+        timers.fireNext();
+        await flush();
+
+        assert.deepEqual(
+            events.map((event) => event.type),
+            ["consumer-lost"],
+        );
+        assert.equal(timers.live().length, 0);
+    });
 });
 
 describe("createConsumerRestorer teardown and connection ownership", () => {
