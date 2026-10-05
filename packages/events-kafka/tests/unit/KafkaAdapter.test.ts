@@ -92,6 +92,20 @@ describe("KafkaAdapter", () => {
         }
     });
 
+    it("accepts both commit strategies and rejects any other value", () => {
+        for (const good of ["per-message", "per-batch"] as const) {
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { commitStrategy: good } });
+            assert.equal(adapter.name, "kafka");
+        }
+
+        for (const bad of ["", "batch", "PER-BATCH", "per-message "]) {
+            assert.throws(
+                () => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { commitStrategy: bad as "per-batch" } }),
+                { name: "RangeError", message: /commitStrategy must be "per-message" or "per-batch"/ },
+            );
+        }
+    });
+
     describe("redeliveryDelay default", () => {
         type EachBatch = (payload: unknown) => Promise<void>;
 

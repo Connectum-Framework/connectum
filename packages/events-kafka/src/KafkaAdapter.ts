@@ -89,6 +89,11 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         );
     }
 
+    const commitStrategy = options.consumerOptions?.commitStrategy ?? "per-message";
+    if (commitStrategy !== "per-message" && commitStrategy !== "per-batch") {
+        throw new RangeError(`KafkaAdapter: consumerOptions.commitStrategy must be "per-message" or "per-batch", got ${JSON.stringify(commitStrategy)}`);
+    }
+
     let kafka: Kafka;
 
     let producer: Producer | null = null;
@@ -204,7 +209,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 await consumer.run({
                     autoCommit: false,
                     eachBatchAutoResolve: false,
-                    eachBatch: createBatchConsumer({ handler, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
+                    eachBatch: createBatchConsumer({ handler, commitStrategy, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
                 });
             } catch (err) {
                 await consumer.disconnect().catch(() => undefined);
