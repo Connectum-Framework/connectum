@@ -110,6 +110,14 @@ export interface AmqpAdapterOptions {
      * In-flight publishes at the moment of a connection loss reject with
      * `AmqpConnectionError`.
      *
+     * With recovery enabled the adapter also restores a consumer the broker
+     * ended while the connection stayed up (queue deleted, consumer cancelled,
+     * channel closed): `consumer-lost`, then `consumer-restored` or
+     * `consumer-restore-failed`. Attempts wait the same delay formula (the
+     * numeric knobs; the defaults when `backoff` is set) and have no limit
+     * except a failure that cannot heal. With `false` the loss is reported
+     * with `willRestore: false` and the consumer stays dead.
+     *
      * `maxRetries` governs BOTH the initial connect and steady-state recovery
      * (counter reset on success); under the default `Infinity`, `connect()`
      * blocks until the broker is reachable rather than failing fast (see
@@ -581,6 +589,48 @@ export type AmqpLifecycleEvent =
           readonly error: Error;
       }
     | {
+          /**
+           * The broker ended a subscription's consumer while the connection
+           * stayed up: its queue was deleted or the consumer was cancelled
+           * (`cancelled`), or the broker closed the consumer channel with a
+           * channel exception (`channel-closed`, with that exception as `error`).
+           *
+           * Delivered once per loss. Not delivered for a connection loss (the
+           * connection's own `disconnected` covers it and connection recovery
+           * restores the subscription), nor for `unsubscribe()` / `disconnect()`.
+           */
+          readonly type: "consumer-lost";
+          readonly queue: string;
+          readonly cause: AmqpConsumerLossCause;
+          readonly error?: Error;
+          /** `true` when `recovery` is enabled and the adapter will try to restore the consumer. */
+          readonly willRestore: boolean;
+      }
+    | {
+          /**
+           * A lost consumer is consuming again. For a subscription without a
+           * group `queue` is the NEW auto-named queue.
+           */
+          readonly type: "consumer-restored";
+          readonly queue: string;
+          /** 1-based number of the restoration attempt that succeeded. */
+          readonly attempt: number;
+      }
+    | {
+          /**
+           * A restoration attempt failed. `willRetry: false` means this
+           * subscription's restoration has ended (a failure that cannot heal
+           * without a configuration or topology change); other subscriptions
+           * and the connection are unaffected.
+           */
+          readonly type: "consumer-restore-failed";
+          readonly queue: string;
+          /** 1-based number of the failed attempt. */
+          readonly attempt: number;
+          readonly error: Error;
+          readonly willRetry: boolean;
+      }
+    | {
           readonly type: "lifecycle-error";
           /** Name of the callback that failed: `onLifecycle` or a flat callback such as `onReconnecting`. */
           readonly callback: string;
@@ -588,6 +638,9 @@ export type AmqpLifecycleEvent =
           readonly event: string;
           readonly error: Error;
       };
+
+/** How the broker ended a consumer: cancelled it (e.g. queue deleted) or closed its channel with an exception. */
+export type AmqpConsumerLossCause = "cancelled" | "channel-closed";
 
 /** What the adapter intended to do with a delivery when its settlement was skipped. */
 export type AmqpSettlementAction = "ack" | "requeue" | "reject";
