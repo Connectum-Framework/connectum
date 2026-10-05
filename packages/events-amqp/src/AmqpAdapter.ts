@@ -1611,7 +1611,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
 
             const queueDurable = override?.durable ?? options.queueOptions?.durable ?? true;
-            const exclusive = options.consumerOptions?.exclusive ?? false;
+            const exclusive = options.consumerOptions?.exclusive ?? true;
 
             try {
                 await topologyOp(`Failed to declare queue '${queueName}'`, { kind: "queue", name: queueName }, () =>

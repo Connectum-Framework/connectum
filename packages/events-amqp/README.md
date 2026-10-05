@@ -152,7 +152,7 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `prefetch` | `number` | `10` | QoS prefetch count |
-| `exclusive` | `boolean` | `false` | Exclusive consumer |
+| `exclusive` | `boolean` | `true` | Make the private queue of a subscription without `group` exclusive to its connection. RabbitMQ 4.3+ refuses a queue that is neither durable nor exclusive, so `false` works only on older brokers; subscriptions with `group` ignore it |
 
 ### AmqpPublisherOptions
 
@@ -292,7 +292,7 @@ Example: "order.>"  →  "order.#"
 |------|-----------|----------|
 | With `group` + `queueOverrides[group]` | override `queue` | External contract queue (bound, consumed) |
 | With `group` | `{exchange}.{group}` | Shared, durable, competing consumers |
-| Without `group` | `{exchange}.sub-{uuid}` | Exclusive, auto-delete (fan-out) |
+| Without `group` | `{exchange}.sub-{uuid}` | Exclusive, auto-delete (fan-out); the name is new on every consumer start |
 
 ### Delivery Settlement
 
