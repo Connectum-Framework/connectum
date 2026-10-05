@@ -809,9 +809,14 @@ export interface AmqpConsumerOptions {
     readonly prefetch?: number;
 
     /**
-     * Whether the consumer is exclusive to this connection.
+     * Whether the private queue of a subscription without `group` is exclusive
+     * to the subscriber's connection, so the broker removes it with that
+     * connection. RabbitMQ 4.3 and later refuse a queue that is neither
+     * durable nor exclusive, so `false` works only on older brokers or where the
+     * `transient_nonexcl_queues` deprecated feature is permitted. Subscriptions
+     * with `group` use a durable shared queue and ignore this option.
      *
-     * @default false
+     * @default true
      */
     readonly exclusive?: boolean;
 }

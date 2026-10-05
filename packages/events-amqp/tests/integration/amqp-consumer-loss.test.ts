@@ -120,9 +120,6 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
             exchange: "loss.auto",
             exchangeType: "topic",
             recovery: { initialDelay: 100, maxDelay: 500 },
-            // RabbitMQ 4.3 closes the connection (541) on a transient non-exclusive queue,
-            // which is what an auto-named queue is unless the consumer is exclusive.
-            consumerOptions: { exclusive: true },
             lifecycle: { onLifecycle: (event) => events.push(event) },
         });
         await adapter.connect();
