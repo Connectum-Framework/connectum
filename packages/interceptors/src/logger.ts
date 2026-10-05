@@ -1,7 +1,8 @@
 /**
  * Logger interceptor
  *
- * Logs all RPC requests and responses for debugging.
+ * Logs every RPC call: request, response, failure and duration. Message bodies
+ * are logged only when `includeBodies` is set.
  *
  * @module logger
  */
@@ -98,11 +99,16 @@ function failureCodeName(error: unknown): string {
  * @param stream - Input stream
  * @param msg - Log message prefix
  * @param logger - Logger function
+ * @param includeBodies - Pass each message to the sink; otherwise only the event line is written
  * @returns Async generator that yields messages
  */
-async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: LogSink): AsyncGenerator<T, void, void> {
+async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: LogSink, includeBodies: boolean): AsyncGenerator<T, void, void> {
     for await (const message of stream) {
-        logger(`${msg} request`, message);
+        if (includeBodies) {
+            logger(`${msg} request`, message);
+        } else {
+            logger(`${msg} request`);
+        }
         yield message;
     }
 }
@@ -118,6 +124,7 @@ async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: L
  * @param stream - Output stream
  * @param msg - Log message prefix
  * @param logger - Logger function
+ * @param includeBodies - Pass each message to the sink; otherwise only the event line is written
  * @param onFailure - Called with the error that ended the stream
  * @param onEnd - Called once when the stream is over
  * @returns Async generator that yields messages
@@ -127,12 +134,17 @@ async function* logResStream<T>(
     stream: AsyncIterable<T>,
     msg: string,
     logger: LogSink,
+    includeBodies: boolean,
     onFailure: (error: unknown) => void,
     onEnd: () => void,
 ): AsyncGenerator<T, void, void> {
     try {
         for await (const message of stream) {
-            logger(`${msg} response`, messageToJson(schema, message));
+            if (includeBodies) {
+                logger(`${msg} response`, messageToJson(schema, message));
+            } else {
+                logger(`${msg} response`);
+            }
             yield message;
         }
     } catch (error) {
@@ -178,6 +190,12 @@ async function* logResStream<T>(
  * // RPC [http] /greeter.v1.GreeterService/SayHello request ...         (network client)
  * ```
  *
+ * @example Log request and response bodies (opt-in)
+ * ```typescript
+ * // Bodies can carry credentials and personal data; enable only where the log is protected.
+ * createLoggerInterceptor({ includeBodies: true });
+ * ```
+ *
  * @example Client-side usage with transport
  * ```typescript
  * import { createConnectTransport } from '@connectrpc/connect-node';
@@ -192,7 +210,7 @@ async function* logResStream<T>(
  * ```
  */
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
-    const { level = "debug", skipHealthCheck = true, includeTransport = false } = options;
+    const { level = "debug", skipHealthCheck = true, includeTransport = false, includeBodies = false } = options;
     // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
     const logger = guardSink(options.logger ?? console[level]);
 
@@ -209,6 +227,8 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
         }
 
         const startTime = performance.now();
+        const logRequest = (message: unknown): void => (includeBodies ? logger(`RPC ${label} request`, message) : logger(`RPC ${label} request`));
+        const logResponse = (message: unknown): void => (includeBodies ? logger(`RPC ${label} response`, message) : logger(`RPC ${label} response`));
         const logFailure = (error: unknown): void => logger(`RPC ${label} failed with ${failureCodeName(error)}`);
         const logCompleted = (): void => logger(`RPC ${label} completed in ${(performance.now() - startTime).toFixed(2)}ms`);
 
@@ -219,26 +239,26 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
             // Log request (do NOT mutate req.message - it's readonly!)
             if (req.stream) {
                 // Wrap stream with logging generator and create new request
-                const modifiedReq = { ...req, message: logReqStream(req.message, `STREAM ${label}`, logger) };
+                const modifiedReq = { ...req, message: logReqStream(req.message, `STREAM ${label}`, logger, includeBodies) };
                 const res = await next(modifiedReq);
 
                 if (res.stream) {
                     completionDeferred = true;
                     return {
                         ...res,
-                        message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${label}`, logger, logFailure, logCompleted),
+                        message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${label}`, logger, includeBodies, logFailure, logCompleted),
                     } as StreamResponse;
                 }
                 return res;
             }
             // Log unary request
-            logger(`RPC ${label} request`, req.message);
+            logRequest(req.message);
 
             // Execute request
             const res = await next(req);
 
             // Log unary response
-            logger(`RPC ${label} response`, res.message);
+            logResponse(res.message);
 
             return res;
         } catch (error) {
