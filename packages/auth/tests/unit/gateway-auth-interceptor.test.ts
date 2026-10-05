@@ -288,6 +288,65 @@ describe("gateway-auth-interceptor", () => {
             );
         });
 
+        it("should match every CIDR prefix length exactly at the range boundaries", async () => {
+            // Expected values follow RFC 4632 prefix semantics: an address is inside
+            // a/N when its first N bits equal the network's first N bits. Addresses
+            // above 127.255.255.255 and /0, /1, /31, /32 are where signed 32-bit
+            // arithmetic goes wrong, so they are covered explicitly.
+            const cases: ReadonlyArray<readonly [cidr: string, ip: string, trusted: boolean]> = [
+                ["192.168.1.0/24", "192.168.1.0", true],
+                ["192.168.1.0/24", "192.168.1.255", true],
+                ["192.168.1.0/24", "192.168.2.0", false],
+                ["192.168.1.0/24", "192.168.0.255", false],
+                ["128.0.0.0/1", "128.0.0.0", true],
+                ["128.0.0.0/1", "255.255.255.255", true],
+                ["128.0.0.0/1", "127.255.255.255", false],
+                ["128.0.0.0/1", "0.0.0.0", false],
+                ["192.168.1.5/32", "192.168.1.5", true],
+                ["192.168.1.5/32", "192.168.1.4", false],
+                ["192.168.1.5/32", "192.168.1.6", false],
+                ["192.168.1.4/31", "192.168.1.4", true],
+                ["192.168.1.4/31", "192.168.1.5", true],
+                ["192.168.1.4/31", "192.168.1.6", false],
+                ["192.168.1.4/31", "192.168.1.3", false],
+                ["0.0.0.0/0", "255.255.255.255", true],
+                ["0.0.0.0/0", "1.2.3.4", true],
+                ["172.16.0.0/12", "172.31.255.255", true],
+                ["172.16.0.0/12", "172.32.0.0", false],
+                ["172.16.0.0/12", "172.15.255.255", false],
+                ["10.1.2.3/8", "10.9.9.9", true],
+                ["10.1.2.3/8", "11.0.0.0", false],
+                ["255.255.255.255/32", "255.255.255.255", true],
+                ["255.255.255.255/32", "255.255.255.254", false],
+            ];
+
+            for (const [cidr, ip, trusted] of cases) {
+                const interceptor = createGatewayAuthInterceptor({
+                    ...DEFAULT_OPTIONS,
+                    trustSource: { header: "x-real-ip", expectedValues: [cidr] },
+                });
+                const next = mock.fn(async (_req: any) => ({ message: {} })) as any;
+                const handler = interceptor(next);
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-real-ip", ip);
+                req.header.set("x-user-id", "cidr-user");
+
+                if (trusted) {
+                    await handler(req);
+                    assert.strictEqual(next.mock.calls.length, 1, `${ip} must be inside ${cidr}`);
+                } else {
+                    await assert.rejects(
+                        () => handler(req),
+                        (err: unknown) => {
+                            assertConnectError(err, Code.Unauthenticated);
+                            return true;
+                        },
+                        `${ip} must be outside ${cidr}`,
+                    );
+                }
+            }
+        });
+
         it("should set auth context in AsyncLocalStorage", async () => {
             const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
 

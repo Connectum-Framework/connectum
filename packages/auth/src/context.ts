@@ -22,7 +22,8 @@ interface StorageMeta {
 
 function isAsyncLocalStorageLike(value: unknown): boolean {
     return (
-        value != null &&
+        value !== null &&
+        value !== undefined &&
         typeof (value as Record<string, unknown>).run === "function" &&
         typeof (value as Record<string, unknown>).getStore === "function" &&
         typeof (value as Record<string, unknown>).enterWith === "function"
@@ -33,7 +34,7 @@ function resolveStorage(): AsyncLocalStorage<AuthContext> {
     const g = globalThis as Record<symbol, unknown>;
     const existing = g[STORAGE_KEY];
 
-    if (existing != null) {
+    if (existing !== null && existing !== undefined) {
         if (!isAsyncLocalStorageLike(existing)) {
             throw new Error("@connectum/auth: globalThis[Symbol.for('@connectum/auth/context-storage')] " + "is not an AsyncLocalStorage instance. This indicates corruption.");
         }

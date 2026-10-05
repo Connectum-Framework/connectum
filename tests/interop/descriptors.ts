@@ -29,7 +29,7 @@ function forEachBytesField(bytes: Uint8Array, visit: (field: number, value: Buff
             if (byte === undefined) {
                 throw new Error("truncated varint");
             }
-            result += (byte & 0x7f) * 2 ** shift;
+            result += (byte % 0x80) * 2 ** shift;
             if (byte < 0x80) {
                 return result;
             }

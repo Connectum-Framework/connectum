@@ -133,7 +133,7 @@ for (const name of pkgNames) {
     if (!existsSync(changelogPath) || !existsSync(pkgJsonPath)) continue;
     const pkgName = JSON.parse(readFileSync(pkgJsonPath, "utf8")).name;
     const section = extractVersionSection(readFileSync(changelogPath, "utf8"), version);
-    if (section == null) continue;
+    if (section === null || section === undefined) continue;
     const entries = parseEntries(section);
     if (!entries.length) continue;
     perPackage.set(pkgName, entries);

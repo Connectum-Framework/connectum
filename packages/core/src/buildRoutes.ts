@@ -177,7 +177,7 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     };
 
     // Collect HTTP handlers from protocols
-    const httpHandlers = protocols.map((p) => p.httpHandler).filter((h) => h != null);
+    const httpHandlers = protocols.map((p) => p.httpHandler).filter((h) => h !== null && h !== undefined);
 
     // Create HTTP/2 server adapter. Unset admission options are left out of the
     // object entirely, so a server without them builds exactly the adapter it

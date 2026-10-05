@@ -152,7 +152,7 @@ check("auth.matchesMethodPattern discriminates matching vs non-matching", () => 
 // ---------- @connectum/healthcheck ----------
 const hc = await import("@connectum/healthcheck");
 check("healthcheck.ServingStatus enum + manager singleton", () => {
-    assert.ok(hc.ServingStatus.SERVING != null);
+    assert.ok(hc.ServingStatus.SERVING !== null && hc.ServingStatus.SERVING !== undefined);
     assert.ok(hc.healthcheckManager);
     const m = hc.createHealthcheckManager();
     assert.ok(m);

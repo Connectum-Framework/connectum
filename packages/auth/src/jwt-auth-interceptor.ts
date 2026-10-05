@@ -9,7 +9,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import * as jose from "jose";
+import { createRemoteJWKSet, type JWTPayload, type JWTVerifyOptions, type JWTVerifyResult, jwtVerify } from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
 
@@ -48,14 +48,14 @@ function getMinHmacKeyBytes(algorithms?: string[]): number {
  *
  * Priority: jwksUri > publicKey > secret
  */
-function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: jose.JWTVerifyOptions): (token: string) => Promise<jose.JWTVerifyResult> {
+function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: JWTVerifyOptions): (token: string) => Promise<JWTVerifyResult> {
     if (options.jwksUri) {
-        const jwks = jose.createRemoteJWKSet(new URL(options.jwksUri));
-        return (token) => jose.jwtVerify(token, jwks, verifyOptions);
+        const jwks = createRemoteJWKSet(new URL(options.jwksUri));
+        return (token) => jwtVerify(token, jwks, verifyOptions);
     }
     if (options.publicKey) {
         const key = options.publicKey;
-        return (token) => jose.jwtVerify(token, key, verifyOptions);
+        return (token) => jwtVerify(token, key, verifyOptions);
     }
     if (options.secret) {
         const key = new TextEncoder().encode(options.secret);
@@ -66,7 +66,7 @@ function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: jose.J
                     `Got ${key.byteLength} bytes. Generate with: openssl rand -base64 ${minBytes}`,
             );
         }
-        return (token) => jose.jwtVerify(token, key, verifyOptions);
+        return (token) => jwtVerify(token, key, verifyOptions);
     }
     throw new Error("@connectum/auth: JWT interceptor requires one of: jwksUri, secret, or publicKey");
 }
@@ -84,7 +84,7 @@ interface MappedClaims {
 /**
  * Map JWT claims to AuthContext using configurable claim paths.
  */
-function mapClaimsToContext(payload: jose.JWTPayload, mapping: NonNullable<JwtAuthInterceptorOptions["claimsMapping"]>): MappedClaims {
+function mapClaimsToContext(payload: JWTPayload, mapping: NonNullable<JwtAuthInterceptorOptions["claimsMapping"]>): MappedClaims {
     const result: MappedClaims = {};
     const claims = payload as Record<string, unknown>;
 
@@ -168,7 +168,7 @@ function throwMissingSubject(): never {
 export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): Interceptor {
     const { claimsMapping = {}, skipMethods, propagateHeaders } = options;
 
-    const verifyOptions: jose.JWTVerifyOptions = {};
+    const verifyOptions: JWTVerifyOptions = {};
     if (options.issuer) {
         verifyOptions.issuer = options.issuer;
     }

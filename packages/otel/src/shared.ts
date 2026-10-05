@@ -49,7 +49,7 @@ const sizeCache = new WeakMap<object, number>();
  * @returns Size in bytes, or 0 if size cannot be determined
  */
 export function estimateMessageSize(message: unknown): number {
-    if (message == null) return 0;
+    if (message === null || message === undefined) return 0;
     if (typeof message !== "object") return 0;
 
     const cached = sizeCache.get(message as object);
