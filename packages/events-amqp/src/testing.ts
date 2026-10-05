@@ -80,7 +80,7 @@ export interface FakeDeliveryResult {
     readonly acked: number;
     /** Handlers that called `nack(false)`. */
     readonly nacked: number;
-    /** Handlers that called `nack(true)` — model redelivery by delivering again with `attempt + 1`. */
+    /** Handlers that called `nack(true)` or a bare `nack()` — model redelivery by delivering again with `attempt + 1`. */
     readonly requeued: number;
     /** Handlers that rejected (swallowed, like the real consumer's nack-on-error path). */
     readonly failed: number;

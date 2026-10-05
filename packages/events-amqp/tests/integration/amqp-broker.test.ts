@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import type amqp from "amqplib";
+import { connect } from "amqplib";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpTopologyError, AmqpUnroutableError } from "../../src/errors.ts";
 
@@ -498,6 +499,16 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             } finally {
                 process.off("unhandledRejection", onUnhandled);
                 await adapter.disconnect();
+                // Named-group queues and the exchange are durable: remove this run's
+                // objects so a long-lived local broker does not accumulate them.
+                const admin = await connect(url);
+                try {
+                    const ch = await admin.createChannel();
+                    await ch.deleteQueue(`it.single.${run}.single-${run}`).catch(() => undefined);
+                    await ch.deleteExchange(`it.single.${run}`).catch(() => undefined);
+                } finally {
+                    await admin.close();
+                }
             }
         });
     }
