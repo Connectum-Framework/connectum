@@ -30,6 +30,7 @@ export { AmqpAdapterError, AmqpConnectionError, AmqpPublishNackError, AmqpPublis
 export type {
     AmqpAdapterOptions,
     AmqpBindingDeclaration,
+    AmqpConsumerLossCause,
     AmqpConsumerOptions,
     AmqpExchangeDeclaration,
     AmqpExchangeOptions,

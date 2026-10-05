@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
+import type { RawEventHandler } from "@connectum/events";
 import type amqp from "amqplib";
 import {
     AmqpAdapter,
@@ -1740,5 +1741,138 @@ describe("handleDelivery settlement on a closed channel", () => {
         await settle();
 
         assert.deepEqual(calls, ["nack-requeue"]);
+    });
+});
+
+describe("handleDelivery never lets a failure escape the consume callback", () => {
+    const makeMessage = (): amqp.ConsumeMessage =>
+        ({
+            content: Buffer.from("payload"),
+            fields: { deliveryTag: 7, redelivered: false, exchange: "ex", routingKey: "orders.created", consumerTag: "ctag" },
+            properties: { headers: {}, messageId: "m1" },
+        }) as unknown as amqp.ConsumeMessage;
+
+    const settle = async (): Promise<void> => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+
+    const recordingChannel = (calls: string[], failWith?: Error) => ({
+        ack: () => {
+            calls.push("ack");
+            if (failWith) {
+                throw failWith;
+            }
+        },
+        nack: (_message: amqp.Message, _allUpTo: boolean, requeue: boolean) => {
+            calls.push(requeue ? "nack-requeue" : "nack-reject");
+            if (failWith) {
+                throw failWith;
+            }
+        },
+    });
+
+    const watchUnhandled = (): { unhandled: unknown[]; stop: () => void } => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        return { unhandled, stop: () => process.off("unhandledRejection", onUnhandled) };
+    };
+
+    it("a handler that throws synchronously is requeued once and nothing is thrown to the caller", async () => {
+        const calls: string[] = [];
+        const events: AmqpLifecycleEvent[] = [];
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: recordingChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                handler: (() => {
+                    throw new Error("synchronous failure");
+                }) as unknown as RawEventHandler,
+                decode: undefined,
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            }),
+        );
+        await settle();
+
+        assert.deepEqual(calls, ["nack-requeue"]);
+        assert.equal(events.length, 0);
+    });
+
+    it("a handler that throws synchronously after an explicit ack() sends no requeue", async () => {
+        const calls: string[] = [];
+
+        handleDelivery({
+            channel: recordingChannel(calls),
+            message: makeMessage(),
+            queue: "orders",
+            handler: async (_event, ack) => {
+                await ack();
+                throw new Error("failure after ack");
+            },
+            decode: undefined,
+            lifecycle: undefined,
+        });
+        await settle();
+
+        assert.deepEqual(calls, ["ack"]);
+    });
+
+    it("a requeue that fails for a reason other than a closed channel is reported as settlement-skipped, not left unhandled", async () => {
+        const watch = watchUnhandled();
+        try {
+            const calls: string[] = [];
+            const events: AmqpLifecycleEvent[] = [];
+
+            handleDelivery({
+                channel: recordingChannel(calls, new TypeError("broker refused")),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => {
+                    throw new Error("handler failed");
+                },
+                decode: undefined,
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            });
+            await settle();
+            await settle();
+
+            assert.deepEqual(calls, ["nack-requeue"]);
+            assert.equal(watch.unhandled.length, 0, "the fallback requeue must not raise unhandledRejection");
+            assert.equal(events.length, 1);
+            const event = events[0];
+            assert.ok(event?.type === "settlement-skipped");
+            assert.equal(event.action, "requeue");
+            assert.ok(event.error instanceof TypeError);
+        } finally {
+            watch.stop();
+        }
+    });
+
+    it("a reject of an undecodable payload that fails for another reason is reported, not thrown to the caller", () => {
+        const calls: string[] = [];
+        const events: AmqpLifecycleEvent[] = [];
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: recordingChannel(calls, new TypeError("broker refused")),
+                message: makeMessage(),
+                queue: "orders",
+                handler: async () => undefined,
+                decode: () => {
+                    throw new Error("bad payload");
+                },
+                lifecycle: { onLifecycle: (event) => events.push(event) },
+            }),
+        );
+
+        assert.deepEqual(calls, ["nack-reject"]);
+        const event = events[0];
+        assert.ok(event?.type === "settlement-skipped");
+        assert.equal(event.action, "reject");
+        assert.ok(event.error instanceof TypeError);
     });
 });

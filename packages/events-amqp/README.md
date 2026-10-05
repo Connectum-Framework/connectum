@@ -249,6 +249,9 @@ lifecycle: {
 | `blocked` | `reason: string` | Broker flow control (`connection.blocked`, e.g. a memory/disk alarm). Union-only — no flat equivalent |
 | `unblocked` | — | Broker resumed after flow control. Union-only — no flat equivalent |
 | `settlement-skipped` | `action, queue, routingKey, deliveryTag, error` | A delivery could not be acknowledged because its channel was already closed (`action`: `ack`, `requeue` or `reject`). The broker returns an unacknowledged delivery to the queue when the channel closes, and it arrives again with `attempt` greater than 1; on a quorum queue each such return counts toward the queue's delivery limit (default 20 since RabbitMQ 4.0), and past the limit the broker drops the message or dead-letters it. The adapter swallows this one error quietly (it used to escape as an unhandled rejection); any other settlement error is not hidden. Union-only. Real adapter only — `FakeAmqpAdapter` has no channel to close |
+| `consumer-lost` | `queue, cause, error?, willRestore` | The broker ended one subscription's consumer while the connection stayed up. `cause` is `cancelled` (queue deleted or consumer cancelled) or `channel-closed` (channel exception, passed as `error`). `willRestore` is `true` when `recovery` is enabled. Not reported for a connection loss, `unsubscribe()` or `disconnect()`. Union-only |
+| `consumer-restored` | `queue, attempt` | A lost consumer is consuming again; for a subscription without a group `queue` is the new auto-named queue. Union-only |
+| `consumer-restore-failed` | `queue, attempt, error, willRetry` | A restoration attempt failed; `willRetry: false` means this subscription's restoration has ended (see Consumer Loss and Restoration). Union-only |
 | `lifecycle-error` | `callback, event, error` | A lifecycle callback threw or returned a rejected promise. `callback` names the callback (`onLifecycle` or a flat one such as `onReconnecting`); `event` is the `type` it was handling. Union-only |
 
 Deprecated flat callbacks (compatibility shim): `onConnected()`, `onDisconnected(cause)`, `onReconnecting({ attempt, delay, error })`, `onReconnectFailed(cause)`, `onSetupFailed(error, { initial, attempt })`.
@@ -298,6 +301,18 @@ Every delivery is settled **at most once**, and the first settlement wins: `ack(
 - A handler that settles and then throws keeps its settlement: after `await ack()` (or `nack(false)`) a thrown error does **not** requeue the message. A handler that throws without settling is requeued, as before.
 - This matters because the broker treats a second settlement of one delivery tag as a protocol violation (`PRECONDITION_FAILED - unknown delivery tag`) and closes the consumer channel.
 - It mirrors `ctx.ack()` / `ctx.nack()` in `@connectum/events`, which are idempotent per event.
+
+### Consumer Loss and Restoration
+
+The broker can end one subscription's consumer while the connection stays up: its queue is deleted, the consumer is cancelled, or the broker closes the consumer channel with a channel exception. Before 1.3 this was silent. Now the adapter reports `consumer-lost` once per loss and, with `recovery` enabled, restores the consumer:
+
+- Restoration repeats the subscription's topology step on the live connection. `assert` mode declares the queue again (a deleted queue returns empty; its messages are gone, including unacknowledged ones of a subscription without a group). `check` mode fails with `AmqpTopologyError` for a missing queue and reports `consumer-restore-failed { willRetry: false }`; `skip` mode never declares the queue. An ended restoration is not retried until a connection recovery or a new `subscribe()`.
+- A queue you delete on purpose comes back in `assert` mode: also `unsubscribe()`, set `recovery: false`, or use `topologyMode: "check"`.
+- Attempt `n` waits the reconnect delay for `n` (`initialDelay`, `factor`, `jitter`, `maxDelay`; defaults when `recovery.backoff` is set; `maxRetries` is not consulted). A failure that can heal is retried without a limit. The counter restarts after the consumer has run for `maxDelay` without a new loss.
+- With `recovery: false` the loss is reported with `willRestore: false` and the consumer stays dead.
+- The lost consumer's channel is closed. A handler still running settles late: `settlement-skipped`, and the broker returns the unacknowledged message to its queue (if the queue still exists), so the restored consumer gets it again with `attempt` > 1. Keep handlers idempotent.
+- A handler that throws synchronously is treated as a rejection: the message is requeued and the consumer keeps working.
+- `consumer_timeout` (measured on RabbitMQ 4.3.1 with `consumer_timeout = 60000` and a handler that never settles): a quorum queue cancelled the consumer at about 60 s, it was restored about 100 ms later and the message came back with `attempt: 2`. A classic queue showed no event and no redelivery over 330 s (one observation, not a guarantee).
 
 ### Metadata
 
@@ -511,6 +526,10 @@ fake.control.failSetup();          // the next recovery re-assert fails (setup-f
 fake.control.completeRecovery();   // …consume it, then heal on the next call
 fake.control.completeRecovery();   // connected { reconnected: true }, parked subscribes complete
 
+// A consumer the broker ends while the connection stays up:
+fake.control.loseConsumer({ queue: 'orders' }); // consumer-lost; deliver() skips it
+fake.control.restoreConsumers();                // consumer-restored { attempt: 1 }; deliver() resumes
+
 // Deliver events (wildcards + competing-consumer groups) and assert settlement:
 const result = await fake.control.deliver('order.created', payload);
 // result: { delivered, acked, nacked, requeued, failed }
@@ -518,7 +537,7 @@ const result = await fake.control.deliver('order.created', payload);
 
 Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
 
-Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
+Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`; a lost consumer returns only through `restoreConsumers()`, on attempt 1, and `consumer-restore-failed` is never reported; a subscription without a group is named `fake.sub-N` by registration order; the `recovery` option only decides `willRestore`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 
 ## Dependencies
 

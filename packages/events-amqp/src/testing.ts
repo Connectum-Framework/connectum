@@ -12,6 +12,9 @@
  *   INCLUDING the deprecated flat-callback shim — events go through the real
  *   adapter's dispatch, so ordering, shim payloads, and exception isolation
  *   match the real adapter by construction;
+ * - the consumer-loss events (`consumer-lost`, `consumer-restored`): the
+ *   broker ending a consumer on a live connection is driven by
+ *   {@link FakeAmqpControl.loseConsumer} / {@link FakeAmqpControl.restoreConsumers};
  * - the state machine: `connect()` on a live or recovering adapter throws
  *   `already connected` like the real one, while an adapter whose recovery
  *   gave up accepts a fresh `connect()` without its old subscriptions;
@@ -22,7 +25,9 @@
  * Deliberately NOT modeled (documented divergences):
  * - timing: there is no backoff — recovery advances only via explicit
  *   {@link FakeAmqpControl.completeRecovery} / {@link FakeAmqpControl.exhaustRecovery}
- *   calls, and `reconnecting.delay` is always `0`;
+ *   calls, and `reconnecting.delay` is always `0`; a lost consumer comes back
+ *   only through {@link FakeAmqpControl.restoreConsumers} (always attempt 1,
+ *   never `consumer-restore-failed`, the queue name never changes);
  * - a queued topology `failSetup` at `connect()` WITHOUT fail-fast reports
  *   `setup-failed { initial: true }` and then connects anyway (the real
  *   adapter would keep retrying inside recovery); a NON-topology queued
@@ -49,7 +54,7 @@ import { matchPattern } from "@connectum/events";
 import { dispatchLifecycle } from "./AmqpAdapter.ts";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpTopologyError } from "./errors.ts";
-import type { AmqpLifecycleCallbacks } from "./types.ts";
+import type { AmqpConsumerLossCause, AmqpLifecycleCallbacks } from "./types.ts";
 
 /** Options for {@link FakeAmqpAdapter}. */
 export interface FakeAmqpAdapterOptions {
@@ -60,6 +65,16 @@ export interface FakeAmqpAdapterOptions {
      * `connect()` rejects it with the typed error instead of report-and-proceed.
      */
     readonly failFastOnInitialSetupError?: boolean;
+    /**
+     * Mirror of the real option, reduced to what a consumer loss reports:
+     * `false` makes {@link FakeAmqpControl.loseConsumer} deliver
+     * `consumer-lost { willRestore: false }` and makes
+     * {@link FakeAmqpControl.restoreConsumers} throw, because the real adapter
+     * would not restore anything. Backoff knobs are not modeled.
+     *
+     * @default true
+     */
+    readonly recovery?: boolean;
 }
 
 /** One publish outcome: `"ack"` resolves; an `Error` rejects the publish with it. */
@@ -120,6 +135,33 @@ export interface FakeAmqpControl {
      * subscribes reject with a typed `AmqpConnectionError`.
      */
     exhaustRecovery(error?: Error): void;
+    /**
+     * The broker ends consumers while the connection stays up (the queue was
+     * deleted, the consumer was cancelled, the consumer channel was closed by a
+     * channel exception). Every matching live subscription stops receiving
+     * {@link deliver}ies and gets one `consumer-lost { queue, cause, error?,
+     * willRestore }` (`willRestore` mirrors the `recovery` option). Union-only
+     * event, no flat-callback equivalent.
+     *
+     * The fake has no exchange, so a subscription's queue is its `group`, or
+     * `fake.sub-N` (N = 1-based order of registration) when it has none.
+     * Without `queue`, every live subscription is lost.
+     *
+     * Throws when the adapter is not `connected` (a connection loss is driven
+     * by {@link dropConnection}) or when nothing matches, so a test cannot
+     * silently exercise nothing.
+     */
+    loseConsumer(options?: { readonly queue?: string; readonly cause?: AmqpConsumerLossCause; readonly error?: Error }): void;
+    /**
+     * Bring every lost subscription back: it receives {@link deliver}ies again
+     * and `consumer-restored { queue, attempt: 1 }` is delivered once per
+     * subscription. Throws when the adapter is not `connected`, when
+     * `recovery: false` (the real adapter would not restore), or when nothing
+     * is lost. A {@link completeRecovery} also brings lost subscriptions back,
+     * silently: connection recovery re-creates every consumer, as in the real
+     * adapter.
+     */
+    restoreConsumers(): void;
     /** Broker flow control: `blocked { reason }` / `unblocked` (union-only events). */
     block(reason?: string): void;
     unblock(): void;
@@ -164,7 +206,9 @@ interface FakeSubscription {
     readonly patterns: string[];
     readonly handler: RawEventHandler;
     readonly group: string | null;
+    readonly queue: string;
     active: boolean;
+    lost: boolean;
 }
 
 interface ParkedSubscribe {
@@ -203,11 +247,14 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
     const published: FakePublishedRecord[] = [];
     const subscriptions: FakeSubscription[] = [];
     const parkedSubscribes: ParkedSubscribe[] = [];
+    let registeredCount = 0;
+    const restorable = options.recovery !== false;
 
     const queuedSetupFailure = (): { error: Error } | undefined => pendingSetupFailures.shift();
 
     const registerSubscription = (patterns: string[], handler: RawEventHandler, group: string | null): EventSubscription => {
-        const sub: FakeSubscription = { patterns, handler, group, active: true };
+        registeredCount += 1;
+        const sub: FakeSubscription = { patterns, handler, group, queue: group ?? `fake.sub-${registeredCount}`, active: true, lost: false };
         subscriptions.push(sub);
         return {
             async unsubscribe(): Promise<void> {
@@ -259,6 +306,12 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
                 return;
             }
             state = CONNECTION_STATE.CONNECTED;
+            // Connection recovery re-creates every consumer, including one the
+            // broker had ended earlier; no consumer-restored event, as in the
+            // real adapter.
+            for (const sub of subscriptions) {
+                sub.lost = false;
+            }
             dispatchLifecycle(lifecycle, { type: "connected", reconnected: true });
             // Parked mid-recovery subscribes complete with the recovery, like
             // the real adapter's waiter queue.
@@ -284,6 +337,47 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
                 parked.reject(new AmqpConnectionError("Connection lost while establishing consumer channel", { cause: error }));
             }
             dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: error ?? new Error("recovery exhausted") });
+        },
+
+        loseConsumer(loseOptions?: { readonly queue?: string; readonly cause?: AmqpConsumerLossCause; readonly error?: Error }): void {
+            if (state !== CONNECTION_STATE.CONNECTED) {
+                throw new Error(`FakeAmqpAdapter.control.loseConsumer(): adapter is '${state}', not 'connected'`);
+            }
+            const matching = subscriptions.filter((sub) => sub.active && !sub.lost && (loseOptions?.queue === undefined || sub.queue === loseOptions.queue));
+            if (matching.length === 0) {
+                throw new Error(`FakeAmqpAdapter.control.loseConsumer(): no live subscription${loseOptions?.queue === undefined ? "" : ` on queue '${loseOptions.queue}'`}`);
+            }
+            for (const sub of matching) {
+                sub.lost = true;
+            }
+            for (const sub of matching) {
+                dispatchLifecycle(lifecycle, {
+                    type: "consumer-lost",
+                    queue: sub.queue,
+                    cause: loseOptions?.cause ?? "cancelled",
+                    ...(loseOptions?.error === undefined ? {} : { error: loseOptions.error }),
+                    willRestore: restorable,
+                });
+            }
+        },
+
+        restoreConsumers(): void {
+            if (state !== CONNECTION_STATE.CONNECTED) {
+                throw new Error(`FakeAmqpAdapter.control.restoreConsumers(): adapter is '${state}', not 'connected'`);
+            }
+            if (!restorable) {
+                throw new Error("FakeAmqpAdapter.control.restoreConsumers(): recovery is disabled, the real adapter restores nothing");
+            }
+            const lost = subscriptions.filter((sub) => sub.active && sub.lost);
+            if (lost.length === 0) {
+                throw new Error("FakeAmqpAdapter.control.restoreConsumers(): no lost consumer");
+            }
+            for (const sub of lost) {
+                sub.lost = false;
+            }
+            for (const sub of lost) {
+                dispatchLifecycle(lifecycle, { type: "consumer-restored", queue: sub.queue, attempt: 1 });
+            }
         },
 
         block(reason = "memory alarm"): void {
@@ -335,7 +429,7 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
             const seenGroups = new Set<string>();
             const targets: FakeSubscription[] = [];
             for (const sub of subscriptions) {
-                if (!sub.active || !sub.patterns.some((pattern) => matchPattern(pattern, eventType))) {
+                if (!sub.active || sub.lost || !sub.patterns.some((pattern) => matchPattern(pattern, eventType))) {
                     continue;
                 }
                 if (sub.group === null) {
