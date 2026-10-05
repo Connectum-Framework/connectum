@@ -20,7 +20,7 @@
  * @module otel-collectors
  */
 
-import { InMemoryMetricExporter, MeterProvider, type MetricData, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, type MetricData, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, InMemorySpanExporter, type ReadableSpan, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 /** Span attribute key produced by `@connectum/otel` to distinguish transports. */
@@ -196,9 +196,10 @@ export class InMemoryMetricCollector {
     public readonly reader: PeriodicExportingMetricReader;
 
     constructor() {
-        // `0` aggregation temporality = CUMULATIVE; the parity driver
-        // does not care which one, only that both transports use the same.
-        this.exporter = new InMemoryMetricExporter(0);
+        // DELTA: each export carries only what was recorded since the previous
+        // export. The parity driver does not care which temporality is used, only
+        // that both transports use the same.
+        this.exporter = new InMemoryMetricExporter(AggregationTemporality.DELTA);
         this.reader = new PeriodicExportingMetricReader({
             exporter: this.exporter,
             // long interval — we force-flush manually.

@@ -24,7 +24,7 @@ import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader } f
 import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import type { CollectorOptions, OTLPSettings } from "./config.ts";
-import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getHttpExporterOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
 
 /** OpenTelemetry semconv key for the service instance id. */
 const ATTR_SERVICE_INSTANCE_ID = "service.instance.id";
@@ -231,10 +231,7 @@ class OtelProviderImpl implements OtelProvider {
         // Create exporter based on protocol
         let traceExporter: OTLPTraceExporterHTTP | OTLPTraceExporterGRPC | ConsoleSpanExporter;
         if (this.settings.traces === ExporterType.OTLP_HTTP) {
-            traceExporter = new OTLPTraceExporterHTTP({
-                ...this.collectorOptions,
-                url: `${this.collectorOptions.url}/v1/traces`,
-            });
+            traceExporter = new OTLPTraceExporterHTTP(getHttpExporterOptions(this.collectorOptions, "TRACES"));
         } else if (this.settings.traces === ExporterType.OTLP_GRPC) {
             traceExporter = new OTLPTraceExporterGRPC(
                 this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
@@ -279,10 +276,7 @@ class OtelProviderImpl implements OtelProvider {
         // Create exporter based on protocol
         let metricExporter: OTLPMetricExporterHTTP | OTLPMetricExporterGRPC | ConsoleMetricExporter;
         if (this.settings.metrics === ExporterType.OTLP_HTTP) {
-            metricExporter = new OTLPMetricExporterHTTP({
-                ...this.collectorOptions,
-                url: `${this.collectorOptions.url}/v1/metrics`,
-            });
+            metricExporter = new OTLPMetricExporterHTTP(getHttpExporterOptions(this.collectorOptions, "METRICS"));
         } else if (this.settings.metrics === ExporterType.OTLP_GRPC) {
             metricExporter = new OTLPMetricExporterGRPC(
                 this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
@@ -323,10 +317,7 @@ class OtelProviderImpl implements OtelProvider {
         // Create exporter based on protocol
         let logExporter: OTLPLogExporterHTTP | OTLPLogExporterGRPC | ConsoleLogRecordExporter;
         if (this.settings.logs === ExporterType.OTLP_HTTP) {
-            logExporter = new OTLPLogExporterHTTP({
-                ...this.collectorOptions,
-                url: `${this.collectorOptions.url}/v1/logs`,
-            });
+            logExporter = new OTLPLogExporterHTTP(getHttpExporterOptions(this.collectorOptions, "LOGS"));
         } else if (this.settings.logs === ExporterType.OTLP_GRPC) {
             logExporter = new OTLPLogExporterGRPC(
                 this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
