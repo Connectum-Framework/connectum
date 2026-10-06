@@ -198,7 +198,7 @@ await service.getUser("123");
 OTEL_SERVICE_NAME=my-service
 
 # Trace exporter
-OTEL_TRACES_EXPORTER=otlp/http  # "otlp/http", "otlp/grpc", "console", or "none"
+OTEL_TRACES_EXPORTER=otlp/http  # "otlp", "otlp/http", "otlp/http-protobuf", "otlp/grpc", "console", or "none"
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
 
 # Metrics exporter
@@ -209,7 +209,7 @@ OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
 OTEL_LOGS_EXPORTER=console
 
 # OTLP settings
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf  # "http/protobuf" or "grpc"
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf  # "grpc", "http/protobuf" or "http/json"; read only for the bare "otlp" exporter value
 OTEL_EXPORTER_OTLP_HEADERS=x-api-key=secret
 
 # Batch span processor
@@ -474,6 +474,7 @@ await shutdownProvider();
 const ExporterType = {
   CONSOLE: "console",
   OTLP_HTTP: "otlp/http",
+  OTLP_HTTP_PROTOBUF: "otlp/http-protobuf",
   OTLP_GRPC: "otlp/grpc",
   NONE: "none",
 } as const;
@@ -519,21 +520,30 @@ type BatchSpanProcessorOptions = {
 
 ### Exporters
 
-- `OTEL_TRACES_EXPORTER` - Trace exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
-- `OTEL_METRICS_EXPORTER` - Metrics exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
-- `OTEL_LOGS_EXPORTER` - Logs exporter type (`otlp/http`, `otlp/grpc`, `console`, `none`)
+- `OTEL_TRACES_EXPORTER` - Trace exporter type (`otlp`, `otlp/http`, `otlp/http-protobuf`, `otlp/grpc`, `console`, `none`)
+- `OTEL_METRICS_EXPORTER` - Metrics exporter type (`otlp`, `otlp/http`, `otlp/http-protobuf`, `otlp/grpc`, `console`, `none`)
+- `OTEL_LOGS_EXPORTER` - Logs exporter type (`otlp`, `otlp/http`, `otlp/http-protobuf`, `otlp/grpc`, `console`, `none`)
+
+The standard value `otlp` picks the transport and encoding from the protocol variables below (protobuf-encoded OTLP/HTTP when none is set, as the OpenTelemetry specification defines). `otlp/http` (JSON), `otlp/http-protobuf` and `otlp/grpc` are explicit and ignore the protocol variables.
 
 ### OTLP Endpoints
 
-- `OTEL_EXPORTER_OTLP_ENDPOINT` - Base OTLP endpoint
-- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` - Traces endpoint (overrides base)
-- `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` - Metrics endpoint (overrides base)
-- `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` - Logs endpoint (overrides base)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - Base OTLP endpoint; for OTLP/HTTP the signal path (`/v1/traces`, `/v1/metrics`, `/v1/logs`) is appended. An empty value counts as not set
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` - Traces endpoint, used as given (overrides base)
+- `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` - Metrics endpoint, used as given (overrides base)
+- `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` - Logs endpoint, used as given (overrides base)
+
+With OTLP/HTTP and no endpoint variable set, the exporter sends to its default, `http://localhost:4318/v1/<signal>`. A value that is not a URL makes provider creation throw.
+
+For OTLP/gRPC exporters a set `OTEL_EXPORTER_OTLP_ENDPOINT` is passed to the exporter explicitly, so it takes precedence over the per-signal variables; the "overrides base" order above holds for OTLP/HTTP.
 
 ### OTLP Settings
 
-- `OTEL_EXPORTER_OTLP_PROTOCOL` - Protocol (`http/protobuf`, `grpc`)
+- `OTEL_EXPORTER_OTLP_PROTOCOL` - Protocol for the bare `otlp` exporter value: `grpc` selects OTLP/gRPC, `http/protobuf` protobuf-encoded OTLP/HTTP (`Content-Type: application/x-protobuf`), `http/json` JSON-encoded OTLP/HTTP (`Content-Type: application/json`)
+- `OTEL_EXPORTER_OTLP_<TRACES|METRICS|LOGS>_PROTOCOL` - The same, for one signal (overrides the general variable)
 - `OTEL_EXPORTER_OTLP_HEADERS` - Headers (comma-separated key=value pairs)
+
+The explicit `otlp/http` value predates the protocol variables and keeps sending JSON; use `otlp` with `http/protobuf`, or `otlp/http-protobuf`, for the binary encoding most collectors prefer.
 
 ### Batch Span Processor
 
