@@ -11,7 +11,7 @@
 
 import { hostname } from "node:os";
 import type { Interceptor } from "@connectrpc/connect";
-import type { Link, SpanOptions } from "@opentelemetry/api";
+import type { Link, Meter, SpanOptions } from "@opentelemetry/api";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
@@ -62,6 +62,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
     } = options;
 
     let rpcMetrics: RpcServerMetrics | undefined;
+    let rpcMetricsMeter: Meter | undefined;
 
     return (next) => async (req) => {
         // 1. Filter check: skip instrumentation if filter returns false
@@ -121,8 +122,12 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         // Helper to record metrics with lazy initialization
         const recordMetrics = (duration: number, responseSize: number, errorAttrs?: Record<string, string | number>) => {
             if (withoutMetrics) return;
-            if (!rpcMetrics) {
-                rpcMetrics = createRpcServerMetrics(getMeter());
+            // Instruments belong to the meter that created them; after the provider
+            // is shut down and created again they would record into the stopped one.
+            const meter = getMeter();
+            if (rpcMetrics === undefined || rpcMetricsMeter !== meter) {
+                rpcMetrics = createRpcServerMetrics(meter);
+                rpcMetricsMeter = meter;
             }
             const metricAttrs = { ...filteredAttributes, ...metricTransportAttrs, ...errorAttrs };
             rpcMetrics.callDuration.record(duration, metricAttrs);
