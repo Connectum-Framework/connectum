@@ -43,12 +43,12 @@ describe("config: otlp exporter value and protocol", () => {
 	});
 
 	describe("getOTLPSettings with OTEL_*_EXPORTER=otlp", () => {
-		it("selects OTLP/HTTP when no protocol is configured", () => {
+		it("selects protobuf-encoded OTLP/HTTP when no protocol is configured", () => {
 			process.env.OTEL_TRACES_EXPORTER = "otlp";
 			process.env.OTEL_METRICS_EXPORTER = "otlp";
 			process.env.OTEL_LOGS_EXPORTER = "otlp";
 
-			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/http", metrics: "otlp/http", logs: "otlp/http" });
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/http-protobuf", metrics: "otlp/http-protobuf", logs: "otlp/http-protobuf" });
 		});
 
 		it("selects OTLP/gRPC for OTEL_EXPORTER_OTLP_PROTOCOL=grpc", () => {
@@ -58,12 +58,16 @@ describe("config: otlp exporter value and protocol", () => {
 			assert.strictEqual(getOTLPSettings().traces, "otlp/grpc");
 		});
 
-		for (const protocol of ["http/protobuf", "http/json"]) {
-			it(`selects OTLP/HTTP for OTEL_EXPORTER_OTLP_PROTOCOL=${protocol}`, () => {
+		const httpEncodings = [
+			["http/protobuf", "otlp/http-protobuf"],
+			["http/json", "otlp/http"],
+		] as const;
+		for (const [protocol, exporter] of httpEncodings) {
+			it(`maps OTEL_EXPORTER_OTLP_PROTOCOL=${protocol} to the ${exporter} exporter`, () => {
 				process.env.OTEL_METRICS_EXPORTER = "otlp";
 				process.env.OTEL_EXPORTER_OTLP_PROTOCOL = protocol;
 
-				assert.strictEqual(getOTLPSettings().metrics, "otlp/http");
+				assert.strictEqual(getOTLPSettings().metrics, exporter);
 			});
 		}
 
@@ -86,15 +90,17 @@ describe("config: otlp exporter value and protocol", () => {
 			assert.throws(() => getOTLPSettings(), /OTEL_EXPORTER_OTLP_PROTOCOL/);
 		});
 
-		it("keeps an explicit otlp/http or otlp/grpc value regardless of the protocol variable", () => {
+		it("keeps an explicit otlp/http, otlp/http-protobuf or otlp/grpc value regardless of the protocol variable", () => {
 			process.env.OTEL_TRACES_EXPORTER = "otlp/http";
 			process.env.OTEL_METRICS_EXPORTER = "otlp/grpc";
+			process.env.OTEL_LOGS_EXPORTER = "otlp/http-protobuf";
 			process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "grpc";
 
 			const settings = getOTLPSettings();
 
 			assert.strictEqual(settings.traces, "otlp/http");
 			assert.strictEqual(settings.metrics, "otlp/grpc");
+			assert.strictEqual(settings.logs, "otlp/http-protobuf");
 		});
 
 		it("does not validate the protocol variable when no signal uses the bare otlp value", () => {

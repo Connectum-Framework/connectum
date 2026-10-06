@@ -22,6 +22,9 @@ const ENV_KEYS = [
 	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
 ] as const;
 
 interface ReceivedRequest {
@@ -56,9 +59,9 @@ async function stopCollector(collector: Collector): Promise<void> {
 	await new Promise<void>((resolve) => collector.server.close(() => resolve()));
 }
 
-function setOnly(signal: "traces" | "metrics" | "logs"): void {
+function setOnly(signal: "traces" | "metrics" | "logs", exporter = "otlp/http"): void {
 	for (const s of ["traces", "metrics", "logs"] as const) {
-		process.env[`OTEL_${s.toUpperCase()}_EXPORTER`] = s === signal ? "otlp/http" : "none";
+		process.env[`OTEL_${s.toUpperCase()}_EXPORTER`] = s === signal ? exporter : "none";
 	}
 }
 
@@ -196,6 +199,38 @@ describe("provider: OTLP/HTTP exporters", () => {
 			["/custom/logs"],
 		);
 	});
+
+	const emitProbe = {
+		traces: (p: ReturnType<typeof getProvider>) => p.tracer.startSpan("probe").end(),
+		metrics: (p: ReturnType<typeof getProvider>) => p.meter.createCounter("probe_total").add(1),
+		logs: (p: ReturnType<typeof getProvider>) => p.logger.emit({ body: "probe" }),
+	};
+	const wireFormats = [
+		{ label: "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf", exporter: "otlp", protocol: "http/protobuf", contentType: "application/x-protobuf" },
+		{ label: "no protocol variable (specification default)", exporter: "otlp", protocol: undefined, contentType: "application/x-protobuf" },
+		{ label: "OTEL_EXPORTER_OTLP_PROTOCOL=http/json", exporter: "otlp", protocol: "http/json", contentType: "application/json" },
+		{ label: "explicit otlp/http-protobuf", exporter: "otlp/http-protobuf", protocol: undefined, contentType: "application/x-protobuf" },
+		{ label: "explicit otlp/http", exporter: "otlp/http", protocol: undefined, contentType: "application/json" },
+	] as const;
+
+	for (const signal of ["traces", "metrics", "logs"] as const) {
+		for (const { label, exporter, protocol, contentType } of wireFormats) {
+			it(`sends ${signal} as ${contentType} for ${label}`, async () => {
+				collector = await startCollector();
+				setOnly(signal, exporter);
+				if (protocol !== undefined) {
+					process.env.OTEL_EXPORTER_OTLP_PROTOCOL = protocol;
+				}
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT = collector.origin;
+
+				emitProbe[signal](getProvider());
+				await shutdownProvider();
+
+				assert.strictEqual(collector.received.length, 1);
+				assert.strictEqual(collector.received[0]?.contentType, contentType);
+			});
+		}
+	}
 
 	it("rejects a malformed base endpoint at construction instead of silently exporting elsewhere", () => {
 		setOnly("traces");
