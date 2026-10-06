@@ -172,9 +172,12 @@ class ServerImpl extends EventEmitter implements Server {
         }
 
         this._state = ServerState.STARTING;
-        this.emit("start");
 
         try {
+            // A throwing start/ready listener is a startup failure: it takes
+            // the rollback path below instead of leaving the server half-started.
+            this.emit("start");
+
             // Shape check (always runs): enabledServices must be a subset of the
             // catalog. A typo here is a configuration mistake → CatalogConfigError.
             this._validateCatalogConfig();
@@ -233,12 +236,20 @@ class ServerImpl extends EventEmitter implements Server {
             this._setupAutoShutdown();
             this.emit("ready");
         } catch (error) {
+            // RUNNING means listen() completed: only a ready listener can fail
+            // after that point, and the bound port must not outlive start().
+            if (this._state === ServerState.RUNNING) {
+                this._removeAutoShutdown();
+                this._transport.destroyAllSessions();
+                await this._transport.close().catch(() => {});
+                this._transport.dispose();
+            }
             // Clean up event bus if it was started but transport failed
             if (this._eventBus) {
                 await this._eventBus.stop().catch(() => {});
             }
             this._state = ServerState.STOPPED;
-            this.emit("error", error instanceof Error ? error : new Error(String(error)));
+            this._reportError(error, false);
             throw error;
         }
     }
@@ -255,13 +266,15 @@ class ServerImpl extends EventEmitter implements Server {
 
         this._state = ServerState.STOPPING;
 
-        // Phase 0: Notify listeners (e.g. healthcheck → NOT_SERVING)
-        this.emit("stopping");
+        // Phase 0: Notify listeners (e.g. healthcheck → NOT_SERVING). Every
+        // listener runs even if an earlier one throws.
+        this._emitIsolated("stopping");
 
         // Phase 1: Signal shutdown to ConnectRPC handlers (streaming RPCs)
         this._abortController.abort();
 
         this._stopPromise = (async () => {
+            let failure: { readonly error: unknown } | undefined;
             try {
                 this._removeAutoShutdown();
 
@@ -270,15 +283,19 @@ class ServerImpl extends EventEmitter implements Server {
                     timeout: this._options.shutdown?.timeout ?? 30_000,
                     forceCloseOnTimeout: this._options.shutdown?.forceCloseOnTimeout ?? true,
                 });
-
-                this._state = ServerState.STOPPED;
-                this.emit("stop");
             } catch (error) {
-                this._state = ServerState.STOPPED;
-                this.emit("error", error instanceof Error ? error : new Error(String(error)));
-                throw error;
-            } finally {
-                this._stopPromise = null;
+                failure = { error };
+            }
+
+            this._state = ServerState.STOPPED;
+            this._stopPromise = null;
+            // A failed shutdown still ends with "stop" (stopping → error → stop).
+            if (failure) {
+                this._reportError(failure.error, false);
+            }
+            this._emitIsolated("stop");
+            if (failure) {
+                throw failure.error;
             }
         })();
 
@@ -553,13 +570,51 @@ class ServerImpl extends EventEmitter implements Server {
         for (const signal of signals) {
             const handler = () => {
                 console.info(`Received ${signal}, initiating graceful shutdown...`);
-                this.stop().catch((err) => {
-                    this.emit("error", err instanceof Error ? err : new Error(String(err)));
-                });
+                // stop() has already reported a failed shutdown through "error";
+                // reporting it again would duplicate the event and, without an
+                // "error" listener, turn it into an unhandled rejection.
+                this.stop().catch(() => {});
             };
 
             this._signalHandlers.set(signal, handler);
             process.on(signal, handler);
+        }
+    }
+
+    /**
+     * Invoke the listeners of a shutdown-phase event one by one, each isolated:
+     * a throwing listener is reported but neither hides the remaining
+     * listeners nor interrupts the shutdown. `rawListeners` keeps `once()`
+     * semantics.
+     */
+    private _emitIsolated(event: "stopping" | "stop"): void {
+        for (const listener of this.rawListeners(event)) {
+            try {
+                listener.call(this);
+            } catch (error) {
+                this._reportError(error, true);
+            }
+        }
+    }
+
+    /**
+     * Report a failure through the "error" event. Without an "error" listener
+     * `emit("error")` would throw out of the lifecycle code; the failure is
+     * printed instead when nothing else carries it (`printIfUnheard`), and is
+     * left to the rejected promise otherwise.
+     */
+    private _reportError(error: unknown, printIfUnheard: boolean): void {
+        const err = error instanceof Error ? error : new Error(String(error));
+        if (this.listenerCount("error") === 0) {
+            if (printIfUnheard) {
+                console.error("Unhandled error in a server lifecycle listener:", err);
+            }
+            return;
+        }
+        try {
+            this.emit("error", err);
+        } catch (listenerError) {
+            console.error("An 'error' listener threw:", listenerError);
         }
     }
 
