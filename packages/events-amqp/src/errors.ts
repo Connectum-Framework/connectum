@@ -19,9 +19,10 @@
  *
  * `AmqpConnectionError` is thrown pre-send (never sent) or on an in-flight
  * confirm loss (UNKNOWN); both are republish-safe. The `AmqpSerializationError`
- * row is the publish-side encode failure; the same class is also thrown on the
- * consumer side for a decode failure (nack without requeue), which is outside
- * republish semantics.
+ * row is the publish-side encode failure. A consumer-side decode failure
+ * throws nothing: the message is rejected without requeue (dropped, or
+ * dead-lettered when the queue has a dead-letter exchange) and no callback
+ * fires, so it is outside republish semantics.
  *
  * @module errors
  */

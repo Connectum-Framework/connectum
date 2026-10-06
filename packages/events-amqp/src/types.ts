@@ -300,6 +300,11 @@ export interface AmqpAdapterOptions {
      * rejects with `AmqpPublishTimeoutError` (message state UNKNOWN — an
      * at-least-once producer should republish).
      *
+     * A value that is not a finite number of at least `1` (`NaN`,
+     * `Infinity`, `0`, a negative number) counts as unset and the default
+     * applies; a fraction is floored; a value above `2147483647` (the largest
+     * delay a timer honors) is capped to it. There is no "no timeout" value.
+     *
      * @default 30000
      */
     readonly publishTimeoutMs?: number;
@@ -332,7 +337,10 @@ export interface AmqpSerializationOptions {
 
     /**
      * Transform the incoming wire body before it reaches the event handler.
-     * Failures nack the message (requeue per consumer policy).
+     * A failure rejects the message without requeue (`basic.nack` with
+     * `requeue: false`): the broker drops it, or dead-letters it when the
+     * queue has a dead-letter exchange. Nothing is thrown or reported, and the
+     * handler never sees the message.
      */
     readonly decode?: (content: Uint8Array) => Uint8Array;
 }
@@ -653,7 +661,7 @@ export type AmqpSettlementAction = "ack" | "requeue" | "reject";
  * `Infinity`.
  */
 export interface AmqpPublishRetryOptions {
-    /** Retries after the first attempt (N retries = N+1 attempts). A negative value clamps to `0` (single attempt); `Infinity` is honored — retry until `disconnect()` aborts. @default 5 */
+    /** Retries after the first attempt (N retries = N+1 attempts). A negative value, including `-Infinity`, clamps to `0` (single attempt); `Infinity` is honored — retry until `disconnect()` aborts; `NaN` counts as unset. A fraction is floored. @default 5 */
     readonly maxRetries?: number;
     /** First retry delay in ms. @default 100 */
     readonly initialDelay?: number;

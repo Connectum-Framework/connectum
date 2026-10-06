@@ -16,6 +16,8 @@ import {
     isConnectionLostError,
     isDeterministicTopologyDrift,
     normalizeInitialConnectBudget,
+    normalizePublishRetryBudget,
+    normalizePublishTimeout,
     resolveDisconnectCause,
     toAmqpPattern,
     trackChannelClose,
@@ -1874,5 +1876,51 @@ describe("handleDelivery never lets a failure escape the consume callback", () =
         assert.ok(event?.type === "settlement-skipped");
         assert.equal(event.action, "reject");
         assert.ok(event.error instanceof TypeError);
+    });
+});
+
+describe("normalizePublishTimeout", () => {
+    it("keeps a usable finite value, flooring a fraction", () => {
+        assert.equal(normalizePublishTimeout(1), 1);
+        assert.equal(normalizePublishTimeout(5_000), 5_000);
+        assert.equal(normalizePublishTimeout(1_500.9), 1_500);
+    });
+
+    it("falls back to the 30 s default for a value setTimeout would fire at once", () => {
+        // NaN, Infinity and anything below 1 make setTimeout run the callback
+        // after about 1 ms, which would time out every publish.
+        assert.equal(normalizePublishTimeout(Number.NaN), 30_000);
+        assert.equal(normalizePublishTimeout(Number.POSITIVE_INFINITY), 30_000);
+        assert.equal(normalizePublishTimeout(Number.NEGATIVE_INFINITY), 30_000);
+        assert.equal(normalizePublishTimeout(0), 30_000);
+        assert.equal(normalizePublishTimeout(-5), 30_000);
+        assert.equal(normalizePublishTimeout(0.5), 30_000);
+        assert.equal(normalizePublishTimeout("5000"), 30_000);
+        assert.equal(normalizePublishTimeout(undefined), 30_000);
+    });
+
+    it("caps a value above the timer limit instead of letting it wrap to 1 ms", () => {
+        assert.equal(normalizePublishTimeout(2_147_483_647), 2_147_483_647);
+        assert.equal(normalizePublishTimeout(2_147_483_648), 2_147_483_647);
+        assert.equal(normalizePublishTimeout(Number.MAX_SAFE_INTEGER), 2_147_483_647);
+    });
+});
+
+describe("normalizePublishRetryBudget", () => {
+    it("clamps a negative or fractional budget to a non-negative integer", () => {
+        assert.equal(normalizePublishRetryBudget(-1), 0);
+        assert.equal(normalizePublishRetryBudget(0), 0);
+        assert.equal(normalizePublishRetryBudget(3.9), 3);
+    });
+
+    it("keeps +Infinity and reads -Infinity as an empty budget", () => {
+        assert.equal(normalizePublishRetryBudget(Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
+        assert.equal(normalizePublishRetryBudget(Number.NEGATIVE_INFINITY), 0);
+    });
+
+    it("uses the default of 5 for a value that is not a number", () => {
+        assert.equal(normalizePublishRetryBudget(Number.NaN), 5);
+        assert.equal(normalizePublishRetryBudget(undefined), 5);
+        assert.equal(normalizePublishRetryBudget("3"), 5);
     });
 });
