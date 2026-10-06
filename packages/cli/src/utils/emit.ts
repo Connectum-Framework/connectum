@@ -124,7 +124,7 @@ function findTargetConflict(targetDir: string, relPath: string, force: boolean):
         }
         nearestDirectory = current;
     }
-    if (!isAccessible(nearestDirectory, constants.W_OK | constants.X_OK)) {
+    if (!isAccessible(nearestDirectory, constants.W_OK) || !isAccessible(nearestDirectory, constants.X_OK)) {
         return `"${relPath}" cannot be written: the directory "${nearestDirectory}" is not writable`;
     }
     return undefined;
