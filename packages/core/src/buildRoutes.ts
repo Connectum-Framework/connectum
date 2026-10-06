@@ -11,6 +11,7 @@ import type { DescFile, DescService, JsonReadOptions, JsonWriteOptions } from "@
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
+import { finishStreamOnAbort } from "./finishStreamOnAbort.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
 import type { CreateServerOptions, NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
 
@@ -186,7 +187,11 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
     // loudly instead of silently meaning "no limit".
     const adapter = connectNodeAdapter({
         routes,
-        interceptors: [stripLocalTransportHeaderOnHttp, ...interceptors],
+        // `finishStreamOnAbort` goes last, next to the handler: whether a
+        // cancelled call unwinds the handler's generator through the failed
+        // socket write depends on the runtime (a write to a closed stream can
+        // still report success), while the call's signal always aborts.
+        interceptors: [stripLocalTransportHeaderOnHttp, ...interceptors, finishStreamOnAbort],
         shutdownSignal,
         ...(jsonOptions ? { jsonOptions } : {}),
         ...(requestGate !== undefined ? { requestGate } : {}),
