@@ -9,6 +9,7 @@
 import type { DescMessage, Message } from "@bufbuild/protobuf";
 import { toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { LoggerOptions } from "./types.ts";
 
 /**
@@ -34,6 +35,63 @@ function detectTransport(req: UnaryRequest | StreamRequest): "in-process" | "htt
     return req.header.get(LOCAL_TRANSPORT_HEADER) === LOCAL_TRANSPORT_VALUE ? "in-process" : "http";
 }
 
+type LogSink = (message: string, ...args: unknown[]) => void;
+
+/**
+ * Wrap a user-supplied sink so that it can never change the outcome of a call.
+ *
+ * The logger observes calls; a sink that throws (a closed transport, a full
+ * disk, a broken formatter) must not turn a successful response into an
+ * `Internal` error or replace the real error of a failed call. A sink typed as
+ * returning `void` may still be an `async` function, so a rejected promise it
+ * returns counts as a failure too: left alone it would surface as an unhandled
+ * rejection, which ends a Node.js process. The first failure is reported once
+ * on the console so it is not silent, later ones are dropped: a sink that is
+ * down fails on every line and would otherwise flood the console on every RPC.
+ */
+function guardSink(sink: LogSink): LogSink {
+    let reported = false;
+    const report = (error: unknown): void => {
+        if (reported) {
+            return;
+        }
+        reported = true;
+        try {
+            console.error("[@connectum/interceptors] logger sink failed; further sink failures are not reported", error);
+        } catch {
+            // The report is best effort: a console that throws must not change the outcome of the call either.
+        }
+    };
+    return (message, ...args) => {
+        try {
+            const pending: unknown = sink(message, ...args);
+            if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
+                Promise.resolve(pending).then(undefined, report);
+            }
+        } catch (error) {
+            report(error);
+        }
+    };
+}
+
+/**
+ * JSON form of a message for the log, or a marker when the message cannot be
+ * converted. A conversion failure is a logging problem, so it must not end the
+ * stream the message belongs to.
+ */
+function messageToJson(schema: DescMessage, message: unknown): unknown {
+    try {
+        return toJson(schema, message as Message);
+    } catch {
+        return "[message could not be converted to JSON]";
+    }
+}
+
+/** Name of the Connect code a failure maps to; plain errors map to `Unknown`. */
+function failureCodeName(error: unknown): string {
+    return Code[ConnectError.from(error).code];
+}
+
 /**
  * Log request stream messages
  *
@@ -42,7 +100,7 @@ function detectTransport(req: UnaryRequest | StreamRequest): "in-process" | "htt
  * @param logger - Logger function
  * @returns Async generator that yields messages
  */
-async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: (message: string, ...args: unknown[]) => void): AsyncGenerator<T, void, void> {
+async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: LogSink): AsyncGenerator<T, void, void> {
     for await (const message of stream) {
         logger(`${msg} request`, message);
         yield message;
@@ -50,18 +108,38 @@ async function* logReqStream<T>(stream: AsyncIterable<T>, msg: string, logger: (
 }
 
 /**
- * Log response stream messages
+ * Log response stream messages and close the call out when the stream ends.
+ *
+ * `onEnd` runs exactly once however the stream ends: fully read, failed midway,
+ * or abandoned by the reader (`return()` / `break`), so the completion line and
+ * the duration cover the whole stream and not just its creation.
  *
  * @param schema - Message schema
  * @param stream - Output stream
  * @param msg - Log message prefix
  * @param logger - Logger function
+ * @param onFailure - Called with the error that ended the stream
+ * @param onEnd - Called once when the stream is over
  * @returns Async generator that yields messages
  */
-async function* logResStream<T>(schema: DescMessage, stream: AsyncIterable<T>, msg: string, logger: (message: string, ...args: unknown[]) => void): AsyncGenerator<T, void, void> {
-    for await (const message of stream) {
-        logger(`${msg} response`, toJson(schema, message as Message));
-        yield message;
+async function* logResStream<T>(
+    schema: DescMessage,
+    stream: AsyncIterable<T>,
+    msg: string,
+    logger: LogSink,
+    onFailure: (error: unknown) => void,
+    onEnd: () => void,
+): AsyncGenerator<T, void, void> {
+    try {
+        for await (const message of stream) {
+            logger(`${msg} response`, messageToJson(schema, message));
+            yield message;
+        }
+    } catch (error) {
+        onFailure(error);
+        throw error;
+    } finally {
+        onEnd();
     }
 }
 
@@ -116,7 +194,7 @@ async function* logResStream<T>(schema: DescMessage, stream: AsyncIterable<T>, m
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
     const { level = "debug", skipHealthCheck = true, includeTransport = false } = options;
     // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
-    const logger = options.logger ?? console[level];
+    const logger = guardSink(options.logger ?? console[level]);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         // With includeTransport the tag sits between the kind and the path
@@ -131,7 +209,12 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
         }
 
         const startTime = performance.now();
+        const logFailure = (error: unknown): void => logger(`RPC ${label} failed with ${failureCodeName(error)}`);
+        const logCompleted = (): void => logger(`RPC ${label} completed in ${(performance.now() - startTime).toFixed(2)}ms`);
 
+        // A streamed response ends long after `next` returns, so its completion
+        // line is written by the response wrapper; everything else completes here.
+        let completionDeferred = false;
         try {
             // Log request (do NOT mutate req.message - it's readonly!)
             if (req.stream) {
@@ -139,8 +222,14 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
                 const modifiedReq = { ...req, message: logReqStream(req.message, `STREAM ${label}`, logger) };
                 const res = await next(modifiedReq);
 
-                // Wrap response stream with logging generator
-                return { ...res, message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${label}`, logger) } as StreamResponse;
+                if (res.stream) {
+                    completionDeferred = true;
+                    return {
+                        ...res,
+                        message: logResStream(res.method.output, res.message as AsyncIterable<Message>, `STREAM ${label}`, logger, logFailure, logCompleted),
+                    } as StreamResponse;
+                }
+                return res;
             }
             // Log unary request
             logger(`RPC ${label} request`, req.message);
@@ -152,9 +241,13 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
             logger(`RPC ${label} response`, res.message);
 
             return res;
+        } catch (error) {
+            logFailure(error);
+            throw error;
         } finally {
-            const duration = (performance.now() - startTime).toFixed(2);
-            logger(`RPC ${label} completed in ${duration}ms`);
+            if (!completionDeferred) {
+                logCompleted();
+            }
         }
     };
 }

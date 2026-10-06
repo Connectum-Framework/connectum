@@ -52,10 +52,11 @@ describe('logger interceptor', () => {
             }
         );
 
-        // Verify timing was logged even on error (request + timing = 2 calls)
-        assert.strictEqual(loggerFn.mock.calls.length, 2, 'logger should be called for request and timing');
+        // Verify the failure and the timing were logged even on error: request, failure with its code, completion
+        assert.strictEqual(loggerFn.mock.calls.length, 3, 'logger should be called for request, failure and timing');
+        assert.strictEqual(loggerFn.mock.calls[1]!.arguments[0], 'RPC /test.Service/Method failed with Internal');
         assert.ok(
-            loggerFn.mock.calls[1]!.arguments[0]?.includes('completed in'),
+            loggerFn.mock.calls[2]!.arguments[0]?.includes('completed in'),
             'timing log should contain "completed in"'
         );
     });
