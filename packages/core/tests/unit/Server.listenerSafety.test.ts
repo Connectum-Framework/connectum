@@ -115,7 +115,7 @@ describe("lifecycle listener safety", () => {
             assert.strictEqual(server.state, ServerState.STOPPED);
         });
 
-        it("startup failure emits start then error, never ready or stop", async () => {
+        it("a throwing ready listener emits start, ready, error and never stopping or stop", async () => {
             const server = make();
             const events: string[] = [];
             server.on("start", () => events.push("start"));
@@ -130,6 +130,23 @@ describe("lifecycle listener safety", () => {
             await assert.rejects(() => server.start());
 
             assert.deepStrictEqual(events, ["start", "ready", "error"]);
+        });
+
+        it("a throwing start listener emits start then error, with no ready, stopping or stop", async () => {
+            const server = make();
+            const events: string[] = [];
+            server.on("start", () => events.push("start"));
+            server.on("start", () => {
+                throw new Error("start failed");
+            });
+            server.on("ready", () => events.push("ready"));
+            server.on("stopping", () => events.push("stopping"));
+            server.on("stop", () => events.push("stop"));
+            server.on("error", () => events.push("error"));
+
+            await assert.rejects(() => server.start());
+
+            assert.deepStrictEqual(events, ["start", "error"]);
         });
     });
 
