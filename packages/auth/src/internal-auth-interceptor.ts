@@ -21,7 +21,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import * as jose from "jose";
+import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
 import { authContextStorage } from "./context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
 import type {
@@ -194,7 +194,7 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
 
 /** Map verified token claims to roles/scopes/name per the issuer's claimsMapping. */
 function mapTokenClaims(
-    payload: jose.JWTPayload,
+    payload: JWTPayload,
     mapping: NonNullable<SignedTokenIssuer["claimsMapping"]> | undefined,
 ): { name?: string; roles: string[]; scopes: string[]; subjectClaim?: string } {
     const claims = payload as Record<string, unknown>;
@@ -249,7 +249,7 @@ function stripBearer(value: string): string {
  *
  * **Hard security requirement — issuer-bound key selection (verified
  * empirically with `jose`).** The keyset is selected by the token's claimed
- * `iss` (`issuers[iss].jwksUri`), and `jose.jwtVerify` is pinned to that same
+ * `iss` (`issuers[iss].jwksUri`), and `jwtVerify` is pinned to that same
  * `issuer`. Each issuer gets its OWN `createRemoteJWKSet` — no `jwtVerify` call
  * ever receives a keyset containing more than one issuer's keys. A single shared
  * JWKS holding multiple services' keys does NOT contain compromise: `jose`
@@ -272,11 +272,11 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
     }
 
     // One JWKSet per issuer (issuer-bound). NEVER a shared keyset across issuers.
-    const keysets = new Map<string, ReturnType<typeof jose.createRemoteJWKSet>>();
+    const keysets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
     for (const iss of issuerKeys) {
         const cfg = issuers[iss];
         if (!cfg) continue;
-        keysets.set(iss, jose.createRemoteJWKSet(new URL(cfg.jwksUri)));
+        keysets.set(iss, createRemoteJWKSet(new URL(cfg.jwksUri)));
     }
 
     return async (req) => {
@@ -295,7 +295,7 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
         // Selection only: read the claimed issuer WITHOUT trusting it.
         let claimedIssuer: string | undefined;
         try {
-            claimedIssuer = jose.decodeJwt(token).iss;
+            claimedIssuer = decodeJwt(token).iss;
         } catch {
             return null;
         }
@@ -313,16 +313,16 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
         // Verify against ONLY this issuer's keyset, pinned to this same issuer.
         // The `issuer` pin makes the iss claim load-bearing; the per-issuer
         // keyset makes the kid load-bearing within that one issuer only.
-        const verifyOptions: jose.JWTVerifyOptions = {
+        const verifyOptions: JWTVerifyOptions = {
             issuer: claimedIssuer,
             algorithms: cfg.algorithms ?? ["RS256"],
         };
         if (cfg.audience !== undefined) verifyOptions.audience = cfg.audience;
         if (cfg.maxTokenAge !== undefined) verifyOptions.maxTokenAge = cfg.maxTokenAge;
 
-        let payload: jose.JWTPayload;
+        let payload: JWTPayload;
         try {
-            ({ payload } = await jose.jwtVerify(token, keyset, verifyOptions));
+            ({ payload } = await jwtVerify(token, keyset, verifyOptions));
         } catch {
             // Bad signature, no matching key, expired, wrong issuer, etc.
             return null;

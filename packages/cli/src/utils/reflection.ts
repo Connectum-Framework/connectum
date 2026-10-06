@@ -19,8 +19,11 @@ import {
     ServerReflection as V1ServerReflection,
 } from "#gen/grpc/reflection/v1/reflection_pb.js";
 import {
+    // biome-ignore lint/suspicious/noDeprecatedImports: v1alpha is deprecated upstream but is the only reflection version older servers implement, so it is the fallback on purpose.
     ServerReflectionRequestSchema as V1alphaRequestSchema,
+    // biome-ignore lint/suspicious/noDeprecatedImports: v1alpha is deprecated upstream but is the only reflection version older servers implement, so it is the fallback on purpose.
     ServerReflectionResponseSchema as V1alphaResponseSchema,
+    // biome-ignore lint/suspicious/noDeprecatedImports: v1alpha is deprecated upstream but is the only reflection version older servers implement, so it is the fallback on purpose.
     ServerReflection as V1alphaServerReflection,
 } from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
 import { reflectionErrorCode } from "./reflectionErrorCode.ts";

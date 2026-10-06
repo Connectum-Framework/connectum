@@ -7,7 +7,7 @@
  * @module testing/test-jwt
  */
 
-import * as jose from "jose";
+import { SignJWT } from "jose";
 
 /**
  * Deterministic test secret for HS256 JWTs.
@@ -54,7 +54,7 @@ export async function createTestJwt(
         audience?: string;
     },
 ): Promise<string> {
-    let builder = new jose.SignJWT(payload).setProtectedHeader({ alg: "HS256" }).setIssuedAt();
+    let builder = new SignJWT(payload).setProtectedHeader({ alg: "HS256" }).setIssuedAt();
 
     if (options?.expiresIn) {
         builder = builder.setExpirationTime(options.expiresIn);

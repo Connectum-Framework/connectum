@@ -44,7 +44,7 @@
 
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import * as jose from "jose";
+import { exportJWK, generateKeyPair, type JWK, SignJWT } from "jose";
 
 /** Default `kid` shared by the generated keypair and the minted tokens. */
 export const TEST_JWT_KID = "connectum-test-key";
@@ -56,7 +56,7 @@ export interface RsaTestKeypair {
     /** Public verification key. */
     readonly publicKey: CryptoKey;
     /** Public JWK (carries `kid`, `alg: "RS256"`, `use: "sig"`) — serve at the JWKS endpoint. */
-    readonly publicJwk: jose.JWK;
+    readonly publicJwk: JWK;
     /** Key id shared by `publicJwk` and the token header (load-bearing for JWKS key selection). */
     readonly kid: string;
 }
@@ -71,8 +71,8 @@ export interface RsaTestKeypair {
  * @param kid - Key id to stamp on the JWK; defaults to {@link TEST_JWT_KID}.
  */
 export async function generateRsaTestKeypair(kid: string = TEST_JWT_KID): Promise<RsaTestKeypair> {
-    const { privateKey, publicKey } = await jose.generateKeyPair("RS256", { extractable: true });
-    const publicJwk: jose.JWK = { ...(await jose.exportJWK(publicKey)), kid, alg: "RS256", use: "sig" };
+    const { privateKey, publicKey } = await generateKeyPair("RS256", { extractable: true });
+    const publicJwk: JWK = { ...(await exportJWK(publicKey)), kid, alg: "RS256", use: "sig" };
     return { privateKey, publicKey, publicJwk, kid };
 }
 
@@ -92,8 +92,8 @@ export interface TestJwksServer {
  *
  * @param jwks - One public JWK or an array (from {@link generateRsaTestKeypair}).
  */
-export async function startTestJwksServer(jwks: jose.JWK | readonly jose.JWK[]): Promise<TestJwksServer> {
-    const keys = Array.isArray(jwks) ? jwks : [jwks as jose.JWK];
+export async function startTestJwksServer(jwks: JWK | readonly JWK[]): Promise<TestJwksServer> {
+    const keys = Array.isArray(jwks) ? jwks : [jwks as JWK];
     const body = JSON.stringify({ keys });
 
     const server = createServer((req, res) => {
@@ -140,7 +140,7 @@ export async function createTestJwtRS256(
         expiresIn?: string;
     },
 ): Promise<string> {
-    let builder = new jose.SignJWT(payload)
+    let builder = new SignJWT(payload)
         .setProtectedHeader({ alg: "RS256", kid: options.kid })
         .setIssuedAt()
         .setExpirationTime(options.expiresIn ?? "1h");

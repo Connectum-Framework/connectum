@@ -42,10 +42,14 @@ function matchesIp(address: string, pattern: string): boolean {
         if (!peerParts.every(isValidOctet) || !networkParts.every(isValidOctet)) return false;
         const [p0 = 0, p1 = 0, p2 = 0, p3 = 0] = peerParts;
         const [n0 = 0, n1 = 0, n2 = 0, n3 = 0] = networkParts;
-        const peerInt = ((p0 << 24) | (p1 << 16) | (p2 << 8) | p3) >>> 0;
-        const networkInt = ((n0 << 24) | (n1 << 16) | (n2 << 8) | n3) >>> 0;
-        const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0;
-        return (peerInt & mask) === (networkInt & mask);
+        // Addresses as unsigned 32-bit integers in plain arithmetic (a double holds
+        // them exactly), so no signed bit-shift can flip the high bit.
+        const peerInt = ((p0 * 256 + p1) * 256 + p2) * 256 + p3;
+        const networkInt = ((n0 * 256 + n1) * 256 + n2) * 256 + n3;
+        // Two addresses share the first `prefix` bits exactly when they fall into
+        // the same aligned block of 2^(32 - prefix) addresses.
+        const blockSize = 2 ** (32 - prefix);
+        return Math.floor(peerInt / blockSize) === Math.floor(networkInt / blockSize);
     }
 
     return false;

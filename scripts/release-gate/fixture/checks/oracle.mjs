@@ -89,7 +89,7 @@ const connectumDtsDiags = program.getSemanticDiagnostics().filter((d) => (d.file
 
 const fmtDiag = (d) => {
     const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
-    if (d.file && d.start != null) {
+    if (d.file && d.start !== null && d.start !== undefined) {
         const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
         return `${d.file.fileName}:${line + 1}:${character + 1} TS${d.code}: ${msg}`;
     }
@@ -111,13 +111,16 @@ specs.forEach((s, i) => {
         types = [];
     for (const ex of exports) {
         let sym = ex;
+        // biome-ignore lint/suspicious/noBitwiseOperators: ts.SymbolFlags is a bit mask in the TypeScript compiler API; testing a flag takes `&`.
         if (sym.flags & ts.SymbolFlags.Alias) {
             try {
                 sym = checker.getAliasedSymbol(ex);
             } catch {}
         }
         const f = sym.flags;
+        // biome-ignore lint/suspicious/noBitwiseOperators: ts.SymbolFlags is a bit mask in the TypeScript compiler API; testing a flag takes `&`.
         const isValue = !!(f & ts.SymbolFlags.Value);
+        // biome-ignore lint/suspicious/noBitwiseOperators: ts.SymbolFlags is a bit mask in the TypeScript compiler API; combining and testing flags takes `|` and `&`.
         const isType = !!(f & (ts.SymbolFlags.Type | ts.SymbolFlags.Interface | ts.SymbolFlags.TypeAlias | ts.SymbolFlags.TypeParameter | ts.SymbolFlags.EnumMember));
         if (isValue) values.push(ex.getName());
         else if (isType) types.push(ex.getName());

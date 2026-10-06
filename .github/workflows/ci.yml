@@ -54,6 +54,12 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # `pnpm lint` checks only each package's `src`. This covers the rest of the
+      # repository -- release scripts, the release-gate fixture, interop helpers --
+      # so the same rules bind code that no package owns.
+      - name: Lint (whole repository)
+        run: pnpm lint:repo
+
       # The custom Biome plugins fail silently (they just match nothing) when
       # their include globs or patterns drift; this proves they still fire.
       - name: Validate custom lint rules

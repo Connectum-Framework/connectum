@@ -12,6 +12,7 @@
 import { create } from "@bufbuild/protobuf";
 import { Code, type ConnectRouter } from "@connectrpc/connect";
 import { ServerReflectionResponseSchema as V1ResponseSchema, ServerReflection as V1ServerReflection } from "#gen/grpc/reflection/v1/reflection_pb.js";
+// biome-ignore lint/suspicious/noDeprecatedImports: the v1alpha reflection service is deprecated upstream but still spoken by older gRPC clients and servers, so it is served and used on purpose.
 import { ServerReflectionResponseSchema as V1alphaResponseSchema, ServerReflection as V1alphaServerReflection } from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
 import type { DescriptorPool } from "./descriptorPool.ts";
 

@@ -28,7 +28,7 @@
   },
   "linter": {
     "enabled": true,
-    "includes": ["**", "!**/node_modules", "!**/gen", "!**/gen-ts", "!**/*.test.*", "!**/tsconfig*.json", "!**/packages/utils/**", "!**/packages/code-provider/**"],
+    "includes": ["**", "!**/node_modules", "!**/gen", "!**/gen-ts", "!**/*.test.*", "!**/tsconfig*.json"],
     "rules": {
       "correctness": {
         "noUnusedVariables": {
@@ -40,11 +40,16 @@
         "useImportExtensions": {
           "level": "warn",
           "fix": "none"
-        }
+        },
+        "noPrivateImports": "error",
+        "noUnusedInstantiation": "error"
       },
       "preset": "recommended",
       "complexity": {},
-      "performance": {},
+      "performance": {
+        "noReExportAll": "error",
+        "noNamespaceImport": "error"
+      },
       "security": {},
       "suspicious": {
         "noConsole": {
@@ -52,7 +57,21 @@
             "allow": ["debug", "log", "error", "info", "warn", "time", "timeEnd"]
           },
           "level": "warn"
-        }
+        },
+        "noImportCycles": "error",
+        "noNestedPromises": "error",
+        "noUnassignedVariables": "error",
+        "useErrorMessage": "error",
+        "noVar": "error",
+        "noForIn": "error",
+        "useGuardForIn": "error",
+        "noReturnAssign": "error",
+        "noConstantBinaryExpressions": "error",
+        "noDeprecatedImports": "error",
+        "noDuplicateDependencies": "error",
+        "noBitwiseOperators": "error",
+        "noUnusedExpressions": "error",
+        "noEqualsToNull": "error"
       }
     }
   },
