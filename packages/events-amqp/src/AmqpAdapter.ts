@@ -1310,6 +1310,14 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * the abandoned call must close whatever it opened and report nothing.
      */
     let connectAttempt: object | null = null;
+    /**
+     * Generation of the adapter's state, advanced by disconnect(). A connect()
+     * remembers the generation it started in; once it differs, everything that
+     * connect() set up (setup hooks, recovery events) is stale and must neither
+     * assign nor clear the publish channel, the live model or the pending
+     * returns, which by then belong to a newer connect().
+     */
+    let generation = 0;
 
     /** Reconnect attempt counter (own; never read from amqplib internals). */
     let reconnectAttempt = 0;
@@ -1512,9 +1520,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     /**
      * (Re)create the publish channel with its `return` listener.
      * Called on every successful (re)connect via the recovery setup hook.
+     *
+     * Resolves with the channel, or `null` when `isCurrent()` turned false while
+     * the channel was being opened: the channel is then closed and not adopted.
      */
-    async function setupPublishChannel(model: amqp.ChannelModel): Promise<void> {
+    async function setupPublishChannel(model: amqp.ChannelModel, isCurrent: () => boolean): Promise<amqp.ConfirmChannel | null> {
         const ch = await model.createConfirmChannel();
+        if (!isCurrent()) {
+            await ch.close().catch(() => undefined);
+            return null;
+        }
 
         // Mark the channel closed BEFORE amqplib drains outstanding confirms, so
         // a connection loss is classified structurally (see classifyConfirmError).
@@ -1546,6 +1561,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         });
 
         publishChannel = ch;
+        return ch;
     }
 
     /**
@@ -1733,17 +1749,36 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * Recovery setup hook: runs on EVERY successful (re)connect before the
      * wrapper reports the connection ready. Re-creates the publish channel,
      * re-applies topology, and replays active subscriptions.
+     *
+     * A setup that `isCurrent()` no longer covers (its connect() was superseded
+     * by disconnect()) touches no adapter state, swallows its own failures —
+     * the connection it ran on is being discarded — and returns quietly.
      */
-    async function onSetup(model: amqp.ChannelModel): Promise<void> {
-        failPendingReturns();
-        await setupPublishChannel(model);
-        await applyTopology(publishChannel as amqp.ConfirmChannel);
+    async function onSetup(model: amqp.ChannelModel, isCurrent: () => boolean): Promise<void> {
+        try {
+            if (!isCurrent()) {
+                return;
+            }
+            failPendingReturns();
+            const ch = await setupPublishChannel(model, isCurrent);
+            if (ch === null) {
+                return;
+            }
+            await applyTopology(ch);
 
-        for (const record of subscriptionRecords) {
-            if (record.active) {
-                // This setup rebuilds the consumer: a restore in progress is superseded.
-                restorer.stop(record);
-                await startConsumer(model, record);
+            for (const record of subscriptionRecords) {
+                if (!isCurrent()) {
+                    return;
+                }
+                if (record.active) {
+                    // This setup rebuilds the consumer: a restore in progress is superseded.
+                    restorer.stop(record);
+                    await startConsumer(model, record);
+                }
+            }
+        } catch (err) {
+            if (isCurrent()) {
+                throw err;
             }
         }
     }
@@ -1753,9 +1788,14 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * connection counts as live for consumer restoration. A consumer lost while
      * the setup was still running could not be restored then and is retried now.
      */
-    async function onRecoverySetup(model: amqp.ChannelModel): Promise<void> {
-        liveModel = null;
-        await onSetup(model);
+    async function onRecoverySetup(model: amqp.ChannelModel, isCurrent: () => boolean): Promise<void> {
+        if (isCurrent()) {
+            liveModel = null;
+        }
+        await onSetup(model, isCurrent);
+        if (!isCurrent()) {
+            return;
+        }
         liveModel = model;
         restorer.resume(subscriptionRecords);
     }
@@ -1772,7 +1812,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     }
 
     /** Attach the adapter's recovery lifecycle wiring to the cycle's recovering connection. */
-    function wireRecoveryCycle(cycle: RecoveryCycle): void {
+    function wireRecoveryCycle(cycle: RecoveryCycle, isCurrent: () => boolean): void {
         const conn = cycle.wrapper;
         // A lost connection is reported SOLELY via the wrapper's
         // `disconnect` event (see wireRecoveryLifecycle) — mapping the
@@ -1783,6 +1823,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         // From the loss on, a consumer cannot be restored on this connection:
         // the next setup hook rebuilds every consumer.
         conn.on("disconnect", () => {
+            // A connection of a superseded connect() must not clear what the
+            // newer connect() owns.
+            if (!isCurrent()) {
+                return;
+            }
             liveModel = null;
             // The channel died with the connection. Dropping the reference makes
             // publish() report the missing connection instead of failing on a
@@ -1792,9 +1837,15 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
         wireRecoveryLifecycle(conn, lifecycle, {
             clearPublishChannel: () => {
-                publishChannel = null;
+                if (isCurrent()) {
+                    publishChannel = null;
+                }
             },
-            failPendingReturns,
+            failPendingReturns: () => {
+                if (isCurrent()) {
+                    failPendingReturns();
+                }
+            },
             nextReconnectAttempt: () => {
                 reconnectAttempt += 1;
                 return reconnectAttempt;
@@ -1880,7 +1931,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
             const attemptToken = {};
             connectAttempt = attemptToken;
-            const superseded = (): boolean => connectAttempt !== attemptToken;
+            const attemptGeneration = generation;
+            const isCurrent = (): boolean => generation === attemptGeneration;
+            const superseded = (): boolean => !isCurrent();
             closing = false;
             // A fresh connect() starts a fresh attempt series — a stale counter
             // from a previous exhausted-recovery incarnation must not leak into
@@ -1913,7 +1966,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     // setup hook re-creates channels/topology/subscriptions.
                     connectOptions.recovery = buildRecoveryConnectOptions({
                         recovery: recoveryOpts,
-                        setup: onRecoverySetup,
+                        setup: (model) => onRecoverySetup(model, isCurrent),
                         initialBudget,
                         calculateDelay: backoffGuard?.calculateDelay,
                     });
@@ -1946,10 +1999,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
                     if (probe) {
                         try {
-                            await onSetup(probe);
+                            await onSetup(probe, isCurrent);
                         } catch (err) {
                             await probe.close().catch(() => undefined);
-                            publishChannel = null;
+                            if (isCurrent()) {
+                                publishChannel = null;
+                            }
                             if (err instanceof AmqpTopologyError) {
                                 dispatchLifecycle(lifecycle, { type: "setup-failed", initial: true, attempt: 0, error: err });
                                 if (options.failFastOnInitialSetupError) {
@@ -1966,7 +2021,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                             // connection re-runs onSetup (re-creating publishChannel)
                             // before connect() returns.
                             await probe.close().catch(() => undefined);
-                            publishChannel = null;
+                            if (isCurrent()) {
+                                publishChannel = null;
+                            }
                         }
                     }
                 }
@@ -1991,7 +2048,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     }
                     const cycle = newRecoveryCycle(wrapper, true, backoffGuard);
                     pendingCycle = cycle;
-                    wireRecoveryCycle(cycle);
+                    wireRecoveryCycle(cycle, isCurrent);
                     try {
                         await wrapper.waitForConnect();
                     } catch (err) {
@@ -2056,7 +2113,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     // the first success, so the wiring attaches after the initial
                     // window: its per-retry events stay unreported.
                     const cycle = newRecoveryCycle(conn, false, backoffGuard);
-                    wireRecoveryCycle(cycle);
+                    wireRecoveryCycle(cycle, isCurrent);
 
                     // With recovery, the wrapper already ran onSetup before resolving.
                     connection = conn;
@@ -2105,7 +2162,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 });
 
                 try {
-                    await onSetup(conn);
+                    await onSetup(conn, isCurrent);
                     // A disconnect() during the setup closed nothing: this
                     // connection was not published to `connection` yet.
                     if (superseded()) {
@@ -2116,7 +2173,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 } catch (err) {
                     setupFailedClose = true;
                     await conn.close().catch(() => undefined);
-                    if (!superseded()) {
+                    if (isCurrent()) {
                         publishChannel = null;
                     }
                     throw err;
@@ -2131,6 +2188,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         async disconnect(): Promise<void> {
             closing = true;
             connectAttempt = null;
+            generation += 1;
             liveModel = null;
 
             // A connect() still inside its initial window owns a live

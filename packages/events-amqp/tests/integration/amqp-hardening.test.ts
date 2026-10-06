@@ -13,6 +13,7 @@
  */
 
 import assert from "node:assert/strict";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
@@ -41,6 +42,120 @@ async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
 
 function describeError(err: unknown): string {
     return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+const AMQP_CHANNEL_CLASS = 20;
+const AMQP_CHANNEL_OPEN_METHOD = 10;
+const AMQP_PROTOCOL_HEADER_LENGTH = 8;
+const AMQP_FRAME_HEADER_LENGTH = 7;
+const AMQP_METHOD_FRAME = 1;
+
+interface GatedProxy {
+    readonly port: number;
+    /** Settles when the first proxied connection has sent its first `channel.open`, i.e. its setup has started. */
+    readonly setupStarted: Promise<void>;
+    /** Lets the broker's replies reach the first connection again. */
+    release(): void;
+    close(): Promise<void>;
+}
+
+/**
+ * A TCP proxy in front of the broker that freezes the broker-to-client
+ * direction of the FIRST connection the moment that connection opens its
+ * first channel. The client has finished the handshake by then, so its setup
+ * hook is running and stays parked on the reply until `release()`; every later
+ * connection passes through untouched. This makes "a connect() whose setup
+ * finishes after a newer connect() took over" a fixed order of events instead
+ * of a timing race.
+ */
+async function startGatedProxy(target: { host: string; port: number }): Promise<GatedProxy> {
+    let held = false;
+    let released = false;
+    let resolveSetupStarted: () => void = () => undefined;
+    const setupStarted = new Promise<void>((resolve) => {
+        resolveSetupStarted = resolve;
+    });
+    const sockets = new Set<net.Socket>();
+    let connections = 0;
+    let flush: () => void = () => undefined;
+
+    const server = net.createServer((client) => {
+        const gated = connections === 0;
+        connections += 1;
+        const upstream = net.connect(target.port, target.host);
+        sockets.add(client);
+        sockets.add(upstream);
+        const buffered: Buffer[] = [];
+        let clientBytes: Buffer = Buffer.alloc(0);
+        let headerSkipped = false;
+
+        const watchChannelOpen = (chunk: Buffer): void => {
+            clientBytes = Buffer.concat([clientBytes, chunk]);
+            if (!headerSkipped) {
+                if (clientBytes.length < AMQP_PROTOCOL_HEADER_LENGTH) {
+                    return;
+                }
+                clientBytes = clientBytes.subarray(AMQP_PROTOCOL_HEADER_LENGTH);
+                headerSkipped = true;
+            }
+            while (clientBytes.length >= AMQP_FRAME_HEADER_LENGTH) {
+                const size = clientBytes.readUInt32BE(3);
+                const total = AMQP_FRAME_HEADER_LENGTH + size + 1;
+                if (clientBytes.length < total) {
+                    return;
+                }
+                const isMethod = clientBytes[0] === AMQP_METHOD_FRAME && size >= 4;
+                if (isMethod && clientBytes.readUInt16BE(7) === AMQP_CHANNEL_CLASS && clientBytes.readUInt16BE(9) === AMQP_CHANNEL_OPEN_METHOD && !released) {
+                    held = true;
+                    resolveSetupStarted();
+                }
+                clientBytes = clientBytes.subarray(total);
+            }
+        };
+
+        client.on("data", (chunk: Buffer) => {
+            if (gated && !released && !held) {
+                watchChannelOpen(chunk);
+            }
+            upstream.write(chunk);
+        });
+        upstream.on("data", (chunk: Buffer) => {
+            if (gated && held) {
+                buffered.push(chunk);
+                return;
+            }
+            client.write(chunk);
+        });
+        if (gated) {
+            flush = () => {
+                held = false;
+                released = true;
+                for (const chunk of buffered.splice(0)) {
+                    client.write(chunk);
+                }
+            };
+        }
+        client.on("close", () => upstream.destroy());
+        upstream.on("close", () => client.destroy());
+        client.on("error", () => undefined);
+        upstream.on("error", () => undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+        throw new Error("gated proxy: no TCP address");
+    }
+    return {
+        port: address.port,
+        setupStarted,
+        release: () => flush(),
+        close: async () => {
+            for (const socket of sockets) {
+                socket.destroy();
+            }
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        },
+    };
 }
 
 for (const image of IMAGES) {
@@ -162,6 +277,42 @@ for (const image of IMAGES) {
 
                 await adapter.disconnect();
                 assert.equal(await connectionsNamedSettled(name, 0), 0, "disconnect() closes the only connection");
+            });
+        }
+
+        for (const mode of [
+            { label: "recovery: false", recovery: false as const, lifecycle: false },
+            { label: "recovery", recovery: true as const, lifecycle: false },
+            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true },
+        ]) {
+            it(`a superseded connect() whose setup finishes late does not take over the publish channel (${mode.label})`, async () => {
+                const name = `hardening-late-setup-${Math.random().toString(36).slice(2, 8)}`;
+                const proxy = await startGatedProxy({ host: container.getHost(), port: container.getMappedPort(5672) });
+                const adapter = AmqpAdapter({
+                    url: `amqp://guest:guest@127.0.0.1:${proxy.port}`,
+                    exchange: "hardening.late-setup",
+                    recovery: mode.recovery,
+                    ...(mode.lifecycle ? { lifecycle: { onLifecycle: () => undefined } } : {}),
+                });
+                try {
+                    const first = adapter.connect({ serviceName: name }).then(
+                        () => "resolved",
+                        (err: unknown) => describeError(err),
+                    );
+                    await proxy.setupStarted;
+                    await adapter.disconnect();
+                    await adapter.connect({ serviceName: name });
+
+                    // The first connect() resumes only now, with its setup finishing after the second one is live.
+                    proxy.release();
+                    const firstOutcome = await first;
+
+                    assert.match(firstOutcome, /AmqpConnectionError: Adapter closed while connect\(\) was in progress/, "the superseded connect() must not report success");
+                    await adapter.publish("hardening.late-setup.evt", new Uint8Array([1]));
+                } finally {
+                    await adapter.disconnect();
+                    await proxy.close();
+                }
             });
         }
 
