@@ -50,7 +50,9 @@ export interface ModuleSelection {
  * TUI and the non-interactive flag path collapse to).
  */
 export interface ScaffoldConfig {
-    /** Project name / target directory. */
+    /** Destination directory exactly as the user typed it (relative, absolute or `.`). */
+    dir: string;
+    /** Package name: the last segment of the resolved destination, valid for a new npm package. */
     name: string;
     /** Target runtime. */
     runtime: Runtime;

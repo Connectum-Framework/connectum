@@ -11,6 +11,7 @@
  */
 
 import type { RawInput } from "./config.ts";
+import { resolveProjectTarget } from "./projectName.ts";
 
 /** Minimal prompt surface; the clack implementation handles cancellation (exit). */
 export interface Prompter {
@@ -84,6 +85,20 @@ export async function collectConfig(flags: RawInput & { yes?: boolean | undefine
     return promptForMissing(flags, prompter);
 }
 
+/** Prompt validator for the project path: the same rule, and message, as `resolveConfig`. */
+function validateProjectPath(value: string | undefined): string | undefined {
+    const typed = (value ?? "").trim();
+    if (typed === "") {
+        return "A project name is required";
+    }
+    try {
+        resolveProjectTarget(typed, process.cwd());
+    } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+    }
+    return undefined;
+}
+
 /**
  * Prompt (via `prompter`) for every field the flags did not already provide. Always
  * interactive — {@link collectConfig} owns the non-interactive short-circuit.
@@ -94,7 +109,7 @@ export async function promptForMissing(flags: RawInput, prompter: Prompter): Pro
         (await prompter.text({
             message: "Project name",
             placeholder: "my-service",
-            validate: (v) => ((v ?? "").trim() === "" ? "A project name is required" : undefined),
+            validate: validateProjectPath,
         }));
     const runtime = flags.runtime ?? (await prompter.select({ message: "Runtime", options: RUNTIME_OPTIONS, initialValue: "node" }));
     const nodeExec =
@@ -111,7 +126,9 @@ export async function promptForMissing(flags: RawInput, prompter: Prompter): Pro
         events = wantEvents ? await prompter.select({ message: "Event adapter", options: ADAPTER_OPTIONS, initialValue: "nats" }) : undefined;
     }
 
-    const sample = flags.sample ?? (await prompter.confirm({ message: "Include the sample Greeter service?", initialValue: true }));
+    // The auth and events demonstration slices are built on the sample service, so choosing either
+    // settles the question: asking would only offer an answer that `resolveConfig` refuses.
+    const sample = flags.sample ?? (auth || events !== undefined ? true : await prompter.confirm({ message: "Include the sample Greeter service?", initialValue: true }));
 
     // Advanced toggles are flag-only (kept out of the wizard); preserve them.
     return {

@@ -9,7 +9,7 @@ import { generateIndex, generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformPackageJson } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
 
-const base: ScaffoldConfig = { name: "payments", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: {} };
+const base: ScaffoldConfig = { dir: "payments", name: "payments", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: {} };
 const withOtel: ScaffoldConfig = { ...base, modules: { otel: true } };
 
 describe("generateServer", () => {
@@ -94,4 +94,27 @@ describe("transformPackageJson (otel module)", () => {
         const pkg = JSON.parse(transformPackageJson(raw, base));
         assert.equal(pkg.dependencies["@connectum/otel"], undefined);
     });
+});
+
+describe("generateIndex: project name in the startup log", () => {
+    const logStatement = (source: string): string => {
+        const line = source.split("\n").find((l) => l.includes("ready on"));
+        assert.ok(line, "startup log statement not found");
+        return line.trim();
+    };
+
+    // The statement is executed as generated: if the name were spliced into a template
+    // literal unescaped, `${…}` would run and the printed text would differ.
+    const hostileNames = ["a${globalThis.__connectumInjected = 1}b", "a`b", 'a"b', "a'b", "a\\b", "a\\${x}b", "a\nb"];
+
+    for (const name of hostileNames) {
+        it(`prints ${JSON.stringify(name)} literally and runs nothing`, () => {
+            const statement = logStatement(generateIndex({ ...base, name }));
+            const printed: string[] = [];
+            const run = new Function("console", "addr", statement);
+            run({ log: (text: string) => printed.push(text) }, { address: "127.0.0.1", port: 5000 });
+            assert.deepEqual(printed, [`${name} ready on 127.0.0.1:5000`]);
+            assert.equal((globalThis as { __connectumInjected?: number }).__connectumInjected, undefined);
+        });
+    }
 });

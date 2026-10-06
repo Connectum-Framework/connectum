@@ -12,7 +12,7 @@ import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
 
-const authConfig: ScaffoldConfig = { name: "acct", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { auth: true } };
+const authConfig: ScaffoldConfig = { dir: "acct", name: "acct", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { auth: true } };
 
 describe("resolveConfig auth flag", () => {
     it("enables auth", () => {

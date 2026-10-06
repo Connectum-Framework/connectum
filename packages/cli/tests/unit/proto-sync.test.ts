@@ -29,6 +29,9 @@ mock.module("../../src/utils/reflection.ts", {
 	namedExports: {
 		fetchReflectionData: mockFetchReflectionData,
 		fetchFileDescriptorSetBinary: mockFetchFileDescriptorSetBinary,
+		DEFAULT_REFLECTION_TIMEOUT_MS: 10_000,
+		MAX_REFLECTION_TIMEOUT_MS: 2_147_483_647,
+		isValidReflectionTimeout: (v: number) => Number.isInteger(v) && v >= 1 && v <= 2_147_483_647,
 	},
 });
 
@@ -60,7 +63,7 @@ mock.module("node:os", {
 });
 
 // Import AFTER mock registration
-const { executeProtoSync, protoSyncCommand } = await import("../../src/commands/proto-sync.ts");
+const { executeProtoSync, parseTimeoutOption, protoSyncCommand } = await import("../../src/commands/proto-sync.ts");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -668,5 +671,26 @@ describe("proto-sync unit tests", () => {
 				"Should call fetchFileDescriptorSetBinary when dryRun is undefined",
 			);
 		});
+	});
+});
+
+describe("parseTimeoutOption", () => {
+	it("accepts a plain positive integer and passes an absent value through", () => {
+		assert.equal(parseTimeoutOption("500"), 500);
+		assert.equal(parseTimeoutOption(undefined), undefined);
+	});
+
+	for (const bad of ["0", "-5", "1.5", "abc", "10s", "", "007"]) {
+		it(`rejects ${JSON.stringify(bad)}`, () => {
+			assert.throws(() => parseTimeoutOption(bad), /--timeout must be a positive integer/);
+		});
+	}
+
+	it("leaves the upper bound to executeProtoSync, which refuses it before connecting", async () => {
+		assert.equal(parseTimeoutOption("2147483648"), 2147483648);
+		await assert.rejects(
+			executeProtoSync({ from: "localhost:5000", out: "gen", timeoutMs: 2147483648 }),
+			/--timeout must be a positive integer/,
+		);
 	});
 });

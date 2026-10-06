@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCommand } from "citty";
-import { fetchFileDescriptorSetBinary, fetchReflectionData } from "../utils/reflection.ts";
+import { DEFAULT_REFLECTION_TIMEOUT_MS, fetchFileDescriptorSetBinary, fetchReflectionData, isValidReflectionTimeout, MAX_REFLECTION_TIMEOUT_MS } from "../utils/reflection.ts";
 
 /**
  * Options for the proto sync pipeline.
@@ -31,6 +31,8 @@ export interface ProtoSyncOptions {
     template?: string | undefined;
     /** Show what would be synced without generating */
     dryRun?: boolean;
+    /** Time limit of each reflection request in ms (positive integer; default 10 000). */
+    timeoutMs?: number | undefined;
 }
 
 /**
@@ -40,25 +42,29 @@ export interface ProtoSyncOptions {
  */
 export async function executeProtoSync(options: ProtoSyncOptions): Promise<void> {
     const { from, out, template, dryRun } = options;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_REFLECTION_TIMEOUT_MS;
+    if (!isValidReflectionTimeout(timeoutMs)) {
+        throw new Error(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got ${timeoutMs}.`);
+    }
 
     // Ensure URL has protocol
     const url = from.startsWith("http") ? from : `http://${from}`;
 
     if (dryRun) {
-        await executeDryRun(url, out);
+        await executeDryRun(url, out, timeoutMs);
         return;
     }
 
-    await executeFullSync(url, out, template);
+    await executeFullSync(url, out, timeoutMs, template);
 }
 
 /**
  * Dry-run mode: connect to server, list services and files, but do not generate code.
  */
-async function executeDryRun(url: string, out: string): Promise<void> {
+async function executeDryRun(url: string, out: string, timeoutMs: number): Promise<void> {
     console.log(`Connecting to ${url}...`);
 
-    const result = await fetchReflectionData(url);
+    const result = await fetchReflectionData(url, { timeoutMs });
 
     console.log(`Connected to ${url}`);
     console.log("");
@@ -78,11 +84,11 @@ async function executeDryRun(url: string, out: string): Promise<void> {
 /**
  * Full sync: fetch descriptors, write .binpb, run buf generate.
  */
-async function executeFullSync(url: string, out: string, template?: string): Promise<void> {
+async function executeFullSync(url: string, out: string, timeoutMs: number, template?: string): Promise<void> {
     console.log(`Connecting to ${url}...`);
 
     // Step 1: Fetch FileDescriptorSet as binary
-    const binpb = await fetchFileDescriptorSetBinary(url);
+    const binpb = await fetchFileDescriptorSetBinary(url, { timeoutMs });
     console.log(`Fetched ${binpb.byteLength} bytes of descriptors`);
 
     // Step 2: Write to temporary file
@@ -108,6 +114,20 @@ async function executeFullSync(url: string, out: string, template?: string): Pro
 }
 
 /**
+ * Parse the `--timeout` value. Anything but a plain positive integer (`0`, `-5`, `1.5`,
+ * `abc`, `10s`) is refused rather than coerced, so a typo cannot silently become "no limit".
+ */
+export function parseTimeoutOption(raw: string | undefined): number | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    if (!/^[1-9]\d*$/.test(raw)) {
+        throw new Error(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got "${raw}".`);
+    }
+    return Number(raw);
+}
+
+/**
  * citty command definition for `connectum proto sync`.
  */
 export const protoSyncCommand = defineCommand({
@@ -130,6 +150,10 @@ export const protoSyncCommand = defineCommand({
             type: "string",
             description: "Path to custom buf.gen.yaml template",
         },
+        timeout: {
+            type: "string",
+            description: `Time limit of each reflection request in milliseconds (positive integer; default: ${DEFAULT_REFLECTION_TIMEOUT_MS})`,
+        },
         "dry-run": {
             type: "boolean",
             description: "Show what would be synced without generating code",
@@ -142,6 +166,7 @@ export const protoSyncCommand = defineCommand({
             out: args.out,
             template: args.template,
             dryRun: args["dry-run"],
+            timeoutMs: parseTimeoutOption(args.timeout),
         });
     },
 });

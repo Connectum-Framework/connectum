@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -15,33 +15,7 @@ import { executeGenerateService, generateServiceCommand } from "../../src/comman
 import { executeInit, initCommand } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
-
-/** A clone stub that writes a minimal getting-started-shaped base into `dest`. */
-const cloneStub: CloneFn = async (_source, dest) => {
-    mkdirSync(join(dest, "src/services"), { recursive: true });
-    mkdirSync(join(dest, "tests/e2e"), { recursive: true });
-    writeFileSync(
-        join(dest, "package.json"),
-        JSON.stringify(
-            {
-                name: "@connectum/example-getting-started",
-                private: true,
-                type: "module",
-                imports: { "#gen/*": "./gen/*", "#*": "./src/*" },
-                scripts: { start: "node src/index.ts" },
-                dependencies: { "@connectum/core": "^1.0.0" },
-                devDependencies: { "@bufbuild/buf": "^1.65.0", "@connectrpc/connect-node": "^2.1.1", typescript: "^5.9.3" },
-                engines: { node: ">=25.2.0" },
-            },
-            null,
-            2,
-        ),
-    );
-    writeFileSync(join(dest, "pnpm-workspace.yaml"), "packages: []\n");
-    writeFileSync(join(dest, "src/services/greeterService.ts"), "export const greeterService = {};\n");
-    writeFileSync(join(dest, "tests/e2e/e2e.test.ts"), "// old test using createGrpcTransport\n");
-    writeFileSync(join(dest, "buf.gen.yaml"), "version: v2\n");
-};
+import { cloneOf, cloneStub } from "../helpers/baseFixture.ts";
 
 describe("init command", () => {
     it("exports a citty command with a run handler", () => {
@@ -73,6 +47,53 @@ describe("executeInit pipeline (injected clone, no network)", () => {
         assert.match(readFileSync(join(workdir, "myservice/pnpm-workspace.yaml"), "utf8"), /allowBuilds:/);
         assert.match(readFileSync(join(workdir, "myservice/tests/e2e/e2e.test.ts"), "utf8"), /createLocalClient/);
         assert.equal(pkg.devDependencies["@connectum/testing"], "^1.0.0");
+    });
+
+    it("creates the project at the typed path and names the package after its last segment", async () => {
+        await executeInit({ name: "apps/payments", clone: cloneStub });
+        const pkg = JSON.parse(readFileSync(join(workdir, "apps/payments/package.json"), "utf8"));
+        assert.equal(pkg.name, "payments");
+    });
+
+    it("refuses an invalid package name without touching the disk", async () => {
+        for (const name of ["My-App", "my app", "a${b}c", "node:fs"]) {
+            await assert.rejects(() => executeInit({ name, clone: cloneStub }), /invalid project name/);
+        }
+        assert.deepEqual(readdirSync(workdir), []);
+    });
+
+    it("refuses --no-sample with --auth before fetching the base", async () => {
+        let fetched = false;
+        const spy: CloneFn = async (source, dest) => {
+            fetched = true;
+            await cloneStub(source, dest);
+        };
+        await assert.rejects(() => executeInit({ name: "demo", sample: false, auth: true, clone: spy }), /--no-sample cannot be combined with --auth/);
+        assert.equal(fetched, false);
+        assert.deepEqual(readdirSync(workdir), []);
+    });
+
+    it("reports every defect of an unfit base in one message and writes nothing", async () => {
+        const unfit = cloneOf((files) => {
+            files.delete("tsconfig.json");
+            files.delete("proto/greeter/v1/greeter.proto");
+        });
+        await assert.rejects(
+            () => executeInit({ name: "demo", clone: unfit }),
+            (err: Error) => /cannot be used/.test(err.message) && /tsconfig\.json/.test(err.message) && /greeter\.proto/.test(err.message),
+        );
+        assert.deepEqual(readdirSync(workdir), []);
+    });
+
+    it("scaffolds a base without the Greeter files when --no-sample is given", async () => {
+        const noGreeter = cloneOf((files) => {
+            files.delete("proto/greeter/v1/greeter.proto");
+            files.delete("src/services/greeterService.ts");
+        });
+        await executeInit({ name: "demo", sample: false, clone: noGreeter });
+        assert.equal(existsSync(join(workdir, "demo/proto/greeter")), false);
+        assert.match(readFileSync(join(workdir, "demo/tests/e2e/server.test.ts"), "utf8"), /buildServer\(0\)/);
+        assert.match(readFileSync(join(workdir, "demo/src/server.ts"), "utf8"), /services: \[\],/);
     });
 
     it("refuses to clobber a non-empty target directory", async () => {

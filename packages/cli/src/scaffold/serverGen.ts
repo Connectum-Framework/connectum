@@ -82,6 +82,7 @@ export function generateServer(config: ScaffoldConfig): string {
     const { imports: protocolImports, expr: protoExpr } = protocolsExpr(config);
     const events = config.modules.events !== undefined;
     const catalog = config.modules.catalog === true;
+    const sample = config.sample;
     const imports = [
         'import { createServer } from "@connectum/core";',
         'import type { Server } from "@connectum/core";',
@@ -89,8 +90,10 @@ export function generateServer(config: ScaffoldConfig): string {
         ...interceptorImports,
         ...(catalog ? ['import { serviceCatalog } from "#gen/catalog.gen.ts";'] : []),
         ...(events ? ['import { greeterEventBus } from "#greeterEventBus.ts";'] : []),
-        'import { greeterService } from "#services/greeterService.ts";',
+        ...(sample ? ['import { greeterService } from "#services/greeterService.ts";'] : []),
     ];
+    const hosted = sample ? "GreeterService" : "the services you register";
+    const servicesLine = sample ? "[greeterService]" : "[]";
     const eventBusLine = events ? "\n        eventBus: greeterEventBus," : "";
     const catalogLine = catalog ? "\n        catalog: serviceCatalog," : "";
     return `/**
@@ -102,14 +105,14 @@ export function generateServer(config: ScaffoldConfig): string {
 ${imports.join("\n")}
 
 /**
- * Build a Connectum server hosting GreeterService.
+ * Build a Connectum server hosting ${hosted}.
  *
  * @param port - TCP port to bind (0 = random, for tests).
  * @param autoShutdown - install SIGTERM/SIGINT graceful-shutdown handlers.
  */
 export function buildServer(port = 5000, autoShutdown = false): Server {
     return createServer({
-        services: [greeterService],${catalogLine}${eventBusLine}
+        services: ${servicesLine},${catalogLine}${eventBusLine}
         port,
         host: "0.0.0.0",
         allowHTTP1: false,
@@ -133,6 +136,9 @@ export function generateIndex(config: ScaffoldConfig): string {
         'import { buildServer } from "#server.ts";',
     ];
     const initBlock = otel ? `\ninitProvider({ serviceName: ${JSON.stringify(config.name)} });\n` : "";
+    // The name is emitted as an escaped string literal and joined to the address with `+`: a name
+    // spliced into a template literal would run its own `${…}` when the server reports ready.
+    const readyMessage = `${JSON.stringify(`${config.name} ready on `)} + `;
     const readyLifecycle = healthcheck ? "    healthcheckManager.update(ServingStatus.SERVING);\n" : "";
     const stopHandler = otel
         ? `server.on("stop", async () => {\n    await shutdownProvider();\n    console.log("stopped");\n});`
@@ -149,7 +155,7 @@ const server = buildServer(Number(process.env.PORT ?? 5000), true);
 
 server.on("ready", () => {
     const addr = server.address;
-${readyLifecycle}    console.log(\`${config.name} ready on \${addr?.address}:\${addr?.port}\`);
+${readyLifecycle}    console.log(${readyMessage}\`\${addr?.address}:\${addr?.port}\`);
 });
 
 ${stopHandler}

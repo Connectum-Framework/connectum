@@ -5,12 +5,14 @@
  * - **Path-safe**: every relative path is validated; emission cannot escape the
  *   target directory (rejects absolute paths — POSIX and Windows — and `..`).
  * - **Refuse-to-clobber**: existing files are skipped unless `force` is set.
+ * - **Checked first**: every target is verified (type of what exists there, writability)
+ *   before the first file is written.
  * - **Deterministic**: files are emitted in sorted-path order.
  *
  * @module utils/emit
  */
 
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
 /** Matches Windows absolute paths: drive-letter (`C:\`, `C:/`) and UNC (`\\server\share`). */
@@ -67,6 +69,85 @@ function assertNoSymlinkComponent(targetDir: string, relPath: string): void {
 }
 
 /**
+ * Describe why `relPath` cannot be written under `targetDir`, or `undefined` when it can
+ * (or when it exists, `force` is off and it will be skipped).
+ *
+ * Covers what would otherwise surface halfway through the emission as a raw system error:
+ * a directory where the file goes, a file where a parent directory goes, and a nearest
+ * existing directory (or an existing file under `force`) that is not writable. The
+ * writability probe is `accessSync`, so it is an approximation: a race with another process
+ * is not covered, and a process with root rights passes it whatever the mode bits say.
+ */
+function findTargetConflict(targetDir: string, relPath: string, force: boolean): string | undefined {
+    const segments = relPath.split(/[/\\]/);
+    let current = targetDir;
+    const rootStat = statOrUndefined(targetDir);
+    if (rootStat !== undefined && !rootStat.isDirectory()) {
+        return `"${relPath}": the destination "${targetDir}" is a file, not a directory`;
+    }
+    // A destination that does not exist yet is created along with its missing parents, so the
+    // directory that has to accept the write is the nearest ancestor that exists.
+    let nearestDirectory = targetDir;
+    if (rootStat === undefined) {
+        let ancestor = dirname(targetDir);
+        while (statOrUndefined(ancestor) === undefined && dirname(ancestor) !== ancestor) {
+            ancestor = dirname(ancestor);
+        }
+        if (statOrUndefined(ancestor)?.isDirectory() !== true) {
+            return `"${relPath}" cannot be written: "${ancestor}", a parent of the destination, is not a directory`;
+        }
+        nearestDirectory = ancestor;
+    }
+    let reachedMissing = rootStat === undefined;
+    for (const [index, segment] of segments.entries()) {
+        const isLast = index === segments.length - 1;
+        current = join(current, segment);
+        if (reachedMissing) {
+            continue;
+        }
+        const stat = statOrUndefined(current);
+        if (stat === undefined) {
+            reachedMissing = true;
+            continue;
+        }
+        if (isLast) {
+            if (stat.isDirectory()) {
+                return `"${relPath}" is a directory, but a file has to be written there`;
+            }
+            if (force && !isAccessible(current, constants.W_OK)) {
+                return `"${relPath}" is not writable (the existing file cannot be overwritten)`;
+            }
+            return undefined;
+        }
+        if (!stat.isDirectory()) {
+            return `"${relPath}" cannot be written: "${segments.slice(0, index + 1).join("/")}" is a file, but a directory has to exist there`;
+        }
+        nearestDirectory = current;
+    }
+    if (!isAccessible(nearestDirectory, constants.W_OK) || !isAccessible(nearestDirectory, constants.X_OK)) {
+        return `"${relPath}" cannot be written: the directory "${nearestDirectory}" is not writable`;
+    }
+    return undefined;
+}
+
+function statOrUndefined(path: string): ReturnType<typeof lstatSync> | undefined {
+    try {
+        return lstatSync(path);
+    } catch {
+        return undefined;
+    }
+}
+
+function isAccessible(path: string, mode: number): boolean {
+    try {
+        accessSync(path, mode);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Options for {@link emitFiles}.
  */
 export interface EmitOptions {
@@ -87,8 +168,8 @@ export interface EmitResult {
 /**
  * Emit a set of files under `targetDir`.
  *
- * All relative paths are validated up front (a single unsafe path aborts before any
- * write). Files are emitted in sorted-path order; parent directories are created as
+ * All relative paths and targets are validated up front (a single unsafe path or
+ * unwritable target aborts before any write). Files are emitted in sorted-path order; parent directories are created as
  * needed. By default an existing file is skipped (refuse-to-clobber); pass
  * `force: true` to overwrite.
  *
@@ -107,6 +188,19 @@ export function emitFiles(targetDir: string, files: ReadonlyMap<string, string>,
     for (const [relPath] of entries) {
         assertSafeRelativePath(relPath);
         assertNoSymlinkComponent(targetDir, relPath);
+    }
+
+    // Everything that can be known to fail is found now, for every target at once, so a refused
+    // emission leaves the destination as it was and names all the conflicts in one message.
+    const conflicts: string[] = [];
+    for (const [relPath] of entries) {
+        const conflict = findTargetConflict(targetDir, relPath, options.force === true);
+        if (conflict !== undefined) {
+            conflicts.push(conflict);
+        }
+    }
+    if (conflicts.length > 0) {
+        throw new Error(`Cannot emit into "${targetDir}", nothing was written:\n  - ${conflicts.join("\n  - ")}`);
     }
 
     const written: string[] = [];

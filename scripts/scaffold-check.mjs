@@ -8,6 +8,8 @@
  * A combination with a `fixture` also gets user-style files copied in after `init`
  * (see FIXTURES), a plain-`node` run of its check file, and a manifest check against
  * the CLI's version floors.
+ * A combination with `generateService` runs `connectum generate service <name>` in the project
+ * before `typecheck`: a `--no-sample` project has no proto until it does.
  * A combination with auth or events imports Connectum's option descriptors from those
  * packages instead of generating them, so it is also checked for that: one `@connectum/*`
  * range at the slice floor (before install), and after generation no local
@@ -123,6 +125,12 @@ const COMBOS = [
     // also carries the enum fixture: erasable generation must coexist with both.
     { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums", pack: true },
     { name: "enums", pm: "npm", args: [], fixture: "enums" },
+    // `--no-sample` projects hold no proto, and `buf generate` (inside `typecheck`, `test`, `start`)
+    // fails on a module without proto files. `generateService` runs `connectum generate service`
+    // right after the install — the step the generated README prescribes — so the cell proves
+    // the documented path from a config-only project to a type-checked, tested one.
+    { name: "no-sample", pm: "npm", args: ["--no-sample"], generateService: "billing" },
+    { name: "no-sample-modules", pm: "npm", args: ["--no-sample", "--otel", "--catalog"], generateService: "billing" },
     // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
     // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
     // It proves compatibility, not the floor — an install resolves the highest version in
@@ -323,6 +331,9 @@ function checkCombo(combo, workdir, pack) {
         if (pack) useLocalTarballs(target, combo.pm, pack.tarballs);
         run(combo.pm, ["install"], target);
         if (pack) assertPackedInstall(target, pack.manifests);
+        if (combo.generateService !== undefined) {
+            run(process.execPath, [CLI_ENTRY, "generate", "service", combo.generateService], target);
+        }
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
         if (optionImports.length > 0) {
