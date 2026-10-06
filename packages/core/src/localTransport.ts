@@ -100,6 +100,13 @@ function asInternals(server: Server): ServerInternals {
  * the wrapped `createRouterTransport` already clones headers at the call
  * boundary, providing mutation isolation between client and server.
  *
+ * Cancellation: a streaming call is cancelled by the `AbortSignal` passed in
+ * the call options, by its deadline, or by `server.stop()`. The handler's
+ * `ctx.signal` aborts and its output generator is finished, so a handler
+ * parked at `yield` runs its `finally`. Leaving a `for await` loop with
+ * `break` is not a cancellation: the handler keeps running until one of the
+ * above happens.
+ *
  * The synthetic origin observed by interceptors reading `req.url` is
  * `https://in-memory/<service>/<method>` (set by the underlying ConnectRPC
  * router transport — see `@connectrpc/connect`'s `router-transport.ts`).
@@ -132,10 +139,10 @@ export function createLocalTransport(server: Server, options?: CreateLocalTransp
             // cross-transport parity invariant (interceptors, error mapping,
             // coexistence).
             //
-            // `finishStreamOnAbort` goes last, next to the handler: over HTTP a
-            // cancelled call unwinds the handler's generator through the failed
-            // socket write, and in-process nothing writes, so a stream parked at
-            // `yield` would never reach its `finally` without it.
+            // `finishStreamOnAbort` goes last, next to the handler, exactly as
+            // on the HTTP path: in-process nothing writes to a socket, so a
+            // stream parked at `yield` would never reach its `finally` without
+            // it.
             interceptors: [...serverInterceptors, finishStreamOnAbort],
             // The same shutdown signal the HTTP adapter gets: `server.stop()`
             // aborts `context.signal` of in-flight local calls (handlers,

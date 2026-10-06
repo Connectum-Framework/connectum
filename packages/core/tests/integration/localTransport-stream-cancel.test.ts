@@ -2,15 +2,15 @@
  * Cancelling a streaming call finishes the handler's output iterator on both
  * transports.
  *
- * Over HTTP/2 the server pumps the handler's generator into the socket, so a
- * client abort breaks the write and unwinds the generator through its
- * `finally`. In-process nothing pumps once the client stops reading, so a
- * generator suspended at `yield` would never resume: its `signal` aborts but
- * its `finally` (open cursors, subscriptions, handles) would never run. These
- * tests observe the handler side of every cancellation path and require the
- * in-process transport to match the HTTP oracle. Leaving a `for await` loop
- * with `break` is not a cancellation on either transport and must not abort
- * the handler's signal.
+ * A generator suspended at `yield` only unwinds when something pulls it again.
+ * Over HTTP/2 the server pumps it into the socket, but whether a cancelled
+ * call is noticed there depends on the runtime (observed: Node 26.10 and Bun
+ * kept the handler parked); in-process nothing pumps once the client stops
+ * reading. In both cases the handler's `signal` aborts while its `finally`
+ * (open cursors, subscriptions, handles) would never run. These tests observe
+ * the handler side of every cancellation path on both transports. Leaving a
+ * `for await` loop with `break` is not a cancellation on either transport and
+ * must not abort the handler's signal.
  */
 
 import assert from "node:assert";
@@ -122,19 +122,10 @@ function open(client: Awaited<ReturnType<typeof start>>["client"], method: Metho
     );
 }
 
-/**
- * Bun's HTTP/2 server does not unwind a handler's generator when the client
- * cancels, so the HTTP oracle for the cleanup scenarios exists on Node only.
- * The in-process transport is held to the Node behaviour on every runtime.
- */
-function cleanupSkip(kind: Kind): string | false {
-    return kind === "http" && "bun" in process.versions ? "the HTTP/2 server of this runtime does not unwind the handler on client cancellation" : false;
-}
-
 for (const kind of ["http", "local"] as const) {
     for (const method of ["server", "bidi"] as const) {
         describe(`${method} stream cancellation over ${kind}`, () => {
-            it("aborting the call's signal inside the loop runs the handler's finally", { skip: cleanupSkip(kind) }, async () => {
+            it("aborting the call's signal inside the loop runs the handler's finally", async () => {
                 const { server, client, probe } = await start(kind, "yield-only");
                 const abort = new AbortController();
                 let seen = 0;
@@ -155,7 +146,7 @@ for (const kind of ["http", "local"] as const) {
                 await server.stop();
             });
 
-            it("break followed by abort runs the handler's finally", { skip: cleanupSkip(kind) }, async () => {
+            it("break followed by abort runs the handler's finally", async () => {
                 const { server, client, probe } = await start(kind, "yield-only");
                 const abort = new AbortController();
                 let seen = 0;
@@ -170,7 +161,7 @@ for (const kind of ["http", "local"] as const) {
                 await server.stop();
             });
 
-            it("break followed by server.stop() runs the handler's finally", { skip: cleanupSkip(kind) }, async () => {
+            it("break followed by server.stop() runs the handler's finally", async () => {
                 const { server, client, probe } = await start(kind, "yield-only");
                 let seen = 0;
                 for await (const _item of open(client, method, new AbortController().signal)) {

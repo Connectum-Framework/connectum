@@ -760,6 +760,11 @@ export interface Server extends EventEmitter {
      * lazily on first access. Once materialized, `addService` / `addInterceptor`
      * / `addProtocol` will throw.
      *
+     * Cancellation: a streaming call is cancelled by the `AbortSignal` passed
+     * in the call options, by its deadline, or by `server.stop()`; the
+     * handler's `finally` then runs. Leaving a `for await` loop with `break`
+     * is not a cancellation.
+     *
      * @example
      * ```typescript
      * import { GreeterService } from './gen/greeter_pb.js';

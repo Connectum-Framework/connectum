@@ -244,13 +244,8 @@ function newProbe(): HandlerProbe {
 }
 
 const abortProbe = newProbe();
-// Bun's HTTP/2 server does not unwind the handler on client cancellation, so
-// the HTTP side of these two scenarios has no reference behaviour there.
-const httpUnwindsOnCancel = !("bun" in process.versions);
 
-const cleanupParity = httpUnwindsOnCancel ? transportParityTest : (_name: string, _options: unknown) => {};
-
-cleanupParity("parity 4.7: aborting a server stream runs the handler's cleanup", {
+transportParityTest("parity 4.7: aborting a server stream runs the handler's cleanup", {
     services: [observableStreamRoutes(abortProbe)],
     scenario: async ({ transport }) => {
         resetProbe(abortProbe);
@@ -271,7 +266,7 @@ cleanupParity("parity 4.7: aborting a server stream runs the handler's cleanup",
 });
 
 const breakProbe = newProbe();
-cleanupParity("parity 4.8: break followed by abort runs the handler's cleanup", {
+transportParityTest("parity 4.8: break followed by abort runs the handler's cleanup", {
     services: [observableStreamRoutes(breakProbe)],
     scenario: async ({ transport }) => {
         resetProbe(breakProbe);

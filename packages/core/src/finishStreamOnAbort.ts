@@ -1,13 +1,16 @@
 /**
  * Server interceptor that unwinds a streaming handler when its call is cancelled.
  *
- * Over HTTP/2 the server pumps the handler's output generator into the socket,
- * so a cancelled call breaks the write and the generator unwinds through its
- * `finally`. The in-process transport has no socket: the client is the only
- * consumer, and once it stops pulling, a generator suspended at `yield` never
- * resumes. Its context signal aborts, but the handler cannot react to a signal
- * it is not running to observe, so cursors, subscriptions and handles opened
- * before the `yield` leak. This interceptor closes that gap by finishing the
+ * A streaming handler's output generator is only unwound when something pulls
+ * it again. Over HTTP/2 the server pumps it into the socket, so a cancelled
+ * call unwinds it only if the failed socket write is noticed, and that depends
+ * on the runtime: a write to a closed stream can still report success, leaving
+ * the pump spinning or parked. The in-process transport has no socket at all:
+ * the client is the only consumer, and once it stops pulling, a generator
+ * suspended at `yield` never resumes. In both cases the context signal aborts,
+ * but a handler parked at `yield` cannot react to a signal it is not running to
+ * observe, so cursors, subscriptions and handles opened before the `yield`
+ * leak. This interceptor closes that gap on both transports by finishing the
  * handler's output iterator when the call's signal aborts (client abort,
  * deadline, server shutdown).
  *
