@@ -466,6 +466,17 @@ const provider = getProvider();
 await shutdownProvider();
 ```
 
+`shutdownProvider()` always releases the provider, even when it rejects. If an
+exporter cannot deliver its last batch (an unreachable collector, for example),
+the promise rejects with that error, but the next `getProvider()` /
+`initProvider()` starts from a clean state and a repeated `shutdownProvider()`
+is a no-op. Tracing, metrics and logging are stopped independently; one failure
+is rethrown as it is, several as an `AggregateError`. Shutdown also releases the
+OpenTelemetry API global registrations (trace, context, propagation, metrics,
+logs) that the provider took; a registration held by other code, such as your own
+`NodeSDK`, is neither taken over nor removed. Interceptors created before a
+shutdown keep working after the provider is created again.
+
 ## Types
 
 ### ExporterType

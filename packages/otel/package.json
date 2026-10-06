@@ -95,6 +95,8 @@
   "dependencies": {
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/api-logs": "catalog:",
+    "@opentelemetry/context-async-hooks": "catalog:",
+    "@opentelemetry/core": "catalog:",
     "@opentelemetry/exporter-trace-otlp-http": "catalog:",
     "@opentelemetry/exporter-trace-otlp-proto": "catalog:",
     "@opentelemetry/exporter-trace-otlp-grpc": "catalog:",
@@ -122,8 +124,6 @@
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@bufbuild/protobuf": "catalog:",
-    "@opentelemetry/context-async-hooks": "catalog:",
-    "@opentelemetry/core": "^2.7.0",
     "c8": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

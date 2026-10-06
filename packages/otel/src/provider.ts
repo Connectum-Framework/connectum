@@ -8,9 +8,11 @@
  */
 
 import type { Meter, Tracer } from "@opentelemetry/api";
-import { DiagConsoleLogger, DiagLogLevel, diag, metrics, trace } from "@opentelemetry/api";
+import { context, DiagConsoleLogger, DiagLogLevel, diag, metrics, propagation, trace } from "@opentelemetry/api";
 import type { Logger } from "@opentelemetry/api-logs";
 import { logs } from "@opentelemetry/api-logs";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from "@opentelemetry/core";
 import { OTLPLogExporter as OTLPLogExporterGRPC } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { OTLPLogExporter as OTLPLogExporterHTTP } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPLogExporter as OTLPLogExporterProto } from "@opentelemetry/exporter-logs-otlp-proto";
@@ -146,6 +148,12 @@ export interface OtelProvider {
     /**
      * Gracefully shutdown all OTLP providers
      *
+     * Tracing, metrics and logging are stopped independently: a failing signal
+     * does not keep the others from stopping. Afterwards the OpenTelemetry API
+     * global registrations this provider took (and only those) are released.
+     * One failure is rethrown as it is; several are combined in an
+     * `AggregateError`.
+     *
      * Does not clear the process-wide instance: {@link getProvider} keeps
      * returning this (now shut down) provider. Use {@link shutdownProvider} to
      * shut down and allow a fresh provider to be created.
@@ -154,6 +162,9 @@ export interface OtelProvider {
      */
     shutdown(): Promise<void>;
 }
+
+/** Process-wide OpenTelemetry API registrations a provider can take. */
+type GlobalSlot = "trace" | "context" | "propagation" | "metrics" | "logs";
 
 // Not exported: a second instance would start its own exporters and try to
 // register the global tracer, meter and logger providers again, so only
@@ -166,6 +177,11 @@ class OtelProviderImpl implements OtelProvider {
     private traceProvider?: NodeTracerProvider;
     private meterProvider?: MeterProvider;
     private loggerProvider?: LoggerProvider;
+
+    // The API keeps one registration per slot and refuses a second one without
+    // throwing, so a slot already taken by the host application stays theirs.
+    // Only the slots this instance actually obtained are released on shutdown.
+    private readonly ownedSlots = new Set<GlobalSlot>();
 
     private readonly settings: OTLPSettings;
     private readonly collectorOptions: CollectorOptions;
@@ -262,9 +278,33 @@ class OtelProviderImpl implements OtelProvider {
             ],
         });
 
-        this.traceProvider.register();
+        this.registerTracing(this.traceProvider);
 
         return this.traceProvider.getTracer(this.serviceName, this.serviceVersion);
+    }
+
+    /**
+     * Registers the tracer provider, an async-local context manager and the
+     * W3C trace-context and baggage propagators, as `NodeTracerProvider.register()`
+     * does, but remembers which of the three slots this instance obtained.
+     */
+    private registerTracing(tracerProvider: NodeTracerProvider): void {
+        if (trace.setGlobalTracerProvider(tracerProvider)) {
+            this.ownedSlots.add("trace");
+        }
+
+        const contextManager = new AsyncLocalStorageContextManager();
+        contextManager.enable();
+        if (context.setGlobalContextManager(contextManager)) {
+            this.ownedSlots.add("context");
+        } else {
+            contextManager.disable();
+        }
+
+        const propagator = new CompositePropagator({ propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()] });
+        if (propagation.setGlobalPropagator(propagator)) {
+            this.ownedSlots.add("propagation");
+        }
     }
 
     /**
@@ -304,10 +344,14 @@ class OtelProviderImpl implements OtelProvider {
             ],
         });
 
-        // Set global meter provider
-        metrics.setGlobalMeterProvider(this.meterProvider);
+        if (metrics.setGlobalMeterProvider(this.meterProvider)) {
+            this.ownedSlots.add("metrics");
+        }
 
-        return metrics.getMeter(this.serviceName, this.serviceVersion);
+        // Taken from this instance's own provider, not from the global one: when
+        // the global slot belongs to someone else the global meter would export
+        // to their provider and ignore the exporter configured here.
+        return this.meterProvider.getMeter(this.serviceName, this.serviceVersion);
     }
 
     /**
@@ -342,17 +386,43 @@ class OtelProviderImpl implements OtelProvider {
             processors: [new SimpleLogRecordProcessor(logExporter)],
         });
 
-        // Set global logger provider
-        logs.setGlobalLoggerProvider(this.loggerProvider);
+        // Unlike the other setters this one returns the registered provider, and
+        // when the slot is taken that is the previous owner's, not this one.
+        if (logs.setGlobalLoggerProvider(this.loggerProvider) === this.loggerProvider) {
+            this.ownedSlots.add("logs");
+        }
 
         return this.loggerProvider.getLogger(this.serviceName, this.serviceVersion);
     }
 
+    /**
+     * Stops the three signals independently, so one failing exporter does not
+     * leave the others unflushed, then releases the registrations this instance
+     * took. The release happens after every signal has stopped: spans ended
+     * during the flush still need the context manager. A single failure is
+     * rethrown as it is, several are combined in an `AggregateError`.
+     */
     async shutdown(): Promise<void> {
         console.debug("OTel provider shutdown...");
-        await this.traceProvider?.shutdown();
-        await this.meterProvider?.shutdown();
-        await this.loggerProvider?.shutdown();
+        const outcomes = await Promise.allSettled([this.traceProvider?.shutdown(), this.meterProvider?.shutdown(), this.loggerProvider?.shutdown()]);
+        this.releaseSlots();
+
+        const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason as unknown] : []));
+        if (failures.length === 1) {
+            throw failures[0];
+        }
+        if (failures.length > 1) {
+            throw new AggregateError(failures, "OpenTelemetry provider shutdown failed for more than one signal");
+        }
+    }
+
+    private releaseSlots(): void {
+        if (this.ownedSlots.has("trace")) trace.disable();
+        if (this.ownedSlots.has("context")) context.disable();
+        if (this.ownedSlots.has("propagation")) propagation.disable();
+        if (this.ownedSlots.has("metrics")) metrics.disable();
+        if (this.ownedSlots.has("logs")) logs.disable();
+        this.ownedSlots.clear();
     }
 }
 
@@ -402,11 +472,26 @@ export function getProvider(): OtelProvider {
  *
  * After shutdown, subsequent calls to {@link getProvider} will create
  * a fresh provider. If no provider exists, this is a no-op.
+ *
+ * The provider is released whether stopping succeeds or fails: when an
+ * exporter cannot deliver its last batch (for example an unreachable
+ * collector) the returned promise rejects, yet the next {@link getProvider}
+ * starts from a clean state and a repeated call is a no-op. Every signal is
+ * stopped even if another one fails, and the OpenTelemetry API global
+ * registrations this provider took are released; a registration that belonged
+ * to other code is left alone. Interceptors created earlier keep working: they
+ * record into whichever provider is current.
+ *
+ * @throws The failure of the one signal that could not stop, or an
+ * `AggregateError` carrying the failures when several could not
  */
 export async function shutdownProvider(): Promise<void> {
     if (provider === undefined) {
         return;
     }
-    await provider.shutdown();
+    const stopping = provider;
+    // Cleared whatever the outcome: a provider whose shutdown failed is
+    // half-stopped, and handing it out again would send telemetry nowhere.
     provider = undefined;
+    await stopping.shutdown();
 }
