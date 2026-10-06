@@ -283,15 +283,21 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
             stopPromise = (async () => {
                 try {
-                    // 1. Close iterators — stop receiving new messages
-                    await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
-                    subscriptions.length = 0;
+                    // 1. Close iterators — stop receiving new messages. Started
+                    //    here but NOT awaited yet: Redis, Kafka and NATS only
+                    //    resolve `unsubscribe()` after the handler that is
+                    //    running right now returns. Awaiting it before the
+                    //    drain starts would leave `handlerTimeout` as the only
+                    //    limit and the `drainTimeout` force-abort could never
+                    //    fire; the drain below is what lets that handler end.
+                    const unsubscribed = Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
 
                     // 2. Drain in-flight handlers and (opt-in, #196) in-flight
-                    //    publishes CONCURRENTLY — shutdown waits for the
-                    //    slower of the two budgets, never their sum. The
-                    //    publish drain must finish before adapter.disconnect()
-                    //    below, which would fail the outstanding confirms.
+                    //    publishes CONCURRENTLY with the unsubscribe above —
+                    //    shutdown waits for the slowest of the three, never
+                    //    their sum. The publish drain and the unsubscribe must
+                    //    both finish before adapter.disconnect() below, which
+                    //    would fail the outstanding confirms.
                     // The race timers MUST be cleared after each round: a
                     // leftover ref'd timer would keep the event loop alive for
                     // the full remaining budget after stop() already returned
@@ -344,7 +350,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             await raceSettled(inFlightPublishes, remaining);
                         }
                     };
-                    await Promise.all([drainHandlers(), drainPublishes()]);
+                    await Promise.all([unsubscribed, drainHandlers(), drainPublishes()]);
+                    subscriptions.length = 0;
 
                     inFlight.clear();
                     inFlightPublishes.clear();
