@@ -458,7 +458,7 @@ RPC /greeter.v1.GreeterService/SayHello completed in 1.84ms
 
 A call that fails writes `RPC <path> failed with <Code>` (the Connect code name, `Unknown` for a plain error) before the completion line, and the original error reaches the caller unchanged. A streaming call writes `STREAM <path> request` / `STREAM <path> response` for every message, and its completion line when the stream ends (fully read, failed, or abandoned by the reader), so the duration covers the whole stream.
 
-Logging never changes the outcome of a call. If the `logger` function throws, the call still returns its response or its original error: the first failure is reported once on the console and later ones are dropped. A streamed message that cannot be converted to JSON is logged as a marker and the stream continues.
+Logging never changes the outcome of a call. If the `logger` function throws, or returns a promise that rejects, the call still returns its response or its original error: the first failure is reported once on the console and later ones are dropped. A streamed message that cannot be converted to JSON is logged as a marker and the stream continues.
 
 ## Per-Service and Per-Method Interceptors
 

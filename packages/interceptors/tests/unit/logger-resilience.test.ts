@@ -62,6 +62,57 @@ describe("logger interceptor isolation", () => {
         }
     });
 
+    it("reports a rejecting asynchronous sink once and raises no unhandled rejection", async () => {
+        const consoleError = mock.method(console, "error", () => {});
+        const rejections: unknown[] = [];
+        const onRejection = (reason: unknown) => rejections.push(reason);
+        process.on("unhandledRejection", onRejection);
+        try {
+            const interceptor = createLoggerInterceptor({
+                logger: async () => {
+                    throw new Error("async sink down");
+                },
+            });
+            const response = { stream: false, message: { result: "success" }, method: { output: {} } };
+            const handler = interceptor((async () => response) as never);
+
+            for (let i = 0; i < 3; i++) {
+                const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+                assert.strictEqual(result, response, "the response object must pass through untouched");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            assert.deepStrictEqual(rejections, [], "a rejected sink promise must be handled, not left unhandled");
+            assert.strictEqual(consoleError.mock.calls.length, 1, "the rejection is reported once, not once per line");
+            assert.match(String(consoleError.mock.calls[0]?.arguments[0]), /logger/i);
+        } finally {
+            process.removeListener("unhandledRejection", onRejection);
+            consoleError.mock.restore();
+        }
+    });
+
+    it("keeps the call outcome when the console used for the report throws as well", async () => {
+        const consoleError = mock.method(console, "error", () => {
+            throw new Error("console down");
+        });
+        try {
+            const interceptor = createLoggerInterceptor({
+                logger: () => {
+                    throw new Error("sink down");
+                },
+            });
+            const response = { stream: false, message: { result: "success" }, method: { output: {} } };
+            const handler = interceptor((async () => response) as never);
+
+            const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: {} }));
+
+            assert.strictEqual(result, response, "a failing report must not replace the response");
+            assert.strictEqual(consoleError.mock.calls.length, 1, "the report was attempted");
+        } finally {
+            consoleError.mock.restore();
+        }
+    });
+
     it("logs the Connect code of a failed call and the code Unknown for a plain error", async () => {
         const lines: string[] = [];
         const interceptor = createLoggerInterceptor({ logger: (message) => lines.push(message) });

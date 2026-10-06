@@ -42,22 +42,34 @@ type LogSink = (message: string, ...args: unknown[]) => void;
  *
  * The logger observes calls; a sink that throws (a closed transport, a full
  * disk, a broken formatter) must not turn a successful response into an
- * `Internal` error or replace the real error of a failed call. The first
- * failure is reported once on the console so it is not silent, later ones are
- * dropped: a sink that is down fails on every line and would otherwise flood
- * the console on every RPC.
+ * `Internal` error or replace the real error of a failed call. A sink typed as
+ * returning `void` may still be an `async` function, so a rejected promise it
+ * returns counts as a failure too: left alone it would surface as an unhandled
+ * rejection, which ends a Node.js process. The first failure is reported once
+ * on the console so it is not silent, later ones are dropped: a sink that is
+ * down fails on every line and would otherwise flood the console on every RPC.
  */
 function guardSink(sink: LogSink): LogSink {
     let reported = false;
+    const report = (error: unknown): void => {
+        if (reported) {
+            return;
+        }
+        reported = true;
+        try {
+            console.error("[@connectum/interceptors] logger sink failed; further sink failures are not reported", error);
+        } catch {
+            // The report is best effort: a console that throws must not change the outcome of the call either.
+        }
+    };
     return (message, ...args) => {
         try {
-            sink(message, ...args);
-        } catch (error) {
-            if (reported) {
-                return;
+            const pending: unknown = sink(message, ...args);
+            if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
+                Promise.resolve(pending).then(undefined, report);
             }
-            reported = true;
-            console.error("[@connectum/interceptors] logger sink threw; further sink failures are not reported", error);
+        } catch (error) {
+            report(error);
         }
     };
 }
