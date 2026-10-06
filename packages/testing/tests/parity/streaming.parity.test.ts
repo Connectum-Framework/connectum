@@ -182,3 +182,108 @@ transportParityTest("parity 4.6: streaming cancellation stops iteration", {
         }
     },
 });
+
+// 4.7 / 4.8 Handler-side effect of cancellation. What the client sees after a
+// cancelled stream is not enough: the handler's own cleanup (`finally`) and its
+// context signal must behave the same on both transports.
+interface HandlerProbe {
+    finallyRan: boolean;
+    signalAborted: boolean;
+    settled: Promise<void>;
+    settle: () => void;
+}
+
+function resetProbe(probe: HandlerProbe): void {
+    probe.finallyRan = false;
+    probe.signalAborted = false;
+    probe.settled = new Promise<void>((resolve) => {
+        probe.settle = resolve;
+    });
+}
+
+function observableStreamRoutes(probe: HandlerProbe) {
+    async function* items(value: string, signal: AbortSignal) {
+        signal.addEventListener("abort", () => {
+            probe.signalAborted = true;
+        });
+        try {
+            for (let i = 0; ; i++) {
+                yield create(ItemSchema, { value: `${value}:${i}`, sequence: i });
+            }
+        } finally {
+            probe.finallyRan = true;
+            probe.settle();
+        }
+    }
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+        server: (req, ctx) => items(req.value, ctx.signal),
+        client: async () => ({ total: 0 }),
+        bidi: (_requests, ctx) => items("bidi", ctx.signal),
+    });
+}
+
+/** Whether the handler's `finally` ran within `ms`, and whether its signal aborted. */
+async function handlerOutcome(probe: HandlerProbe, ms: number) {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+    });
+    try {
+        const finallyRan = await Promise.race([probe.settled.then(() => true), timeout]);
+        return { response: { finallyRan, signalAborted: probe.signalAborted } };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function newProbe(): HandlerProbe {
+    const probe = { finallyRan: false, signalAborted: false, settled: Promise.resolve(), settle: () => {} };
+    resetProbe(probe);
+    return probe;
+}
+
+const abortProbe = newProbe();
+// Bun's HTTP/2 server does not unwind the handler on client cancellation, so
+// the HTTP side of these two scenarios has no reference behaviour there.
+const httpUnwindsOnCancel = !("bun" in process.versions);
+
+const cleanupParity = httpUnwindsOnCancel ? transportParityTest : (_name: string, _options: unknown) => {};
+
+cleanupParity("parity 4.7: aborting a server stream runs the handler's cleanup", {
+    services: [observableStreamRoutes(abortProbe)],
+    scenario: async ({ transport }) => {
+        resetProbe(abortProbe);
+        const client = createClient(StreamingService, transport);
+        const ac = new AbortController();
+        let seen = 0;
+        try {
+            for await (const _m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: ac.signal })) {
+                if (++seen === 2) {
+                    ac.abort();
+                }
+            }
+        } catch {
+            // the client-side outcome of a cancelled stream is covered by the previous scenario
+        }
+        return await handlerOutcome(abortProbe, 2_000);
+    },
+});
+
+const breakProbe = newProbe();
+cleanupParity("parity 4.8: break followed by abort runs the handler's cleanup", {
+    services: [observableStreamRoutes(breakProbe)],
+    scenario: async ({ transport }) => {
+        resetProbe(breakProbe);
+        const client = createClient(StreamingService, transport);
+        const ac = new AbortController();
+        let seen = 0;
+        for await (const _m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: ac.signal })) {
+            if (++seen === 2) {
+                break;
+            }
+        }
+        ac.abort();
+        return await handlerOutcome(breakProbe, 2_000);
+    },
+});

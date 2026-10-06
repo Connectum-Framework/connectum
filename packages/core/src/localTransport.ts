@@ -10,6 +10,7 @@
 
 import type { Interceptor, Transport } from "@connectrpc/connect";
 import { createRouterTransport } from "@connectrpc/connect";
+import { finishStreamOnAbort } from "./finishStreamOnAbort.ts";
 import type { CreateServerOptions, Server } from "./types.ts";
 
 /**
@@ -130,7 +131,12 @@ export function createLocalTransport(server: Server, options?: CreateLocalTransp
             // path applies them via connectNodeAdapter — this preserves the
             // cross-transport parity invariant (interceptors, error mapping,
             // coexistence).
-            interceptors: serverInterceptors,
+            //
+            // `finishStreamOnAbort` goes last, next to the handler: over HTTP a
+            // cancelled call unwinds the handler's generator through the failed
+            // socket write, and in-process nothing writes, so a stream parked at
+            // `yield` would never reach its `finally` without it.
+            interceptors: [...serverInterceptors, finishStreamOnAbort],
             // The same shutdown signal the HTTP adapter gets: `server.stop()`
             // aborts `context.signal` of in-flight local calls (handlers,
             // pending request gates, streams) exactly as it does for HTTP
