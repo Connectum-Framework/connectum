@@ -20,10 +20,8 @@ interface StorageMeta {
     warned: boolean;
 }
 
-function isAsyncLocalStorageLike(value: unknown): boolean {
+function isAsyncLocalStorageLike(value: NonNullable<unknown>): boolean {
     return (
-        value !== null &&
-        value !== undefined &&
         typeof (value as Record<string, unknown>).run === "function" &&
         typeof (value as Record<string, unknown>).getStore === "function" &&
         typeof (value as Record<string, unknown>).enterWith === "function"
