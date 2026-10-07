@@ -4,7 +4,7 @@
  * Verifies that errors thrown by handlers and server-side interceptors are
  * mapped identically across HTTP and in-process transports:
  *   5.1 ConnectError(NotFound) with metadata round-trip
- *   5.2 plain Error -> Code.Internal
+ *   5.2 plain Error -> Code.Internal, text not disclosed
  *   5.3 server interceptor throw -> identical mapping
  */
 
@@ -46,16 +46,19 @@ function notFoundRoutes() {
     });
 }
 
+/** Text of the failure a handler throws that is not a ConnectError; it must never reach a client. */
+const PLAIN_ERROR_TEXT = "secret-token-9f3a";
+
 function plainErrorRoutes() {
     return defineService(EchoService, {
         echo: () => {
-            throw new Error("boom");
+            throw new Error(PLAIN_ERROR_TEXT);
         },
         secureEcho: () => {
-            throw new Error("boom");
+            throw new Error(PLAIN_ERROR_TEXT);
         },
         rateLimitedEcho: () => {
-            throw new Error("boom");
+            throw new Error(PLAIN_ERROR_TEXT);
         },
     });
 }
@@ -112,8 +115,9 @@ transportParityTest("parity 5.1: ConnectError(NotFound) maps identically with me
     compare: expectErrorOnBothTransports(Code.NotFound),
 });
 
-// 5.2 — plain Error → Code.Internal, message contains "boom".
-transportParityTest("parity 5.2: plain Error maps to Code.Internal with same message shape", {
+// A failure that is not a ConnectError: code `internal`, the same message on both
+// transports, and the original text reaches neither client.
+transportParityTest("parity: a failure that is not a ConnectError maps to internal identically and its text is not disclosed", {
     services: [plainErrorRoutes()],
     scenario: async ({ transport }) => {
         const client = createClient(EchoService, transport);
@@ -124,24 +128,19 @@ transportParityTest("parity 5.2: plain Error maps to Code.Internal with same mes
             return { error: describeError(err) };
         }
     },
-    // Both transports normalize plain Error to Code.Internal; rawMessage often
-    // becomes the original "boom". Compare only code + message containment.
+    // The protocols leave the message of an unhandled failure open, so the literal
+    // is not pinned here; what is pinned is that both paths agree and disclose nothing.
     compare: (http, local) => {
-        if (!http.error || !local.error) {
-            throw new Error("expected both runs to error");
-        }
-        if (http.error.code !== local.error.code) {
-            throw new Error(`error code mismatch: http=${http.error.code} local=${local.error.code}`);
-        }
-        if (http.error.code !== Code.Internal) {
-            throw new Error(`expected Code.Internal on http, got ${http.error.code}`);
-        }
-        // Both transports normalize the rawMessage of an opaque plain Error
-        // to ConnectRPC's default "internal error" string (the original
-        // "boom" text is intentionally not leaked to wire). The contract is
-        // that this normalization happens identically on both paths.
-        if (http.error.message !== local.error.message) {
-            throw new Error(`expected identical normalized message; http="${http.error.message}" local="${local.error.message}"`);
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        assert.strictEqual(http.error.code, Code.Internal, "HTTP transport error code must be Internal");
+        assert.strictEqual(local.error.code, Code.Internal, "Local transport error code must be Internal");
+        assert.strictEqual(local.error.message, http.error.message, "both transports must report the same message");
+        for (const [transport, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.ok(!JSON.stringify(result.error).includes(PLAIN_ERROR_TEXT), `${transport} error must not contain the original text`);
         }
     },
 });
