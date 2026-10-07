@@ -17,6 +17,7 @@
 
 import type { DescService } from "@bufbuild/protobuf";
 import type { ConnectRouter, ServiceImpl } from "@connectrpc/connect";
+import { validateReadMaxBytes } from "./admission.ts";
 import type { ConnectumServiceImpl } from "./context.ts";
 
 /**
@@ -72,6 +73,7 @@ export interface ServiceDefinition {
  * ```
  */
 export function defineService<S extends DescService>(descriptor: S, handlers: ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
+    validateReadMaxBytes(options?.readMaxBytes, "defineService");
     return {
         descriptor,
         register(router, ctx) {
@@ -93,6 +95,7 @@ export function defineService<S extends DescService>(descriptor: S, handlers: Co
  * servers yields one instance per server.
  */
 export function defineLazyService<S extends DescService>(descriptor: S, factory: () => ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
+    validateReadMaxBytes(options?.readMaxBytes, "defineLazyService");
     // A server registers its services on every router it builds (HTTP adapter,
     // each in-process transport) but passes the same register context each
     // time, so the context identifies the server. Without this cache every
