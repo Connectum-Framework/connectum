@@ -91,13 +91,14 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
      * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
      * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
      */
-    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean }): EventAdapter {
+    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number }): EventAdapter {
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
             kafkaConfig,
             consumerOptions: {
                 fromBeginning: extra?.fromBeginning ?? true,
+                ...(extra?.sessionTimeout !== undefined && { sessionTimeout: extra.sessionTimeout }),
                 ...(extra?.adapterDefaultRedelivery !== true && { redeliveryDelay: extra?.redeliveryDelay ?? 0 }),
             },
         });
@@ -180,7 +181,53 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("user metadata cannot spoof the internal event id", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it(
+        "a handler that outlives the session timeout keeps its membership: the message is delivered once and committed",
+        { timeout: SCENARIO_TIMEOUT_MS },
+        async () => {
+            const topic = await createTopic(uniqueName("it.long-handler"));
+            const group = uniqueName("group");
+            const sessionTimeout = 10_000;
+            const handlerDuration = 25_000;
+
+            const deliveries: string[] = [];
+            let ackSucceeded = false;
+            const adapter = newAdapter({ sessionTimeout });
+            await adapter.connect();
+            try {
+                const subscription = await adapter.subscribe(
+                    [topic],
+                    async (event, ack) => {
+                        deliveries.push(text(event.payload));
+                        await sleep(handlerDuration);
+                        await ack();
+                        ackSucceeded = true;
+                    },
+                    { group },
+                );
+                try {
+                    await adapter.publish(topic, bytes("slow"));
+                    await waitFor(() => deliveries.length === 1, "message delivered");
+                    await waitForStableGroup(group, 1);
+                    await waitFor(() => ackSucceeded, "ack accepted", () => ({ deliveries: deliveries.length }), handlerDuration + WAIT_TIMEOUT_MS);
+                    await waitFor(
+                        async () => (await committedOffset(group, topic)) === 1,
+                        "offset 1 committed",
+                        async () => ({ committed: await committedOffset(group, topic), deliveries: deliveries.length }),
+                    );
+                    await sleep(2_000);
+                    assert.deepEqual(deliveries, ["slow"], "the message must be delivered exactly once");
+                    assert.equal(await committedOffset(group, topic), 1);
+                } finally {
+                    await subscription.unsubscribe();
+                }
+            } finally {
+                await adapter.disconnect();
+            }
+        },
+    );
+
+    it("user metadata cannot spoof the internal event id",{ timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const topic = await createTopic(uniqueName("it.spoof"));
         const received: RawEvent[] = [];
         const adapter = newAdapter();

@@ -19,6 +19,8 @@ interface Harness {
     /** Arguments of every `console.error` call made while the batch ran. */
     readonly errorLogs: unknown[][];
     heartbeats: number;
+    /** Most `heartbeat()` calls that were awaiting their answer at the same moment. */
+    maxConcurrentHeartbeats: number;
     run: () => Promise<void>;
 }
 
@@ -34,11 +36,18 @@ function harness(options: {
     commitFails?: number;
     runningWhile?: (call: number) => boolean;
     resumeTimers?: Set<NodeJS.Timeout>;
+    /** Heartbeat interval handed to the consumer; large by default so short tests see no timer beat. */
+    heartbeatInterval?: number;
+    /** How long each `heartbeat()` call takes to answer. */
+    heartbeatDelayMs?: number;
+    /** Makes the nth `heartbeat()` call (1-based) reject. */
+    heartbeatFails?: (call: number) => boolean;
 }): Harness {
     const commits: { partition: number; offset: string }[] = [];
     const resolved: string[] = [];
     const paused: { resumed: boolean }[] = [];
     let isRunningCalls = 0;
+    let concurrentHeartbeats = 0;
     const errorLogs: unknown[][] = [];
     const state: Harness = {
         commits,
@@ -46,9 +55,11 @@ function harness(options: {
         paused,
         errorLogs,
         heartbeats: 0,
+        maxConcurrentHeartbeats: 0,
         run: async () => {
             const consume = createBatchConsumer({
                 handler: options.handler,
+                heartbeatInterval: options.heartbeatInterval ?? 3_000,
                 redeliveryDelay: options.redeliveryDelay ?? 0,
                 resumeTimers: options.resumeTimers ?? new Set(),
             });
@@ -83,6 +94,15 @@ function harness(options: {
                 },
                 heartbeat: async () => {
                     state.heartbeats++;
+                    const call = state.heartbeats;
+                    concurrentHeartbeats++;
+                    state.maxConcurrentHeartbeats = Math.max(state.maxConcurrentHeartbeats, concurrentHeartbeats);
+                    try {
+                        if (options.heartbeatDelayMs !== undefined) await sleep(options.heartbeatDelayMs);
+                        if (options.heartbeatFails?.(call) === true) throw new Error("heartbeat failed");
+                    } finally {
+                        concurrentHeartbeats--;
+                    }
                 },
                 isRunning: () => {
                     isRunningCalls++;
@@ -490,5 +510,187 @@ describe("createBatchConsumer", () => {
         for (const timer of timers) clearTimeout(timer);
         await sleep(120);
         assert.equal(h.paused[0]?.resumed, false);
+    });
+});
+
+describe("createBatchConsumer heartbeat while a handler runs", () => {
+    /** Heartbeat interval of 40 ms: the timer ticks every 20 ms. */
+    const interval = 40;
+
+    it("heartbeats repeatedly while the handler is busy", async () => {
+        let atAck = 0;
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            heartbeatInterval: interval,
+            handler: async (_event, ack) => {
+                await sleep(170);
+                atAck = h.heartbeats;
+                await ack();
+            },
+        });
+        await h.run();
+        assert.ok(atAck >= 5, `expected at least 5 heartbeats during a 170 ms handler, saw ${atAck}`);
+    });
+
+    it("does not heartbeat from the timer when the handler is faster than a tick", async () => {
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            heartbeatInterval: interval,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(h.heartbeats, 1, "only the heartbeat after the commit");
+    });
+
+    const outcomes: { name: string; handler: RawEventHandler }[] = [
+        {
+            name: "returns after ack",
+            handler: async (_event, ack) => {
+                await sleep(60);
+                await ack();
+            },
+        },
+        {
+            name: "returns without settling",
+            handler: async () => {
+                await sleep(60);
+            },
+        },
+        {
+            name: "throws before settling",
+            handler: async () => {
+                await sleep(60);
+                throw new Error("boom");
+            },
+        },
+        {
+            name: "throws after ack",
+            handler: async (_event, ack) => {
+                await sleep(60);
+                await ack();
+                throw new Error("boom");
+            },
+        },
+        {
+            name: "requeues with nack(true)",
+            handler: async (_event, _ack, nack) => {
+                await sleep(60);
+                await nack(true);
+            },
+        },
+        {
+            name: "rejects with nack(false)",
+            handler: async (_event, _ack, nack) => {
+                await sleep(60);
+                await nack(false);
+            },
+        },
+    ];
+
+    for (const outcome of outcomes) {
+        it(`the timer stops when the handler ${outcome.name}`, async () => {
+            const h = harness({
+                messages: [{ offset: "10", value: "a" }],
+                heartbeatInterval: interval,
+                handler: outcome.handler,
+            });
+            await h.run();
+            const afterTurn = h.heartbeats;
+            assert.ok(afterTurn >= 1, "the timer beat while the handler was busy");
+            await sleep(120);
+            assert.equal(h.heartbeats, afterTurn, "no heartbeat after the handler's turn ended");
+        });
+    }
+
+    it("one timer per message: a later message is not beaten for by an earlier timer", async () => {
+        const h = harness({
+            messages: three,
+            heartbeatInterval: interval,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(h.heartbeats, 3, "instant handlers leave only the three post-commit heartbeats");
+        await sleep(120);
+        assert.equal(h.heartbeats, 3);
+    });
+
+    it("never has two heartbeats in flight at once", async () => {
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            heartbeatInterval: interval,
+            heartbeatDelayMs: 70,
+            handler: async (_event, ack) => {
+                await sleep(200);
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(h.maxConcurrentHeartbeats, 1);
+    });
+
+    it("a heartbeat failure with an uncommitted message is rethrown to KafkaJS: no pause, no later message", async () => {
+        const seen: string[] = [];
+        const h = harness({
+            messages: three,
+            heartbeatInterval: interval,
+            redeliveryDelay: 40,
+            heartbeatFails: () => true,
+            handler: async (event) => {
+                seen.push(Buffer.from(event.payload).toString());
+                await sleep(100);
+            },
+        });
+        await assert.rejects(() => h.run(), { message: "heartbeat failed" });
+        assert.deepEqual(seen, ["a"]);
+        assert.equal(h.paused.length, 0, "KafkaJS rejoins the group; a pause would only delay it");
+        const afterTurn = h.heartbeats;
+        await sleep(100);
+        assert.equal(h.heartbeats, afterTurn, "a failed heartbeat stops the timer");
+    });
+
+    it("a heartbeat failure while the handler throws is rethrown too", async () => {
+        const h = harness({
+            messages: three,
+            heartbeatInterval: interval,
+            heartbeatFails: () => true,
+            handler: async () => {
+                await sleep(100);
+                throw new Error("boom");
+            },
+        });
+        await assert.rejects(() => h.run(), { message: "heartbeat failed" });
+    });
+
+    it("a heartbeat failure after a successful commit does not undo or rethrow the commit", async () => {
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            heartbeatInterval: interval,
+            heartbeatFails: (call) => call === 1,
+            handler: async (_event, ack) => {
+                await sleep(100);
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "11" }]);
+        assert.deepEqual(h.resolved, ["10"]);
+    });
+
+    it("a failed commit takes precedence over a heartbeat failure", async () => {
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            heartbeatInterval: interval,
+            heartbeatFails: () => true,
+            commitFails: 1,
+            handler: async (_event, ack) => {
+                await sleep(100);
+                await ack();
+            },
+        });
+        await assert.rejects(() => h.run(), { message: "commit failed" });
     });
 });

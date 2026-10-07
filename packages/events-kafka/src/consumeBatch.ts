@@ -55,10 +55,24 @@ function parseHeaders(headers: IHeaders | undefined): Map<string, string> {
     return result;
 }
 
+/**
+ * Heartbeat interval of the consumer, in milliseconds. The adapter passes it to KafkaJS and to
+ * {@link createBatchConsumer}, so the interval KafkaJS enforces and the one the handler timer
+ * works from cannot drift apart. It equals the KafkaJS default.
+ */
+export const defaultHeartbeatIntervalMs = 3_000;
+
 /** Dependencies of {@link createBatchConsumer}. */
 export interface BatchConsumerOptions {
     /** Receives every message together with its settlement callbacks. */
     readonly handler: RawEventHandler;
+    /**
+     * Heartbeat interval KafkaJS runs with, in milliseconds. While a handler runs the batch
+     * callback tries to heartbeat twice per interval: `heartbeat()` of KafkaJS sends nothing
+     * until a whole interval has passed since the previous request, so a tick period equal to
+     * the interval could skip a beat and double the real gap.
+     */
+    readonly heartbeatInterval: number;
     /** Milliseconds a partition stays paused after a message was left uncommitted; 0 disables the pause. */
     readonly redeliveryDelay: number;
     /** Pending partition resumes, owned by the caller so it can cancel them on unsubscribe. */
@@ -76,7 +90,8 @@ export interface BatchConsumerOptions {
  * partition order.
  */
 export function createBatchConsumer(options: BatchConsumerOptions): (payload: EachBatchPayload) => Promise<void> {
-    const { handler, redeliveryDelay, resumeTimers } = options;
+    const { handler, heartbeatInterval, redeliveryDelay, resumeTimers } = options;
+    const heartbeatTickMs = heartbeatInterval / 2;
 
     return async ({ batch, resolveOffset, commitOffsetsIfNecessary, heartbeat, isRunning, pause }: EachBatchPayload): Promise<void> => {
         const lastIndex = batch.messages.length - 1;
@@ -159,6 +174,25 @@ export function createBatchConsumer(options: BatchConsumerOptions): (payload: Ea
                 requeued = true;
             };
 
+            // KafkaJS has no background heartbeat: it only beats when this callback asks. A handler
+            // that outlives the session timeout would drop out of the group and every later
+            // commit would fail with "The coordinator is not aware of this member". The timer lives
+            // exactly as long as the handler's turn; one heartbeat at a time, and the first failure
+            // stops it and is kept for the decision after the turn.
+            let heartbeatFailure: { readonly error: unknown } | undefined;
+            let heartbeatInFlight: Promise<void> | undefined;
+            const heartbeatTimer = setInterval(() => {
+                if (heartbeatInFlight !== undefined) return;
+                heartbeatInFlight = heartbeat()
+                    .catch((error: unknown) => {
+                        heartbeatFailure = { error };
+                        clearInterval(heartbeatTimer);
+                    })
+                    .finally(() => {
+                        heartbeatInFlight = undefined;
+                    });
+            }, heartbeatTickMs);
+
             try {
                 await handler(rawEvent, ack, nack);
             } catch (err) {
@@ -166,12 +200,17 @@ export function createBatchConsumer(options: BatchConsumerOptions): (payload: Ea
                 // handler threw. The error itself is only reported, so a failing handler
                 // is visible in the service log instead of silently looping.
                 console.error(`[KafkaAdapter] handler error for ${batch.topic}[${batch.partition}]@${message.offset}:`, err);
+            } finally {
+                clearInterval(heartbeatTimer);
             }
             open = false;
 
             if (commitInFlight !== undefined) {
                 await commitInFlight.catch(() => undefined);
             }
+            // A heartbeat still on the wire settles before the outcome is decided, so its failure
+            // is not missed; the promise never rejects (the failure is recorded above).
+            await heartbeatInFlight;
             // A failed commit is surfaced to KafkaJS so it can rejoin the group
             // (rebalance) or restart the consumer from the last committed offset.
             if (commitError !== undefined) throw commitError;
@@ -180,6 +219,9 @@ export function createBatchConsumer(options: BatchConsumerOptions): (payload: Ea
             // settling. Stop here: the message and the rest of the batch are
             // fetched again, preserving order.
             if (!committed) {
+                // The member was dropped (or is being rebalanced) while the handler ran: redelivering
+                // on that membership would fail again, so hand the failure to KafkaJS to rejoin.
+                if (heartbeatFailure !== undefined) throw heartbeatFailure.error;
                 if (redeliveryDelay > 0) {
                     const resume = pause();
                     const timer = setTimeout(() => {
