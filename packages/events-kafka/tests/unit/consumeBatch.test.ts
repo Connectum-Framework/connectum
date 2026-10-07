@@ -33,6 +33,8 @@ function harness(options: {
     handler: RawEventHandler;
     lastOffset?: string;
     redeliveryDelay?: number;
+    /** Commit strategy handed to the consumer; per-message by default. */
+    commitStrategy?: "per-message" | "per-batch";
     commitFails?: number;
     runningWhile?: (call: number) => boolean;
     resumeTimers?: Set<NodeJS.Timeout>;
@@ -61,6 +63,7 @@ function harness(options: {
                 handler: options.handler,
                 heartbeatInterval: options.heartbeatInterval ?? 3_000,
                 redeliveryDelay: options.redeliveryDelay ?? 0,
+                commitStrategy: options.commitStrategy ?? "per-message",
                 resumeTimers: options.resumeTimers ?? new Set(),
             });
             const messages = options.messages.map((m) => ({
@@ -692,5 +695,250 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
             },
         });
         await assert.rejects(() => h.run(), { message: "commit failed" });
+    });
+});
+
+describe("createBatchConsumer commit strategy", () => {
+    /** Twenty consecutive messages of one batch, offsets 100..119. */
+    const twenty: FakeMessage[] = Array.from({ length: 20 }, (_, i) => ({ offset: String(100 + i), value: `m${i}` }));
+
+    it("per-message (the default) sends one commit for each of 20 acknowledged messages", async () => {
+        const h = harness({
+            messages: twenty,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(h.commits.length, 20);
+        assert.deepEqual(h.commits.at(-1), { partition: 3, offset: "120" });
+    });
+
+    it("per-batch sends a single commit past the last message for 20 acknowledged messages", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: twenty,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "120" }]);
+        assert.equal(h.resolved.at(-1), "119");
+        assert.equal(h.heartbeats, 20, "the consumer still heartbeats after every acknowledged message");
+    });
+
+    it("per-batch sends nothing while the batch is still being processed", async () => {
+        const seenCommits: number[] = [];
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: twenty,
+            handler: async (_event, ack) => {
+                await ack();
+                seenCommits.push(h.commits.length);
+            },
+        });
+        await h.run();
+        assert.deepEqual(seenCommits, Array.from({ length: 20 }, () => 0));
+        assert.equal(h.commits.length, 1);
+    });
+
+    it("per-batch commits past trailing control records of the batch", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: [{ offset: "10", value: "a" }, { offset: "11", value: "b" }],
+            lastOffset: "15",
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "16" }]);
+    });
+
+    it("per-batch sends nothing when no message was acknowledged", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            handler: async () => undefined,
+        });
+        await h.run();
+        assert.deepEqual(h.commits, []);
+        assert.deepEqual(h.resolved, []);
+    });
+
+    it("per-batch counts a second ack of the same message once", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: [{ offset: "10", value: "a" }],
+            handler: async (_event, ack) => {
+                await ack();
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "11" }]);
+    });
+
+    it("per-batch keeps an acknowledged message acknowledged when nack(true) follows", async () => {
+        const seen: string[] = [];
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            handler: async (event, ack, nack) => {
+                seen.push(Buffer.from(event.payload).toString());
+                await ack();
+                await nack(true);
+            },
+        });
+        await h.run();
+        assert.deepEqual(seen, ["a", "b", "c"]);
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "13" }]);
+    });
+
+    it("per-batch treats nack(false) as an acknowledgement", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            handler: async (_event, _ack, nack) => {
+                await nack(false);
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "13" }]);
+    });
+
+    it("per-batch commits the acknowledged prefix when a message is requeued, and not the requeued one", async () => {
+        const seen: string[] = [];
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: twenty,
+            handler: async (event, ack, nack) => {
+                const name = Buffer.from(event.payload).toString();
+                seen.push(name);
+                if (name === "m7") {
+                    await nack(true);
+                    return;
+                }
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(seen.length, 8, "the batch ends at the requeued message");
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "107" }]);
+        assert.equal(h.resolved.at(-1), "106");
+    });
+
+    it("per-batch commits the acknowledged prefix when a message is returned unsettled", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            handler: async (event, ack) => {
+                if (Buffer.from(event.payload).toString() === "c") return;
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "12" }]);
+    });
+
+    it("per-batch commits the acknowledged prefix when the handler throws, and reports the error", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            handler: async (event, ack) => {
+                if (Buffer.from(event.payload).toString() === "c") throw new Error("boom");
+                await ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "12" }]);
+        assert.equal(h.errorLogs.length, 1);
+    });
+
+    it("per-batch pauses the partition after a requeue exactly as per-message does", async () => {
+        const resumeTimers = new Set<NodeJS.Timeout>();
+        const h = harness({
+            commitStrategy: "per-batch",
+            redeliveryDelay: 60_000,
+            resumeTimers,
+            messages: three,
+            handler: async () => undefined,
+        });
+        await h.run();
+        assert.equal(h.paused.length, 1);
+        assert.equal(resumeTimers.size, 1);
+        for (const timer of resumeTimers) clearTimeout(timer);
+    });
+
+    it("per-batch commits the acknowledged messages when the consumer is stopped in the middle of the batch", async () => {
+        const seen: string[] = [];
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: twenty,
+            runningWhile: (call) => call <= 5,
+            handler: async (event, ack) => {
+                seen.push(Buffer.from(event.payload).toString());
+                await ack();
+            },
+        });
+        await h.run();
+        assert.equal(seen.length, 5);
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "105" }]);
+    });
+
+    it("per-batch commits the acknowledged messages when a heartbeat fails, and rethrows the heartbeat error", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            heartbeatFails: (call) => call === 2,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await assert.rejects(h.run(), { message: "heartbeat failed" });
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "12" }]);
+    });
+
+    it("per-batch lets the heartbeat failure win over a failed commit and logs the commit failure", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            heartbeatFails: (call) => call === 2,
+            commitFails: 1,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await assert.rejects(h.run(), { message: "heartbeat failed" });
+        assert.equal(h.errorLogs.length, 1);
+        assert.match(String(h.errorLogs[0]?.[0]), /offset commit/);
+    });
+
+    it("per-batch surfaces a failed final commit to the client library and does not resolve the offsets", async () => {
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: three,
+            commitFails: 1,
+            handler: async (_event, ack) => {
+                await ack();
+            },
+        });
+        await assert.rejects(h.run(), { message: "commit failed" });
+        assert.deepEqual(h.resolved, []);
+    });
+
+    it("per-batch ignores an ack that arrives after the handler's turn", async () => {
+        let lateAck: (() => Promise<void>) | undefined;
+        const h = harness({
+            commitStrategy: "per-batch",
+            messages: [{ offset: "10", value: "a" }],
+            handler: async (_event, ack) => {
+                lateAck = ack;
+            },
+        });
+        await h.run();
+        await lateAck?.();
+        assert.deepEqual(h.commits, []);
     });
 });

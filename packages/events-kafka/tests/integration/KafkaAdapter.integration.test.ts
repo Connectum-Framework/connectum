@@ -964,3 +964,258 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 });
+
+describe("Kafka adapter commit strategy on a real broker", { skip: KAFKA_TEST_URL === undefined ? "KAFKA_TEST_URL not set" : false, concurrency: 1 }, () => {
+    const brokers = (KAFKA_TEST_URL as string).split(",").map((b) => b.trim());
+    const kafka = new Kafka({ clientId: "integration-control-commit", brokers, logLevel: logLevel.ERROR });
+    const admin: Admin = kafka.admin();
+    const createdTopics: string[] = [];
+    let adminConnected = false;
+
+    async function createTopic(name: string): Promise<string> {
+        if (!adminConnected) {
+            await admin.connect();
+            adminConnected = true;
+        }
+        const created = await admin.createTopics({ waitForLeaders: true, topics: [{ topic: name, numPartitions: 1, replicationFactor: 1 }] });
+        assert.equal(created, true, `topic ${name} was not created`);
+        createdTopics.push(name);
+        return name;
+    }
+
+    async function committedOffset(groupId: string, topic: string): Promise<number> {
+        const [entry] = await admin.fetchOffsets({ groupId, topics: [topic] });
+        return Number(entry?.partitions.find((p) => p.partition === 0)?.offset ?? -1);
+    }
+
+    /**
+     * Adapter whose KafkaJS client logs at DEBUG level into a counter of the `OffsetCommit` requests it
+     * sends. KafkaJS writes one "Request OffsetCommit(...)" line per request before it goes on the wire,
+     * so the count is what the broker is asked to do, not what the adapter believes it did.
+     */
+    function newCountingAdapter(commitStrategy: "per-message" | "per-batch" | undefined): { adapter: EventAdapter; offsetCommitRequests: () => number } {
+        let count = 0;
+        const adapter = KafkaAdapter({
+            brokers,
+            clientId: uniqueName("integration"),
+            kafkaConfig: {
+                logLevel: logLevel.DEBUG,
+                logCreator: () => (entry) => {
+                    if (entry.log.message.startsWith("Request OffsetCommit(")) count++;
+                },
+            },
+            consumerOptions: { fromBeginning: true, redeliveryDelay: 0, ...(commitStrategy !== undefined && { commitStrategy }) },
+        });
+        return { adapter, offsetCommitRequests: () => count };
+    }
+
+    /** Publish `count` messages `m0`..`m<count-1>` before any consumer exists, so one fetch returns them all. */
+    async function publishAll(adapter: EventAdapter, topic: string, count: number): Promise<void> {
+        for (let i = 0; i < count; i++) {
+            await adapter.publish(topic, bytes(`m${i}`));
+        }
+    }
+
+    after(async () => {
+        if (!adminConnected) return;
+        try {
+            await admin.deleteTopics({ topics: createdTopics });
+        } finally {
+            await admin.disconnect();
+        }
+    });
+
+    it("by default 20 acknowledged messages cost 20 OffsetCommit requests", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const topic = await createTopic(uniqueName("it.commit-default"));
+        const group = uniqueName("group");
+        const handled: string[] = [];
+        const { adapter, offsetCommitRequests } = newCountingAdapter(undefined);
+        await adapter.connect();
+        try {
+            await publishAll(adapter, topic, 20);
+            const subscription = await adapter.subscribe(
+                [topic],
+                async (event, ack) => {
+                    handled.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(async () => (await committedOffset(group, topic)) === 20, "offset 20 committed", async () => ({ handled: handled.length, requests: offsetCommitRequests() }));
+                assert.equal(handled.length, 20);
+                assert.equal(offsetCommitRequests(), 20);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("per-batch: 20 acknowledged messages of one batch cost a single OffsetCommit request, and none is delivered again", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const topic = await createTopic(uniqueName("it.commit-batch"));
+        const group = uniqueName("group");
+        const handled: string[] = [];
+        const { adapter, offsetCommitRequests } = newCountingAdapter("per-batch");
+        await adapter.connect();
+        try {
+            await publishAll(adapter, topic, 20);
+            const subscription = await adapter.subscribe(
+                [topic],
+                async (event, ack) => {
+                    handled.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(async () => (await committedOffset(group, topic)) === 20, "offset 20 committed", async () => ({ handled: handled.length, requests: offsetCommitRequests() }));
+                await sleep(1_000);
+                assert.deepEqual(handled, Array.from({ length: 20 }, (_, i) => `m${i}`), "every message exactly once, in order");
+                assert.equal(offsetCommitRequests(), 1);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("per-batch: a requeue in the middle of a batch commits the acknowledged prefix and redelivers from the requeued message", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const topic = await createTopic(uniqueName("it.commit-batch-requeue"));
+        const group = uniqueName("group");
+        const handled: string[] = [];
+        let requeued = false;
+        const { adapter, offsetCommitRequests } = newCountingAdapter("per-batch");
+        await adapter.connect();
+        try {
+            await publishAll(adapter, topic, 20);
+            const subscription = await adapter.subscribe(
+                [topic],
+                async (event, ack, nack) => {
+                    const value = text(event.payload);
+                    handled.push(value);
+                    if (value === "m7" && !requeued) {
+                        requeued = true;
+                        await nack(true);
+                        return;
+                    }
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(async () => (await committedOffset(group, topic)) === 20, "offset 20 committed", async () => ({ handled, requests: offsetCommitRequests() }));
+                await sleep(1_000);
+                const expected = [...Array.from({ length: 8 }, (_, i) => `m${i}`), ...Array.from({ length: 13 }, (_, i) => `m${i + 7}`)];
+                assert.deepEqual(handled, expected, "m0..m6 once, m7 twice, the rest once");
+                assert.equal(offsetCommitRequests(), 2, "one commit for the prefix, one for the redelivered tail");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("per-batch: a handler that keeps throwing leaves exactly the acknowledged prefix committed", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const topic = await createTopic(uniqueName("it.commit-batch-throw"));
+        const group = uniqueName("group");
+        const handled: string[] = [];
+        const { adapter } = newCountingAdapter("per-batch");
+        await adapter.connect();
+        const originalError = console.error;
+        console.error = () => undefined;
+        try {
+            await publishAll(adapter, topic, 10);
+            const subscription = await adapter.subscribe(
+                [topic],
+                async (event, ack) => {
+                    const value = text(event.payload);
+                    handled.push(value);
+                    if (value === "m5") throw new Error("poison");
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(async () => (await committedOffset(group, topic)) === 5, "offset 5 committed", async () => ({ handled }));
+                await sleep(1_000);
+                assert.equal(await committedOffset(group, topic), 5, "the failing message is never committed");
+                assert.deepEqual(handled.slice(0, 6), ["m0", "m1", "m2", "m3", "m4", "m5"]);
+                assert.equal(handled.filter((v) => v === "m0").length, 1, "the acknowledged prefix is not redelivered");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            console.error = originalError;
+            await adapter.disconnect();
+        }
+    });
+
+    it("per-batch: unsubscribe in the middle of a batch commits what was acknowledged and leaves the rest for the next consumer", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const topic = await createTopic(uniqueName("it.commit-batch-stop"));
+        const group = uniqueName("group");
+        const firstRun: string[] = [];
+        const { adapter: adapter1 } = newCountingAdapter("per-batch");
+        let release: (() => void) | undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let m2Started = false;
+
+        await adapter1.connect();
+        try {
+            await publishAll(adapter1, topic, 5);
+            const subscription = await adapter1.subscribe(
+                [topic],
+                async (event, ack) => {
+                    const value = text(event.payload);
+                    firstRun.push(value);
+                    if (value === "m2") {
+                        m2Started = true;
+                        await gate;
+                    }
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(() => m2Started, "m2 is being handled", () => ({ firstRun }));
+                const stopping = subscription.unsubscribe();
+                await sleep(300);
+                release?.();
+                await stopping;
+            } finally {
+                release?.();
+            }
+        } finally {
+            await adapter1.disconnect();
+        }
+        assert.deepEqual(firstRun, ["m0", "m1", "m2"], "m3 must not start after the consumer was told to stop");
+        assert.equal(await committedOffset(group, topic), 3, "m0, m1 and m2 were acknowledged and are committed");
+
+        const secondRun: string[] = [];
+        const { adapter: adapter2 } = newCountingAdapter("per-batch");
+        await adapter2.connect();
+        try {
+            const subscription = await adapter2.subscribe(
+                [topic],
+                async (event, ack) => {
+                    secondRun.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitFor(async () => (await committedOffset(group, topic)) === 5, "offset 5 committed", async () => ({ secondRun }));
+                assert.deepEqual(secondRun, ["m3", "m4"], "only what was not acknowledged comes back");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter2.disconnect();
+        }
+    });
+});
