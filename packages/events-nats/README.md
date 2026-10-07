@@ -1,147 +1,41 @@
 # @connectum/events-nats
 
-NATS JetStream adapter for `@connectum/events`.
+This README describes the 1.3.x source; that release is not yet published to npm.
 
-**@connectum/events-nats** connects the Connectum EventBus to [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, at-least-once event delivery with automatic stream management.
+NATS JetStream adapter for `@connectum/events`, with durable consumers and subject-based routing.
 
-**Layer**: 2 (Tools) | **Node.js**: >=22.13.0 | **License**: Apache-2.0
-
-## Features
-
-- **JetStream Integration** -- durable, at-least-once delivery via NATS JetStream
-- **Auto-Stream Creation** -- creates JetStream stream on connect if not exists
-- **Durable Consumers** -- deterministic consumer naming for load balancing
-- **Wildcard Subscriptions** -- native NATS wildcard patterns (`*`, `>`)
-- **Metadata as Headers** -- event metadata mapped to NATS message headers
-- **Configurable Delivery** -- ack wait, max delivery attempts, deliver policy
-
-## Installation
+## Install
 
 ```bash
-pnpm add @connectum/events-nats
+pnpm add @connectum/events-nats @connectum/events
 ```
 
-**Peer dependencies:**
+The adapter requires Node.js `>=22.13.0` and has `@connectum/events` as a peer dependency. See [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
 
-```bash
-pnpm add @connectum/events
-```
+## Start here
 
-## Quick Start
+Set the broker connection variable, then start the bus:
 
 ```typescript
 import { createEventBus } from '@connectum/events';
 import { NatsAdapter } from '@connectum/events-nats';
 
 const bus = createEventBus({
-  adapter: NatsAdapter({
-    servers: 'nats://localhost:4222',
-  }),
-  routes: [eventRoutes],
+  adapter: NatsAdapter({ servers: process.env.NATS_URL ?? 'nats://localhost:4222' }),
 });
 
 await bus.start();
+await bus.stop();
 ```
 
-### With Full Options
+A NATS server with JetStream enabled must be reachable. Delivery is at-least-once; make handlers idempotent and acknowledge after their side effects complete.
 
-```typescript
-const bus = createEventBus({
-  adapter: NatsAdapter({
-    servers: ['nats://node1:4222', 'nats://node2:4222'],
-    stream: 'my-service',
-    consumerOptions: {
-      deliverPolicy: 'all',
-      ackWait: 60000,
-      maxDeliver: 10,
-    },
-  }),
-  routes: [eventRoutes],
-  group: 'worker-group',
-  middleware: {
-    retry: { maxRetries: 3 },
-    dlq: { topic: 'service.dlq' },
-  },
-});
-```
+## Learn and reference
 
-## API Reference
-
-### NatsAdapter()
-
-```typescript
-import { NatsAdapter } from '@connectum/events-nats';
-
-function NatsAdapter(options: NatsAdapterOptions): EventAdapter
-```
-
-### NatsAdapterOptions
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `servers` | `string \| string[]` | required | NATS server URL(s) |
-| `stream` | `string` | `'events'` | JetStream stream name |
-| `connectionOptions` | `Partial<NodeConnectionOptions>` | `undefined` | Advanced NATS connection options |
-| `consumerOptions` | `NatsConsumerOptions` | `{}` | Consumer tuning |
-
-### NatsConsumerOptions
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `deliverPolicy` | `'new' \| 'all' \| 'last'` | `'new'` | Message delivery policy |
-| `ackWait` | `number` | `30000` | Ack timeout in ms |
-| `maxDeliver` | `number` | `5` | Max delivery attempts before giving up |
-
-## How It Works
-
-### Topic Mapping
-
-Event types are mapped to NATS subjects with the stream name prefix:
-
-```text
-EventType: "user.created"
-Stream:    "events"
-Subject:   "events.user.created"
-```
-
-### Consumer Naming
-
-Durable consumers use deterministic names to ensure load balancing across instances. Group and pattern are sanitized (invalid durable-name characters replaced with `_`):
-
-```text
-Format:  {sanitized-group}--{sanitized-pattern}--{hash}
-Example: worker-group--user_created--a1b2c3d4
-```
-
-### Metadata
-
-Event metadata is transmitted as NATS message headers. Internal headers (prefixed with `x-`) are stripped when parsing.
-
-## Dependencies
-
-### External
-
-- `@nats-io/jetstream` -- NATS JetStream client
-- `@nats-io/transport-node` -- NATS Node.js transport
-
-### Peer
-
-- `@connectum/events` -- EventBus core
-
-## Requirements
-
-- **Node.js**: >=22.13.0
-- **NATS Server**: >=2.9 with JetStream enabled
-
-## Documentation
-
-- [Adapters Guide](https://connectum.dev/en/guide/events/adapters)
-- [EventBus Guide](https://connectum.dev/en/guide/events)
+- [Package overview](https://connectum.dev/en/packages/events-nats)
+- [Adapter guide](https://connectum.dev/en/guide/events/adapters#nats-jetstream-adapter)
+- [API reference](https://connectum.dev/en/api/@connectum/events-nats/types/interfaces/NatsAdapterOptions)
 
 ## License
 
 Apache-2.0
-
----
-
-**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices

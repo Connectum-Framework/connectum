@@ -376,7 +376,7 @@ function buildConnectOptions(socketOptions: Record<string, unknown> | undefined,
 }
 
 /**
- * The publish AUTO-RETRY boundary (#195): which publish failures the opt-in
+ * The publish AUTO-RETRY boundary: which publish failures the opt-in
  * `publishRetry` retries inline.
  *
  * Deliberately NARROWER than the at-least-once REPUBLISH matrix in the error

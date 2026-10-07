@@ -521,7 +521,7 @@ export interface AmqpRecoveryOptions {
  * Discriminated connection lifecycle event, delivered to
  * {@link AmqpLifecycleCallbacks.onLifecycle}.
  *
- * Exactly-once guarantees (pinned by integration tests):
+ * Lifecycle event behavior (covered by integration tests):
  * - `connected` fires once per successful (re)connect; `reconnected` is `false`
  *   for the initial connect and `true` after a recovery.
  * - `disconnected` fires once per connection loss (a socket-level cut no longer

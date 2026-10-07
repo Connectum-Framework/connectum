@@ -1,5 +1,7 @@
 # @connectum/protoc-gen-catalog
 
+This README describes the 1.3.x source; that release is not yet published to npm.
+
 A Buf/protoc plugin that generates a **Connectum service catalog** from your
 proto files. The generated `catalog.gen.ts` is what makes `ctx.call` and
 `ctx.stream` (from `@connectum/core`) fully typed.
@@ -7,7 +9,8 @@ proto files. The generated `catalog.gen.ts` is what makes `ctx.call` and
 ## Installation
 
 ```bash
-pnpm add -D @connectum/protoc-gen-catalog
+pnpm add @connectum/core
+pnpm add -D @connectum/protoc-gen-catalog @bufbuild/buf @bufbuild/protoc-gen-es
 ```
 
 The package installs the `protoc-gen-connectum-catalog` binary, which Buf/protoc
@@ -26,8 +29,8 @@ One `catalog.gen.ts` per buf module, containing:
 ```ts
 // catalog.gen.ts (generated — DO NOT EDIT)
 import type {} from "@connectum/core";
-import { GreeterService } from "./greeter_pb.js";
-import type { SayHelloRequest, SayHelloResponse } from "./greeter_pb.js";
+import { GreeterService } from "./greeter/v1/greeter_pb.js";
+import type { SayHelloRequest, SayHelloResponse } from "./greeter/v1/greeter_pb.js";
 
 export const serviceCatalog = {
     "greeter.v1.GreeterService": GreeterService,
@@ -40,6 +43,31 @@ declare module "@connectum/core" {
     interface ConnectumStreamMap {}
 }
 ```
+
+This generated output assumes `buf.yaml` uses `proto` as a module path and
+`proto/greeter/v1/greeter.proto` contains:
+
+```yaml
+version: v2
+modules:
+  - path: proto
+```
+
+```proto
+syntax = "proto3";
+package greeter.v1;
+
+message SayHelloRequest { string name = 1; }
+message SayHelloResponse { string message = 1; }
+
+service GreeterService {
+  rpc SayHello(SayHelloRequest) returns (SayHelloResponse);
+}
+```
+
+With the Buf config below, `buf generate` writes the protobuf module to
+`gen/greeter/v1/greeter_pb.ts` and the catalog to `gen/catalog.gen.ts`. The
+catalog imports the generated service from `./greeter/v1/greeter_pb.js`.
 
 ## Quick Start (`buf.gen.yaml`)
 
@@ -104,10 +132,16 @@ single-copy guarantee of the runtime packages — including the `@bufbuild/proto
 
 - Node.js >=22.13.0
 
+## Learn and reference
+
+- [Package overview](https://connectum.dev/en/packages/protoc-gen-catalog)
+- [Service catalog guide](https://connectum.dev/en/guide/service-communication/service-catalog)
+- [API reference](https://connectum.dev/en/api/@connectum/protoc-gen-catalog/)
+
 ## License
 
 Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** -- Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [Connectum](../../README.md).**
