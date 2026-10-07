@@ -312,7 +312,7 @@ The broker can end one subscription's consumer while the connection stays up: it
 - With `recovery: false` the loss is reported with `willRestore: false` and the consumer stays dead.
 - The lost consumer's channel is closed. A handler still running settles late: `settlement-skipped`, and the broker returns the unacknowledged message to its queue (if the queue still exists), so the restored consumer gets it again with `attempt` > 1. Keep handlers idempotent.
 - A handler that throws synchronously is treated as a rejection: the message is requeued and the consumer keeps working.
-- `consumer_timeout` (measured on RabbitMQ 4.3.1 with `consumer_timeout = 60000` and a handler that never settles): a quorum queue cancelled the consumer at about 60 s, it was restored about 100 ms later and the message came back with `attempt: 2`. A classic queue showed no event and no redelivery over 330 s (one observation, not a guarantee).
+- `consumer_timeout` (measured with `consumer_timeout = 60000`, a quorum queue and a handler that never settles): on RabbitMQ 4.3.1 and 4.3.6 the broker cancelled the consumer at about 60 s (`consumer-lost` with `cause: "cancelled"`); on 3.13.7, 4.1.8 and 4.2.8 it closed the whole channel at about 120 s (`cause: "channel-closed"`). In every case the consumer was restored and the message came back with `attempt: 2` (on 4.3.1 about 100 ms after the loss). A classic queue showed no event and no redelivery over 330 s on 4.3.1 (one observation, not a guarantee).
 
 ### Metadata
 
@@ -542,6 +542,20 @@ Parity contract: lifecycle events go through the real adapter's dispatch (union 
 
 Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`; a lost consumer returns only through `restoreConsumers()`, on attempt 1, and `consumer-restore-failed` is never reported; a subscription without a group is named `fake.sub-N` by registration order; the `recovery` option only decides `willRestore`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 
+### Running the integration suites against a real broker
+
+The happy-path suite needs only a reachable broker and skips without `AMQP_TEST_URL`:
+
+```bash
+docker run -d --name connectum-amqp-test -p 15672:5672 rabbitmq:4.3.6-alpine
+until docker exec --user rabbitmq connectum-amqp-test rabbitmq-diagnostics -q check_port_connectivity; do sleep 2; done
+AMQP_TEST_URL=amqp://guest:guest@localhost:15672 pnpm --filter @connectum/events-amqp test:integration
+```
+
+Probe the broker as the `rabbitmq` user. A `docker exec` as root that reaches the container before the server has written its Erlang cookie creates the cookie itself (mode 400, owner root); the server then cannot read it and exits with `.erlang.cookie: eacces`. The image boots without any extra flag.
+
+The recovery, consumer-loss, consumer-timeout, hardening and ungrouped-queue suites start their own brokers through testcontainers (Docker required) and run only with `RUN_RECOVERY_TESTS=1`. They use `rabbitmq:4.3.6-alpine`; set `AMQP_BROKER_IMAGE` to run them against another version.
+
 ## Dependencies
 
 ### External
@@ -555,7 +569,7 @@ Documented divergences: no timing (recovery advances only via explicit `control`
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **RabbitMQ**: >=3.8
+- **RabbitMQ**: the integration suites pass on 3.13.7, 4.1.8, 4.2.8 and 4.3.6; older releases are not tested
 
 ## Documentation
 

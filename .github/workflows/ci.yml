@@ -109,7 +109,9 @@ jobs:
     timeout-minutes: 15
     services:
       rabbitmq:
-        image: rabbitmq:4-alpine
+        # Exact version; keep in step with RABBITMQ_IMAGE in
+        # packages/events-amqp/tests/integration/brokerImage.ts.
+        image: rabbitmq:4.3.6-alpine
         ports:
           - 5672:5672
         options: >-

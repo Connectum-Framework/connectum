@@ -1,9 +1,15 @@
 /**
  * Happy-path integration tests against a real RabbitMQ broker.
  *
- * Skipped unless AMQP_TEST_URL is set, e.g.:
- *   docker run -d --name connectum-amqp-test -p 15672:5672 rabbitmq:4-alpine
+ * Skipped unless AMQP_TEST_URL is set. Start a broker, wait until it answers, then run:
+ *   docker run -d --name connectum-amqp-test -p 15672:5672 rabbitmq:4.3.6-alpine
+ *   until docker exec --user rabbitmq connectum-amqp-test rabbitmq-diagnostics -q check_port_connectivity; do sleep 2; done
  *   AMQP_TEST_URL=amqp://guest:guest@localhost:15672 pnpm test
+ *
+ * Probe the broker as the `rabbitmq` user. A bare `docker exec` runs as root: when it reaches
+ * the container before the server has written its Erlang cookie, root creates the cookie
+ * (mode 400, owner root), the server then cannot read it and exits with
+ * `.erlang.cookie: eacces`. The image itself boots without any extra flag.
  *
  * These require only a reachable broker (no container control), so they run in
  * CI against a `services: rabbitmq` container. Connection-recovery scenarios
