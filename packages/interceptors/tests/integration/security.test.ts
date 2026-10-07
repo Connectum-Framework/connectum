@@ -94,6 +94,8 @@ describe('Security Integration', () => {
 
         assert(loggedData.length > 0);
         assert(loggedData.some((log) => log.message.includes('SecureMethod')));
+        assert(!JSON.stringify(loggedData).includes('should-be-hidden'), 'request body must not reach the log by default');
+        assert(!JSON.stringify(loggedData).includes('secret-response'), 'response body must not reach the log by default');
     });
 
     it('should skip health check services', async () => {

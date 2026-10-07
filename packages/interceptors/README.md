@@ -436,13 +436,14 @@ const interceptor = createLoggerInterceptor({
   skipHealthCheck: true,    // Skip health check (default: true)
   logger: console.info,    // Custom logger (default: console[level])
   includeTransport: true,  // Tag lines with the transport (default: false)
+  includeBodies: false,    // Pass message bodies to the logger (default: false)
 });
 ```
 
 With `includeTransport: true`, every line carries the transport right after the `RPC` / `STREAM` prefix: `[in-process]` for calls made through `server.localClient()` or `createLocalTransport()` of `@connectum/core`, `[http]` for all other calls:
 
 ```text
-RPC [in-process] /greeter.v1.GreeterService/SayHello request ...
+RPC [in-process] /greeter.v1.GreeterService/SayHello request
 RPC [http] /greeter.v1.GreeterService/SayHello completed in 1.84ms
 ```
 
@@ -451,12 +452,14 @@ The tag is for reading logs only. It comes from a framework-internal request mar
 Every call writes a request line, a response line and a completion line:
 
 ```text
-RPC /greeter.v1.GreeterService/SayHello request ...
-RPC /greeter.v1.GreeterService/SayHello response ...
+RPC /greeter.v1.GreeterService/SayHello request
+RPC /greeter.v1.GreeterService/SayHello response
 RPC /greeter.v1.GreeterService/SayHello completed in 1.84ms
 ```
 
 A call that fails writes `RPC <path> failed with <Code>` (the Connect code name, `Unknown` for a plain error) before the completion line, and the original error reaches the caller unchanged. A streaming call writes `STREAM <path> request` / `STREAM <path> response` for every message, and its completion line when the stream ends (fully read, failed, or abandoned by the reader), so the duration covers the whole stream.
+
+By default a line carries only metadata: no request or response body reaches the `logger` function, because bodies can hold credentials, tokens and personal data, and a log outlives the call and has more readers. Set `includeBodies: true` to pass them: a unary call hands its request and response message to `logger` as an extra argument, and a streaming call hands each request message and the JSON form of each response message. Enable it only where the log is as protected as the traffic itself.
 
 Logging never changes the outcome of a call. If the `logger` function throws, or returns a promise that rejects, the call still returns its response or its original error: the first failure is reported once on the console and later ones are dropped. A streamed message that cannot be converted to JSON is logged as a marker and the stream continues.
 
@@ -704,6 +707,7 @@ interface LoggerOptions {
   skipHealthCheck?: boolean;                     // default: true
   logger?: (message: string, ...args: unknown[]) => void;
   includeTransport?: boolean;                    // default: false
+  includeBodies?: boolean;                       // default: false
 }
 ```
 

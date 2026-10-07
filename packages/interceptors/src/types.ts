@@ -75,6 +75,20 @@ export interface LoggerOptions {
      * @default false
      */
     includeTransport?: boolean;
+
+    /**
+     * Pass request and response bodies to the log sink.
+     *
+     * Off by default: bodies carry credentials, tokens and personal data, and a
+     * log line is usually kept far longer and readable by more people than the
+     * call itself. By default a line carries only metadata (path, event,
+     * duration, failure code). When on, a unary call passes its request and
+     * response message to the sink as an extra argument, and a streaming call
+     * passes the request message and the JSON form of each response message.
+     *
+     * @default false
+     */
+    includeBodies?: boolean;
 }
 
 /**
