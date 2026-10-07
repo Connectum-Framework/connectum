@@ -23,6 +23,8 @@ The server exposes these configurations: port 8081 has no interceptors, 8082 ena
 
 Run these commands from the `connectum` repository root. The example server listens on HTTP by default, so set `BASE_URL` for the first three scenarios and `PROTOCOL` for interceptor profiling:
 
+These commands require `TLS_DIR` to be unset in the server environment. If TLS is enabled with `TLS_DIR`, use `https://` in each `BASE_URL` and set `PROTOCOL=https`.
+
 ```bash
 BASE_URL=http://localhost:8080 k6 run tests/performance/scenarios/basic-load.js
 BASE_URL=http://localhost:8080 k6 run tests/performance/scenarios/stress-test.js

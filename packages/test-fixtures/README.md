@@ -25,6 +25,10 @@ descriptor fixtures are needed:
 pnpm add -D @connectum/test-fixtures
 ```
 
+This installs the published package version, not the unreleased 1.3.x source
+described in this README. Use this command for the documented 1.3.x API after
+that version is published.
+
 ## Start here
 
 Create a request and a spy for an interceptor test:

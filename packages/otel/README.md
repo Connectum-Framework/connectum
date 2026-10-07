@@ -30,6 +30,9 @@ Node.js `>=25.2.0` in its default mode.
 ```typescript
 import { createServer } from '@connectum/core';
 import type { Server } from '@connectum/core';
+import { Healthcheck } from '@connectum/healthcheck';
+import { createDefaultInterceptors, createErrorHandlerInterceptor } from '@connectum/interceptors';
+import { Reflection } from '@connectum/reflection';
 import { createOtelInterceptor, initProvider, shutdownProvider } from '@connectum/otel';
 import { greeterService } from '#services/greeterService.ts';
 
@@ -39,7 +42,12 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
     services: [greeterService],
     port,
     allowHTTP1: false,
-    interceptors: [createOtelInterceptor()],
+    protocols: [Healthcheck({ httpEnabled: true }), Reflection()],
+    interceptors: [
+      createErrorHandlerInterceptor(),
+      createOtelInterceptor(),
+      ...createDefaultInterceptors({ errorHandler: false }),
+    ],
     shutdown: { autoShutdown, timeout: 10_000 },
   });
   server.onShutdown(shutdownProvider);

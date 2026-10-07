@@ -14,6 +14,10 @@ pnpm add -D \
   @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node tsx
 ```
 
+This installs the published package versions, not the unreleased 1.3.x source
+described in this README. Use this command for the documented 1.3.x API after
+that version is published.
+
 The package requires Node.js `>=22.13.0`. Its peer dependencies are
 `@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0`, and
 `@connectrpc/connect-node` `^2.2.0`; keep these shared with the application.

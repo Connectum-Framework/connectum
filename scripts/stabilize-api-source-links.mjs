@@ -27,7 +27,9 @@ const SHA_LINK = /\/blob\/[0-9a-f]{40}\//g;
 const STABLE = "/blob/main/";
 const DEFINED_IN = /^([ \t]{0,3})Defined in: ([^\s:]+):([1-9]\d*)([ \t]*)$/;
 
-/** Recursively yield every `.md` file under `dir`. */
+/**
+ * walk the generated API tree so nested TypeDoc pages receive the same stable links.
+ */
 function* markdownFiles(dir) {
     for (const entry of readdirSync(dir)) {
         const full = join(dir, entry);
@@ -68,6 +70,9 @@ function sourcePathFor(displayPath, packageName, trackedPaths) {
     return trackedPaths.has(packageRelativePath) ? packageRelativePath : null;
 }
 
+/**
+ * short TypeDoc source paths need package context to avoid linking to another package.
+ */
 function packageNameForApiFile(file) {
     const [scope, packageName] = relative(API_DIR, file).split(sep);
     if (scope !== "@connectum" || !/^[a-z0-9-]+$/.test(packageName ?? "")) return null;
@@ -111,6 +116,9 @@ export function stabilizeSourceLinks(markdown, trackedPaths, packageName = null)
     return parts.join("");
 }
 
+/**
+ * restrict link targets to tracked source paths; generated or ignored files are not stable references.
+ */
 function trackedFrameworkFiles() {
     const output = execFileSync("git", ["ls-files", "-z"], {
         cwd: FRAMEWORK_ROOT,
@@ -120,6 +128,9 @@ function trackedFrameworkFiles() {
     return new Set(output.toString("utf8").split("\0").filter(Boolean));
 }
 
+/**
+ * limit the rewrite to generated API pages so hand-written links retain their chosen targets.
+ */
 function main() {
     const trackedPaths = trackedFrameworkFiles();
     let scanned = 0;

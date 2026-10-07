@@ -29,7 +29,9 @@ example requires Node.js `>=25.2.0` by default.
 ```typescript
 import { createServer } from '@connectum/core';
 import type { Server } from '@connectum/core';
+import { Healthcheck } from '@connectum/healthcheck';
 import { createDefaultInterceptors } from '@connectum/interceptors';
+import { Reflection } from '@connectum/reflection';
 import { greeterService } from '#services/greeterService.ts';
 
 export function buildServer(port = 5000, autoShutdown = false): Server {
@@ -37,6 +39,7 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
     services: [greeterService],
     port,
     allowHTTP1: false,
+    protocols: [Healthcheck({ httpEnabled: true }), Reflection()],
     interceptors: createDefaultInterceptors(),
     shutdown: { autoShutdown, timeout: 10_000 },
   });
