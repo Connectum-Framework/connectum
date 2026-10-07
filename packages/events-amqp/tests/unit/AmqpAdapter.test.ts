@@ -474,32 +474,36 @@ describe("AmqpAdapter AdapterContext", () => {
 });
 
 describe("toAmqpPattern", () => {
-    it("should convert > to # for multi-level wildcard", () => {
-        assert.equal(toAmqpPattern("user.>"), "user.#");
+    it("requires at least one segment after a terminal >", () => {
+        assert.equal(toAmqpPattern("user.>"), "user.*.#");
+        assert.equal(toAmqpPattern(">"), "*.#");
     });
 
     it("should preserve * for single-level wildcard", () => {
         assert.equal(toAmqpPattern("user.*"), "user.*");
     });
 
-    it("should convert multiple > occurrences", () => {
-        assert.equal(toAmqpPattern(">.user.>"), "#.user.#");
+    it("rejects a complete > segment outside the terminal position", () => {
+        assert.throws(() => toAmqpPattern(">.user.>"), /outside the terminal segment/);
+        assert.throws(() => toAmqpPattern("user.>.created"), /outside the terminal segment/);
     });
 
     it("should return literal patterns unchanged", () => {
         assert.equal(toAmqpPattern("user.created"), "user.created");
     });
 
-    it("should handle mixed wildcards", () => {
-        assert.equal(toAmqpPattern("*.user.>"), "*.user.#");
+    it("preserves a single-level wildcard and translates only terminal >", () => {
+        assert.equal(toAmqpPattern("*.user.>"), "*.user.*.#");
     });
 
     it("should handle empty string", () => {
         assert.equal(toAmqpPattern(""), "");
     });
 
-    it("should handle pattern with only >", () => {
-        assert.equal(toAmqpPattern(">"), "#");
+    it("keeps wildcard characters embedded in segments literal", () => {
+        assert.equal(toAmqpPattern("user>"), "user>");
+        assert.equal(toAmqpPattern("user*"), "user*");
+        assert.equal(toAmqpPattern("user.foo>"), "user.foo>");
     });
 });
 

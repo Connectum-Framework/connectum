@@ -52,15 +52,55 @@ const PUBLISH_ID_HEADER = "x-connectum-publish-id";
 /**
  * Convert an EventBus wildcard pattern to an AMQP routing key pattern.
  *
- * EventBus uses NATS-style wildcards:
- * - `*` matches a single token (same in AMQP topic exchange)
- * - `>` matches one or more tokens (AMQP uses `#`)
+ * EventBus uses complete dot-separated wildcard tokens. RabbitMQ's `*` matches
+ * one topic segment and `#` matches zero or more; translating terminal `>` to
+ * `*.#` preserves its one-or-more rule.
+ * `subscribe()` requires a topic exchange for complete `*` or `>` tokens and
+ * rejects a complete `#` segment on topic exchanges because RabbitMQ treats it
+ * as a wildcard while EventBus treats it as literal text.
  *
  * @param pattern - EventBus wildcard pattern
  * @returns AMQP routing key pattern
+ * @throws {TypeError} When a complete `>` segment is not terminal. The
+ *   adapter's `subscribe()` method also rejects complete `*` or `>` tokens for
+ *   non-topic exchanges and complete `#` tokens for topic exchanges before
+ *   topology changes.
  */
 export function toAmqpPattern(pattern: string): string {
-    return pattern.replace(/>/g, "#");
+    const segments = pattern.split(".");
+    const greaterThanIndex = segments.indexOf(">");
+    if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
+        throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
+    }
+
+    if (greaterThanIndex === segments.length - 1) {
+        return [...segments.slice(0, -1), "*", "#"].join(".");
+    }
+
+    return pattern;
+}
+
+/**
+ * Reject patterns that the configured exchange cannot route according to
+ * EventBus semantics. Embedded `*`, `>`, and `#` characters are literal segment
+ * content in the shared matcher, so only complete segments count as tokens.
+ */
+function validateSubscriptionPatterns(patterns: readonly string[], exchangeType: string): void {
+    for (const pattern of patterns) {
+        const segments = pattern.split(".");
+        const greaterThanIndex = segments.indexOf(">");
+        if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
+            throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
+        }
+
+        if (exchangeType === "topic" && segments.includes("#")) {
+            throw new TypeError(`AMQP topic subscription pattern "${pattern}" contains "#", which RabbitMQ treats as a wildcard`);
+        }
+
+        if (exchangeType !== "topic" && segments.some((segment) => segment === "*" || segment === ">")) {
+            throw new TypeError(`AMQP wildcard subscription pattern "${pattern}" requires a topic exchange; configured exchange type is "${exchangeType}"`);
+        }
+    }
 }
 
 /**
@@ -2464,6 +2504,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             if (!connection) {
                 throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
             }
+
+            validateSubscriptionPatterns(patterns, exchangeType);
 
             const record: SubscriptionRecord = {
                 patterns,

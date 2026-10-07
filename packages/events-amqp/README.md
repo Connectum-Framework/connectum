@@ -279,12 +279,35 @@ Routing Key:  "user.created"
 EventBus wildcard patterns are converted to AMQP topic patterns:
 
 ```text
-EventBus  →  AMQP
-*         →  *     (single token -- same in both)
->         →  #     (multi-token greedy match)
+EventBus pattern  →  AMQP topic binding
+*                 →  *       (exactly one segment)
+terminal >        →  *.#     (one or more trailing segments)
 
-Example: "order.>"  →  "order.#"
+Example: "order.>"  →  "order.*.#"
 ```
+
+Only a complete `>` segment at the end of a pattern is supported. A complete
+`>` segment elsewhere throws before the adapter creates or binds a queue.
+Subscriptions containing complete `*` or `>` segments require a topic
+exchange; direct, fanout, and headers exchanges reject them before topology
+changes. Characters embedded in a segment, such as `user*` or `user>`, remain
+literal. A complete `#` segment is rejected on topic exchanges because
+RabbitMQ interprets it as a wildcard, while the EventBus matcher treats it as
+literal text. On non-topic exchanges `#` remains an ordinary routing-key
+literal (or is ignored according to the exchange type).
+
+When upgrading an existing named-group queue, the adapter adds the corrected
+binding but does not remove an older, broader binding. Add the new binding
+before removing the old one so the queue remains bound throughout the change:
+
+```typescript
+await channel.bindQueue(queue, exchange, 'user.*.#');
+await channel.unbindQueue(queue, exchange, 'user.#');
+```
+
+This changes routing only; it does not delete the queue or its queued messages.
+Check every binding on externally managed queues before removing one, because
+another consumer may still rely on it.
 
 ### Consumer Groups
 
