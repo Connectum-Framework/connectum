@@ -30,7 +30,7 @@
     "release:gate": "node scripts/release-gate/run.mjs --mode pack",
     "interop:tools": "node scripts/interop-tools.mjs",
     "release:gate:preview": "node scripts/release-gate/run.mjs --mode preview",
-    "release:contract": "node --test scripts/release-contract/contract.test.mjs && node scripts/validate-release-contract.mjs",
+    "release:contract": "node --test scripts/release-contract/*.test.mjs && node scripts/validate-release-contract.mjs",
     "dev": "turbo run dev --parallel",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "changeset": "changeset",
