@@ -15,11 +15,17 @@
  * @module plugin
  */
 
+import { createRequire } from "node:module";
 import type { DescService } from "@bufbuild/protobuf";
 import { createEcmaScriptPlugin, type Schema } from "@bufbuild/protoplugin";
 
-/** Self-reported plugin version (appears in the generated preamble). */
-const PLUGIN_VERSION = "1.0.0-rc.11";
+/**
+ * Self-reported plugin version (appears in the generated preamble and in the
+ * version `buf` shows for the plugin). Read from the package manifest, which
+ * sits one directory above both `src/` and `dist/`, so it cannot drift from the
+ * published version.
+ */
+const PLUGIN_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 /** proto streaming `methodKind` → Connectum `ConnectumStreamMap` kind discriminator. */
 const STREAM_KIND = {
