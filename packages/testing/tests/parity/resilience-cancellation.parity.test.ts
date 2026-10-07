@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
 import { StringValueSchema } from "@bufbuild/protobuf/wkt";
@@ -158,7 +157,10 @@ transportParityTest("caller cancellation interrupts retry backoff and preserves 
     clientInterceptors: [observeRetryCleanup, createRetryInterceptor({ initialDelay: 2_000, maxDelay: 2_000 }), observeRetryAttempt],
     scenario: async ({ transport }) => {
         retry = retryState();
-        const random = mock.method(Math, "random", () => 0.5);
+        // Bun's node:test implementation has no mock.method. The scenarios run
+        // sequentially, and restoring the function keeps this jitter control local.
+        const originalRandom = Math.random;
+        Math.random = () => 0.5;
         const caller = new AbortController();
         const reason = new ConnectError("caller stopped retry", Code.Canceled, { "x-caller": "preserved" }, [{ desc: StringValueSchema, value: { value: "caller detail" } }]);
         const pending = createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "retry cancellation" }), { signal: caller.signal });
@@ -179,7 +181,7 @@ transportParityTest("caller cancellation interrupts retry backoff and preserves 
             caller.abort(reason);
             await retry.settled.promise;
             await pending.catch(() => {});
-            random.mock.restore();
+            Math.random = originalRandom;
         }
     },
     compare: expectResult({

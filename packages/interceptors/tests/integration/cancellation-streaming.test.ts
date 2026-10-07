@@ -199,7 +199,10 @@ for (const transportKind of ["local", "http"] as const) {
                     });
                 });
 
-                it("response consumption succeeds after the successful opener's timeout duration", async () => {
+                it("response consumption succeeds after the successful opener's timeout duration", async (t) => {
+                    // Let the real transport open without a wall-clock race,
+                    // then advance the opening timer only after it has returned.
+                    t.mock.timers.enable({ apis: ["setTimeout"] });
                     let cleanup = 0;
                     const delayConsumption: Interceptor = (next) => async (req) => {
                         const response = await next(req);
@@ -209,11 +212,8 @@ for (const transportKind of ["local", "http"] as const) {
                             ...response,
                             message: (async function* () {
                                 try {
-                                    // Read the body promptly, then delay delivery to the
-                                    // consumer so the assertion isolates opener lifetime
-                                    // from application processing of an available message.
                                     for await (const message of original) {
-                                        await sleep(80);
+                                        t.mock.timers.tick(40);
                                         assert.equal(req.signal.aborted, false, "the opener timer must be cleared before response consumption");
                                         yield message;
                                     }
@@ -233,7 +233,10 @@ for (const transportKind of ["local", "http"] as const) {
                     });
                 });
 
-                it("successful opening outlives the timer and still forwards later caller cancellation", async () => {
+                it("successful opening outlives the timer and still forwards later caller cancellation", async (t) => {
+                    // Socket setup may take longer than the policy duration on
+                    // busy runners. Advance time after observing the opened body.
+                    t.mock.timers.enable({ apis: ["setTimeout"] });
                     const caller = new AbortController();
                     const opened = deferred();
                     const finished = deferred();
@@ -272,7 +275,7 @@ for (const transportKind of ["local", "http"] as const) {
                             assertMessage(kind, first.value);
                             const rejected = assert.rejects(iterator.next(), isError(Code.Canceled));
                             await opened.promise;
-                            await sleep(80);
+                            t.mock.timers.tick(40);
                             assert.equal(downstream?.aborted, false, "the expired opening timer must not cancel the response iterator");
                             assert.equal(cleanup, 0);
                             caller.abort(new ConnectError("caller stopped opened stream", Code.Canceled));
