@@ -57,8 +57,10 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 
 ## Limitations
 
-- Streaming spans include per-message events. The message size attribute is an
-  estimate for each individual message, not the total stream size.
+- Set `recordMessages: true` to add per-message events to streaming spans; the
+  option is disabled by default. The message size attribute is an estimate for
+  each individual message, not the total stream size. Events contain metadata
+  and estimated size, not serialized message payloads.
 - The instrumentation captures the active span when creating a stream because
   Node.js `AsyncLocalStorage` context can be lost across async-generator
   boundaries. See the [observability guide](https://connectum.dev/en/guide/observability).

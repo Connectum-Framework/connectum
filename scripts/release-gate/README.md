@@ -67,6 +67,8 @@ after the pkg-pr-new snapshot publishes) against that PR's pre-release build.
 
 ## Scope
 
-Verifies the publish boundary and pure/in-process behavior directly. RPC-path
-runtime (streaming/bidi), broker-backed adapters, and the auth interceptors are
-covered by the example e2e, not by this gate.
+Verifies the publish boundary and pure/in-process behavior directly. The smoke
+also opens real HTTP/2 and HTTP/1.1 connections to check idle-session drain and
+force-close shutdown behavior on the consumer runtime floor. Streaming/bidi
+RPC paths, broker-backed adapters, and the auth interceptors require their
+dedicated integration or example suites; this gate does not cover those paths.

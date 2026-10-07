@@ -1,6 +1,7 @@
 # @connectum/events-redis
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README describes the unreleased 1.3.x source. Until that version is published,
+the install command below resolves the latest version published to npm.
 
 Redis Streams and Valkey adapter for `@connectum/events`, using stream consumer groups.
 
@@ -28,7 +29,12 @@ await bus.start();
 await bus.stop();
 ```
 
-A Redis-compatible server must be reachable. Delivery is at-least-once; pending entries can be delivered again. Configure persistence and retention in the broker for the durability your service requires.
+This snippet only connects to Redis; with no routes, it does not start a
+consumer. For routed delivery, a reachable Redis-compatible server is required.
+Pending stream entries can be reclaimed and delivered again; configure Redis
+persistence and stream retention for the durability your service requires. See
+the [Redis adapter guide](https://connectum.dev/en/guide/events/adapters#redis-streams-adapter)
+for retention and stream-mapping options.
 
 ## Learn and reference
 

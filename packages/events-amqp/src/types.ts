@@ -371,7 +371,7 @@ export interface AmqpQueueDeclaration {
 }
 
 export interface AmqpBindingDeclaration {
-    /** Destination queue name (queue binding) — mutually exclusive with `exchange`. */
+    /** Destination queue name. If both destination fields are set, runtime uses this queue. */
     readonly queue?: string;
     /** Destination exchange name (exchange-to-exchange binding). */
     readonly exchange?: string;
@@ -551,12 +551,13 @@ export interface AmqpRecoveryOptions {
  *   `connection.blocked`, e.g. under a memory/disk alarm); they have no flat
  *   callback equivalent.
  * - `settlement-skipped` reports an acknowledge, requeue or reject that the
- *   adapter skipped because the consumer channel was already closed. It is a
- *   diagnostic, not a failure: the broker requeues every delivery that was not
- *   acknowledged before the channel closed, so the message is redelivered. On a
- *   quorum queue each such return counts toward the queue's delivery limit
- *   (default 20 since RabbitMQ 4.0); past it the broker drops the message or
- *   dead-letters it. Union-only (no flat callback).
+ *   adapter skipped because the consumer channel was already closed. If the
+ *   broker has not processed the settlement and the queue still exists, the
+ *   unacknowledged delivery is returned; redelivery is not guaranteed if the
+ *   queue was deleted or settlement had already completed. On a quorum queue,
+ *   returns count toward its delivery limit (default 20 since RabbitMQ 4.0);
+ *   after that limit the broker drops the message or dead-letters it. Union-only
+ *   (no flat callback).
  * - `lifecycle-error` reports a lifecycle callback that threw or returned a
  *   promise that rejected. The failure is already isolated; the event only
  *   makes it visible. A failure while handling a `lifecycle-error` is dropped.
@@ -777,7 +778,9 @@ export interface AmqpExchangeOptions {
  */
 export interface AmqpQueueOptions {
     /**
-     * Whether the queue should survive broker restarts.
+     * Whether a queue for a named consumer group should survive broker restarts.
+     * In the default `assert` mode, ungrouped subscriptions use private,
+     * non-durable, auto-delete queues. `check` and `skip` do not create them.
      *
      * @default true
      */

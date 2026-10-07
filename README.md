@@ -48,6 +48,7 @@ Connectum provides modular packages for gRPC and ConnectRPC services. Published 
 | [`@connectum/events-amqp`](packages/events-amqp) | AMQP / RabbitMQ adapter for EventBus |
 | [`@connectum/protoc-gen-catalog`](packages/protoc-gen-catalog) | Buf plugin generating the typed service catalog (`ctx.call` / `ctx.stream`) |
 | [`@connectum/testing`](packages/testing) | `createTestServer()`, `mockResolver()`, `createMockContext()` — testing utilities |
+| [`@connectum/test-fixtures`](packages/test-fixtures) | Transport-free mock requests, descriptors, streams, and assertion helpers |
 
 ## Documentation
 

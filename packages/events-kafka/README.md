@@ -1,6 +1,7 @@
 # @connectum/events-kafka
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README describes the unreleased 1.3.x source. Until that version is published,
+the install command below resolves the latest version published to npm.
 
 Kafka and Redpanda adapter for `@connectum/events`, using partitions and consumer groups.
 
@@ -28,7 +29,12 @@ await bus.start();
 await bus.stop();
 ```
 
-A Kafka-compatible broker must be reachable. Delivery is at-least-once; handlers should be idempotent. A message that fails repeatedly can block later messages in its partition; see the [acknowledgement and redelivery guidance](https://connectum.dev/en/guide/events/adapters#kafka-ack-redelivery).
+This snippet only connects to Kafka; with no routes, it does not start a
+consumer. For routed delivery, a reachable Kafka-compatible broker and the
+configured topic/consumer group are required. Unsettled messages can be
+redelivered, and a repeatedly failing message can block later messages in its
+partition. Make handlers idempotent and see the [acknowledgement and redelivery
+guidance](https://connectum.dev/en/guide/events/adapters#kafka-ack-redelivery).
 
 ## Learn and reference
 

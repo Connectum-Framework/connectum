@@ -1,6 +1,7 @@
 # @connectum/events-amqp
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README describes the unreleased 1.3.x source. Until that version is published,
+the install command below resolves the latest version published to npm.
 
 AMQP/RabbitMQ adapter for `@connectum/events`. It maps EventBus topics to exchanges and queues and supports delivery settlement, publisher confirms, dead-letter routing, and connection recovery.
 
@@ -28,7 +29,15 @@ await bus.start();
 await bus.stop();
 ```
 
-Delivery is at-least-once. Make handlers idempotent and acknowledge only after their side effects complete. See the [AMQP reliability guide](https://connectum.dev/en/guide/events/amqp-reliability) for recovery and settlement behavior.
+Delivery and retention depend on the broker topology and publish settings. In
+the default `assert` mode, a subscription without a named consumer group uses a
+private, non-durable, auto-delete queue; `check` and `skip` do not create that
+queue. Use a named group when its queue must survive consumer restarts, with
+durable queue settings enabled. Set `publisherOptions.mandatory: true` to detect
+unroutable publishes.
+Make handlers idempotent and complete side effects before settlement. See the
+[AMQP reliability guide](https://connectum.dev/en/guide/events/amqp-reliability)
+for recovery, routing, and settlement behavior.
 
 ## Learn and reference
 

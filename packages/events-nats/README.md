@@ -1,6 +1,7 @@
 # @connectum/events-nats
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README describes the unreleased 1.3.x source. Until that version is published,
+the install command below resolves the latest version published to npm.
 
 NATS JetStream adapter for `@connectum/events`, with durable consumers and subject-based routing.
 
@@ -28,7 +29,13 @@ await bus.start();
 await bus.stop();
 ```
 
-A NATS server with JetStream enabled must be reachable. Delivery is at-least-once; make handlers idempotent and acknowledge after their side effects complete.
+This snippet only connects to JetStream and creates or checks the stream; with no
+routes, it does not start a consumer. For routed delivery, a JetStream-enabled
+server and a matching stream subject are required. Unacknowledged messages can be
+redelivered until `maxDeliver` is reached (default `5`); at that point JetStream
+stops redelivering them and emits a max-deliver advisory. Messages remain in the
+stream subject to its retention policy. Make handlers idempotent and complete
+side effects before acknowledging. See the [NATS adapter guide](https://connectum.dev/en/guide/events/adapters#nats-jetstream-adapter).
 
 ## Learn and reference
 

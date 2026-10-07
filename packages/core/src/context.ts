@@ -93,6 +93,13 @@ export interface BidiStreamHandle<Req, Res> {
 /**
  * Maps a {@link ConnectumStreamMap} entry to the ergonomic shape returned by
  * {@link Context.stream}, discriminated by the entry's `kind`.
+ *
+ * - `kind: "server-stream"`: `(request, options?) => AsyncIterable<response>`.
+ * - `kind: "client-stream"`: `(options?) => ClientStreamHandle<request, response>`.
+ * - `kind: "bidi"`: `(options?) => BidiStreamHandle<request, response>`.
+ *
+ * Request and response types are inferred from the entry's `request` and
+ * `response` fields; an entry matching none of these branches maps to `never`.
  */
 export type StreamReturn<E> = E extends { kind: "server-stream"; request: infer Req; response: infer Res }
     ? (request: Req, options?: CallOptions) => AsyncIterable<Res>

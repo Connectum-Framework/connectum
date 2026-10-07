@@ -84,9 +84,9 @@ plugins:
 ```
 
 `strategy: all` is **required**. The catalog aggregates every service into a
-single `catalog.gen.ts`, so buf must invoke the plugin once over all files. With
-the default `directory` strategy, buf runs the plugin once per proto directory
-and emits a duplicate `catalog.gen.ts` — keeping only one directory's services.
+single `catalog.gen.ts`, so buf must invoke the plugin once over all files.
+Separate directory invocations cannot produce one aggregate catalog: each
+invocation emits the same output filename for its own files-to-generate.
 
 The catalog plugin emits **TypeScript only** (the `declare module` augmentation
 is types-only). Generate it alongside `protoc-gen-es`, with the **same
@@ -94,12 +94,14 @@ is types-only). Generate it alongside `protoc-gen-es`, with the **same
 
 - `import_extension=.js` — recommended (pre-compiled distribution: tsup → `.js`
   + `.d.ts`).
-- `import_extension=.ts` — raw-source distribution (Bun / Node 22+ strip-types /
-  Node 25.2+). Use only if you ship `.ts` and your `tsconfig` allows it.
+- `import_extension=.ts` — source execution on the documented Node.js/Bun path.
+  Use only if you ship `.ts` and your `tsconfig` allows it; see
+  [runtime compatibility](https://connectum.dev/en/guide/runtime-compatibility).
 
 ## API Reference
 
-The plugin parameter string accepts the following option (passed via `opt:` in
+In addition to standard `@bufbuild/protoplugin` options such as `target` and
+`import_extension`, the plugin accepts this custom option (passed via `opt:` in
 `buf.gen.yaml`):
 
 | Option | Default | Description |

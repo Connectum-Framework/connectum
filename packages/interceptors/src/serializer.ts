@@ -1,7 +1,7 @@
 /**
  * Serializer interceptor
  *
- * Auto-converts messages to/from JSON for non-gRPC services.
+ * Converts messages to/from JSON, skipping the `grpc.*` service namespace by default.
  *
  * @module serializer
  */
@@ -43,7 +43,9 @@ async function* toJsonStream<T>(schema: DescMessage, stream: AsyncIterable<T>, a
  * Create serializer interceptor
  *
  * Automatically serializes/deserializes messages to/from JSON.
- * Skips gRPC services by default (they use protobuf binary format).
+ * By default, skips services whose protobuf type name starts with `grpc.`,
+ * including the standard Health and Reflection services. This checks the
+ * service namespace, regardless of the wire protocol used for the call.
  *
  * @param options - Serializer options
  * @returns ConnectRPC interceptor
@@ -75,6 +77,7 @@ async function* toJsonStream<T>(schema: DescMessage, stream: AsyncIterable<T>, a
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createSerializerInterceptor({ alwaysEmitImplicit: true }),
  *   ],
@@ -85,7 +88,7 @@ export function createSerializerInterceptor(options: SerializerOptions = {}): In
     const { skipGrpcServices = true, alwaysEmitImplicit = true, ignoreUnknownFields = true } = options;
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
-        // Skip gRPC services (they use protobuf binary format)
+        // Skip the grpc.* service namespace, independently of the wire protocol.
         if (skipGrpcServices && req.service.typeName.startsWith("grpc.")) {
             return await next(req);
         }
@@ -103,7 +106,7 @@ export function createSerializerInterceptor(options: SerializerOptions = {}): In
         // Execute request and deserialize response (cast needed: message is transformed from protobuf to JSON)
         const res = await next(modifiedReq as UnaryRequest | StreamRequest);
 
-        // Skip gRPC services
+        // Apply the same namespace exclusion to the response.
         if (skipGrpcServices && res.service.typeName.startsWith("grpc.")) {
             return res;
         }

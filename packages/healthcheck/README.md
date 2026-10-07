@@ -49,7 +49,8 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 ## Constraints
 
 - HTTP health routes are disabled unless `httpEnabled` is set.
-- `healthcheckManager.update()` changes the status of all registered services.
+- `healthcheckManager.update()` without a service name changes the status of all
+  registered services and components.
   Use a dedicated manager when separate servers or components need independent
   status.
 

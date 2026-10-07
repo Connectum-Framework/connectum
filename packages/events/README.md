@@ -1,6 +1,7 @@
 # @connectum/events
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README describes the unreleased 1.3.x source. Until that version is published,
+the install command below resolves the latest version published to npm.
 
 Proto-first event publishing and subscription with middleware, a memory adapter,
 and pluggable broker adapters.
@@ -52,8 +53,11 @@ await bus.stop();
 ## Constraints
 
 - `MemoryAdapter` does not persist messages and does not provide consumer groups.
-- Broker adapters provide at-least-once delivery. Handlers should be idempotent
-  and acknowledge only after completing their side effects.
+- Broker adapters can redeliver messages when a handler does not settle them;
+  actual retention and redelivery depend on the broker configuration. Handlers
+  should be idempotent and complete side effects before settlement. EventBus
+  automatically acknowledges successful handlers; use `ack()` only when manual
+  settlement is needed.
 - Install the adapter for your broker separately: `@connectum/events-nats`,
   `@connectum/events-kafka`, `@connectum/events-redis`, or
   `@connectum/events-amqp`.

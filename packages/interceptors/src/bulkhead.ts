@@ -47,6 +47,7 @@ import type { BulkheadOptions } from "./types.ts";
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createBulkheadInterceptor({ capacity: 5, queueSize: 5 }),
  *   ],

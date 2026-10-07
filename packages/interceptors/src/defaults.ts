@@ -24,10 +24,13 @@ import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, Fallb
 /**
  * Configuration options for the default interceptor chain.
  *
- * Each interceptor can be:
+ * Except for fallback and validation, each interceptor can be:
  * - `false` to disable it entirely
  * - `true` to enable with default options
  * - An options object to enable with custom configuration
+ *
+ * Fallback requires an options object with a handler; boolean values leave it
+ * disabled. Validation accepts only a boolean and is enabled unless `false`.
  *
  * Only structural interceptors (errorHandler, validation) are enabled by
  * default. Behavioral resilience interceptors (timeout, bulkhead,
@@ -81,6 +84,7 @@ export interface DefaultInterceptorOptions {
      * Fallback interceptor.
      * Provides graceful degradation when service fails.
      * Disabled by default — requires a handler function.
+     * Pass an options object with a handler to enable it; `true` leaves it disabled.
      * @default false
      */
     fallback?: boolean | FallbackOptions;
@@ -102,14 +106,25 @@ export interface DefaultInterceptorOptions {
 }
 
 /**
+ * Narrow an interceptor option to an options object.
+ *
+ * `typeof value === "object"` alone also matches `null`, so e.g. `{ timeout: null }`
+ * would forward `null` to a factory and crash during options destructuring.
+ * This guard excludes `null` (and `boolean`).
+ */
+function isOptionsObject<T>(value: boolean | T | undefined): value is T {
+    return typeof value === "object" && value !== null;
+}
+
+/**
  * Creates the default interceptor chain with the specified configuration.
  *
  * The interceptor order is fixed and intentional:
- * 1. **errorHandler** - Catch-all error normalization (outermost, must be first; enabled by default)
+ * 1. **errorHandler** - Normalize rejections from downstream `next(req)` (outermost; enabled by default)
  * 2. **timeout** - Enforce deadline before any processing (OPT-IN)
  * 3. **bulkhead** - Limit concurrency (OPT-IN)
- * 4. **circuitBreaker** - Prevent cascading failures (OPT-IN; wraps retry — one logical
- *    request increments the failure counter once, regardless of retry attempts)
+ * 4. **circuitBreaker** - Prevent cascading failures (OPT-IN; wraps retry — an
+ *    ultimate failure counts once, regardless of the number of retry attempts)
  * 5. **retry** - Retry transient failures with exponential backoff (OPT-IN)
  * 6. **fallback** - Graceful degradation (OPT-IN, requires handler)
  * 7. **validation** - @connectrpc/validate (enabled by default)
@@ -123,18 +138,20 @@ export interface DefaultInterceptorOptions {
  *
  * @example
  * ```typescript
+ * import { createDefaultInterceptors } from '@connectum/interceptors';
+ *
  * // Defaults: errorHandler + validation only
- * const interceptors = createDefaultInterceptors();
+ * const defaults = createDefaultInterceptors();
  *
  * // Explicitly enable resilience where needed
- * const interceptors = createDefaultInterceptors({
+ * const withResilience = createDefaultInterceptors({
  *   timeout: { duration: 10000 },
  *   bulkhead: true,
  *   retry: { maxRetries: 3 },
  * });
  *
  * // Enable fallback with handler
- * const interceptors = createDefaultInterceptors({
+ * const withFallback = createDefaultInterceptors({
  *   fallback: { handler: () => ({ data: [] }) },
  * });
  *
@@ -142,17 +159,6 @@ export interface DefaultInterceptorOptions {
  * // or pass `interceptors: []`
  * ```
  */
-/**
- * Narrow an interceptor option to an options object.
- *
- * `typeof value === "object"` alone also matches `null`, so e.g. `{ timeout: null }`
- * would forward `null` to a factory and crash during options destructuring.
- * This guard excludes `null` (and `boolean`).
- */
-function isOptionsObject<T>(value: boolean | T | undefined): value is T {
-    return typeof value === "object" && value !== null;
-}
-
 export function createDefaultInterceptors(options: DefaultInterceptorOptions = {}): Interceptor[] {
     const interceptors: Interceptor[] = [];
 

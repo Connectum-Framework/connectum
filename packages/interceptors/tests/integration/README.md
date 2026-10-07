@@ -1,13 +1,14 @@
 # Interceptor integration tests
 
-These tests exercise combinations of `@connectum/interceptors` against real
-in-process Connect handlers. The suites cover the default chain, resilience
-behavior, logging, and validation; they do not measure production traffic or
-external service behavior.
+These tests combine `@connectum/interceptors` using mock requests and downstream
+handlers, plus real in-process and HTTP/2 calls for logger behavior. The suites
+cover chain composition, resilience, logging, and validation; they do not measure
+production traffic or external service behavior.
 
 Run the integration suites from the framework repository root:
 
 ```bash
+pnpm build
 pnpm --filter @connectum/interceptors test:integration
 ```
 

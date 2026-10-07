@@ -26,7 +26,8 @@ dependencies and add `@connectum/auth`, then replace `src/server.ts`
 with this version, and set `JWKS_URI` and `JWT_ISSUER` for your token provider.
 Follow the [JWT setup guide](https://connectum.dev/en/guide/auth/jwt) for token
 issuer and key configuration. The example project uses Node.js `>=25.2.0` in
-its default mode.
+its default mode. Tokens for this example must include a subject and the
+`my-api` audience configured below.
 
 ```typescript
 import { createServer } from '@connectum/core';
@@ -64,10 +65,13 @@ Handlers can read the verified identity with `requireAuthContext()` from
 
 - `createJwtAuthInterceptor` rejects a token without `sub` unless
   `claimsMapping.subject` supplies the identity.
-- Use `propagatedClaims` to limit which claim keys are forwarded in
-  `x-auth-claims` headers.
-- `createJwtAuthInterceptor` enforces the HMAC key sizes defined by RFC 7518.
-- The package strips untrusted `x-auth-*` headers before setting verified auth
+- The generic and session interceptors accept `propagatedClaims` to limit the
+  claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
+- `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length
+  against configured algorithms: 32 for HS256, 48 for HS384, and 64 for HS512;
+  when algorithms are omitted, its minimum is 32 bytes.
+- The generic, JWT, and session interceptors strip the standard Connectum auth
+  headers before setting verified auth
   context. Header values for roles, scopes, and claims are bounded; oversized
   values are omitted.
 
