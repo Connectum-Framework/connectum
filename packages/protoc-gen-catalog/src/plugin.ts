@@ -101,7 +101,15 @@ function generateCatalog(schema: Schema<CatalogOptions>): void {
     for (const service of services) {
         for (const method of service.methods) {
             if (method.methodKind !== "unary") continue;
-            f.print(`        "${service.typeName}/${method.name}": { request: `, f.importShape(method.input), "; response: ", f.importShape(method.output), " };");
+            f.print(
+                `        "${service.typeName}/${method.name}": { request: `,
+                f.import("MessageInitShape", "@bufbuild/protobuf", true),
+                "<typeof ",
+                f.importSchema(method.input, true),
+                ">; response: ",
+                f.importShape(method.output),
+                " };",
+            );
         }
     }
     f.print("    }");
@@ -110,7 +118,15 @@ function generateCatalog(schema: Schema<CatalogOptions>): void {
         for (const method of service.methods) {
             if (method.methodKind === "unary") continue;
             const kind = STREAM_KIND[method.methodKind];
-            f.print(`        "${service.typeName}/${method.name}": { request: `, f.importShape(method.input), "; response: ", f.importShape(method.output), `; kind: "${kind}" };`);
+            f.print(
+                `        "${service.typeName}/${method.name}": { request: `,
+                f.import("MessageInitShape", "@bufbuild/protobuf", true),
+                "<typeof ",
+                f.importSchema(method.input, true),
+                ">; response: ",
+                f.importShape(method.output),
+                `; kind: "${kind}" };`,
+            );
         }
     }
     f.print("    }");
