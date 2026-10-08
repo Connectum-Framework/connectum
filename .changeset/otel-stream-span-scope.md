@@ -1,5 +1,5 @@
 ---
-"@connectum/otel": patch
+"@connectum/otel": minor
 ---
 
 fix: the server span is now the active span inside server-streaming and bidirectional handlers.
