@@ -364,8 +364,15 @@ describe("server span scope inside streaming handlers", () => {
 
 describe("server span retention", () => {
     it("no finished span stays reachable through the stream scope", { timeout: 60_000 }, async () => {
-        setFlagsFromString("--expose-gc");
-        const gc = runInNewContext("gc") as () => void;
+        // Node exposes a collector through a V8 flag, Bun through its own API.
+        const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
+        let gc: () => void;
+        if (bun) {
+            gc = () => bun.gc(true);
+        } else {
+            setFlagsFromString("--expose-gc");
+            gc = runInNewContext("gc") as () => void;
+        }
 
         const refs: WeakRef<Span>[] = [];
         // A tracer provider that keeps no span: the collector would otherwise
@@ -421,6 +428,10 @@ describe("server span retention", () => {
             alive = refs.filter((r) => r.deref() !== undefined).length;
         }
         assert.ok(refs.length >= 40, `server spans were created (${refs.length})`);
-        assert.strictEqual(alive, 0, `${alive} of ${refs.length} spans are still reachable after the streams finished`);
+        // JavaScriptCore (Bun) keeps the most recently created object alive from its
+        // stack scan even without the stream scope, so one survivor is the engine's
+        // floor there; V8 must release every span.
+        const allowed = bun ? 1 : 0;
+        assert.ok(alive <= allowed, `${alive} of ${refs.length} spans are still reachable after the streams finished`);
     });
 });
