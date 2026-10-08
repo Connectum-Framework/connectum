@@ -855,6 +855,21 @@ Observe `req.signal` in custom interceptors and `ctx.signal` in RPC handlers,
 and pass it to cancellable I/O. Unaware work
 can still finish and commit side effects, so cancellation is not a rollback.
 
+**Timeout and circuit breaker.** In the default order the timeout is outside the
+circuit breaker, which wraps retry. An expired timeout aborts the inner chain
+with a `DeadlineExceeded` error, so the breaker now records it as a failure:
+`DeadlineExceeded` is one of the codes counted by the default failure predicate
+(`INFRASTRUCTURE_CODES`, `src/circuit-breaker.ts`). Repeated timeouts of a
+cooperative handler open the circuit. Before, the breaker never saw the timeout
+itself, only whatever the abandoned handler eventually returned. For a handler
+that ignores the signal the failure is recorded when that handler settles, not
+when the caller gets its deadline error, and only because retry converts the
+late result into the cancellation error. Caller cancellation with the default
+`Canceled` code is not counted; a caller `ConnectError` reason with an
+infrastructure code such as `Unavailable` is counted under its own code. To keep
+timeouts from tripping the breaker, exclude `DeadlineExceeded` in
+`failurePredicate` (see [Circuit breaker: placement and error classification](#circuit-breaker-placement-and-error-classification)).
+
 Options, defaults and chain order are unchanged. `skipStreaming: false` remains
 opening-only; caller cancellation continues to work after successful opening.
 
