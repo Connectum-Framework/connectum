@@ -91,7 +91,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
      * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
      * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
      */
-    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number }): EventAdapter {
+    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number; topicDiscoveryInterval?: number }): EventAdapter {
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
@@ -99,6 +99,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             consumerOptions: {
                 fromBeginning: extra?.fromBeginning ?? true,
                 ...(extra?.sessionTimeout !== undefined && { sessionTimeout: extra.sessionTimeout }),
+                ...(extra?.topicDiscoveryInterval !== undefined && { topicDiscoveryInterval: extra.topicDiscoveryInterval }),
                 ...(extra?.adapterDefaultRedelivery !== true && { redeliveryDelay: extra?.redeliveryDelay ?? 0 }),
             },
         });
@@ -822,6 +823,226 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             } finally {
                 await star.unsubscribe();
                 await gt.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("a leading wildcard does not subscribe the broker's internal topics", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        // The internal offsets topic exists as soon as any group commits an offset; the control
+        // consumer below guarantees it holds records, so a subscription that included it would
+        // receive them.
+        const topic = await createTopic(uniqueName("it.internal"));
+        const control = newAdapter();
+        const seen = new Set<string>();
+        const adapter = newAdapter();
+
+        await control.connect();
+        await adapter.connect();
+        try {
+            const warm = await control.subscribe([topic], async (_event, ack) => ack(), { group: uniqueName("group") });
+            await control.publish(topic, bytes("warm"));
+            await sleep(2_000);
+            await warm.unsubscribe();
+
+            const subscription = await adapter.subscribe(
+                [">"],
+                async (event, ack) => {
+                    seen.add(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                await waitFor(() => seen.has(topic), "the ordinary topic was delivered");
+                await sleep(3_000);
+                assert.deepEqual(
+                    [...seen].filter((name) => name.startsWith("__")),
+                    [],
+                    "records of the broker's internal topics reached the handler",
+                );
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await control.disconnect();
+            await adapter.disconnect();
+        }
+    });
+
+    it("a wildcard still matches topics with a single leading underscore, and an explicit double-underscore prefix", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.under");
+        const [single, doubled] = (await Promise.all([createTopic(`_${root}.a`), createTopic(`__${root}.a`)])) as [string, string];
+        const seen = new Set<string>();
+        const adapter = newAdapter();
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`_${root}.*`, `__${root}.*`],
+                async (event, ack) => {
+                    seen.add(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                await adapter.publish(single, bytes("s"));
+                await adapter.publish(doubled, bytes("d"));
+                await waitFor(() => seen.size === 2, "both topics delivered", () => [...seen]);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: a topic created after the subscription is delivered, including what was published right after its creation", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.late");
+        const early = await createTopic(`${root}.early`);
+        const received: string[] = [];
+        const group = uniqueName("group");
+        const adapter = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(`${event.eventType}:${text(event.payload)}`);
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await adapter.publish(early, bytes("before"));
+                await waitFor(() => received.length === 1, "the existing topic delivered");
+                await waitForStableGroup(group, 1);
+
+                const late = await createTopic(`${root}.late`);
+                await adapter.publish(late, bytes("first"));
+                await waitFor(() => received.includes(`${late}:first`), "the late topic delivered", () => received);
+
+                await adapter.publish(late, bytes("second"));
+                await adapter.publish(early, bytes("after"));
+                await waitFor(() => received.length === 4, "later messages of both topics delivered", () => received);
+                await sleep(2_000);
+
+                assert.deepEqual([...received].sort(), [`${early}:after`, `${early}:before`, `${late}:first`, `${late}:second`].sort(), "every message exactly once");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: a subscription that matched no topic when it started picks up the first one that appears", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.empty");
+        const received: string[] = [];
+        const adapter = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                const first = await createTopic(`${root}.first`);
+                await adapter.publish(first, bytes("x"));
+                await waitFor(() => received.length === 1, "the first topic delivered", () => received);
+                assert.deepEqual(received, [first]);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: two members of a group both discover a new multi-partition topic and share it without duplicates", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.late2");
+        await createTopic(`${root}.early`, 2);
+        const group = uniqueName("group");
+        const seenByA: string[] = [];
+        const seenByB: string[] = [];
+        const adapterA = newAdapter({ topicDiscoveryInterval: 1_000 });
+        const adapterB = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapterA.connect();
+        await adapterB.connect();
+        try {
+            const subA = await adapterA.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    seenByA.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            const subB = await adapterB.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    seenByB.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitForStableGroup(group, 2);
+                const late = await createTopic(`${root}.late`, 4);
+                const expected: string[] = [];
+                for (let i = 0; i < 12; i++) {
+                    expected.push(`m${i}`);
+                    await adapterA.publish(late, bytes(`m${i}`), { key: `k${i}` });
+                }
+                await waitFor(() => seenByA.length + seenByB.length >= 12, "all messages of the late topic delivered", () => ({ a: seenByA, b: seenByB }), 40_000);
+                await sleep(2_000);
+
+                assert.deepEqual([...seenByA, ...seenByB].sort(), expected.sort(), "every message exactly once across the group");
+            } finally {
+                await subA.unsubscribe();
+                await subB.unsubscribe();
+            }
+        } finally {
+            await adapterA.disconnect();
+            await adapterB.disconnect();
+        }
+    });
+
+    it("without topicDiscoveryInterval a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.nolate");
+        const early = await createTopic(`${root}.early`);
+        const received: string[] = [];
+        const group = uniqueName("group");
+        const adapter = newAdapter();
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(event.eventType);
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await adapter.publish(early, bytes("x"));
+                await waitFor(() => received.length === 1, "the existing topic delivered");
+                const late = await createTopic(`${root}.late`);
+                await adapter.publish(late, bytes("y"));
+                await sleep(8_000);
+                assert.deepEqual(received, [early], "the subscription's topic list is fixed when subscribe() runs");
+            } finally {
+                await subscription.unsubscribe();
             }
         } finally {
             await adapter.disconnect();

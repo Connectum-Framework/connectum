@@ -74,5 +74,23 @@ export interface KafkaAdapterOptions {
          * `KafkaAdapter()` throws a `RangeError` for any other value.
          */
         readonly commitStrategy?: "per-message" | "per-batch";
+        /**
+         * How often, in milliseconds, a subscription with wildcard patterns checks the broker for
+         * newly created topics that match them (default: not set — never).
+         *
+         * Without it a wildcard is expanded once, when `subscribe()` runs: a matching topic created
+         * later is never consumed by that subscription. With it, every interval the adapter lists the
+         * broker's topics and, if a matching topic appeared, restarts the subscription's consumer to
+         * include it. The restart rebalances the consumer group (a pause in consumption of a few
+         * seconds, in-flight messages are redelivered) and happens only when there is a new topic;
+         * the check itself is one metadata request per subscription per interval. A discovered
+         * topic is read from its first message, whatever `fromBeginning` says: it is new to the
+         * group, so nothing in it predates the subscription.
+         *
+         * The first check runs one interval after `subscribe()`. Subscriptions without wildcard
+         * patterns never check. Must be a positive number of milliseconds, at most 2147483647;
+         * `KafkaAdapter()` throws a `RangeError` otherwise.
+         */
+        readonly topicDiscoveryInterval?: number;
     };
 }

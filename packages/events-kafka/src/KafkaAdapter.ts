@@ -9,9 +9,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
-import type { Consumer, IHeaders, Producer } from "kafkajs";
+import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
+import { startTopicDiscovery } from "./topicDiscovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
@@ -45,7 +46,14 @@ function patternToKafkaTopicMatcher(pattern: string): string | RegExp {
         .replace(/\*/g, "[^.]+")
         .replace(/>/g, ".+");
 
-    return new RegExp(`^${escaped}$`);
+    // Kafka names its own topics with a leading double underscore (`__consumer_offsets`,
+    // `__transaction_state`). A pattern that opens with a wildcard would subscribe them and feed
+    // the broker's binary bookkeeping records to the event handler, so it must not match them.
+    // A pattern that spells the prefix out (`__audit.>`) asks for such topics and keeps them.
+    const opensWithWildcard = pattern.startsWith("*") || pattern.startsWith(">");
+    const guard = opensWithWildcard ? "(?!__)" : "";
+
+    return new RegExp(`^${guard}${escaped}$`);
 }
 
 /**
@@ -94,11 +102,47 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         throw new RangeError(`KafkaAdapter: consumerOptions.commitStrategy must be "per-message" or "per-batch", got ${JSON.stringify(commitStrategy)}`);
     }
 
+    const topicDiscoveryInterval = options.consumerOptions?.topicDiscoveryInterval;
+    if (topicDiscoveryInterval !== undefined && (!Number.isFinite(topicDiscoveryInterval) || topicDiscoveryInterval <= 0 || topicDiscoveryInterval > maxTimerDelayMs)) {
+        throw new RangeError(
+            `KafkaAdapter: consumerOptions.topicDiscoveryInterval must be a positive finite number of milliseconds (at most ${maxTimerDelayMs}), got ${topicDiscoveryInterval}`,
+        );
+    }
+
     let kafka: Kafka;
 
     let producer: Producer | null = null;
     const consumers: Consumer[] = [];
     let connected = false;
+
+    /** Admin client used to list topics for wildcard discovery; opened on first use. */
+    let admin: Admin | null = null;
+    let adminConnecting: Promise<Admin> | null = null;
+    /** Stops the topic discovery of every live subscription. */
+    const discoveryStops = new Set<() => Promise<void>>();
+
+    const openAdmin = async (): Promise<Admin> => {
+        const candidate = kafka.admin();
+        try {
+            await candidate.connect();
+        } catch (err) {
+            await candidate.disconnect().catch(() => undefined);
+            throw err;
+        }
+        admin = candidate;
+        return candidate;
+    };
+
+    const getAdmin = async (): Promise<Admin> => {
+        if (admin !== null) {
+            return admin;
+        }
+        // Concurrent callers share one connection attempt; a failed attempt is not remembered.
+        adminConnecting ??= openAdmin().finally(() => {
+            adminConnecting = null;
+        });
+        return adminConnecting;
+    };
 
     return {
         name: "kafka",
@@ -128,6 +172,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 return;
             }
 
+            // Topic discovery restarts consumers; it must be over before they are disconnected.
+            await Promise.allSettled([...discoveryStops].map((stop) => stop()));
+            discoveryStops.clear();
+
             // Disconnect all consumers (continue on individual failures)
             const results = await Promise.allSettled(consumers.map((c) => c.disconnect()));
             for (const r of results) {
@@ -136,6 +184,13 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 }
             }
             consumers.length = 0;
+
+            if (admin !== null) {
+                await admin.disconnect().catch((err: unknown) => {
+                    console.error("[KafkaAdapter] admin disconnect error:", err);
+                });
+                admin = null;
+            }
 
             // Then disconnect the producer
             if (producer) {
@@ -197,20 +252,49 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             /** Pending partition resumes of this subscription, cleared on unsubscribe. */
             const resumeTimers = new Set<NodeJS.Timeout>();
 
+            // `autoCommit: false` and `eachBatchAutoResolve: false` hand every offset
+            // decision to ack/nack(false); see createBatchConsumer.
+            const runConfig = {
+                autoCommit: false,
+                eachBatchAutoResolve: false,
+                eachBatch: createBatchConsumer({ handler, commitStrategy, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
+            } as const;
+
+            /** Stops this subscription's topic discovery, if it has any. */
+            let stopDiscovery: (() => Promise<void>) | undefined;
+
             try {
                 // Convert patterns to Kafka topic subscriptions
                 const topics: (string | RegExp)[] = patterns.map(patternToKafkaTopicMatcher);
+                const wildcards = topics.filter((topic): topic is RegExp => topic instanceof RegExp);
                 const fromBeginning = options.consumerOptions?.fromBeginning ?? false;
 
-                await consumer.subscribe({ topics, fromBeginning });
+                // The topics that exist when the subscription starts are the ones KafkaJS expands the
+                // wildcards to; anything listed later that matches is new. Listing first means a topic
+                // created in between is seen again at the first check, which costs one needless restart
+                // and loses nothing.
+                const known = new Set<string>();
+                if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
+                    for (const name of await (await getAdmin()).listTopics()) {
+                        known.add(name);
+                    }
+                }
 
-                // `autoCommit: false` and `eachBatchAutoResolve: false` hand every offset
-                // decision to ack/nack(false); see createBatchConsumer.
-                await consumer.run({
-                    autoCommit: false,
-                    eachBatchAutoResolve: false,
-                    eachBatch: createBatchConsumer({ handler, commitStrategy, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
-                });
+                await consumer.subscribe({ topics, fromBeginning });
+                await consumer.run(runConfig);
+
+                if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
+                    stopDiscovery = startTopicDiscovery({
+                        consumer,
+                        wildcards,
+                        known,
+                        runConfig,
+                        resumeTimers,
+                        interval: topicDiscoveryInterval,
+                        listTopics: async () => (await getAdmin()).listTopics(),
+                    });
+                    discoveryStops.add(stopDiscovery);
+                }
             } catch (err) {
                 await consumer.disconnect().catch(() => undefined);
                 throw err;
@@ -223,6 +307,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                     const idx = consumers.indexOf(consumer);
                     if (idx !== -1) {
                         consumers.splice(idx, 1);
+                    }
+                    if (stopDiscovery !== undefined) {
+                        discoveryStops.delete(stopDiscovery);
+                        await stopDiscovery();
                     }
                     for (const timer of resumeTimers) {
                         clearTimeout(timer);
