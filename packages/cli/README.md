@@ -1,6 +1,6 @@
 # @connectum/cli
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/cli` 1.3 and later.
 
 Command-line tools for scaffolding Connectum services, adding services, and
 synchronizing protobuf types from a server with reflection enabled.

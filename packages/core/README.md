@@ -1,6 +1,6 @@
 # @connectum/core
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/core` 1.3 and later.
 
 Server foundation for ConnectRPC services. `createServer()` composes service
 routes, protocol plugins, interceptors, transport, and shutdown behavior.

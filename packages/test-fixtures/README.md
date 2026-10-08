@@ -1,6 +1,6 @@
 # @connectum/test-fixtures
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/test-fixtures` 1.3 and later.
 
 Lightweight mock factories, assertion helpers, and protobuf descriptor fixtures
 shared across `@connectum/*` test suites.
@@ -25,9 +25,7 @@ descriptor fixtures are needed:
 pnpm add -D @connectum/test-fixtures
 ```
 
-This installs the published package version, not the unreleased 1.3.x source
-described in this README. Use this command for the documented 1.3.x API after
-that version is published.
+Install version 1.3 or later to get the API documented in this README.
 
 ## Start here
 

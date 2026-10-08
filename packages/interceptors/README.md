@@ -1,6 +1,6 @@
 # @connectum/interceptors
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/interceptors` 1.3 and later.
 
 ConnectRPC interceptors for error normalization, validation, request limits,
 resilience, logging, and protobuf JSON serialization.
@@ -51,7 +51,7 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - The default chain enables only error handling and validation.
   Timeout, bulkhead, circuit breaker, and retry behavior are opt-in.
 - The circuit breaker is intended for outbound calls to an upstream service.
-- In the upcoming 1.3.x source, request and response bodies are omitted from
+- Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 
 ## Learn and reference

@@ -1,6 +1,6 @@
 # @connectum/reflection
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/reflection` 1.3 and later.
 
 gRPC Server Reflection v1 and v1alpha protocol plugin for Connectum. Reflection
 lets compatible clients discover mounted services and their protobuf schemas.

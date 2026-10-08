@@ -1,6 +1,6 @@
 # @connectum/healthcheck
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/healthcheck` 1.3 and later.
 
 Implements the gRPC Health Checking Protocol and optional HTTP health endpoints
 for Connectum servers.

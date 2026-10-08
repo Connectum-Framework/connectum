@@ -1,7 +1,6 @@
 # @connectum/events-amqp
 
-This README describes the unreleased 1.3.x source. Until that version is published,
-the install command below resolves the latest version published to npm.
+This README documents `@connectum/events-amqp` 1.3 and later.
 
 AMQP/RabbitMQ adapter for `@connectum/events`. It maps EventBus topics to exchanges and queues and supports delivery settlement, publisher confirms, dead-letter routing, and connection recovery.
 

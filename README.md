@@ -28,7 +28,7 @@
 
 Connectum provides modular packages for gRPC and ConnectRPC services. Published packages contain compiled JavaScript; running an application's TypeScript source directly has separate runtime requirements. See [Runtime Compatibility](https://connectum.dev/en/guide/runtime-compatibility).
 
-> This source checkout targets the upcoming 1.3.x release. Changes not yet published are available from this repository; installing from npm resolves the latest published package versions.
+> This README documents the 1.3 release line. Installing from npm resolves the latest published package versions, which may predate changes on the main branch of this repository.
 
 ## Packages
 

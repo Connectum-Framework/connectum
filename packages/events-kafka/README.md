@@ -1,7 +1,6 @@
 # @connectum/events-kafka
 
-This README describes the unreleased 1.3.x source. Until that version is published,
-the install command below resolves the latest version published to npm.
+This README documents `@connectum/events-kafka` 1.3 and later.
 
 Kafka and Redpanda adapter for `@connectum/events`, using partitions and consumer groups.
 

@@ -1,6 +1,6 @@
 # @connectum/auth
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/auth` 1.3 and later.
 
 Authentication and authorization interceptors for ConnectRPC. The package
 supports JWT verification, gateway and session credentials, service-to-service

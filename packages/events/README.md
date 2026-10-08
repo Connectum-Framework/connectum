@@ -1,7 +1,6 @@
 # @connectum/events
 
-This README describes the unreleased 1.3.x source. Until that version is published,
-the install command below resolves the latest version published to npm.
+This README documents `@connectum/events` 1.3 and later.
 
 Proto-first event publishing and subscription with middleware, a memory adapter,
 and pluggable broker adapters.

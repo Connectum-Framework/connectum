@@ -1,7 +1,6 @@
 # @connectum/events-redis
 
-This README describes the unreleased 1.3.x source. Until that version is published,
-the install command below resolves the latest version published to npm.
+This README documents `@connectum/events-redis` 1.3 and later.
 
 Redis Streams and Valkey adapter for `@connectum/events`, using stream consumer groups.
 

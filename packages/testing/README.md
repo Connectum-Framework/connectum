@@ -1,6 +1,6 @@
 # @connectum/testing
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/testing` 1.3 and later.
 
 Utilities for testing Connectum services and interceptors, including mocks,
 in-process clients, transport-parity scenarios, and in-memory telemetry
@@ -14,9 +14,7 @@ pnpm add -D \
   @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node tsx
 ```
 
-This installs the published package versions, not the unreleased 1.3.x source
-described in this README. Use this command for the documented 1.3.x API after
-that version is published.
+Install version 1.3 or later to get the API documented in this README.
 
 The package requires Node.js `>=22.13.0`. Its peer dependencies are
 `@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0`, and

@@ -1,7 +1,6 @@
 # @connectum/events-nats
 
-This README describes the unreleased 1.3.x source. Until that version is published,
-the install command below resolves the latest version published to npm.
+This README documents `@connectum/events-nats` 1.3 and later.
 
 NATS JetStream adapter for `@connectum/events`, with durable consumers and subject-based routing.
 

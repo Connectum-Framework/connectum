@@ -1,6 +1,6 @@
 # @connectum/protoc-gen-catalog
 
-This README describes the 1.3.x source; that release is not yet published to npm.
+This README documents `@connectum/protoc-gen-catalog` 1.3 and later.
 
 A Buf/protoc plugin that generates a **Connectum service catalog** from your
 proto files. The generated `catalog.gen.ts` is what makes `ctx.call` and
