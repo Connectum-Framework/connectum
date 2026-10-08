@@ -67,31 +67,36 @@ const PUBLISH_ID_HEADER = "x-connectum-publish-id";
  *   topology changes.
  */
 export function toAmqpPattern(pattern: string): string {
-    const segments = pattern.split(".");
-    const greaterThanIndex = segments.indexOf(">");
-    if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
-        throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
-    }
+    const segments = splitPattern(pattern);
 
-    if (greaterThanIndex === segments.length - 1) {
+    if (segments[segments.length - 1] === ">") {
         return [...segments.slice(0, -1), "*", "#"].join(".");
     }
 
     return pattern;
 }
 
+/** Split a pattern into segments, rejecting a complete `>` segment that is not terminal. */
+function splitPattern(pattern: string): string[] {
+    const segments = pattern.split(".");
+    const greaterThanIndex = segments.indexOf(">");
+    if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
+        throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
+    }
+    return segments;
+}
+
 /**
  * Reject patterns that the configured exchange cannot route according to
  * EventBus semantics. Embedded `*`, `>`, and `#` characters are literal segment
  * content in the shared matcher, so only complete segments count as tokens.
+ *
+ * Shared by the real adapter and `FakeAmqpAdapter` so both accept and reject
+ * exactly the same subscriptions.
  */
-function validateSubscriptionPatterns(patterns: readonly string[], exchangeType: string): void {
+export function validateSubscriptionPatterns(patterns: readonly string[], exchangeType: string): void {
     for (const pattern of patterns) {
-        const segments = pattern.split(".");
-        const greaterThanIndex = segments.indexOf(">");
-        if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
-            throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
-        }
+        const segments = splitPattern(pattern);
 
         if (exchangeType === "topic" && segments.includes("#")) {
             throw new TypeError(`AMQP topic subscription pattern "${pattern}" contains "#", which RabbitMQ treats as a wildcard`);

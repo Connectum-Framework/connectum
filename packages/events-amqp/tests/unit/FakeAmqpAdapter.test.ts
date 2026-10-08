@@ -573,3 +573,61 @@ describe("FakeAmqpAdapter consumer loss", () => {
         assert.equal(events.filter((e) => e.type === "consumer-restored").length, 0);
     });
 });
+
+describe("FakeAmqpAdapter subscription validation parity", () => {
+    const rejected: Array<{ type: "topic" | "direct" | "fanout" | "headers"; pattern: string; message: RegExp }> = [
+        { type: "topic", pattern: "user.>.b", message: /outside the terminal segment/ },
+        { type: "topic", pattern: "#", message: /contains "#"/ },
+        { type: "topic", pattern: "user.#", message: /contains "#"/ },
+        { type: "direct", pattern: "user.*", message: /requires a topic exchange; configured exchange type is "direct"/ },
+        { type: "fanout", pattern: "user.>", message: /requires a topic exchange; configured exchange type is "fanout"/ },
+        { type: "headers", pattern: "*", message: /requires a topic exchange; configured exchange type is "headers"/ },
+    ];
+
+    for (const { type, pattern, message } of rejected) {
+        it(`rejects "${pattern}" on a ${type} exchange with the real adapter's error, and registers nothing`, async () => {
+            const fake = FakeAmqpAdapter({ exchangeType: type });
+            await fake.connect();
+
+            await assert.rejects(
+                () => fake.subscribe([pattern], async () => undefined),
+                (err: unknown) => err instanceof TypeError && message.test(err.message),
+            );
+            const result = await fake.control.deliver("user.created", new Uint8Array());
+            assert.equal(result.delivered, 0);
+        });
+    }
+
+    it("accepts what the real adapter accepts: wildcards on topic, literal # on direct, literals everywhere", async () => {
+        const topic = FakeAmqpAdapter();
+        await topic.connect();
+        await topic.subscribe(["user.*", "user.>", "a*b.c"], async () => undefined);
+
+        const direct = FakeAmqpAdapter({ exchangeType: "direct" });
+        await direct.connect();
+        await direct.subscribe(["#", "user.created"], async () => undefined);
+    });
+
+    it("keeps # literal on a direct exchange: it does not match an unrelated key", async () => {
+        const fake = FakeAmqpAdapter({ exchangeType: "direct" });
+        await fake.connect();
+        const seen: string[] = [];
+        await fake.subscribe(["#"], async (event) => void seen.push(event.eventType));
+
+        await fake.control.deliver("user", new Uint8Array());
+        await fake.control.deliver("#", new Uint8Array());
+
+        assert.deepEqual(seen, ["#"]);
+    });
+
+    it("validates a subscribe parked during recovery before parking it", async () => {
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+        fake.control.dropConnection();
+
+        await assert.rejects(
+            () => fake.subscribe(["user.#"], async () => undefined),
+            /contains "#"/,
+        );
+    });
+});

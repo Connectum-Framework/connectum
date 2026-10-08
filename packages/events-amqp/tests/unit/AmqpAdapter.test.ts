@@ -21,6 +21,7 @@ import {
     resolveDisconnectCause,
     toAmqpPattern,
     trackChannelClose,
+    validateSubscriptionPatterns,
     wireRecoveryLifecycle,
 } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "../../src/errors.ts";
@@ -504,6 +505,69 @@ describe("toAmqpPattern", () => {
         assert.equal(toAmqpPattern("user>"), "user>");
         assert.equal(toAmqpPattern("user*"), "user*");
         assert.equal(toAmqpPattern("user.foo>"), "user.foo>");
+    });
+});
+
+describe("validateSubscriptionPatterns", () => {
+    const EXCHANGE_TYPES = ["topic", "direct", "fanout", "headers"] as const;
+    const NON_TOPIC = ["direct", "fanout", "headers"] as const;
+
+    it("accepts a literal routing key on every exchange type", () => {
+        for (const type of EXCHANGE_TYPES) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns(["user.created"], type), type);
+        }
+    });
+
+    it("accepts a single-level and a terminal multi-level wildcard on a topic exchange", () => {
+        assert.doesNotThrow(() => validateSubscriptionPatterns(["user.*", "*.created", "user.>", ">"], "topic"));
+    });
+
+    it("rejects a complete > segment outside the terminal position on every exchange type", () => {
+        for (const type of EXCHANGE_TYPES) {
+            assert.throws(() => validateSubscriptionPatterns(["user.>.created"], type), /outside the terminal segment/, type);
+            assert.throws(() => validateSubscriptionPatterns([">.user.>"], type), /outside the terminal segment/, type);
+        }
+    });
+
+    it("rejects a complete # segment on a topic exchange, wherever it stands", () => {
+        for (const pattern of ["#", "user.#", "#.created", "user.#.created"]) {
+            assert.throws(() => validateSubscriptionPatterns([pattern], "topic"), /contains "#", which RabbitMQ treats as a wildcard/, pattern);
+        }
+    });
+
+    it("keeps # literal on non-topic exchanges", () => {
+        for (const type of NON_TOPIC) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns(["#", "user.#"], type), type);
+        }
+    });
+
+    it("rejects a complete * or terminal > on every non-topic exchange, naming the configured type", () => {
+        for (const type of NON_TOPIC) {
+            for (const pattern of ["user.*", "*", "user.>", ">"]) {
+                assert.throws(
+                    () => validateSubscriptionPatterns([pattern], type),
+                    (err: unknown) => err instanceof TypeError && err.message === `AMQP wildcard subscription pattern "${pattern}" requires a topic exchange; configured exchange type is "${type}"`,
+                    `${type} ${pattern}`,
+                );
+            }
+        }
+    });
+
+    it("treats wildcard characters embedded in a segment as literal on every exchange type", () => {
+        for (const type of EXCHANGE_TYPES) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns(["user>", "user*", "user#", "user.foo>", "a*b.c"], type), type);
+        }
+    });
+
+    it("fails the whole call when any one pattern is invalid", () => {
+        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.#"], "topic"), /contains "#"/);
+        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.*"], "direct"), /requires a topic exchange/);
+    });
+
+    it("accepts an empty pattern list", () => {
+        for (const type of EXCHANGE_TYPES) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns([], type), type);
+        }
     });
 });
 

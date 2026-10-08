@@ -56,13 +56,23 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { matchPattern } from "@connectum/events";
-import { dispatchLifecycle } from "./AmqpAdapter.ts";
+import { dispatchLifecycle, validateSubscriptionPatterns } from "./AmqpAdapter.ts";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpTopologyError } from "./errors.ts";
 import type { AmqpConsumerLossCause, AmqpLifecycleCallbacks } from "./types.ts";
 
 /** Options for {@link FakeAmqpAdapter}. */
 export interface FakeAmqpAdapterOptions {
+    /**
+     * Mirror of the real option. `subscribe()` applies the real adapter's
+     * pattern validation for this exchange type: wildcard subscriptions are
+     * rejected on non-topic exchanges, a complete `#` segment on topic ones,
+     * and a non-terminal `>` everywhere. Routing itself is still the shared
+     * EventBus matcher.
+     *
+     * @default "topic"
+     */
+    readonly exchangeType?: "topic" | "direct" | "fanout" | "headers";
     /** The same lifecycle surface as the real adapter (union + flat shim). */
     readonly lifecycle?: AmqpLifecycleCallbacks;
     /**
@@ -246,6 +256,7 @@ interface ParkedSubscribe {
  */
 export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpAdapterInstance {
     const lifecycle = options.lifecycle;
+    const exchangeType = options.exchangeType ?? "topic";
 
     let state: ConnectionState = CONNECTION_STATE.CREATED;
     let reassertAttempt = 0;
@@ -547,6 +558,10 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
             const group = subOptions?.group ?? null;
+            if (state !== CONNECTION_STATE.CONNECTED && state !== CONNECTION_STATE.RECOVERING) {
+                throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
+            }
+            validateSubscriptionPatterns(patterns, exchangeType);
             if (state === CONNECTION_STATE.RECOVERING) {
                 // Parity: the real adapter accepts a mid-recovery subscribe —
                 // channel creation parks in the recovery wrapper's waiter
@@ -558,9 +573,6 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
                         reject,
                     });
                 });
-            }
-            if (state !== CONNECTION_STATE.CONNECTED) {
-                throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
             }
             return registerSubscription(patterns, handler, group);
         },
