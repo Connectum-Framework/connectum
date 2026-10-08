@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, describe, it } from "node:test";
-import { matchPattern } from "@connectum/events";
+import { StructSchema } from "@bufbuild/protobuf/wkt";
+import { createEventBus, matchPattern } from "@connectum/events";
 import { connect } from "amqplib";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
@@ -237,33 +238,217 @@ describe(`AMQP wildcard routing on ${IMAGE} (testcontainers)`, { skip: RUN ? fal
         }
     });
 
-    it("rejects complete wildcard segments on non-topic exchanges before queue declaration", async () => {
-        for (const exchangeType of ["direct", "fanout", "headers"] as const) {
-            const exchange = `it.wildcard-reject.${exchangeType}.${randomUUID()}`;
-            const queue = `${exchange}.wildcard`;
+    it("rejects complete wildcard segments on a direct exchange before queue declaration when the adapter binds", async () => {
+        const exchange = `it.wildcard-reject.direct.${randomUUID()}`;
+        const queue = `${exchange}.wildcard`;
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "direct", recovery: false });
+        await adapter.connect();
+        try {
+            for (const pattern of ["user.*", "user.>"]) {
+                await assert.rejects(
+                    () => adapter.subscribe([pattern], async (_event, ack) => ack(), { group: "wildcard" }),
+                    (err: Error) => {
+                        assert.ok(err instanceof TypeError);
+                        assert.match(err.message, /a direct exchange matches binding keys literally/);
+                        return true;
+                    },
+                );
+
+                await assertQueueMissing(container, queue);
+            }
+
+            const literal = await adapter.subscribe(["literal*", "literal>"], async (_event, ack) => ack(), { group: "literal" });
+            await literal.unsubscribe();
+            const literalHash = await adapter.subscribe(["#"], async (_event, ack) => ack(), { group: "hash" });
+            await literalHash.unsubscribe();
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("accepts a wildcard on a direct exchange when the operator owns the bindings, and delivers what the operator bound", async () => {
+        const exchange = `it.wildcard-direct-skip.${randomUUID()}`;
+        const queue = `${exchange}.operator`;
+        const conn = await connect(url);
+        const channel = await conn.createChannel();
+        await channel.assertExchange(exchange, "direct", { durable: true });
+        await channel.assertQueue(queue, { durable: true });
+        await channel.bindQueue(queue, exchange, "user.created");
+        await channel.bindQueue(queue, exchange, "user.deleted");
+        await channel.close();
+        await conn.close();
+
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "direct", recovery: false, topologyMode: "skip", queueOverrides: { operator: { queue } } });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            const subscription = await adapter.subscribe(
+                ["user.*"],
+                async (event, ack) => {
+                    received.push(event.eventType);
+                    await ack();
+                },
+                { group: "operator" },
+            );
+            await adapter.publish("user.created", new Uint8Array([1]));
+            await adapter.publish("user.deleted", new Uint8Array([1]));
+            await waitFor(() => received.length >= 2);
+            await sleep(250);
+            assert.deepEqual([...received].sort(), ["user.created", "user.deleted"]);
+            await subscription.unsubscribe();
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    for (const exchangeType of ["fanout", "headers"] as const) {
+        it(`delivers every message to a ${exchangeType} queue whatever the subscription pattern`, async () => {
+            const exchange = `it.wildcard-all.${exchangeType}.${randomUUID()}`;
             const adapter = AmqpAdapter({ url, exchange, exchangeType, recovery: false });
             await adapter.connect();
             try {
-                for (const pattern of ["user.*", "user.>"]) {
-                    await assert.rejects(
-                        () => adapter.subscribe([pattern], async (_event, ack) => ack(), { group: "wildcard" }),
-                        (err: Error) => {
-                            assert.ok(err instanceof TypeError);
-                            assert.match(err.message, /requires a topic exchange/);
-                            return true;
+                const keys = ["user", "user.created", "user.created.eu", "order.created", "#"];
+                const patterns: Array<{ pattern: string; group?: string }> = [{ pattern: "user.created", group: "literal" }, { pattern: "user.*", group: "single" }, { pattern: "user.>" }];
+                const received = new Map<string, string[]>(patterns.map(({ pattern }) => [pattern, []]));
+                for (const { pattern, group } of patterns) {
+                    await adapter.subscribe(
+                        [pattern],
+                        async (event, ack) => {
+                            received.get(pattern)?.push(event.eventType);
+                            await ack();
                         },
+                        group === undefined ? {} : { group },
                     );
-
-                    await assertQueueMissing(container, queue);
                 }
-
-                const literal = await adapter.subscribe(["literal*", "literal>"], async (_event, ack) => ack(), { group: "literal" });
-                await literal.unsubscribe();
-                const literalHash = await adapter.subscribe(["#"], async (_event, ack) => ack(), { group: "hash" });
-                await literalHash.unsubscribe();
+                for (const key of keys) {
+                    await adapter.publish(key, new Uint8Array([1]));
+                }
+                await waitFor(() => [...received.values()].every((list) => list.length >= keys.length));
+                await sleep(250);
+                for (const [pattern, list] of received) {
+                    assert.deepEqual([...list].sort(), [...keys].sort(), `${exchangeType} ${pattern}`);
+                }
             } finally {
                 await adapter.disconnect();
             }
+        });
+    }
+
+    it("headers: the adapter's argument-less binding supersedes an operator's selective binding in assert mode", async () => {
+        const exchange = `it.wildcard-headers-assert.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+        const adapter = AmqpAdapter({
+            url,
+            exchange,
+            exchangeType: "headers",
+            recovery: false,
+            topology: {
+                queues: [{ name: queue, durable: true }],
+                bindings: [{ queue, source: exchange, routingKey: "", arguments: { "x-match": "all", kind: "a" } }],
+            },
+            queueOverrides: { g: { queue } },
+        });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            await adapter.subscribe(
+                ["kind-a"],
+                async (event, ack) => {
+                    received.push(`${event.eventType}:${event.metadata.get("kind")}`);
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("kind-a", new Uint8Array([1]), { metadata: { kind: "a" } });
+            await adapter.publish("kind-b", new Uint8Array([1]), { metadata: { kind: "b" } });
+            await waitFor(() => received.length >= 2);
+            assert.deepEqual([...received].sort(), ["kind-a:a", "kind-b:b"]);
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("headers: with the operator owning the bindings (skip) a selective binding filters", async () => {
+        const exchange = `it.wildcard-headers-skip.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+        const conn = await connect(url);
+        const channel = await conn.createChannel();
+        await channel.assertExchange(exchange, "headers", { durable: true });
+        await channel.assertQueue(queue, { durable: true });
+        await channel.bindQueue(queue, exchange, "", { "x-match": "all", kind: "a" });
+        await channel.close();
+        await conn.close();
+
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "headers", recovery: false, topologyMode: "skip", queueOverrides: { g: { queue } } });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            await adapter.subscribe(
+                ["kind-a"],
+                async (event, ack) => {
+                    received.push(`${event.eventType}:${event.metadata.get("kind")}`);
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("kind-a", new Uint8Array([1]), { metadata: { kind: "a" } });
+            await adapter.publish("kind-b", new Uint8Array([1]), { metadata: { kind: "b" } });
+            await waitFor(() => received.length >= 1);
+            await sleep(250);
+            assert.deepEqual(received, ["kind-a:a"]);
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("fanout: the EventBus dispatches only matching handlers on routes and acknowledges the rest", async () => {
+        const exchange = `it.wildcard-bus-fanout.${randomUUID()}`;
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "fanout", recovery: false });
+        const handled: string[] = [];
+        const route = (localName: string, topic: string) => ({
+            localName,
+            // The topic is the proto input type name when no (event).topic option is set.
+            input: Object.create(StructSchema, { typeName: { value: topic, writable: false, enumerable: true } }),
+            proto: { options: undefined },
+        });
+        const service = {
+            typeName: "it.v1.UserService",
+            methods: [route("created", "user.created"), route("anyOrder", "order.*")],
+        };
+        const bus = createEventBus({
+            adapter,
+            group: "bus",
+            routes: [
+                (router) => {
+                    router.service(service as never, {
+                        created: async (_msg: unknown, ctx: { eventType: string }) => void handled.push(ctx.eventType),
+                        anyOrder: async (_msg: unknown, ctx: { eventType: string }) => void handled.push(ctx.eventType),
+                    } as never);
+                },
+            ],
+        });
+        await bus.start();
+        const probe = await connect(url);
+        const channel = await probe.createChannel();
+        try {
+            const keys = ["user.created", "order.paid", "audit.logged", "user.deleted"];
+            for (const key of keys) {
+                await adapter.publish(key, new Uint8Array());
+            }
+            await waitFor(() => handled.length >= 2);
+            await sleep(500);
+            assert.deepEqual([...handled].sort(), ["order.paid", "user.created"]);
+            const queue = `${exchange}.bus`;
+            await waitForAsync(async () => (await channel.checkQueue(queue)).messageCount === 0);
+            // Nothing is left unacknowledged: the unmatched messages were acked, not parked.
+            const unacked = await container.exec(["rabbitmqctl", "list_queues", "name", "messages_unacknowledged", "messages_ready"]);
+            const row = unacked.output.split(/\r?\n/).find((line) => line.startsWith(queue));
+            assert.ok(row, unacked.output);
+            assert.match(row, /\s0\s+0$/);
+        } finally {
+            await channel.close();
+            await probe.close();
+            await bus.stop();
         }
     });
 

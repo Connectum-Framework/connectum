@@ -579,9 +579,10 @@ describe("FakeAmqpAdapter subscription validation parity", () => {
         { type: "topic", pattern: "user.>.b", message: /outside the terminal segment/ },
         { type: "topic", pattern: "#", message: /contains "#"/ },
         { type: "topic", pattern: "user.#", message: /contains "#"/ },
-        { type: "direct", pattern: "user.*", message: /requires a topic exchange; configured exchange type is "direct"/ },
-        { type: "fanout", pattern: "user.>", message: /requires a topic exchange; configured exchange type is "fanout"/ },
-        { type: "headers", pattern: "*", message: /requires a topic exchange; configured exchange type is "headers"/ },
+        { type: "direct", pattern: "user.*", message: /direct exchange matches binding keys literally/ },
+        { type: "direct", pattern: "user.>", message: /direct exchange matches binding keys literally/ },
+        { type: "fanout", pattern: "user.>.b", message: /outside the terminal segment/ },
+        { type: "headers", pattern: ">.user.>", message: /outside the terminal segment/ },
     ];
 
     for (const { type, pattern, message } of rejected) {
@@ -608,6 +609,24 @@ describe("FakeAmqpAdapter subscription validation parity", () => {
         await direct.subscribe(["#", "user.created"], async () => undefined);
     });
 
+    it("accepts a wildcard on a direct exchange when the operator owns the bindings (check, skip)", async () => {
+        for (const topologyMode of ["check", "skip"] as const) {
+            const fake = FakeAmqpAdapter({ exchangeType: "direct", topologyMode });
+            await fake.connect();
+            await fake.subscribe(["user.*", "user.>"], async () => undefined);
+        }
+    });
+
+    it("accepts wildcards on fanout and headers exchanges in every topology mode", async () => {
+        for (const exchangeType of ["fanout", "headers"] as const) {
+            for (const topologyMode of ["assert", "check", "skip"] as const) {
+                const fake = FakeAmqpAdapter({ exchangeType, topologyMode });
+                await fake.connect();
+                await fake.subscribe(["user.*", "user.>", ">"], async () => undefined);
+            }
+        }
+    });
+
     it("keeps # literal on a direct exchange: it does not match an unrelated key", async () => {
         const fake = FakeAmqpAdapter({ exchangeType: "direct" });
         await fake.connect();
@@ -629,5 +648,58 @@ describe("FakeAmqpAdapter subscription validation parity", () => {
             () => fake.subscribe(["user.#"], async () => undefined),
             /contains "#"/,
         );
+    });
+});
+
+describe("FakeAmqpAdapter delivery follows the configured exchange type", () => {
+    async function received(exchangeType: "topic" | "direct" | "fanout" | "headers", patterns: string[], keys: string[], topologyMode?: "assert" | "check" | "skip"): Promise<string[]> {
+        const fake = FakeAmqpAdapter({ exchangeType, ...(topologyMode === undefined ? {} : { topologyMode }) });
+        await fake.connect();
+        const seen: string[] = [];
+        await fake.subscribe(patterns, async (event) => void seen.push(event.eventType), { group: "g" });
+        for (const key of keys) {
+            await fake.control.deliver(key, new Uint8Array());
+        }
+        return seen;
+    }
+
+    const KEYS = ["user.created", "order.created", "user"];
+
+    it("fanout delivers every message to a subscription whose pattern does not match it", async () => {
+        assert.deepEqual(await received("fanout", ["user.created"], KEYS), KEYS);
+        assert.deepEqual(await received("fanout", ["user.*"], KEYS), KEYS);
+    });
+
+    it("headers delivers every message to a subscription whose pattern does not match it", async () => {
+        assert.deepEqual(await received("headers", ["user.created"], KEYS), KEYS);
+        assert.deepEqual(await received("headers", ["user.>"], KEYS), KEYS);
+    });
+
+    it("direct delivers only on an identical routing key", async () => {
+        assert.deepEqual(await received("direct", ["user.created"], KEYS), ["user.created"]);
+    });
+
+    it("direct with operator-owned bindings still filters handlers by the subscription pattern", async () => {
+        assert.deepEqual(await received("direct", ["user.*"], KEYS, "skip"), ["user.created"]);
+    });
+
+    it("topic delivers by the EventBus matcher", async () => {
+        assert.deepEqual(await received("topic", ["user.*"], KEYS), ["user.created"]);
+        assert.deepEqual(await received("topic", ["user.>"], KEYS), ["user.created"]);
+    });
+
+    it("fanout still delivers once per distinct group and to every group-less subscription", async () => {
+        const fake = FakeAmqpAdapter({ exchangeType: "fanout" });
+        await fake.connect();
+        let a = 0;
+        let b = 0;
+        let free = 0;
+        await fake.subscribe(["x.1"], async () => void a++, { group: "g" });
+        await fake.subscribe(["x.2"], async () => void b++, { group: "g" });
+        await fake.subscribe(["x.3"], async () => void free++);
+        const result = await fake.control.deliver("other", new Uint8Array());
+        assert.equal(result.delivered, 2);
+        assert.equal(a + b, 1);
+        assert.equal(free, 1);
     });
 });

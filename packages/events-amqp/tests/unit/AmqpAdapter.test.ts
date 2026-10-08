@@ -510,63 +510,90 @@ describe("toAmqpPattern", () => {
 
 describe("validateSubscriptionPatterns", () => {
     const EXCHANGE_TYPES = ["topic", "direct", "fanout", "headers"] as const;
-    const NON_TOPIC = ["direct", "fanout", "headers"] as const;
+    const TOPOLOGY_MODES = ["assert", "check", "skip"] as const;
 
-    it("accepts a literal routing key on every exchange type", () => {
-        for (const type of EXCHANGE_TYPES) {
-            assert.doesNotThrow(() => validateSubscriptionPatterns(["user.created"], type), type);
-        }
-    });
-
-    it("accepts a single-level and a terminal multi-level wildcard on a topic exchange", () => {
-        assert.doesNotThrow(() => validateSubscriptionPatterns(["user.*", "*.created", "user.>", ">"], "topic"));
-    });
-
-    it("rejects a complete > segment outside the terminal position on every exchange type", () => {
-        for (const type of EXCHANGE_TYPES) {
-            assert.throws(() => validateSubscriptionPatterns(["user.>.created"], type), /outside the terminal segment/, type);
-            assert.throws(() => validateSubscriptionPatterns([">.user.>"], type), /outside the terminal segment/, type);
-        }
-    });
-
-    it("rejects a complete # segment on a topic exchange, wherever it stands", () => {
-        for (const pattern of ["#", "user.#", "#.created", "user.#.created"]) {
-            assert.throws(() => validateSubscriptionPatterns([pattern], "topic"), /contains "#", which RabbitMQ treats as a wildcard/, pattern);
-        }
-    });
-
-    it("keeps # literal on non-topic exchanges", () => {
-        for (const type of NON_TOPIC) {
-            assert.doesNotThrow(() => validateSubscriptionPatterns(["#", "user.#"], type), type);
-        }
-    });
-
-    it("rejects a complete * or terminal > on every non-topic exchange, naming the configured type", () => {
-        for (const type of NON_TOPIC) {
-            for (const pattern of ["user.*", "*", "user.>", ">"]) {
-                assert.throws(
-                    () => validateSubscriptionPatterns([pattern], type),
-                    (err: unknown) => err instanceof TypeError && err.message === `AMQP wildcard subscription pattern "${pattern}" requires a topic exchange; configured exchange type is "${type}"`,
-                    `${type} ${pattern}`,
-                );
+    it("accepts a literal routing key on every exchange type in every topology mode", () => {
+        for (const exchangeType of EXCHANGE_TYPES) {
+            for (const topologyMode of TOPOLOGY_MODES) {
+                assert.doesNotThrow(() => validateSubscriptionPatterns(["user.created"], { exchangeType, topologyMode }), `${exchangeType}/${topologyMode}`);
             }
         }
     });
 
-    it("treats wildcard characters embedded in a segment as literal on every exchange type", () => {
-        for (const type of EXCHANGE_TYPES) {
-            assert.doesNotThrow(() => validateSubscriptionPatterns(["user>", "user*", "user#", "user.foo>", "a*b.c"], type), type);
+    it("accepts a single-level and a terminal multi-level wildcard on a topic exchange in every topology mode", () => {
+        for (const topologyMode of TOPOLOGY_MODES) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns(["user.*", "*.created", "user.>", ">"], { exchangeType: "topic", topologyMode }), topologyMode);
+        }
+    });
+
+    it("rejects a complete > segment outside the terminal position on every exchange type and topology mode", () => {
+        for (const exchangeType of EXCHANGE_TYPES) {
+            for (const topologyMode of TOPOLOGY_MODES) {
+                assert.throws(() => validateSubscriptionPatterns(["user.>.created"], { exchangeType, topologyMode }), /outside the terminal segment/, `${exchangeType}/${topologyMode}`);
+                assert.throws(() => validateSubscriptionPatterns([">.user.>"], { exchangeType, topologyMode }), /outside the terminal segment/, `${exchangeType}/${topologyMode}`);
+            }
+        }
+    });
+
+    it("rejects a complete # segment on a topic exchange, wherever it stands, in every topology mode", () => {
+        for (const topologyMode of TOPOLOGY_MODES) {
+            for (const pattern of ["#", "user.#", "#.created", "user.#.created"]) {
+                assert.throws(() => validateSubscriptionPatterns([pattern], { exchangeType: "topic", topologyMode }), /contains "#", which RabbitMQ treats as a wildcard/, `${topologyMode} ${pattern}`);
+            }
+        }
+    });
+
+    it("keeps # literal on non-topic exchanges", () => {
+        for (const exchangeType of ["direct", "fanout", "headers"] as const) {
+            for (const topologyMode of TOPOLOGY_MODES) {
+                assert.doesNotThrow(() => validateSubscriptionPatterns(["#", "user.#"], { exchangeType, topologyMode }), `${exchangeType}/${topologyMode}`);
+            }
+        }
+    });
+
+    it("rejects a complete * or terminal > on a direct exchange only when the adapter creates the binding (assert)", () => {
+        for (const pattern of ["user.*", "*", "user.>", ">"]) {
+            assert.throws(
+                () => validateSubscriptionPatterns([pattern], { exchangeType: "direct", topologyMode: "assert" }),
+                (err: unknown) =>
+                    err instanceof TypeError &&
+                    err.message.includes(`subscription pattern "${pattern}" uses a wildcard, but a direct exchange matches binding keys literally`) &&
+                    err.message.includes('topologyMode "check" or "skip"'),
+                pattern,
+            );
+        }
+    });
+
+    it("accepts a complete * or terminal > on a direct exchange when the operator owns the bindings (check, skip)", () => {
+        for (const topologyMode of ["check", "skip"] as const) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns(["user.*", "*", "user.>", ">"], { exchangeType: "direct", topologyMode }), topologyMode);
+        }
+    });
+
+    it("accepts a complete * or terminal > on fanout and headers exchanges in every topology mode", () => {
+        for (const exchangeType of ["fanout", "headers"] as const) {
+            for (const topologyMode of TOPOLOGY_MODES) {
+                assert.doesNotThrow(() => validateSubscriptionPatterns(["user.*", "*", "user.>", ">"], { exchangeType, topologyMode }), `${exchangeType}/${topologyMode}`);
+            }
+        }
+    });
+
+    it("treats wildcard characters embedded in a segment as literal on every exchange type and topology mode", () => {
+        for (const exchangeType of EXCHANGE_TYPES) {
+            for (const topologyMode of TOPOLOGY_MODES) {
+                assert.doesNotThrow(() => validateSubscriptionPatterns(["user>", "user*", "user#", "user.foo>", "a*b.c"], { exchangeType, topologyMode }), `${exchangeType}/${topologyMode}`);
+            }
         }
     });
 
     it("fails the whole call when any one pattern is invalid", () => {
-        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.#"], "topic"), /contains "#"/);
-        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.*"], "direct"), /requires a topic exchange/);
+        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.#"], { exchangeType: "topic", topologyMode: "assert" }), /contains "#"/);
+        assert.throws(() => validateSubscriptionPatterns(["user.created", "user.*"], { exchangeType: "direct", topologyMode: "assert" }), /direct exchange matches binding keys literally/);
     });
 
     it("accepts an empty pattern list", () => {
-        for (const type of EXCHANGE_TYPES) {
-            assert.doesNotThrow(() => validateSubscriptionPatterns([], type), type);
+        for (const exchangeType of EXCHANGE_TYPES) {
+            assert.doesNotThrow(() => validateSubscriptionPatterns([], { exchangeType, topologyMode: "assert" }), exchangeType);
         }
     });
 });
