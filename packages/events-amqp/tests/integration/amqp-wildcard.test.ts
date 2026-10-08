@@ -438,13 +438,12 @@ describe(`AMQP wildcard routing on ${IMAGE} (testcontainers)`, { skip: RUN ? fal
             await waitFor(() => handled.length >= 2);
             await sleep(500);
             assert.deepEqual([...handled].sort(), ["order.paid", "user.created"]);
+            // Stopping closes the consumer channel, which requeues anything left
+            // unacknowledged: an empty queue afterwards proves the messages the
+            // bus had no handler for were acknowledged, not parked.
+            await bus.stop();
             const queue = `${exchange}.bus`;
             await waitForAsync(async () => (await channel.checkQueue(queue)).messageCount === 0);
-            // Nothing is left unacknowledged: the unmatched messages were acked, not parked.
-            const unacked = await container.exec(["rabbitmqctl", "list_queues", "name", "messages_unacknowledged", "messages_ready"]);
-            const row = unacked.output.split(/\r?\n/).find((line) => line.startsWith(queue));
-            assert.ok(row, unacked.output);
-            assert.match(row, /\s0\s+0$/);
         } finally {
             await channel.close();
             await probe.close();
