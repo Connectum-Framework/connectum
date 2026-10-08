@@ -113,6 +113,14 @@ Format:  {sanitized-group}--{sanitized-pattern}--{hash}
 Example: worker-group--user_created--a1b2c3d4
 ```
 
+### Overlapping Patterns
+
+A JetStream consumer delivers a stream message once, and every pattern of a subscription gets its own consumer. When several patterns of one subscription match the same subject (`user.created`, `user.*` and `user.>` all match `user.created`), one event per consumer would reach the handler. The adapter therefore creates consumers for the patterns that remain after dropping every pattern another one contains: the three patterns above share the single consumer of `user.>`, and the event is delivered once. Patterns that overlap with nothing keep their own consumer and name, exactly as before.
+
+Two patterns that overlap only in part (`a.*.c` and `a.b.*` both match `a.b.c`) cannot be reduced that way. They are replaced by the narrowest single pattern that covers both (`a.>`), and the adapter acknowledges and skips any event that matches none of the patterns you asked for. NATS servers differ in whether one consumer may carry overlapping filters (2.10 rejects them), which is why the adapter does not rely on multi-filter consumers.
+
+**Upgrading from a version that created one consumer per pattern:** consumers of dropped patterns are no longer used, but the adapter does not delete them, because other instances of the group may still run the old version. Backlog is not lost: the consumer that is kept was one of the old ones, so it resumes from its position and receives everything the dropped ones would have. After every instance runs the new version, list the consumers (`nats consumer ls <stream>`), find the ones named `{group}--{pattern}--{hash}` for the dropped patterns, and remove them (`nats consumer rm <stream> <name>`). Until then their pending count grows with every event, and on a stream with `interest` retention they keep every message in the stream, because they never acknowledge it.
+
 ### Metadata
 
 Event metadata is transmitted as NATS message headers. Internal headers (prefixed with `x-`) are stripped when parsing.

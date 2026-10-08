@@ -14,6 +14,7 @@ import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
+import { coverPatterns, matchesAny } from "./patternCover.ts";
 import type { NatsAdapterOptions } from "./types.ts";
 
 /** Default stream name when none is provided. */
@@ -205,8 +206,15 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             /** Tracked durable names for rollback on partial failure. */
             const createdDurables: string[] = [];
 
+            // Every consumer delivers a stream message once, so two patterns that can match the same
+            // subject would run the handler twice for one event. Create consumers for a cover of the
+            // patterns instead; patterns that overlap with nothing keep their own consumer and name.
+            const { filters, exact } = coverPatterns(patterns);
+            // A cover that is wider than the patterns also receives subjects none of them match.
+            const accepted = exact ? undefined : patterns;
+
             try {
-                for (const pattern of patterns) {
+                for (const pattern of filters) {
                     const subject = `${streamName}.${pattern}`;
                     const durableName = consumerName(group, pattern);
 
@@ -228,7 +236,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
                     // Start the consumption loop in the background.
                     // The loop exits when messages.close() is called.
-                    consumeLoop(messages, handler, pattern, streamName).catch((err) => {
+                    consumeLoop(messages, handler, accepted, streamName).catch((err) => {
                         console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
                     });
                 }
@@ -307,7 +315,7 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
  * The EventBus layer handles auto-ack fallback if the handler
  * does not explicitly call ack() or nack().
  */
-async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, _pattern: string, streamName: string): Promise<void> {
+async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, accepted: readonly string[] | undefined, streamName: string): Promise<void> {
     // The stream subject prefix to strip from delivered subjects.
     // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
     const subjectPrefix = `${streamName}.`;
@@ -315,6 +323,12 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
     for await (const msg of messages) {
         // Strip the stream prefix so eventType matches what was originally published.
         const eventType = msg.subject.startsWith(subjectPrefix) ? msg.subject.slice(subjectPrefix.length) : msg.subject;
+
+        // The consumer filter is wider than the subscription: settle what the subscription did not ask for.
+        if (accepted !== undefined && !matchesAny(accepted, eventType)) {
+            msg.ack();
+            continue;
+        }
 
         const eventId = msg.headers?.get("x-event-id") ?? randomUUID();
 
