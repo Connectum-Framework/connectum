@@ -91,7 +91,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
      * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
      * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
      */
-    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number; topicDiscoveryInterval?: number }): EventAdapter {
+    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number; topicDiscoveryInterval?: number | false }): EventAdapter {
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
@@ -1017,12 +1017,12 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("without topicDiscoveryInterval a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it("with topicDiscoveryInterval false (the default) a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const root = uniqueName("it.nolate");
         const early = await createTopic(`${root}.early`);
         const received: string[] = [];
         const group = uniqueName("group");
-        const adapter = newAdapter();
+        const adapter = newAdapter({ topicDiscoveryInterval: false });
 
         await adapter.connect();
         try {

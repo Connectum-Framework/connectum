@@ -106,7 +106,8 @@ describe("KafkaAdapter", () => {
         }
     });
 
-    it("accepts a positive topicDiscoveryInterval and rejects anything else", () => {
+    it("accepts false or a positive topicDiscoveryInterval and rejects anything else", () => {
+        KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
         KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: 1 } });
         KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: 2_147_483_647 } });
 

@@ -102,7 +102,9 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         throw new RangeError(`KafkaAdapter: consumerOptions.commitStrategy must be "per-message" or "per-batch", got ${JSON.stringify(commitStrategy)}`);
     }
 
-    const topicDiscoveryInterval = options.consumerOptions?.topicDiscoveryInterval;
+    // Discovery is opt-in: `false` states the same thing as leaving the option out.
+    const topicDiscoveryOption = options.consumerOptions?.topicDiscoveryInterval;
+    const topicDiscoveryInterval = topicDiscoveryOption === false ? undefined : topicDiscoveryOption;
     if (topicDiscoveryInterval !== undefined && (!Number.isFinite(topicDiscoveryInterval) || topicDiscoveryInterval <= 0 || topicDiscoveryInterval > maxTimerDelayMs)) {
         throw new RangeError(
             `KafkaAdapter: consumerOptions.topicDiscoveryInterval must be a positive finite number of milliseconds (at most ${maxTimerDelayMs}), got ${topicDiscoveryInterval}`,
