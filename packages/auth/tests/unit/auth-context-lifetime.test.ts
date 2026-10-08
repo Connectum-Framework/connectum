@@ -165,7 +165,7 @@ for (const name of AUTH_FACTORY_NAMES) {
             );
         });
 
-        it("keeps a real generator on the verified identity across await, yield and finally for overlapping identities", async () => {
+        it("keeps a real generator on the verified identity across await, yield and finally for overlapping identities", { timeout: 120_000 }, async () => {
             let violations = 0;
             const examples: string[] = [];
             const fail = (message: string) => {

@@ -25,6 +25,13 @@ import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
+/**
+ * Overlapping pairs per cell. The defect is deterministic: with the cleanup left unbound every cleanup of an
+ * in-process call that is parked on a yield saw the wrong scope, so a few dozen pairs already turn the cell red.
+ * Set CANCEL_CONTEXT_PAIRS=250 for deeper local runs.
+ */
+const PAIRS = Number(process.env.CANCEL_CONTEXT_PAIRS ?? 60);
+
 const scope = new AsyncLocalStorage<string>();
 
 /** Scopes `value` around the chain, the creation of the response iterator and each of its operations. */
@@ -120,7 +127,7 @@ for (const transport of ["local", "http"] as const) {
     for (const method of ["server", "bidi"] as const) {
         for (const pace of ["yield-only", "slow-await"] as const) {
             describe(`${transport} ${method} (${pace}): cancellation cleanup`, () => {
-                it("sees the scope of the call it belongs to, for 250 overlapping pairs", async () => {
+                it(`sees the scope of the call it belongs to, for ${PAIRS} overlapping pairs`, { timeout: 120_000 }, async () => {
                     const seen = new Map<string, Seen>();
                     const server = createServer({ services: [routes(seen, pace)], port: 0, allowHTTP1: false, interceptors: [scoping("x-scope")], shutdown: { timeout: 1_000 } });
                     started.push(server);
@@ -144,7 +151,7 @@ for (const transport of ["local", "http"] as const) {
                         );
                     };
 
-                    for (let i = 0; i < 250; i++) {
+                    for (let i = 0; i < PAIRS; i++) {
                         await Promise.all([cancel(`pair-${i}-A`), cancel(`pair-${i}-B`)]);
                         if (transport === "http") {
                             // Hundreds of stream resets in a burst trip HTTP/2 flood protection (ENHANCE_YOUR_CALM), which is not what is under test.
@@ -152,13 +159,13 @@ for (const transport of ["local", "http"] as const) {
                         }
                     }
                     const deadline = Date.now() + 10_000;
-                    while (seen.size < 500 && Date.now() < deadline) {
+                    while (seen.size < PAIRS * 2 && Date.now() < deadline) {
                         await sleep(20);
                     }
                     await sleep(100);
 
                     const wrong = [...seen.values()].filter((entry) => entry.runs !== 1 || entry.inFinally !== entry.tag);
-                    assert.strictEqual(seen.size, 500, "every call ran its cleanup");
+                    assert.strictEqual(seen.size, PAIRS * 2, "every call ran its cleanup");
                     assert.deepStrictEqual(wrong.slice(0, 3), [], `${wrong.length} cleanups saw the wrong scope or ran more than once`);
                 });
             });

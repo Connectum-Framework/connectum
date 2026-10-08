@@ -46,8 +46,12 @@ import {
 const ITERATIONS = Number(process.env.AUTH_STREAM_CANCEL_ITERATIONS ?? 25);
 /** Rounds started together: enough overlap to interleave calls, few enough to stay clear of HTTP/2 reset-flood protection. */
 const WAVE = 13;
-/** Generous: the first message of a cold call takes well over 100 ms, and it must arrive before the deadline. */
-const DEADLINE_MS = 1_000;
+/**
+ * Generous: the first message of a cold call takes well over 100 ms, and it must arrive before the deadline.
+ * One second was not enough when three copies of the suite ran side by side on a machine with a load average
+ * near 50: the first message then arrived after the deadline and the call failed before it could be ended.
+ */
+const DEADLINE_MS = 2_000;
 
 type EndKind = "server" | "bidi";
 /** The ways a call can end before the handler is done. */
@@ -124,6 +128,11 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
     // When a deadline expires while nobody is reading a server-streaming response, the Connect client
     // rejects a promise of its own that no one awaits. That is the client library reporting the very
     // deadline under test, so it is collected and checked below instead of failing the run.
+    // The hook is process-global, so while it is installed it would also see a rejection raised by any other
+    // test running in the same process. That is safe here because it is installed only for the duration of
+    // this scenario, node:test never runs the tests of one file concurrently, and every collected reason is
+    // filtered below: anything that is not a DeadlineExceeded is reported as a failure instead of being
+    // swallowed.
     const clientDeadlines: unknown[] = [];
     const onUnhandled = (reason: unknown) => clientDeadlines.push(reason);
     if (mode === "deadline") {

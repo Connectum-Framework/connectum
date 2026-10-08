@@ -36,8 +36,16 @@ import {
     violations,
 } from "../helpers/stream-context.ts";
 
-/** At least 250 overlapping pairs per scenario: a lost or crossed identity shows up as a count, not as a flake. */
-const PAIRS = Number(process.env.AUTH_STREAM_PAIRS ?? 250);
+/**
+ * Overlapping pairs per scenario. The defect this suite guards is deterministic, not statistical: without the
+ * fix every observation of a streaming call is wrong, so a few dozen pairs already turn the run red and a lost
+ * or crossed identity shows up as a count, not as a flake. 60 pairs also keep the credential-cache check
+ * meaningful (two calls per identity). Set AUTH_STREAM_PAIRS=250 for deeper local runs.
+ */
+const PAIRS = Number(process.env.AUTH_STREAM_PAIRS ?? 60);
+
+/** Each scenario drives hundreds of calls; the bun:pure engine would otherwise cut a test off after 5 seconds. */
+const SCENARIO_TIMEOUT_MS = 120_000;
 
 const KINDS: readonly Kind[] = ["unary", "client", "server", "bidi"];
 const TRANSPORTS: readonly Transport[] = ["local", "local-ambient", "http"];
@@ -74,7 +82,7 @@ for (const factory of [...AUTH_FACTORY_NAMES, "jwt-jwks"] as const) {
     for (const transport of TRANSPORTS) {
         for (const kind of KINDS) {
             describe(`${factory} over ${transport}: ${kind}`, () => {
-                it(`handler sees only its own verified identity at every phase (${PAIRS} overlapping pairs)`, async () => {
+                it(`handler sees only its own verified identity at every phase (${PAIRS} overlapping pairs)`, { timeout: SCENARIO_TIMEOUT_MS }, async () => {
                     const { tally, setup } = await runScenario(factory, transport, kind);
                     assert.deepStrictEqual(violations(tally), CLEAN, `observations: ${JSON.stringify(tally)}`);
                     assert.ok(tally.own > 0, "no handler observation was recorded");

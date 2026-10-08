@@ -656,6 +656,8 @@ await withAuthContext(createMockAuthContext({ subject: 'user-1' }), async () => 
 });
 ```
 
+The context is scoped to the callback, not to a value it returns. If the handler is an `async function*`, iterate the generator inside the callback: a generator created inside the callback but consumed after it has returned does not see the context.
+
 ### TEST_JWT_SECRET
 
 Deterministic HMAC secret for test JWTs: `"connectum-test-secret-do-not-use-in-production"`.
