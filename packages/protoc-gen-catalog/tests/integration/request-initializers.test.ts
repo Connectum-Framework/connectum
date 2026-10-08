@@ -17,7 +17,7 @@ const packageRoot = resolve(here, "../..");
 const repoRoot = resolve(packageRoot, "../..");
 const fixtureSource = resolve(packageRoot, "tests/fixtures/request-initializers");
 const coreRoot = resolve(repoRoot, "packages/core");
-const bufBin = resolve(repoRoot, "packages/healthcheck/node_modules/.bin/buf");
+const bufBin = resolve(packageRoot, "node_modules/.bin/buf");
 const protocGenEs = resolve(repoRoot, "node_modules/.bin/protoc-gen-es");
 const tsc = resolve(packageRoot, "node_modules/.bin/tsc");
 

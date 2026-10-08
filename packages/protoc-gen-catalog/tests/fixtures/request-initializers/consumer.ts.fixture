@@ -1,5 +1,5 @@
-import { create, type MessageInitShape } from "@bufbuild/protobuf";
-import type { Context } from "@connectum/core";
+import { create, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
+import type { ConnectumCallMap, Context } from "@connectum/core";
 import { RequestSchema as OtherRequestSchema } from "./gen/catalog/other/v1/other_pb.ts";
 import { RequestSchema, type Response, type ResponseSchema } from "./gen/catalog/request/v1/request_pb.ts";
 import "./gen/catalog.gen.ts";
@@ -80,3 +80,42 @@ context.call("catalog.other.v1.OtherService/Get", { name: "wrong package shape" 
 
 const fullResponseName: typeof ResponseSchema.typeName = (await unaryResponse).$typeName;
 void fullResponseName;
+
+// @ts-expect-error A server-stream request rejects fields absent from the protobuf descriptor.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ name: "unknown field", extra: true });
+
+// @ts-expect-error A server-stream request checks the oneof discriminant.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A server-stream request checks map values as nested protobuf initializers.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ nestedByKey: { primary: { missing: true } } });
+
+// @ts-expect-error A client-stream send rejects fields absent from the protobuf descriptor.
+clientStream.send({ name: "unknown field", extra: true });
+
+// @ts-expect-error A client-stream send checks the oneof discriminant.
+clientStream.send({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A client-stream send checks map values as nested protobuf initializers.
+clientStream.send({ nestedByKey: { primary: { missing: true } } });
+
+// @ts-expect-error A bidi send rejects fields absent from the protobuf descriptor.
+bidiStream.send({ name: "unknown field", extra: true });
+
+// @ts-expect-error A bidi send checks the oneof discriminant.
+bidiStream.send({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A bidi send checks map values as nested protobuf initializers.
+bidiStream.send({ nestedByKey: { primary: { missing: true } } });
+
+declare const unaryRequestSlot: ConnectumCallMap["catalog.request.v1.RequestService/Unary"]["request"];
+
+// @ts-expect-error The request slot may hold a plain initializer, so it is not assignable to the full message type.
+export const messageFromSlot: MessageShape<typeof RequestSchema> = unaryRequestSlot;
+
+export const normalizedFromSlot: MessageShape<typeof RequestSchema> = create(RequestSchema, unaryRequestSlot);
+
+// @ts-expect-error Members read from the request slot are optional, so $typeName is not a definite literal.
+export const slotTypeName: "catalog.request.v1.Request" = unaryRequestSlot.$typeName;
+
+export const normalizedTypeName: "catalog.request.v1.Request" = normalizedFromSlot.$typeName;
