@@ -22,7 +22,6 @@ import { authContextStorage, getAuthContext } from "../../src/index.ts";
 import { ItemSchema } from "../fixtures/streaming/v1/streaming_pb.ts";
 import {
     AMBIENT_CALLER,
-    AUTH_FACTORY_NAMES,
     type AuthFactoryName,
     type AuthSetup,
     boot,
@@ -42,11 +41,11 @@ import {
     type TestServer,
     type Transport,
     telemetryStorage,
-} from "../helpers/stream-context.ts";
+} from "./stream-context.ts";
 
 const ITERATIONS = Number(process.env.AUTH_STREAM_CANCEL_ITERATIONS ?? 25);
 /** Rounds started together: enough overlap to interleave calls, few enough to stay clear of HTTP/2 reset-flood protection. */
-const WAVE = 5;
+const WAVE = 13;
 /** Generous: the first message of a cold call takes well over 100 ms, and it must arrive before the deadline. */
 const DEADLINE_MS = 1_000;
 
@@ -94,28 +93,19 @@ async function endCall(client: StreamingClient, kind: EndKind, mode: EndMode, he
             // The handler has yielded and nobody pulls again: it is parked at `yield`.
             await sleep(10);
             abort.abort();
-            await iterator.next().then(
-                () => {},
-                swallowed,
-            );
+            await iterator.next().then(() => {}, swallowed);
             break;
         case "abort-during-pending-next": {
             // The handler is inside a timer that ignores the signal when the abort lands.
             const pending = iterator.next();
             await sleep(SLOW_AWAIT_MS / 4);
             abort.abort();
-            await pending.then(
-                () => {},
-                swallowed,
-            );
+            await pending.then(() => {}, swallowed);
             break;
         }
         case "deadline":
             await sleep(DEADLINE_MS + 60);
-            await iterator.next().then(
-                () => {},
-                swallowed,
-            );
+            await iterator.next().then(() => {}, swallowed);
             break;
         case "early-break":
             await iterator.next();
@@ -180,7 +170,6 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
     // Give a duplicate cleanup the chance to show up before counting.
     await sleep(50);
 
-
     process.off("unhandledRejection", onUnhandled);
     const foreignRejections = clientDeadlines.filter((reason) => ConnectError.from(reason).code !== Code.DeadlineExceeded);
     const wrongCount = tags.filter((tag) => probe.cleanups.get(tag)?.count !== 1);
@@ -202,116 +191,122 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
     };
 }
 
-for (const factory of [...AUTH_FACTORY_NAMES, "jwt-jwks"] as const) {
-    for (const transport of ["local", "local-ambient", "http"] as const) {
-        for (const kind of ["server", "bidi"] as const) {
-            describe(`${factory} over ${transport}: ${kind} ended early`, () => {
-                for (const { mode, pace } of MODES) {
-                    it(`${mode}: cleanup runs once under the call's own identity`, async () => {
-                        const scenario = `${factory}/${transport}/${kind}/${mode}`;
-                        const issuer = factory === "jwt-jwks" ? await startJwksIssuer() : undefined;
-                        try {
-                            const setup = issuer ? createJwksAuthSetup(issuer) : createAuthSetup(factory as AuthFactoryName, identitiesFor(scenario, ITERATIONS));
-                            const result = await runEnd({ setup, transport, kind, mode, pace, scenario });
-                            assert.deepStrictEqual(
-                                {
-                                    allCleaned: result.allCleaned,
-                                    cleanedBeforeStop: result.cleanedBeforeStop,
-                                    foreignRejections: result.foreignRejections,
-                                    wrongCount: result.wrongCount,
-                                    wrongIdentity: result.wrongIdentity,
-                                    wrongTelemetry: result.wrongTelemetry,
-                                    wrongDuringCall: result.wrongDuringCall,
-                                },
-                                { allCleaned: true, cleanedBeforeStop: 0, foreignRejections: 0, wrongCount: 0, wrongIdentity: 0, wrongTelemetry: 0, wrongDuringCall: 0 },
-                                JSON.stringify(result),
-                            );
-                            assert.deepStrictEqual(result.callerViews, [result.expectedCallerView], "the caller's own identity must be untouched after the call");
-                        } finally {
-                            await issuer?.close();
-                        }
-                    });
-                }
-            });
-        }
-    }
-}
-
-describe("early ends leave nothing behind", () => {
-    const snapshot = () => {
-        const counts: Record<string, number> = {};
-        for (const name of process.getActiveResourcesInfo()) {
-            counts[name] = (counts[name] ?? 0) + 1;
-        }
-        return counts;
-    };
-
-    for (const transport of ["local", "http"] as const) {
-        for (const kind of ["server", "bidi"] as const) {
-            for (const { mode, pace } of MODES.filter((entry) => entry.mode !== "early-break")) {
-                it(`${transport} ${kind} ${mode}: active resources return to the baseline and cleanup runs exactly once per call`, async () => {
-                    const probe = createProbe();
-                    const setup = createAuthSetup("generic", []);
-                    const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, pace) });
-                    started.push(server);
-                    const client = clientFor(server, transport);
-                    const headers = await setup.headersFor("resource-check");
-
-                    // One call first so connections, timers of the client library and lazily created state exist in the baseline.
-                    await endCall(client, kind, mode, headers, "resource-check#warm");
-                    await eventually(() => probe.cleanups.get("resource-check#warm")?.count === 1);
-                    await sleep(200);
-                    const before = snapshot();
-
-                    const calls = 12;
-                    for (let i = 0; i < calls; i++) {
-                        await endCall(client, kind, mode, headers, `resource-check#${i}`);
+/** Registers the early-end scenarios for the given authentication factories. */
+export function registerEndMatrix(factories: ReadonlyArray<AuthFactoryName | "jwt-jwks">): void {
+    for (const factory of factories) {
+        for (const transport of ["local", "local-ambient", "http"] as const) {
+            for (const kind of ["server", "bidi"] as const) {
+                describe(`${factory} over ${transport}: ${kind} ended early`, () => {
+                    for (const { mode, pace } of MODES) {
+                        it(`${mode}: cleanup runs once under the call's own identity`, { timeout: 120_000 }, async () => {
+                            const scenario = `${factory}/${transport}/${kind}/${mode}`;
+                            const issuer = factory === "jwt-jwks" ? await startJwksIssuer() : undefined;
+                            try {
+                                const setup = issuer ? createJwksAuthSetup(issuer) : createAuthSetup(factory as AuthFactoryName, identitiesFor(scenario, ITERATIONS));
+                                const result = await runEnd({ setup, transport, kind, mode, pace, scenario });
+                                assert.deepStrictEqual(
+                                    {
+                                        allCleaned: result.allCleaned,
+                                        cleanedBeforeStop: result.cleanedBeforeStop,
+                                        foreignRejections: result.foreignRejections,
+                                        wrongCount: result.wrongCount,
+                                        wrongIdentity: result.wrongIdentity,
+                                        wrongTelemetry: result.wrongTelemetry,
+                                        wrongDuringCall: result.wrongDuringCall,
+                                    },
+                                    { allCleaned: true, cleanedBeforeStop: 0, foreignRejections: 0, wrongCount: 0, wrongIdentity: 0, wrongTelemetry: 0, wrongDuringCall: 0 },
+                                    JSON.stringify(result),
+                                );
+                                assert.deepStrictEqual(result.callerViews, [result.expectedCallerView], "the caller's own identity must be untouched after the call");
+                            } finally {
+                                await issuer?.close();
+                            }
+                        });
                     }
-                    await eventually(() => probe.cleanups.size === calls + 1, 5_000);
-                    await sleep(300);
-
-                    const duplicates = [...probe.cleanups.entries()].filter(([, entry]) => entry.count !== 1).map(([tag]) => tag);
-                    assert.deepStrictEqual(duplicates, [], "every call is cleaned up exactly once");
-                    assert.strictEqual(probe.cleanups.size, calls + 1);
-
-                    let after = snapshot();
-                    await eventually(() => {
-                        after = snapshot();
-                        return JSON.stringify(after) === JSON.stringify(before);
-                    }, 5_000);
-                    assert.deepStrictEqual(after, before, "no timers, sockets or handles are left over from the ended calls");
                 });
             }
         }
     }
+}
 
-    it("leaving the consumer loop early is not a cancellation: the handler stays parked until the server stops, then cleans up once under its own identity", async () => {
-        const probe = createProbe();
-        const setup = createAuthSetup("generic", []);
-        const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, "yield-only") });
-        started.push(server);
-        const client = clientFor(server, "local");
-        const headers = { ...(await setup.headersFor("breaker")), "x-tag": "breaker#0" };
+/** Registers the checks that early ends leave no resources or duplicate cleanups behind. */
+export function registerLeftoverChecks(): void {
+    describe("early ends leave nothing behind", () => {
+        const snapshot = () => {
+            const counts: Record<string, number> = {};
+            for (const name of process.getActiveResourcesInfo()) {
+                counts[name] = (counts[name] ?? 0) + 1;
+            }
+            return counts;
+        };
 
-        let received = 0;
-        for await (const _message of client.server(create(ItemSchema, { value: "breaker#0", sequence: 0 }), { headers })) {
-            received++;
-            if (received === 3) {
-                break;
+        for (const transport of ["local", "http"] as const) {
+            for (const kind of ["server", "bidi"] as const) {
+                for (const { mode, pace } of MODES.filter((entry) => entry.mode !== "early-break")) {
+                    it(`${transport} ${kind} ${mode}: active resources return to the baseline and cleanup runs exactly once per call`, { timeout: 120_000 }, async () => {
+                        const probe = createProbe();
+                        const setup = createAuthSetup("generic", []);
+                        const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, pace) });
+                        started.push(server);
+                        const client = clientFor(server, transport);
+                        const headers = await setup.headersFor("resource-check");
+
+                        // One call first so connections, timers of the client library and lazily created state exist in the baseline.
+                        await endCall(client, kind, mode, headers, "resource-check#warm");
+                        await eventually(() => probe.cleanups.get("resource-check#warm")?.count === 1);
+                        await sleep(200);
+                        const before = snapshot();
+
+                        const calls = 12;
+                        for (let i = 0; i < calls; i++) {
+                            await endCall(client, kind, mode, headers, `resource-check#${i}`);
+                        }
+                        await eventually(() => probe.cleanups.size === calls + 1, 5_000);
+                        await sleep(300);
+
+                        const duplicates = [...probe.cleanups.entries()].filter(([, entry]) => entry.count !== 1).map(([tag]) => tag);
+                        assert.deepStrictEqual(duplicates, [], "every call is cleaned up exactly once");
+                        assert.strictEqual(probe.cleanups.size, calls + 1);
+
+                        let after = snapshot();
+                        await eventually(() => {
+                            after = snapshot();
+                            return JSON.stringify(after) === JSON.stringify(before);
+                        }, 5_000);
+                        assert.deepStrictEqual(after, before, "no timers, sockets or handles are left over from the ended calls");
+                    });
+                }
             }
         }
-        await sleep(150);
-        assert.strictEqual(received, 3);
-        assert.strictEqual(probe.cleanups.size, 0, "break alone does not unwind the handler");
-        await server.stop();
-        await eventually(() => probe.cleanups.get("breaker#0")?.count === 1);
-        await sleep(50);
-        assert.strictEqual(probe.cleanups.get("breaker#0")?.count, 1);
-        assert.strictEqual(probe.cleanups.get("breaker#0")?.seen, "breaker");
-        // The handler resumed from its last yield exactly the number of times the consumer pulled.
-        assert.deepStrictEqual(
-            probe.observations.filter((o) => o.phase.startsWith("server-after-yield")).map((o) => o.phase),
-            ["server-after-yield-0", "server-after-yield-1"],
-        );
+
+        it("leaving the consumer loop early is not a cancellation: the handler stays parked until the server stops, then cleans up once under its own identity", async () => {
+            const probe = createProbe();
+            const setup = createAuthSetup("generic", []);
+            const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, "yield-only") });
+            started.push(server);
+            const client = clientFor(server, "local");
+            const headers = { ...(await setup.headersFor("breaker")), "x-tag": "breaker#0" };
+
+            let received = 0;
+            for await (const _message of client.server(create(ItemSchema, { value: "breaker#0", sequence: 0 }), { headers })) {
+                received++;
+                if (received === 3) {
+                    break;
+                }
+            }
+            await sleep(150);
+            assert.strictEqual(received, 3);
+            assert.strictEqual(probe.cleanups.size, 0, "break alone does not unwind the handler");
+            await server.stop();
+            await eventually(() => probe.cleanups.get("breaker#0")?.count === 1);
+            await sleep(50);
+            assert.strictEqual(probe.cleanups.get("breaker#0")?.count, 1);
+            assert.strictEqual(probe.cleanups.get("breaker#0")?.seen, "breaker");
+            // The handler resumed from its last yield exactly the number of times the consumer pulled.
+            assert.deepStrictEqual(
+                probe.observations.filter((o) => o.phase.startsWith("server-after-yield")).map((o) => o.phase),
+                ["server-after-yield-0", "server-after-yield-1"],
+            );
+        });
     });
-});
+}

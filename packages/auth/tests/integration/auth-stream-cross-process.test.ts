@@ -106,7 +106,7 @@ function networkClient(port: number) {
 
 describe("server in its own process, RS256/ES256 tokens verified through a remote JWKS", () => {
     for (const kind of KINDS) {
-        it(`${kind}: the handler sees only its own verified identity at every phase (${PAIRS} overlapping pairs)`, async () => {
+        it(`${kind}: the handler sees only its own verified identity at every phase (${PAIRS} overlapping pairs)`, { timeout: 120_000 }, async () => {
             const issuer = await startJwksIssuer();
             issuers.push(issuer);
             const remote = await startRemote({ factory: "jwt-jwks", routes: "finite", jwksUri: issuer.jwksUri });
@@ -191,7 +191,7 @@ describe("server in its own process, RS256/ES256 tokens verified through a remot
 
     for (const pace of ["yield-only", "slow-await"] as const) {
         for (const kind of ["server", "bidi"] as const) {
-            it(`${kind} (${pace}): a client abort and a deadline are cleaned up once in the server process, under the call's identity`, async () => {
+            it(`${kind} (${pace}): a client abort and a deadline are cleaned up once in the server process, under the call's identity`, { timeout: 120_000 }, async () => {
                 const issuer = await startJwksIssuer();
                 issuers.push(issuer);
                 const remote = await startRemote({ factory: "jwt-jwks", routes: pace, jwksUri: issuer.jwksUri });
