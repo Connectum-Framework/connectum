@@ -404,4 +404,44 @@ describe(`AMQP wildcard routing on ${IMAGE} (testcontainers)`, { skip: RUN ? fal
             await adapter.disconnect();
         }
     });
+
+    it("re-binds an auto-named exclusive queue with the corrected terminal wildcard after the connection is lost", { timeout: 60_000 }, async () => {
+        const exchange = `it.wildcard-recovery-auto.${randomUUID()}`;
+        const lifecycle: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange,
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: {
+                onConnected: () => lifecycle.push("connected"),
+            },
+        });
+        const received: string[] = [];
+        await adapter.connect();
+        try {
+            // No group: the queue is exclusive and auto-delete, so the broker removes it
+            // together with its bindings when the connection drops. Routing after recovery
+            // therefore proves the adapter bound a fresh queue with the translated pattern.
+            const subscription = await adapter.subscribe(["user.>"], async (event, ack) => {
+                received.push(event.eventType);
+                await ack();
+            });
+            await adapter.publish("user.created", new Uint8Array([1]));
+            await waitFor(() => received.length === 1);
+
+            const dropped = await container.exec(["rabbitmqctl", "close_all_connections", "wildcard-recovery-auto"]);
+            assert.equal(dropped.exitCode, 0, dropped.output);
+            await waitFor(() => lifecycle.filter((event) => event === "connected").length >= 2);
+            await adapter.publish("user", new Uint8Array([0]));
+            await adapter.publish("user.created.v2", new Uint8Array([2]));
+            await waitFor(() => received.length >= 2);
+            await sleep(250);
+
+            assert.deepEqual(received, ["user.created", "user.created.v2"]);
+            await subscription.unsubscribe();
+        } finally {
+            await adapter.disconnect();
+        }
+    });
 });
