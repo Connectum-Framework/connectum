@@ -6,7 +6,7 @@ import type { Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { createLocalTransport, createServer, defineCatalog, defineService } from "@connectum/core";
-import { EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../../../testing/tests/fixtures/echo/v1/echo_pb.ts";
+import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../../../testing/tests/fixtures/echo/v1/echo_pb.ts";
 import { createRetryInterceptor } from "../../src/retry.ts";
 import { createTimeoutInterceptor } from "../../src/timeout.ts";
 
@@ -52,6 +52,43 @@ async function settlesWithin(settlement: Promise<void>, maxWaitMs: number): Prom
     }
 }
 
+/**
+ * Waits for a promise, but fails with a diagnostic instead of waiting forever.
+ * A handler that never starts (for example because a 45 ms timeout expired
+ * before the request reached it) would otherwise leave the whole test, and the
+ * server and connection it owns, suspended until the runner gives up.
+ */
+async function within<T>(promise: Promise<T>, maxWaitMs: number, describeFailure: () => string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(describeFailure())), maxWaitMs);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// Message of the throw-away call that makes the connection, the server routing
+// and the JIT-compiled request path hot before a test starts its short timers.
+const WARMUP_MESSAGE = "connection warm-up";
+
+function isWarmupRequest(request: Parameters<ReturnType<Interceptor>>[0]): boolean {
+    return !request.stream && (request.message as { message?: unknown }).message === WARMUP_MESSAGE;
+}
+
+// The warm-up call must reach the handler without being gated or timed out by
+// the interceptors under test, so those interceptors are bypassed for it.
+function exemptWarmup(interceptor: Interceptor): Interceptor {
+    return (next) => {
+        const guarded = interceptor(next);
+        return (request) => (isWarmupRequest(request) ? next(request) : guarded(request));
+    };
+}
+
 declare module "@connectum/core" {
     interface ConnectumCallMap {
         "echo.v1.EchoService/Echo": { request: import("../../../testing/tests/fixtures/echo/v1/echo_pb.ts").EchoRequest; response: EchoResponse };
@@ -75,27 +112,41 @@ async function withRpc(
     implementation: Record<string, (request: never, context: never) => unknown>,
     run: (transport: Transport) => Promise<void>,
 ) {
+    const echo = implementation.echo as (request: EchoRequest, context: never) => unknown;
     const server = createServer({
         host: "127.0.0.1",
         port: 0,
         allowHTTP1: false,
         shutdown: { autoShutdown: false, timeout: 100 },
-        interceptors: placement === "server" ? interceptors : [],
-        services: [defineService(EchoService, implementation as never)],
+        interceptors: placement === "server" ? interceptors.map(exemptWarmup) : [],
+        services: [
+            defineService(EchoService, {
+                ...implementation,
+                echo: (request: EchoRequest, context: never) =>
+                    request.message === WARMUP_MESSAGE ? create(EchoResponseSchema, { message: WARMUP_MESSAGE, timestamp: 0n }) : echo(request, context),
+            } as never),
+        ],
     });
     let session: Http2SessionManager | undefined;
     try {
         let transport: Transport;
+        let bareTransport: Transport;
         if (transportKind === "http") {
             await server.start();
             const port = server.address?.port;
             assert.ok(port);
             const baseUrl = `http://127.0.0.1:${port}`;
             session = new Http2SessionManager(baseUrl);
+            bareTransport = createGrpcTransport({ baseUrl, sessionManager: session });
             transport = createGrpcTransport({ baseUrl, sessionManager: session, interceptors: placement === "client" ? interceptors : [] });
         } else {
+            bareTransport = createLocalTransport(server);
             transport = createLocalTransport(server, { interceptors: placement === "client" ? interceptors : [] });
         }
+        // A timer started on a cold connection can expire before the request has
+        // left the client, so the handler would never run. Warm the path first;
+        // the call shares the connection (http) and the server with the test call.
+        await createClient(EchoService, bareTransport).echo(create(EchoRequestSchema, { message: WARMUP_MESSAGE }), { timeoutMs: 5_000 });
         await run(transport);
     } finally {
         session?.abort();
@@ -186,7 +237,12 @@ for (const transportKind of ["local", "http"] as const) {
                                         pendingSettled = true;
                                     },
                                 );
-                                await started.promise;
+                                await within(
+                                    started.promise,
+                                    5_000,
+                                    () =>
+                                        `the handler did not start within 5000ms (handler executions: ${executions}, caller outcome ${pendingSettled ? "settled" : "pending"}, error seen by the outermost interceptor: ${String(outerError)})`,
+                                );
                                 if (cancelKind === "caller") {
                                     controller.abort(new ConnectError("caller stopped", Code.Canceled));
                                 }
