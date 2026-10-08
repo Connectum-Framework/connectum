@@ -61,7 +61,7 @@ function sanitizeDurableName(name: string): string {
  * A short SHA-256 hash suffix prevents collisions between inputs that
  * map to the same sanitized form (e.g. `orders.created` vs `orders_created`).
  */
-function consumerName(group: string, pattern: string): string {
+export function consumerName(group: string, pattern: string): string {
     const safeGroup = sanitizeDurableName(group);
     const safePattern = sanitizeDurableName(pattern);
     const suffix = createHash("sha256").update(`${group}\0${pattern}`).digest("hex").slice(0, 8);
