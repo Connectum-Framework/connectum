@@ -22,8 +22,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
-import { authContextStorage } from "./context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
     AuthContext,
     InternalAuthInterceptorOptions,
@@ -116,7 +116,7 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 
-        return await authContextStorage.run(authContext, () => next(req));
+        return await runWithAuthContext(authContext, () => next(req));
     };
 }
 
