@@ -131,6 +131,16 @@ EventType: "user.created"
 Stream:    "events:user.created"
 ```
 
+### Wildcards Are Not Supported
+
+Redis Streams has no pattern subscription. A topic containing `*` or `>` is rejected when the subscription is made, so `bus.start()` fails instead of silently receiving nothing:
+
+```text
+RedisAdapter: wildcard pattern "orders.*" is not supported. Redis Streams requires explicit topic names.
+```
+
+Subscribe to each topic by its exact name. Use `NatsAdapter`, `KafkaAdapter` or `AmqpAdapter` (topic exchange) when you need wildcard routing.
+
 ### Consumer Groups
 
 Subscriptions use Redis consumer groups (XREADGROUP) for load balancing across multiple instances. Each instance creates a unique consumer name within the group.
