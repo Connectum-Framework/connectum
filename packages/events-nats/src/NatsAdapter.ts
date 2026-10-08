@@ -14,7 +14,9 @@ import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
-import { coverPatterns, matchesAny } from "./patternCover.ts";
+import { ensureConsumer } from "./consumerSetup.ts";
+import type { OwnedPattern } from "./patternOwner.ts";
+import { comparePatterns, ownedPattern, ownerOf } from "./patternOwner.ts";
 import type { NatsAdapterOptions } from "./types.ts";
 
 /** Default stream name when none is provided. */
@@ -203,40 +205,47 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
-            /** Tracked durable names for rollback on partial failure. */
+            /** Durables this call created, deleted again when a later step fails. Pre-existing ones are left alone. */
             const createdDurables: string[] = [];
+            /** Every durable of the subscription, for the cleanup of an auto-generated group. */
+            const durables: string[] = [];
 
-            // Every consumer delivers a stream message once, so two patterns that can match the same
-            // subject would run the handler twice for one event. Create consumers for a cover of the
-            // patterns instead; patterns that overlap with nothing keep their own consumer and name.
-            const { filters, exact } = coverPatterns(patterns);
-            // A cover that is wider than the patterns also receives subjects none of them match.
-            const accepted = exact ? undefined : patterns;
+            // Every pattern keeps its own durable consumer, so a message matched by several patterns
+            // is delivered once per pattern. Which delivery runs the handler is decided per message by
+            // the patterns' start sequences (see patternOwner), so all consumers are created and
+            // their start sequences known before any loop starts.
+            const unique = [...new Set(patterns)].sort(comparePatterns);
+            const owned: OwnedPattern[] = [];
 
             try {
-                for (const pattern of filters) {
-                    const subject = `${streamName}.${pattern}`;
+                for (const pattern of unique) {
                     const durableName = consumerName(group, pattern);
+                    durables.push(durableName);
 
-                    // Ensure consumer exists.
-                    await jsm.consumers.add(streamName, {
-                        durable_name: durableName,
-                        ack_policy: AckPolicy.Explicit,
-                        deliver_policy: deliverPolicy,
-                        filter_subject: subject,
-                        ack_wait: ackWaitNs,
-                        max_deliver: maxDeliver,
-                    });
-                    createdDurables.push(durableName);
+                    const startSeq = await ensureConsumer(
+                        jsm,
+                        streamName,
+                        {
+                            durable_name: durableName,
+                            ack_policy: AckPolicy.Explicit,
+                            deliver_policy: deliverPolicy,
+                            filter_subject: `${streamName}.${pattern}`,
+                            ack_wait: ackWaitNs,
+                            max_deliver: maxDeliver,
+                        },
+                        createdDurables,
+                    );
+                    owned.push(ownedPattern(pattern, startSeq));
+                }
 
-                    const consumer = await js.consumers.get(streamName, durableName);
-
+                for (const { pattern } of owned) {
+                    const consumer = await js.consumers.get(streamName, consumerName(group, pattern));
                     const messages = await consumer.consume();
                     messageIterators.push(messages);
 
                     // Start the consumption loop in the background.
                     // The loop exits when messages.close() is called.
-                    consumeLoop(messages, handler, accepted, streamName).catch((err) => {
+                    consumeLoop(messages, handler, pattern, owned, streamName).catch((err) => {
                         console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
                     });
                 }
@@ -263,10 +272,11 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
                     // Delete auto-generated durable consumers to prevent broker-side leak.
                     if (isAutoGroup && jsm) {
-                        for (const durableName of createdDurables) {
+                        for (const durableName of durables) {
                             await jsm.consumers.delete(streamName, durableName).catch(() => undefined);
                         }
                     }
+                    durables.length = 0;
                     createdDurables.length = 0;
 
                     // Remove from the active subscriptions list.
@@ -315,7 +325,7 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
  * The EventBus layer handles auto-ack fallback if the handler
  * does not explicitly call ack() or nack().
  */
-async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, accepted: readonly string[] | undefined, streamName: string): Promise<void> {
+async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, pattern: string, owned: readonly OwnedPattern[], streamName: string): Promise<void> {
     // The stream subject prefix to strip from delivered subjects.
     // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
     const subjectPrefix = `${streamName}.`;
@@ -324,8 +334,9 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
         // Strip the stream prefix so eventType matches what was originally published.
         const eventType = msg.subject.startsWith(subjectPrefix) ? msg.subject.slice(subjectPrefix.length) : msg.subject;
 
-        // The consumer filter is wider than the subscription: settle what the subscription did not ask for.
-        if (accepted !== undefined && !matchesAny(accepted, eventType)) {
+        // A more specific pattern of this subscription delivers this message too: that delivery
+        // runs the handler, this one is settled without it.
+        if (owned.length > 1 && ownerOf(owned, eventType, msg.seq) !== pattern) {
             msg.ack();
             continue;
         }

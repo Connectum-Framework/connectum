@@ -177,11 +177,11 @@ jobs:
 
   # ── NATS JetStream integration (required) ──────────────────────────────
   # Runs the events-nats integration tests against real JetStream servers: the
-  # oldest line the overlapping-pattern handling was verified on and a current
-  # one, because servers differ in which overlapping consumer filters they
-  # accept. A service container cannot pass `-js`, so the server is started
-  # with docker run. The tests skip silently without NATS_TEST_URL, so the step
-  # asserts that nothing was skipped.
+  # oldest line the package supports (2.9, which has no consumer metadata), the
+  # last 2.10 patch and a current one, because servers differ in which consumer
+  # configurations they accept. A service container cannot pass `-js`, so the
+  # server is started with docker run. The tests skip silently without
+  # NATS_TEST_URL, so the step asserts that nothing was skipped.
   test-nats-broker:
     name: "NATS JetStream (${{ matrix.nats.name }})"
     runs-on: ubuntu-latest
@@ -190,6 +190,8 @@ jobs:
       fail-fast: false
       matrix:
         nats:
+          - name: nats-2.9.25
+            image: nats:2.9.25-alpine
           - name: nats-2.10.29
             image: nats:2.10.29-alpine
           - name: nats-2.15.0

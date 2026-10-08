@@ -101,7 +101,7 @@ describe("NATS adapter: overlapping subscription patterns", { skip: NATS_TEST_UR
                 await sleep(QUIET_PERIOD_MS);
 
                 assert.deepEqual(Object.fromEntries([...deliveries].sort()), { "user.created": 1, "user.profile.changed": 1, "user.updated": 1 });
-                assert.deepEqual(await consumerFilters(stream), [`${stream}.user.>`], "one consumer, for the pattern that contains the others");
+                assert.deepEqual(await consumerFilters(stream), [`${stream}.user.*`, `${stream}.user.>`, `${stream}.user.created`], "one consumer per pattern, as before");
             } finally {
                 await sub.unsubscribe();
             }

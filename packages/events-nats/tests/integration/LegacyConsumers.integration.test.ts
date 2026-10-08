@@ -1,8 +1,9 @@
 /**
- * Upgrade from the layout that earlier versions left on the broker: one durable consumer per
- * pattern. The durables are created here directly with the names and settings the previous
- * adapter used, events are published while no subscription exists, and then the current adapter
- * subscribes with the same group. The scenarios record which backlog survives the upgrade.
+ * Durable consumers that exist before the subscription: one per pattern, with the names and
+ * settings earlier adapter versions used. They are created here directly, events are published
+ * while no subscription exists, and then the adapter subscribes with the same group. Whatever
+ * backlog those consumers hold is delivered once, and a pattern added later starts at the end of
+ * the stream like any new route.
  *
  * Set NATS_TEST_URL to a JetStream-enabled server; see OverlappingPatterns.integration.test.ts.
  */
@@ -31,7 +32,7 @@ function bytes(value: string): Uint8Array {
     return new Uint8Array(Buffer.from(value, "utf-8"));
 }
 
-describe("NATS adapter: upgrade from one durable consumer per pattern", { skip: NATS_TEST_URL === undefined ? "NATS_TEST_URL not set" : false, concurrency: 1 }, () => {
+describe("NATS adapter: durable consumers that exist before the subscription", { skip: NATS_TEST_URL === undefined ? "NATS_TEST_URL not set" : false, concurrency: 1 }, () => {
     const servers = NATS_TEST_URL as string;
 
     /**
@@ -39,7 +40,7 @@ describe("NATS adapter: upgrade from one durable consumer per pattern", { skip: 
      * `published` while nothing is subscribed, then subscribe with the current adapter and report
      * the events delivered per subject.
      */
-    async function upgrade(patterns: string[], legacyPatterns: string[], published: string[]): Promise<Record<string, number>> {
+    async function attach(patterns: string[], legacyPatterns: string[], published: string[]): Promise<Record<string, number>> {
         const stream = uniqueName("leg");
         const group = uniqueName("grp");
         const adapter = NatsAdapter({ servers, stream });
@@ -83,23 +84,23 @@ describe("NATS adapter: upgrade from one durable consumer per pattern", { skip: 
     }
 
     it("a pattern that survives keeps its durable: its backlog and that of the patterns it contains is delivered once", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
-        const delivered = await upgrade(["user.created", "user.*", "user.>"], ["user.created", "user.*", "user.>"], ["user.created", "user.updated"]);
+        const delivered = await attach(["user.created", "user.*", "user.>"], ["user.created", "user.*", "user.>"], ["user.created", "user.updated"]);
         assert.deepEqual(delivered, { "user.created": 1, "user.updated": 1 });
     });
 
-    it("a broader route added later starts a new durable: the backlog of the narrower durable it replaces is not delivered", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it("a broader route added later: the narrower durable keeps delivering its backlog once, the new wider durable starts at the end", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
         // Only `user.created` existed before; the service now also listens on `user.>`.
-        const delivered = await upgrade(["user.created", "user.>"], ["user.created"], ["user.created"]);
-        assert.deepEqual(delivered, {}, "the new `user.>` durable starts at the end of the stream, like any new route");
+        const delivered = await attach(["user.created", "user.>"], ["user.created"], ["user.created"]);
+        assert.deepEqual(delivered, { "user.created": 1 });
     });
 
-    it("partly overlapping patterns are replaced by a new durable: the backlog of the old durables is not delivered", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
-        const delivered = await upgrade(["a.*.c", "a.b.*"], ["a.*.c", "a.b.*"], ["a.b.c"]);
-        assert.deepEqual(delivered, {}, "the widened `a.>` durable starts at the end of the stream");
+    it("partly overlapping patterns keep both durables: the backlog is delivered once", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const delivered = await attach(["a.*.c", "a.b.*"], ["a.*.c", "a.b.*"], ["a.b.c"]);
+        assert.deepEqual(delivered, { "a.b.c": 1 });
     });
 
     it("patterns without overlap keep their durables and their backlog", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
-        const delivered = await upgrade(["pay.created", "ship.*"], ["pay.created", "ship.*"], ["pay.created", "ship.sent"]);
+        const delivered = await attach(["pay.created", "ship.*"], ["pay.created", "ship.*"], ["pay.created", "ship.sent"]);
         assert.deepEqual(delivered, { "pay.created": 1, "ship.sent": 1 });
     });
 });
