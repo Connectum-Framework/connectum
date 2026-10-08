@@ -275,6 +275,36 @@ describe("NATS adapter: pattern ownership", { skip: NATS_TEST_URL === undefined 
         }
     });
 
+    it("a consumer deleted under a running subscription stops delivering and is not recreated", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const stream = uniqueName("own");
+        const group = uniqueName("grp");
+        const adapter = NatsAdapter({ servers, stream });
+        await adapter.connect();
+        try {
+            const { deliveries, handler } = counter();
+            const sub = await adapter.subscribe(["user.created"], handler, { group });
+            try {
+                await adapter.publish("user.created", bytes("before"));
+                await sleep(1_000);
+                const connection = await connect({ servers });
+                try {
+                    const manager = await jetstreamManager(connection);
+                    await manager.consumers.delete(stream, consumerName(group, "user.created"));
+                } finally {
+                    await connection.close();
+                }
+                await adapter.publish("user.created", bytes("after"));
+                await sleep(SETTLE_MS);
+                assert.deepEqual([...deliveries], [["user.created:before", 1]], "nothing arrives after the consumer was removed");
+                await assert.rejects(consumerInfo(stream, consumerName(group, "user.created")), "the consumer is not recreated behind the operator's back");
+            } finally {
+                await sub.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
     it("500 events over three nested patterns, every third handler run fails once: each event handled, extra runs only from redelivery", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const stream = uniqueName("own");
         const adapter = NatsAdapter({ servers, stream, consumerOptions: { ackWait: 1_000 } });
