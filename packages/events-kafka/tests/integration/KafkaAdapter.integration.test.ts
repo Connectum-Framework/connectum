@@ -26,6 +26,7 @@ import { createEventContext, dlqMiddleware } from "@connectum/events";
 import type { Admin } from "kafkajs";
 import { Kafka, logLevel } from "kafkajs";
 import { KafkaAdapter } from "../../src/KafkaAdapter.ts";
+import { createTopicWithLeader } from "./createTopic.ts";
 
 const KAFKA_TEST_URL = process.env.KAFKA_TEST_URL;
 
@@ -77,11 +78,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
 
     async function createTopic(name: string, partitions = 1): Promise<string> {
         await ensureAdmin();
-        const created = await admin.createTopics({
-            waitForLeaders: true,
-            topics: [{ topic: name, numPartitions: partitions, replicationFactor: 1 }],
-        });
-        assert.equal(created, true, `topic ${name} was not created`);
+        await createTopicWithLeader(admin, name, partitions);
         createdTopics.push(name);
         return name;
     }
@@ -1200,8 +1197,7 @@ describe("Kafka adapter commit strategy on a real broker", { skip: KAFKA_TEST_UR
             await admin.connect();
             adminConnected = true;
         }
-        const created = await admin.createTopics({ waitForLeaders: true, topics: [{ topic: name, numPartitions: 1, replicationFactor: 1 }] });
-        assert.equal(created, true, `topic ${name} was not created`);
+        await createTopicWithLeader(admin, name);
         createdTopics.push(name);
         return name;
     }
