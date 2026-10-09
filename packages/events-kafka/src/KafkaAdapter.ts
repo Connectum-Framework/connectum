@@ -284,7 +284,11 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 // The topics that exist when the subscription starts are the ones KafkaJS expands the
                 // wildcards to; anything listed later that matches is new. Listing first means a topic
                 // created in between is seen again at the first check, which costs one needless restart
-                // and loses nothing.
+                // and loses nothing. A failed listing fails the subscription: continuing with an empty
+                // list would make every existing topic look new at the first check, and the restart
+                // would read their whole history from the beginning although `fromBeginning` is off.
+                // KafkaJS expands the wildcards with the same metadata request, so a broker that
+                // cannot answer this one fails the subscribe below anyway.
                 const known = new Set<string>();
                 if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
                     for (const name of await (await getAdmin()).listTopics()) {
