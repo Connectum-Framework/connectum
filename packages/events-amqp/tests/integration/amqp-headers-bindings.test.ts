@@ -170,6 +170,51 @@ describe(`AMQP headers exchange bindings on ${IMAGE} (testcontainers)`, { skip: 
         assert.deepEqual(seen, ["kind-a:a", "kind-a:b", "kind-b:b"]);
     });
 
+    it("upgrade: a catch-all left by the previous adapter keeps delivering until the operator removes it; the adapter unbinds nothing", { timeout: 60_000 }, async () => {
+        const exchange = `it.headers-upgrade.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+        const topology: AmqpAdapterOptions["topology"] = {
+            queues: [{ name: queue, durable: true }],
+            bindings: [{ queue, source: exchange, routingKey: "", arguments: { ...SELECTIVE } }],
+        };
+
+        // The previous adapter version: it asserted the queue and bound it with
+        // an argument-less binding under the subscription's pattern. The broker
+        // keeps that binding on a durable queue after the adapter is gone.
+        const conn = await connect(url);
+        const channel = await conn.createChannel();
+        await channel.assertExchange(exchange, "headers", { durable: true });
+        await channel.assertQueue(queue, { durable: true });
+        await channel.bindQueue(queue, exchange, "kind-a");
+        await channel.close();
+        await conn.close();
+
+        // This version, declared selective binding: the old catch-all still
+        // matches, so the declared binding does not filter yet.
+        const beforeCleanup = await observe(exchange, queue, { topology });
+        assert.deepEqual(beforeCleanup, ["kind-a:a", "kind-a:b", "kind-b:b"], "the leftover argument-less binding still delivers everything");
+        const left = await bindingsOf(exchange, queue);
+        assert.equal(left.length, 2, "the adapter neither removed the leftover binding nor added one of its own");
+        assert.ok(
+            left.some((b) => b.routingKey === "kind-a" && Object.keys(b.arguments).length === 0),
+            "the argument-less binding of the previous version is still there",
+        );
+        assert.ok(left.some((b) => b.routingKey === "" && b.arguments["x-match"] === "all" && b.arguments.kind === "a"));
+
+        // The documented migration step: the operator removes the leftover.
+        const operator = await connect(url);
+        const opChannel = await operator.createChannel();
+        await opChannel.unbindQueue(queue, exchange, "kind-a");
+        await opChannel.close();
+        await operator.close();
+
+        const afterCleanup = await observe(exchange, queue, { topology });
+        assert.deepEqual(afterCleanup, ["kind-a:a"], "once the leftover is gone the declared binding filters");
+        const remaining = await bindingsOf(exchange, queue);
+        assert.equal(remaining.length, 1);
+        assert.deepEqual(remaining[0]?.arguments, SELECTIVE);
+    });
+
     it("check mode leaves the operator's selective binding alone and it filters", async () => {
         const exchange = `it.headers-check.${randomUUID()}`;
         const queue = `${exchange}.q`;

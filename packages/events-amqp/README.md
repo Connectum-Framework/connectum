@@ -335,7 +335,9 @@ Consequences worth knowing:
 - On a direct exchange with `topologyMode: "assert"`, `subscribe()` throws a
   `TypeError` for a complete `*` or `>` segment before any queue is declared.
 - On fanout and headers exchanges every pattern is accepted, and the queue
-  receives every message published to the exchange. A literal such as
+  receives every message published to the exchange, except that on a headers
+  exchange a selective binding declared for the queue in `topology.bindings`
+  limits it to the messages that binding matches. A literal such as
   `user.created` does not narrow it either; use a topic exchange when the broker
   should do the filtering.
 - The adapter publishes no header carrying the event type, so a headers
@@ -393,6 +395,18 @@ by the adapter; to rely on them use `topologyMode: "check"` or `"skip"`.
 > selective declared binding still received every message. It now receives only
 > what the declared bindings select. To keep the old behavior, remove the
 > selective binding from `topology.bindings` or declare it without arguments.
+
+**Upgrading a durable queue the previous version bound.** The previous version
+bound a durable queue with an argument-less binding, and the broker keeps that
+binding after the upgrade. The adapter stops adding it but never removes
+bindings, because it cannot tell its own from one an operator created; until the
+operator removes it, the queue still receives every message and the declared
+`x-match` binding filters nothing. Remove the leftover once, with the same routing
+key the old binding was made with (the subscription pattern) and no arguments,
+for example with amqplib `channel.unbindQueue(queue, exchange, pattern)` (or the
+broker's management HTTP API), or delete the queue and let the adapter declare it
+again (`rabbitmqctl delete_queue <queue>`; its messages are lost). `rabbitmqctl
+list_bindings` shows what the broker holds for the queue.
 
 ### Consumer Groups
 
