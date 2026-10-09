@@ -8,11 +8,12 @@
  * pattern among those whose consumer delivers (or already delivered) that message; the other
  * deliveries are acknowledged and skipped.
  *
- * A consumer delivers every matching message from its start sequence on. The start sequence of a
- * consumer that existed before the subscription is recorded in the consumer's own metadata the first
- * time this adapter version attaches to it, so every replica of the group skips the same deliveries.
- * Replicas that disagree on a start sequence can only run the handler twice for a message, never
- * zero times: a delivery is skipped only when a more specific consumer is known to deliver it too.
+ * A consumer delivers every matching message from its start sequence on. Each replica works out the
+ * start sequence of every consumer from what the server reports about it when it subscribes; nothing
+ * is written back to the broker. Replicas that disagree on a start sequence can only run the handler
+ * twice for a message, never zero times: a delivery is skipped only when a more specific consumer
+ * is known to deliver it too, and a delivery below the delivering consumer's own start sequence is
+ * never skipped.
  *
  * @module patternOwner
  */
@@ -87,4 +88,16 @@ export function ownerOf(patterns: readonly OwnedPattern[], subject: string, seq:
         }
     }
     return undefined;
+}
+
+/**
+ * Whether the delivery of `subject` at stream sequence `seq` by the consumer of `delivering` runs
+ * the handler. It does unless a more specific pattern of the subscription owns the message; and
+ * a delivery below the delivering pattern's own start bound always does. Such a delivery exists
+ * only when the bound was computed above an unacknowledged message that the consumer delivers
+ * again; the bound is then wrong for every replica, so leaving the message to another consumer
+ * could leave it to nobody. Running the handler here can cost a second run, never a lost event.
+ */
+export function runsHandler(patterns: readonly OwnedPattern[], delivering: OwnedPattern, subject: string, seq: number): boolean {
+    return seq < delivering.startSeq || ownerOf(patterns, subject, seq) === delivering.pattern;
 }

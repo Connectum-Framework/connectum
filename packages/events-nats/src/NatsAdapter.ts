@@ -16,7 +16,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
 import { ensureConsumer } from "./consumerSetup.ts";
 import type { OwnedPattern } from "./patternOwner.ts";
-import { comparePatterns, ownedPattern, ownerOf } from "./patternOwner.ts";
+import { comparePatterns, ownedPattern, runsHandler } from "./patternOwner.ts";
 import type { NatsAdapterOptions } from "./types.ts";
 
 /** Default stream name when none is provided. */
@@ -205,9 +205,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
-            /** Durables this call created, deleted again when a later step fails. Pre-existing ones are left alone. */
-            const createdDurables: string[] = [];
-            /** Every durable of the subscription, for the cleanup of an auto-generated group. */
+            /** Every durable of the subscription, for the cleanup of an auto-generated group (on unsubscribe and when subscribe fails). */
             const durables: string[] = [];
 
             // Every pattern keeps its own durable consumer, so a message matched by several patterns
@@ -222,31 +220,26 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     const durableName = consumerName(group, pattern);
                     durables.push(durableName);
 
-                    const startSeq = await ensureConsumer(
-                        jsm,
-                        streamName,
-                        {
-                            durable_name: durableName,
-                            ack_policy: AckPolicy.Explicit,
-                            deliver_policy: deliverPolicy,
-                            filter_subject: `${streamName}.${pattern}`,
-                            ack_wait: ackWaitNs,
-                            max_deliver: maxDeliver,
-                        },
-                        createdDurables,
-                    );
+                    const startSeq = await ensureConsumer(jsm, streamName, {
+                        durable_name: durableName,
+                        ack_policy: AckPolicy.Explicit,
+                        deliver_policy: deliverPolicy,
+                        filter_subject: `${streamName}.${pattern}`,
+                        ack_wait: ackWaitNs,
+                        max_deliver: maxDeliver,
+                    });
                     owned.push(ownedPattern(pattern, startSeq));
                 }
 
-                for (const { pattern } of owned) {
-                    const consumer = await js.consumers.get(streamName, consumerName(group, pattern));
+                for (const own of owned) {
+                    const consumer = await js.consumers.get(streamName, consumerName(group, own.pattern));
                     const messages = await consumer.consume();
                     messageIterators.push(messages);
 
                     // Start the consumption loop in the background.
                     // The loop exits when messages.close() is called.
-                    consumeLoop(messages, handler, pattern, owned, streamName).catch((err) => {
-                        console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
+                    consumeLoop(messages, handler, own, owned, streamName).catch((err) => {
+                        console.error(`[EventBus/NATS] Consume loop error for pattern "${own.pattern}":`, err);
                     });
                 }
             } catch (error) {
@@ -255,9 +248,16 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 for (const iter of messageIterators) {
                     await iter.close().catch(() => undefined);
                 }
-                // Delete broker-side durable consumers created before the failure.
-                for (const durableName of createdDurables) {
-                    await jsm.consumers.delete(streamName, durableName).catch(() => undefined);
+                // The durables of an auto-generated group belong to this call alone and are removed.
+                // Those of a named group are shared with every replica of the group, and this call
+                // cannot tell the ones it created from the ones another replica created at the same
+                // moment (the server accepts an equal configuration as the same consumer); deleting a
+                // consumer a replica reads stops its delivery without any error, so they are left in
+                // place for the next, successful subscribe() of the group to attach to.
+                if (isAutoGroup) {
+                    for (const durableName of durables) {
+                        await jsm.consumers.delete(streamName, durableName).catch(() => undefined);
+                    }
                 }
                 messageIterators.length = 0;
                 throw error;
@@ -277,7 +277,6 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                         }
                     }
                     durables.length = 0;
-                    createdDurables.length = 0;
 
                     // Remove from the active subscriptions list.
                     const idx = activeSubs.indexOf(subscription);
@@ -325,7 +324,7 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
  * The EventBus layer handles auto-ack fallback if the handler
  * does not explicitly call ack() or nack().
  */
-async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, pattern: string, owned: readonly OwnedPattern[], streamName: string): Promise<void> {
+async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, own: OwnedPattern, owned: readonly OwnedPattern[], streamName: string): Promise<void> {
     // The stream subject prefix to strip from delivered subjects.
     // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
     const subjectPrefix = `${streamName}.`;
@@ -336,7 +335,7 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
 
         // A more specific pattern of this subscription delivers this message too: that delivery
         // runs the handler, this one is settled without it.
-        if (owned.length > 1 && ownerOf(owned, eventType, msg.seq) !== pattern) {
+        if (owned.length > 1 && !runsHandler(owned, own, eventType, msg.seq)) {
             msg.ack();
             continue;
         }

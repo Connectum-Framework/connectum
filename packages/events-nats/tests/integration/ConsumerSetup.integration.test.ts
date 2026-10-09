@@ -112,12 +112,12 @@ describe("NATS adapter: consumer set-up against a real server", { skip: NATS_TES
                     });
                 },
             });
-            const created: string[] = [];
-            const startSeq = await ensureConsumer(stale, stream, config(stream, 60_000_000_000), created);
+            const startSeq = await ensureConsumer(stale, stream, config(stream, 60_000_000_000));
             assert.equal(startSeq, 1, "nothing was published: the winner's consumer delivers from the start");
-            // A server older than 2.10 takes the second add as an update of the same consumer, so there the
-            // caller does count as its creator; newer servers refuse it and the caller attaches instead.
-            assert.deepEqual(created, refuses ? [] : ["dur"], "a refused creation is not the caller's, so a rollback cannot remove the winner's consumer");
+            // A server older than 2.10 takes the second add as an update of the same consumer; newer servers
+            // refuse it and the caller attaches instead. Either way the caller continues.
+            const info = await jsm.consumers.info(stream, "dur");
+            assert.equal(info.config.ack_wait, refuses ? 30_000_000_000 : 60_000_000_000);
         });
     });
 
@@ -126,7 +126,7 @@ describe("NATS adapter: consumer set-up against a real server", { skip: NATS_TES
         try {
             const jsm = await jetstreamManager(connection);
             const missingStream = uniqueName("nostream");
-            const error = await ensureConsumer(jsm, missingStream, config(missingStream, 1_000_000_000), []).then(
+            const error = await ensureConsumer(jsm, missingStream, config(missingStream, 1_000_000_000)).then(
                 () => undefined,
                 (e: unknown) => e,
             );

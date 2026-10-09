@@ -2,37 +2,36 @@
  * Creating or attaching to the durable consumer of one pattern, and finding out from which stream
  * sequence on that consumer delivers messages.
  *
+ * The adapter only ever reads an existing consumer: it never updates its configuration. A
+ * consumer's configuration is compared by the server when an earlier version of this adapter
+ * creates it again on start-up, so any field this version added (such as metadata) would make
+ * that version fail with "consumer already exists" and block a rollback.
+ *
  * @module consumerSetup
  */
 
 import type { ConsumerConfig, ConsumerInfo, JetStreamManager } from "@nats-io/jetstream";
 
 /**
- * Consumer metadata key holding the first stream sequence the consumer delivers. Written once, when
- * the adapter creates the consumer or attaches for the first time to one created by an earlier
- * version, so that every replica of the group reads the same value.
- */
-export const START_SEQ_METADATA = "connectum.start_seq";
-
-/** Set once the first metadata write was refused, so the warning is printed once per process. */
-let startSeqRecordWarned = false;
-
-/**
- * Make sure the durable described by `config` exists and return the first stream sequence it delivers.
+ * Make sure the durable described by `config` exists and return a bound on the first stream
+ * sequence it delivers: never below the sequence the consumer started at, so another consumer of
+ * the subscription never leaves a message to this one unless this one delivers it.
  *
- * A consumer this call creates is appended to `created` (a later failure removes it again) and
- * starts wherever `deliver_policy` puts it. An existing consumer delivers everything above its
- * acknowledgement floor, or, before its first acknowledgement, everything above what it has
- * delivered so far; both are at or above the sequence it started at, so another consumer never
- * skips a message in favour of this one unless this one delivers it. The bound is written to the
- * consumer's metadata the first time, so later subscribers and other replicas skip the same
- * deliveries instead of each reading a floor that has moved on.
+ * A consumer this call creates starts wherever `deliver_policy` puts it, and the bound is exact.
+ * For an existing consumer the bound is its acknowledgement floor plus one (everything below is
+ * acknowledged and will not be delivered again), or, while nothing has been acknowledged yet,
+ * what it has delivered so far plus one. The second bound can be above a delivery that is still
+ * unacknowledged and will come again; the consume loop therefore runs the handler for every
+ * delivery below the bound of the consumer that made it (see `runsHandler`). The bound is not
+ * written anywhere: replicas that compute different bounds can run the handler twice for a
+ * message, never zero times.
  *
- * Two replicas may both find the consumer missing and both try to create it. The loser is refused
- * because the winner has meanwhile written the metadata, so the loser reads the consumer again and
- * continues as with one that existed before; it is not appended to `created`.
+ * Two replicas may both find the consumer missing and both try to create it. With equal
+ * configurations the second creation is accepted as the same consumer; with different ones
+ * (for example during a rollout that changes `ackWait`) it is refused as "already exists", and
+ * the loser reads the consumer again and continues as with one that existed before.
  */
-export async function ensureConsumer(jsm: JetStreamManager, streamName: string, config: Partial<ConsumerConfig> & { durable_name: string }, created: string[]): Promise<number> {
+export async function ensureConsumer(jsm: JetStreamManager, streamName: string, config: Partial<ConsumerConfig> & { durable_name: string }): Promise<number> {
     let info: ConsumerInfo | undefined;
     try {
         info = await jsm.consumers.info(streamName, config.durable_name);
@@ -45,10 +44,7 @@ export async function ensureConsumer(jsm: JetStreamManager, streamName: string, 
     if (info === undefined) {
         try {
             const fresh = await jsm.consumers.add(streamName, config);
-            created.push(config.durable_name);
-            const startSeq = fresh.delivered.stream_seq + 1;
-            await recordStartSeq(jsm, streamName, config.durable_name, fresh.config.metadata, startSeq);
-            return startSeq;
+            return fresh.delivered.stream_seq + 1;
         } catch (err: unknown) {
             if (!isConsumerAlreadyExists(err)) {
                 throw err;
@@ -57,33 +53,36 @@ export async function ensureConsumer(jsm: JetStreamManager, streamName: string, 
         }
     }
 
-    const recorded = Number(info.config.metadata?.[START_SEQ_METADATA]);
-    if (Number.isSafeInteger(recorded) && recorded > 0) {
-        return recorded;
-    }
-    const startSeq = (info.ack_floor.stream_seq > 0 ? info.ack_floor.stream_seq : info.delivered.stream_seq) + 1;
-    await recordStartSeq(jsm, streamName, config.durable_name, info.config.metadata, startSeq);
-    return startSeq;
+    warnOnConfigurationDrift(streamName, info, config);
+    return (info.ack_floor.stream_seq > 0 ? info.ack_floor.stream_seq : info.delivered.stream_seq) + 1;
 }
 
+/** Consumers already reported by this process, so a consumer that stays different is reported once. */
+const reportedDrift = new Set<string>();
+
 /**
- * Write the start sequence into the consumer's metadata. Consumer metadata needs nats-server 2.10;
- * on an older server (the package supports 2.9) the client refuses the field, and the adapter then
- * works from the bound it computed: correctness does not depend on the record, only the number of
- * repeated handler runs when replicas compute different bounds. The refusal is reported once.
+ * Report an existing consumer whose delivery settings differ from the ones this subscription asks
+ * for. The adapter keeps the existing configuration (see the module comment); an earlier version
+ * failed here with "consumer already exists" on nats-server 2.10 and later, so a changed
+ * `ackWait` or `maxDeliver` would otherwise go on running with the old values without a word.
  */
-async function recordStartSeq(jsm: JetStreamManager, streamName: string, durableName: string, metadata: Record<string, string> | undefined, startSeq: number): Promise<void> {
-    try {
-        await jsm.consumers.update(streamName, durableName, { metadata: { ...metadata, [START_SEQ_METADATA]: String(startSeq) } });
-    } catch (err: unknown) {
-        if (!startSeqRecordWarned) {
-            startSeqRecordWarned = true;
-            console.warn(
-                `[EventBus/NATS] cannot record the start sequence of consumer "${durableName}" (server older than 2.10?): replicas may handle an event twice when they attach at different times.`,
-                err,
-            );
+function warnOnConfigurationDrift(streamName: string, existing: ConsumerInfo, requested: Partial<ConsumerConfig> & { durable_name: string }): void {
+    const key = `${streamName}/${requested.durable_name}`;
+    if (reportedDrift.has(key)) {
+        return;
+    }
+    const differences: string[] = [];
+    for (const field of ["ack_wait", "max_deliver", "deliver_policy"] as const) {
+        const wanted = requested[field];
+        if (wanted !== undefined && existing.config[field] !== wanted) {
+            differences.push(`${field}=${String(existing.config[field])} (requested ${String(wanted)})`);
         }
     }
+    if (differences.length === 0) {
+        return;
+    }
+    reportedDrift.add(key);
+    console.warn(`[EventBus/NATS] consumer "${requested.durable_name}" of stream "${streamName}" exists with ${differences.join(", ")}; the existing configuration is kept.`);
 }
 
 /** JetStream API error code: the consumer does not exist. */

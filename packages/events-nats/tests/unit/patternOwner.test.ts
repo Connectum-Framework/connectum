@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { comparePatterns, matchesPattern, ownedPattern, ownerOf } from "../../src/patternOwner.ts";
+import { comparePatterns, matchesPattern, ownedPattern, ownerOf, runsHandler } from "../../src/patternOwner.ts";
 
 describe("matchesPattern", () => {
     it("follows NATS wildcard rules", () => {
@@ -65,5 +65,28 @@ describe("ownerOf", () => {
         assert.equal(ownerOf(partial, "a.b.c", 10), "a.*.c");
         assert.equal(ownerOf(partial, "a.b.x", 10), "a.b.*");
         assert.equal(ownerOf(partial, "a.x.c", 10), "a.*.c");
+    });
+});
+
+describe("runsHandler", () => {
+    const owned = [ownedPattern("user.created", 100), ownedPattern("user.>", 10)];
+    const [narrow, wide] = owned as [typeof owned[0], typeof owned[1]];
+
+    it("runs the handler for the delivery of the owning pattern only", () => {
+        assert.equal(runsHandler(owned, narrow, "user.created", 150), true);
+        assert.equal(runsHandler(owned, wide, "user.created", 150), false);
+        assert.equal(runsHandler(owned, wide, "user.updated", 150), true);
+    });
+
+    it("leaves a message below the narrow consumer's bound to the wide consumer", () => {
+        assert.equal(runsHandler(owned, wide, "user.created", 50), true);
+    });
+
+    it("always runs the handler for a delivery below the delivering consumer's own bound", () => {
+        // The narrow consumer delivers sequence 50 after all: its bound was computed above an unacknowledged message.
+        assert.equal(runsHandler(owned, narrow, "user.created", 50), true);
+        // The same holds when no pattern claims the sequence at all.
+        const late = [ownedPattern("user.created", 100), ownedPattern("user.>", 200)];
+        assert.equal(runsHandler(late, late[0] as typeof narrow, "user.created", 50), true);
     });
 });
