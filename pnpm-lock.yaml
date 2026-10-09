@@ -628,6 +628,9 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@bufbuild/buf':
+        specifier: 'catalog:'
+        version: 1.72.0
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
