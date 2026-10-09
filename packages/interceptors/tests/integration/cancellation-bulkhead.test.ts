@@ -36,11 +36,24 @@ describe("bulkhead cancellation accounting", { timeout: 10_000 }, () => {
         const firstStarted = deferred<void>();
         const firstRelease = deferred<void>();
         const firstSettled = deferred<void>();
+        const slotReleased = deferred<void>();
+        let interceptedCalls = 0;
+        // Outside the bulkhead: settles when the bulkhead has released the slot, which
+        // happens after the handler finishes, not when the handler's own finally runs.
+        const observeSlotRelease: Interceptor = (next) => async (request) => {
+            const callNumber = ++interceptedCalls;
+            try {
+                return await next(request);
+            } finally {
+                if (callNumber === 1) slotReleased.resolve();
+            }
+        };
         let invocations = 0;
         let active = 0;
         const server = createServer({
             interceptors: [
                 createTimeoutInterceptor({ duration: 40 }),
+                observeSlotRelease,
                 createBulkheadInterceptor({ capacity: 1, queueSize: 0 }),
                 createRetryInterceptor({ maxRetries: 2, initialDelay: 100, maxDelay: 100 }),
             ],
@@ -91,6 +104,7 @@ describe("bulkhead cancellation accounting", { timeout: 10_000 }, () => {
 
             firstRelease.resolve();
             await firstSettled.promise;
+            await slotReleased.promise;
             assert.equal(active, 0);
             const response = await client.echo(create(EchoRequestSchema, { message: "after-settle" }));
             assert.deepEqual(response, { $typeName: "echo.v1.EchoResponse", message: "response:after-settle", timestamp: 0n });

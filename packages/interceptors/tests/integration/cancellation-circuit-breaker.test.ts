@@ -56,6 +56,24 @@ function isCode(code: Code, rawMessage?: string) {
     };
 }
 
+// Placed between timeout and circuit breaker. The caller gets its error as soon as the
+// client aborts, but the breaker records the outcome only when the inner chain unwinds;
+// this observer settles at exactly that moment, so a test can wait for it instead of
+// relying on the unwind finishing before the next request is sent.
+function observeBreakerSettlement() {
+    const firstCallSettled = deferred<void>();
+    let calls = 0;
+    const interceptor: Interceptor = (next) => async (request) => {
+        const callNumber = ++calls;
+        try {
+            return await next(request);
+        } finally {
+            if (callNumber === 1) firstCallSettled.resolve();
+        }
+    };
+    return { interceptor, firstCallSettled: firstCallSettled.promise };
+}
+
 describe("timeout in front of a circuit breaker", { timeout: 10_000 }, () => {
     it("counts an expired deadline of a cooperative handler as a circuit failure", async () => {
         let handlerCalls = 0;
@@ -135,8 +153,9 @@ describe("timeout in front of a circuit breaker", { timeout: 10_000 }, () => {
     it("does not count caller cancellation as a circuit failure", async () => {
         const started = deferred<void>();
         let handlerCalls = 0;
+        const observer = observeBreakerSettlement();
         const server = createEchoServer({
-            interceptors: [createTimeoutInterceptor({ duration: 5_000 }), createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000 }), createRetryInterceptor({ maxRetries: 0 })],
+            interceptors: [createTimeoutInterceptor({ duration: 5_000 }), observer.interceptor, createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000 }), createRetryInterceptor({ maxRetries: 0 })],
             echo: async (message, signal) => {
                 handlerCalls++;
                 if (message === "cancelled") {
@@ -154,6 +173,7 @@ describe("timeout in front of a circuit breaker", { timeout: 10_000 }, () => {
             await started.promise;
             controller.abort(new ConnectError("caller stopped", Code.Canceled));
             await assert.rejects(pending, isCode(Code.Canceled, "caller stopped"));
+            await observer.firstCallSettled;
 
             const next = await client.echo(create(EchoRequestSchema, { message: "next" }));
             assert.equal(next.message, "response:next", "a cancelled call leaves the circuit closed");
@@ -166,8 +186,9 @@ describe("timeout in front of a circuit breaker", { timeout: 10_000 }, () => {
     it("counts caller cancellation whose own ConnectError carries an infrastructure code", async () => {
         const started = deferred<void>();
         let handlerCalls = 0;
+        const observer = observeBreakerSettlement();
         const server = createEchoServer({
-            interceptors: [createTimeoutInterceptor({ duration: 5_000 }), createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000 }), createRetryInterceptor({ maxRetries: 0 })],
+            interceptors: [createTimeoutInterceptor({ duration: 5_000 }), observer.interceptor, createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000 }), createRetryInterceptor({ maxRetries: 0 })],
             echo: async (_message, signal) => {
                 handlerCalls++;
                 started.resolve();
@@ -182,6 +203,7 @@ describe("timeout in front of a circuit breaker", { timeout: 10_000 }, () => {
             await started.promise;
             controller.abort(new ConnectError("upstream gone", Code.Unavailable));
             await assert.rejects(pending, isCode(Code.Unavailable, "upstream gone"));
+            await observer.firstCallSettled;
 
             await assert.rejects(client.echo(create(EchoRequestSchema, { message: "next" })), isCode(Code.Unavailable, "Circuit breaker is open (1 consecutive failures)"));
             assert.equal(handlerCalls, 1);
