@@ -22,6 +22,15 @@ import type { KafkaAdapterOptions } from "./types.ts";
 const defaultRedeliveryDelayMs = 1_000;
 
 /**
+ * How often a wildcard subscription checks the broker for new matching topics when
+ * `consumerOptions.topicDiscoveryInterval` is not set. The same period the Java client and
+ * KafkaJS use to refresh cluster metadata (`metadata.max.age.ms`, `metadataMaxAge`): one
+ * metadata request per wildcard subscription every five minutes, whose size grows with the
+ * number of topics on the cluster.
+ */
+export const defaultTopicDiscoveryIntervalMs = 300_000;
+
+/**
  * Convert NATS-style wildcard patterns to Kafka-compatible RegExp.
  *
  * - `*` matches a single segment (between dots)
@@ -102,8 +111,9 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         throw new RangeError(`KafkaAdapter: consumerOptions.commitStrategy must be "per-message" or "per-batch", got ${JSON.stringify(commitStrategy)}`);
     }
 
-    // Discovery is opt-in: `false` states the same thing as leaving the option out.
-    const topicDiscoveryOption = options.consumerOptions?.topicDiscoveryInterval;
+    // Discovery is on unless `false` is set: without it a wildcard subscription never sees a topic
+    // created after it started, and the group skips what was published there before the next restart.
+    const topicDiscoveryOption = options.consumerOptions?.topicDiscoveryInterval ?? defaultTopicDiscoveryIntervalMs;
     const topicDiscoveryInterval = topicDiscoveryOption === false ? undefined : topicDiscoveryOption;
     if (topicDiscoveryInterval !== undefined && (!Number.isFinite(topicDiscoveryInterval) || topicDiscoveryInterval <= 0 || topicDiscoveryInterval > maxTimerDelayMs)) {
         throw new RangeError(

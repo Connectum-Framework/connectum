@@ -19,6 +19,17 @@ async function waitFor(cond: () => boolean, label: string): Promise<void> {
     }
 }
 
+/** Run `body` with the discovery announcement (`console.warn`) swallowed, for tests that are not about the log. */
+async function withoutAnnouncement(body: () => Promise<void>): Promise<void> {
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        await body();
+    } finally {
+        console.warn = originalWarn;
+    }
+}
+
 /** A consumer that records the calls the discovery makes, in order. */
 function fakeConsumer(options?: { failRunTimes?: number }): { consumer: Consumer; calls: string[] } {
     const calls: string[] = [];
@@ -66,19 +77,31 @@ describe("startTopicDiscovery", () => {
         assert.deepEqual(calls, []);
     });
 
-    it("restarts the consumer once with the new topic, reading it from the beginning, and then stays quiet", async () => {
+    it("restarts the consumer once with the new topic, reading it from the beginning, names the topic in the log, and then stays quiet", async () => {
         const { consumer, calls } = fakeConsumer();
         const known = new Set(["orders.a"]);
         let topics = ["orders.a"];
-        const stop = startTopicDiscovery({ consumer, wildcards: [/^orders\..+$/], known, runConfig, resumeTimers: new Set(), interval: 5, listTopics: async () => topics });
-        await sleep(30);
-        topics = ["orders.a", "orders.b", "other.c"];
-        await waitFor(() => calls.includes("run"), "restart");
-        await sleep(40);
-        await stop();
+        const originalWarn = console.warn;
+        const logged: string[] = [];
+        console.warn = (...args: unknown[]) => {
+            logged.push(args.map(String).join(" "));
+        };
+        try {
+            const stop = startTopicDiscovery({ consumer, wildcards: [/^orders\..+$/], known, runConfig, resumeTimers: new Set(), interval: 5, listTopics: async () => topics });
+            await sleep(30);
+            topics = ["orders.a", "orders.b", "other.c"];
+            await waitFor(() => calls.includes("run"), "restart");
+            await sleep(40);
+            await stop();
+        } finally {
+            console.warn = originalWarn;
+        }
         assert.deepEqual(calls, ["stop", "subscribe orders.b fromBeginning=true", "run"]);
         assert.ok(known.has("orders.b"));
         assert.ok(!known.has("other.c"));
+        // The restart rebalances the group; the log says which topic caused it.
+        assert.equal(logged.length, 1);
+        assert.match(logged[0] as string, /topic discovery.*orders\.b/);
     });
 
     it("drops the pending partition resumes of the consumer it stops", async () => {
@@ -90,9 +113,11 @@ describe("startTopicDiscovery", () => {
                 resumed = true;
             }, 60),
         );
-        const stop = startTopicDiscovery({ consumer, wildcards: [/^orders\..+$/], known: new Set(), runConfig, resumeTimers, interval: 5, listTopics: async () => ["orders.a"] });
-        await sleep(100);
-        await stop();
+        await withoutAnnouncement(async () => {
+            const stop = startTopicDiscovery({ consumer, wildcards: [/^orders\..+$/], known: new Set(), runConfig, resumeTimers, interval: 5, listTopics: async () => ["orders.a"] });
+            await sleep(100);
+            await stop();
+        });
         assert.equal(resumed, false);
         assert.equal(resumeTimers.size, 0);
     });
@@ -100,10 +125,13 @@ describe("startTopicDiscovery", () => {
     it("runs the consumer again on the next check when the restart failed half-way, without subscribing twice", async () => {
         const { consumer, calls } = fakeConsumer({ failRunTimes: 1 });
         const originalError = console.error;
+        const originalWarn = console.warn;
         const logged: unknown[][] = [];
         console.error = (...args: unknown[]) => {
             logged.push(args);
         };
+        // The discovery of `orders.a` is announced on console.warn; it is not under test here.
+        console.warn = () => undefined;
         try {
             const stop = startTopicDiscovery({ consumer, wildcards: [/^orders\..+$/], known: new Set(), runConfig, resumeTimers: new Set(), interval: 5, listTopics: async () => ["orders.a"] });
             await waitFor(() => calls.filter((c) => c === "run").length === 1, "a successful run after the failed one");
@@ -111,6 +139,7 @@ describe("startTopicDiscovery", () => {
             await stop();
         } finally {
             console.error = originalError;
+            console.warn = originalWarn;
         }
         assert.deepEqual(calls, ["stop", "subscribe orders.a fromBeginning=true", "run failed", "run"]);
         assert.equal(logged.length, 1);
@@ -119,7 +148,9 @@ describe("startTopicDiscovery", () => {
     it("keeps checking after a failed topic listing", async () => {
         const { consumer, calls } = fakeConsumer();
         const originalError = console.error;
+        const originalWarn = console.warn;
         console.error = () => undefined;
+        console.warn = () => undefined;
         let attempt = 0;
         try {
             const stop = startTopicDiscovery({
@@ -141,6 +172,7 @@ describe("startTopicDiscovery", () => {
             await stop();
         } finally {
             console.error = originalError;
+            console.warn = originalWarn;
         }
         assert.deepEqual(calls, ["stop", "subscribe orders.a fromBeginning=true", "run"]);
     });
@@ -164,30 +196,32 @@ describe("startTopicDiscovery", () => {
             },
         } as unknown as Consumer;
         let lists = 0;
-        const stopDiscovery = startTopicDiscovery({
-            consumer,
-            wildcards: [/^orders\..+$/],
-            known: new Set(),
-            runConfig,
-            resumeTimers: new Set(),
-            interval: 5,
-            listTopics: async () => {
-                lists++;
-                return ["orders.a"];
-            },
+        await withoutAnnouncement(async () => {
+            const stopDiscovery = startTopicDiscovery({
+                consumer,
+                wildcards: [/^orders\..+$/],
+                known: new Set(),
+                runConfig,
+                resumeTimers: new Set(),
+                interval: 5,
+                listTopics: async () => {
+                    lists++;
+                    return ["orders.a"];
+                },
+            });
+            await waitFor(() => calls.includes("stop"), "restart started");
+            let stopped = false;
+            const stopping = stopDiscovery().then(() => {
+                stopped = true;
+            });
+            await sleep(20);
+            assert.equal(stopped, false, "stop() resolved while the consumer was still being restarted");
+            releaseStop();
+            await stopping;
+            const listsAtStop = lists;
+            await sleep(40);
+            assert.equal(lists, listsAtStop, "a check ran after stop()");
         });
-        await waitFor(() => calls.includes("stop"), "restart started");
-        let stopped = false;
-        const stopping = stopDiscovery().then(() => {
-            stopped = true;
-        });
-        await sleep(20);
-        assert.equal(stopped, false, "stop() resolved while the consumer was still being restarted");
-        releaseStop();
-        await stopping;
-        const listsAtStop = lists;
-        await sleep(40);
-        assert.equal(lists, listsAtStop, "a check ran after stop()");
         assert.deepEqual(calls, ["stop"], "a stopped discovery must not restart the consumer it no longer owns");
     });
 });

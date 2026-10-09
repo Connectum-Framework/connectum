@@ -66,6 +66,9 @@ export function startTopicDiscovery(options: TopicDiscoveryOptions): () => Promi
             return;
         }
         if (fresh.length > 0) {
+            // The restart below rebalances the consumer group; the operator should be able to tell
+            // a rebalance caused by a new topic from one caused by a failing member.
+            console.warn(`[KafkaAdapter] topic discovery: subscribing ${fresh.length} new topic(s) matching a wildcard and restarting the consumer: ${fresh.join(", ")}`);
             // A topic that appeared after the subscription is new to the group, so everything in
             // it is newer than the subscription: start from its first message, or the messages
             // published between its creation and this check would be skipped.

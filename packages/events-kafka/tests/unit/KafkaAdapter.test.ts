@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Kafka } from "kafkajs";
-import { KafkaAdapter } from "../../src/KafkaAdapter.ts";
+import { defaultTopicDiscoveryIntervalMs, KafkaAdapter } from "../../src/KafkaAdapter.ts";
 
 describe("KafkaAdapter", () => {
     it("creates adapter with correct name", () => {
@@ -135,7 +135,8 @@ describe("KafkaAdapter", () => {
                 },
                 run: async () => undefined,
             });
-            const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
+            // Discovery is on by default for wildcard patterns and would open a real admin client otherwise.
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
             try {
                 await adapter.connect();
                 const subscription = await adapter.subscribe(patterns, async () => undefined);
@@ -178,6 +179,61 @@ describe("KafkaAdapter", () => {
 
         it("a pattern without wildcards stays a literal topic name, including an internal one", async () => {
             assert.deepEqual(await subscribedTopics(["user.created", "__consumer_offsets"]), ["user.created", "__consumer_offsets"]);
+        });
+    });
+
+    describe("topicDiscoveryInterval default", () => {
+        /**
+         * Subscribe through the real adapter against a stubbed KafkaJS client and report whether the
+         * adapter listed the broker's topics, which it does only to seed a running discovery.
+         */
+        async function topicListings(patterns: string[], topicDiscoveryInterval?: number | false): Promise<number> {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
+            let listings = 0;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = () => ({ connect: async () => undefined, disconnect: async () => undefined, subscribe: async () => undefined, run: async () => undefined, stop: async () => undefined });
+            proto.admin = () => ({
+                connect: async () => undefined,
+                disconnect: async () => undefined,
+                listTopics: async () => {
+                    listings++;
+                    return ["orders.created"];
+                },
+            });
+            const adapter = KafkaAdapter({
+                brokers: ["localhost:9092"],
+                ...(topicDiscoveryInterval !== undefined && { consumerOptions: { topicDiscoveryInterval } }),
+            });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(patterns, async () => undefined);
+                await subscription.unsubscribe();
+            } finally {
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
+                await adapter.disconnect();
+            }
+            return listings;
+        }
+
+        it("is five minutes, the metadata refresh period of the Kafka clients", () => {
+            assert.equal(defaultTopicDiscoveryIntervalMs, 300_000);
+        });
+
+        it("runs discovery for a wildcard subscription when the option is not set", async () => {
+            assert.equal(await topicListings(["orders.*"]), 1);
+        });
+
+        it("does not run discovery when the option is false", async () => {
+            assert.equal(await topicListings(["orders.*"], false), 0);
+        });
+
+        it("never lists topics for a subscription without wildcards", async () => {
+            assert.equal(await topicListings(["orders.created"]), 0);
         });
     });
 

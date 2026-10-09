@@ -90,6 +90,8 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
      * Adapter for one scenario. A positive redelivery pause costs a whole KafkaJS fetch cycle (5 s)
      * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
      * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
+     * Topic discovery stays at the adapter default (on, five minutes) unless a scenario sets
+     * `topicDiscoveryInterval`, so a wildcard scenario keeps one extra admin connection open.
      */
     function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number; topicDiscoveryInterval?: number | false }): EventAdapter {
         return KafkaAdapter({
@@ -1017,7 +1019,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("with topicDiscoveryInterval false (the default) a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it("with topicDiscoveryInterval false a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const root = uniqueName("it.nolate");
         const early = await createTopic(`${root}.early`);
         const received: string[] = [];

@@ -76,24 +76,30 @@ export interface KafkaAdapterOptions {
         readonly commitStrategy?: "per-message" | "per-batch";
         /**
          * How often, in milliseconds, a subscription with wildcard patterns checks the broker for
-         * newly created topics that match them. Not set (or `false`): never — discovery is opt-in.
+         * newly created topics that match them. Default: 300000 (five minutes, the metadata refresh
+         * period of the Kafka clients). `false` turns the checks off: the topic list is then fixed
+         * when `subscribe()` runs.
          *
-         * Without it a wildcard is expanded once, when `subscribe()` runs: a matching topic created
-         * later is never consumed by that subscription. With it, every interval the adapter lists the
-         * broker's topics and, if a matching topic appeared, restarts the subscription's consumer to
-         * include it. The restart rebalances the consumer group (a pause in consumption of a few
-         * seconds, in-flight messages are redelivered) and happens only when there is a new topic;
-         * the check itself is one metadata request per subscription per interval. A discovered
+         * Without the checks a wildcard is expanded once, when `subscribe()` runs: a matching topic
+         * created later is not consumed until the service restarts, and a restart reads that topic
+         * from its end unless `fromBeginning` is set, so what was published to it before the restart
+         * is never handled by the group. A restart of the service inside one interval, before the
+         * check has seen a new topic, has the same effect for that topic: the window is at most one
+         * interval. With the checks, every interval the adapter lists the broker's topics and, if a
+         * matching topic appeared, restarts the subscription's consumer to include it. The restart
+         * rebalances the consumer group (a pause in consumption of a few seconds, in-flight
+         * messages are redelivered) and happens only when there is a new topic; the check itself is one metadata request per subscription per interval. A discovered
          * topic is read from its first message, whatever `fromBeginning` says: it is new to the
          * group, so nothing in it predates the subscription. A check that fails (for example the
-         * credentials may not list topics) is logged and repeated at the next interval.
+         * credentials may not list topics) is logged and repeated at the next interval. Each
+         * discovery is logged with the names of the topics, so a rebalance it causes can be told
+         * from one caused by a failing member.
          *
          * In a group of several members every member must discover the topic before the group reads
          * it completely: KafkaJS assigns partitions only from the topic list of the group's leader,
          * and a member drops assigned topics it has not subscribed to itself. A new topic is
          * therefore consumed in full after at most the longest interval among the members, with
-         * nothing lost in between. Give the
-         * members of a group the same interval.
+         * nothing lost in between. Give the members of a group the same interval.
          *
          * The first check runs one interval after `subscribe()`. Subscriptions without wildcard
          * patterns never check. A number must be positive, at most 2147483647; `KafkaAdapter()`
