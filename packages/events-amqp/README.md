@@ -401,12 +401,25 @@ bound a durable queue with an argument-less binding, and the broker keeps that
 binding after the upgrade. The adapter stops adding it but never removes
 bindings, because it cannot tell its own from one an operator created; until the
 operator removes it, the queue still receives every message and the declared
-`x-match` binding filters nothing. Remove the leftover once, with the same routing
-key the old binding was made with (the subscription pattern) and no arguments,
-for example with amqplib `channel.unbindQueue(queue, exchange, pattern)` (or the
-broker's management HTTP API), or delete the queue and let the adapter declare it
-again (`rabbitmqctl delete_queue <queue>`; its messages are lost). `rabbitmqctl
-list_bindings` shows what the broker holds for the queue.
+`x-match` binding filters nothing. Remove the leftover once. Each option below
+was run against RabbitMQ 4.3.6:
+
+- amqplib, with the routing key the old binding was made with (the subscription
+  pattern) and no arguments: `await channel.unbindQueue(queue, exchange, pattern)`.
+- The management HTTP API (the `rabbitmq_management` plugin; `guest:guest` is the
+  default user, `%2F` the default vhost). The leftover is the entry with empty
+  `arguments`; its `properties_key` goes into the `DELETE`:
+
+  ```bash
+  curl -s -u guest:guest http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>
+  curl -s -u guest:guest -X DELETE http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>/<properties_key>
+  ```
+
+  The `DELETE` answers `204`; the next `GET` lists only the declared binding.
+- Delete the queue and let the adapter declare it again with the declared
+  binding: `rabbitmqctl delete_queue <queue>`. Its messages are lost.
+
+`rabbitmqctl list_bindings` shows what the broker holds for the queue.
 
 ### Consumer Groups
 

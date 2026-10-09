@@ -15,7 +15,8 @@ import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import type { AmqpAdapterOptions } from "../../src/types.ts";
 
 const RUN = process.env.RUN_RECOVERY_TESTS === "1";
-const IMAGE = "rabbitmq:4.3.6-alpine";
+// The management variant of the pinned patch: the same broker plus the HTTP API the migration step is checked against.
+const IMAGE = "rabbitmq:4.3.6-management-alpine";
 
 const SELECTIVE = { "x-match": "all", kind: "a" } as const;
 
@@ -50,13 +51,21 @@ interface BrokerBinding {
 describe(`AMQP headers exchange bindings on ${IMAGE} (testcontainers)`, { skip: RUN ? false : "RUN_RECOVERY_TESTS != 1", concurrency: 1 }, () => {
     let container: StartedTestContainer;
     let url: string;
+    let managementUrl: string;
 
     before(async () => {
-        container = await new GenericContainer(IMAGE).withExposedPorts(5672).start();
+        container = await new GenericContainer(IMAGE).withExposedPorts(5672, 15672).start();
+        managementUrl = `http://${container.getHost()}:${container.getMappedPort(15672)}/api`;
         url = `amqp://guest:guest@${container.getHost()}:${container.getMappedPort(5672)}`;
         const version = await container.exec(["rabbitmqctl", "version"]);
         assert.equal(version.exitCode, 0, version.output);
         assert.equal(version.output.trim(), "4.3.6", "the regression must execute against the pinned RabbitMQ patch");
+        // The management plugin comes up a little after the AMQP listener.
+        const deadline = Date.now() + 30_000;
+        while ((await management("GET", "/overview").catch(() => undefined))?.status !== 200) {
+            assert.ok(Date.now() < deadline, "the management API did not come up");
+            await sleep(500);
+        }
     });
 
     after(async () => {
@@ -71,6 +80,25 @@ describe(`AMQP headers exchange bindings on ${IMAGE} (testcontainers)`, { skip: 
         return all
             .filter((b) => b.source_name === exchange && b.destination_name === queue && b.destination_kind === "queue")
             .map((b) => ({ routingKey: b.routing_key, arguments: Object.fromEntries(b.arguments.map(([name, , value]) => [name, value])) }));
+    }
+
+    /** One call to the management HTTP API as the default guest user. */
+    async function management(method: string, path: string): Promise<Response> {
+        return fetch(`${managementUrl}${path}`, {
+            method,
+            headers: { authorization: `Basic ${Buffer.from("guest:guest").toString("base64")}`, "content-type": "application/json" },
+        });
+    }
+
+    /** Create the exchange and queue and bind the queue the way the previous adapter version did: argument-less, under the subscription's pattern. */
+    async function legacyBind(exchange: string, queue: string): Promise<void> {
+        const conn = await connect(url);
+        const channel = await conn.createChannel();
+        await channel.assertExchange(exchange, "headers", { durable: true });
+        await channel.assertQueue(queue, { durable: true });
+        await channel.bindQueue(queue, exchange, "kind-a");
+        await channel.close();
+        await conn.close();
     }
 
     /** Pre-create the exchange and queue and bind them outside the adapter, the way an operator's tooling would. */
@@ -213,6 +241,52 @@ describe(`AMQP headers exchange bindings on ${IMAGE} (testcontainers)`, { skip: 
         const remaining = await bindingsOf(exchange, queue);
         assert.equal(remaining.length, 1);
         assert.deepEqual(remaining[0]?.arguments, SELECTIVE);
+    });
+
+    it("upgrade: the management API lists the leftover binding and deleting it by properties_key restores filtering", { timeout: 60_000 }, async () => {
+        const exchange = `it.headers-upgrade-api.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+        const topology: AmqpAdapterOptions["topology"] = {
+            queues: [{ name: queue, durable: true }],
+            bindings: [{ queue, source: exchange, routingKey: "", arguments: { ...SELECTIVE } }],
+        };
+        await legacyBind(exchange, queue);
+        assert.deepEqual(await observe(exchange, queue, { topology }), ["kind-a:a", "kind-a:b", "kind-b:b"]);
+
+        const listPath = `/bindings/%2F/e/${exchange}/q/${queue}`;
+        const listed = (await (await management("GET", listPath)).json()) as Array<{ routing_key: string; properties_key: string; arguments: Record<string, unknown> }>;
+        assert.equal(listed.length, 2);
+        const leftover = listed.find((b) => Object.keys(b.arguments).length === 0);
+        assert.ok(leftover, "the argument-less binding is listed");
+        assert.equal(leftover.properties_key, "kind-a");
+
+        const deleted = await management("DELETE", `${listPath}/${leftover.properties_key}`);
+        assert.equal(deleted.status, 204);
+        const rest = (await (await management("GET", listPath)).json()) as Array<{ arguments: Record<string, unknown> }>;
+        assert.equal(rest.length, 1);
+        assert.deepEqual(rest[0]?.arguments, SELECTIVE);
+        assert.deepEqual(await observe(exchange, queue, { topology }), ["kind-a:a"]);
+    });
+
+    it("upgrade: deleting the queue with rabbitmqctl drops its bindings and the adapter declares it again with filtering", { timeout: 60_000 }, async () => {
+        const exchange = `it.headers-upgrade-delete.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+        const topology: AmqpAdapterOptions["topology"] = {
+            queues: [{ name: queue, durable: true }],
+            bindings: [{ queue, source: exchange, routingKey: "", arguments: { ...SELECTIVE } }],
+        };
+        await legacyBind(exchange, queue);
+        assert.deepEqual(await observe(exchange, queue, { topology }), ["kind-a:a", "kind-a:b", "kind-b:b"]);
+        assert.equal((await bindingsOf(exchange, queue)).length, 2);
+
+        const removed = await container.exec(["rabbitmqctl", "delete_queue", queue]);
+        assert.equal(removed.exitCode, 0, removed.output);
+        assert.equal((await bindingsOf(exchange, queue)).length, 0, "the queue and every binding of it are gone");
+
+        assert.deepEqual(await observe(exchange, queue, { topology }), ["kind-a:a"]);
+        const bindings = await bindingsOf(exchange, queue);
+        assert.equal(bindings.length, 1);
+        assert.deepEqual(bindings[0]?.arguments, SELECTIVE);
     });
 
     it("check mode leaves the operator's selective binding alone and it filters", async () => {
