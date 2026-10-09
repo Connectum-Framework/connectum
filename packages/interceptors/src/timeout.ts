@@ -46,6 +46,7 @@ import type { TimeoutOptions } from "./types.ts";
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createTimeoutInterceptor({ duration: 10000 }),
  *   ],

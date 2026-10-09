@@ -186,7 +186,7 @@ export class HealthcheckManager {
     }
 
     /**
-     * Get all services health status
+     * Get health status for all registered services and components.
      *
      * @returns Map of service/component name to health status
      */

@@ -27,7 +27,7 @@ export const ATTR_NETWORK_PEER_PORT = "network.peer.port";
 
 /**
  * Connectum-specific span attribute that distinguishes RPC observations
- * carried by the in-process router transport from those carried by HTTP/2.
+ * carried by the in-process router transport from those carried by HTTP transports.
  *
  * Values:
  *   - `"in-process"` — the call traversed `createLocalTransport`

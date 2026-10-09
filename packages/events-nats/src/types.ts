@@ -58,8 +58,10 @@ export interface NatsConsumerOptions {
     readonly ackWait?: number;
 
     /**
-     * Maximum number of delivery attempts before the message
-     * is discarded by the server.
+     * Maximum number of delivery attempts. When the limit is reached,
+     * JetStream stops redelivering the message and emits a max-deliver
+     * advisory; the message remains in the stream subject to its retention
+     * policy.
      *
      * @default 5
      */

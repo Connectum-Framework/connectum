@@ -2,10 +2,15 @@
  * AMQP/RabbitMQ adapter for `@connectum/events`.
  *
  * Implements the {@link EventAdapter} interface on top of AMQP 0-9-1 (RabbitMQ),
- * providing at-least-once delivery with topic exchanges, consumer groups via
- * named queues, dead-letter exchange support, explicit external topology,
+ * with topic exchanges, consumer groups via named queues, dead-letter exchange
+ * support, explicit external topology,
  * automatic connection recovery (amqplib opt-in recovery), and per-message
  * publisher confirms with `mandatory`/`basic.return` correlation.
+ * Delivery and retention depend on broker topology and publish settings;
+ * unroutable publishes are detected only when `publisherOptions.mandatory`
+ * is enabled. In the default `assert` mode, subscriptions without a named group
+ * use private, non-durable, auto-delete queues; `check` and `skip` do not create
+ * that queue.
  *
  * @module AmqpAdapter
  */
@@ -376,7 +381,7 @@ function buildConnectOptions(socketOptions: Record<string, unknown> | undefined,
 }
 
 /**
- * The publish AUTO-RETRY boundary (#195): which publish failures the opt-in
+ * The publish AUTO-RETRY boundary: which publish failures the opt-in
  * `publishRetry` retries inline.
  *
  * Deliberately NARROWER than the at-least-once REPUBLISH matrix in the error
@@ -767,8 +772,10 @@ interface DeliveryChannel {
  * Settle a delivery, treating a closed channel as a no-op.
  *
  * Once a channel is closed amqplib's `ack`/`nack` throw `IllegalOperationError`.
- * That is not a failure: the broker requeues every delivery that was not
- * acknowledged before the channel closed, so the message comes back on its own.
+ * That is not itself a broker outcome: if the broker has not processed the
+ * settlement and the queue still exists, the unacknowledged delivery is
+ * returned. The broker may already have processed the settlement, or the queue
+ * may have been deleted, so redelivery is not guaranteed.
  * Throwing would turn a handler that outlives its connection into an
  * unhandled rejection (the requeue after a rejected handler runs in a `.catch`
  * with nobody above it). The skipped settlement is reported as a
@@ -1241,12 +1248,18 @@ interface RecoveryCycle {
  *
  * @example External AMQP contract (AsyncAPI-style)
  * ```typescript
+ * import { AmqpAdapter } from "@connectum/events-amqp";
+ *
  * const adapter = AmqpAdapter({
  *     url: "amqp://broker:5672",
  *     exchange: "partner.direct",
  *     exchangeType: "direct",
  *     serialization: { contentType: "application/json" },
  *     topology: {
+ *         exchanges: [
+ *             { name: "partner.direct", type: "direct", durable: true },
+ *             { name: "partner.dlx", type: "direct", durable: true },
+ *         ],
  *         queues: [{
  *             name: "partner.inbound.v1",
  *             durable: true,
@@ -1254,13 +1267,23 @@ interface RecoveryCycle {
  *                 "x-dead-letter-exchange": "partner.dlx",
  *                 "x-dead-letter-routing-key": "inbound.dead",
  *             },
+ *         }, {
+ *             name: "partner.inbound.dead",
+ *             durable: true,
  *         }],
- *         bindings: [{ queue: "partner.inbound.v1", source: "partner.direct", routingKey: "inbound" }],
+ *         bindings: [
+ *             { queue: "partner.inbound.v1", source: "partner.direct", routingKey: "inbound" },
+ *             { queue: "partner.inbound.dead", source: "partner.dlx", routingKey: "inbound.dead" },
+ *         ],
  *     },
+ *     // Used when an EventBus subscription has the `partner` group.
  *     queueOverrides: { partner: { queue: "partner.inbound.v1" } },
  *     // externalContract: emit only contract-specified properties (no envelope).
  *     publisherOptions: { persistent: true, mandatory: true, externalContract: true },
  * });
+ * await adapter.connect();
+ * // Add a subscription with group `partner` before receiving messages.
+ * await adapter.disconnect();
  * ```
  */
 export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {

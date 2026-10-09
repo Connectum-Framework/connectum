@@ -13,6 +13,8 @@ import type { FallbackOptions } from "./types.ts";
  * Create fallback interceptor
  *
  * Provides fallback response when service fails, enabling graceful degradation.
+ * The handler returns the RPC response message, not a response wrapper.
+ * In the server example, getCachedData is application code that returns that message.
  *
  * @param options - Fallback options
  * @returns ConnectRPC interceptor
@@ -29,7 +31,7 @@ import type { FallbackOptions } from "./types.ts";
  *     createFallbackInterceptor({
  *       handler: (error) => {
  *         console.error('Service failed, returning cached data:', error);
- *         return { message: getCachedData() };
+ *         return getCachedData();
  *       },
  *       skipStreaming: true,
  *     }),
@@ -46,6 +48,7 @@ import type { FallbackOptions } from "./types.ts";
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createFallbackInterceptor({
  *       handler: () => ({ data: [] }),

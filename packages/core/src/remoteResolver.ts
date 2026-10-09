@@ -95,7 +95,22 @@ export interface PerServiceEnvResolverOptions {
  * no mapping, or whose env var is unset/empty, resolves to `null`
  * (→ `Code.Unavailable`). Replaces hand-rolled env registries in boot code.
  *
- * @example `perServiceEnvResolver({ "orders.v1.OrdersService": "ORDERS_URL" })`
+ * @example
+ * ```ts
+ * import { createCatalogClient, perServiceEnvResolver } from "@connectum/core";
+ * import { serviceCatalog } from "./gen/catalog.gen.ts";
+ *
+ * // Generate the catalog from the Greeter proto and set GREETER_URL
+ * // to its server's HTTP/2 base URL before running this example.
+ * const client = createCatalogClient({
+ *   catalog: serviceCatalog,
+ *   resolver: perServiceEnvResolver({
+ *     "greeter.v1.GreeterService": "GREETER_URL",
+ *   }),
+ * });
+ * const greeting = await client.call("greeter.v1.GreeterService/SayHello", { name: "Alice" });
+ * console.log(greeting.message); // "Hello, Alice!"
+ * ```
  */
 export function perServiceEnvResolver(map: Readonly<Record<string, string>>, options?: PerServiceEnvResolverOptions): RemoteResolver {
     const create = options?.createTransport ?? defaultCreateTransport;

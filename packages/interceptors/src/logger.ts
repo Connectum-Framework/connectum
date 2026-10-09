@@ -1,8 +1,9 @@
 /**
  * Logger interceptor
  *
- * Logs every RPC call: request, response, failure and duration. Message bodies
- * are logged only when `includeBodies` is set.
+ * Logs RPC requests, responses, failures and duration. By default, calls whose
+ * service type name contains `grpc.health` are excluded. Message bodies are
+ * logged only when `includeBodies` is set.
  *
  * @module logger
  */
@@ -158,7 +159,9 @@ async function* logResStream<T>(
 /**
  * Create logger interceptor
  *
- * Logs all RPC requests and responses with timing information.
+ * Logs RPC requests and responses with timing information. By default,
+ * skips calls whose service type name contains `grpc.health`; set
+ * `skipHealthCheck: false` to include them.
  * Supports both unary and streaming RPCs.
  *
  * @param options - Logger options
@@ -203,6 +206,7 @@ async function* logResStream<T>(
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createLoggerInterceptor({ level: 'debug' }),
  *   ],

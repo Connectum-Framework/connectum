@@ -147,7 +147,9 @@ export interface ProtocolRegistration {
 }
 
 /**
- * TLS configuration options
+ * TLS configuration options.
+ * Supply both explicit key and certificate paths or use a directory pair.
+ * A single explicit path is ignored: both files are then read from the directory.
  */
 export interface TLSOptions {
     /**
@@ -591,9 +593,10 @@ export interface Server extends EventEmitter {
     start(): Promise<void>;
 
     /**
-     * Stop the server gracefully
+     * Stop the server gracefully. Concurrent calls during STOPPING join the
+     * in-progress shutdown; calls after it has completed are rejected.
      *
-     * @throws Error if server is not in RUNNING state
+     * @throws Error unless the server is RUNNING or already stopping
      */
     stop(): Promise<void>;
 
@@ -654,23 +657,26 @@ export interface Server extends EventEmitter {
     // ==========================================================================
 
     /**
-     * Add a service route at runtime
+     * Add a service before startup and before routes are materialized.
+     * Local client or transport access can materialize routes before start().
      *
-     * @throws Error if server is already running
+     * @throws Error if state is not CREATED or routes are already materialized
      */
     addService(service: ServiceDefinition): void;
 
     /**
-     * Add an interceptor at runtime
+     * Add an interceptor before startup and before routes are materialized.
+     * Local client or transport access can materialize routes before start().
      *
-     * @throws Error if server is already running
+     * @throws Error if state is not CREATED or routes are already materialized
      */
     addInterceptor(interceptor: Interceptor): void;
 
     /**
-     * Add a protocol at runtime
+     * Add a protocol before startup and before routes are materialized.
+     * Local client or transport access can materialize routes before start().
      *
-     * @throws Error if server is already running
+     * @throws Error if state is not CREATED or routes are already materialized
      */
     addProtocol(protocol: ProtocolRegistration): void;
 

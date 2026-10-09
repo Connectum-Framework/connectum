@@ -22,8 +22,9 @@ export interface SanitizableError {
 /**
  * Type guard for SanitizableError.
  *
- * Checks if the value is an object with clientMessage (string) and
- * serverDetails (non-null object) properties, plus a numeric code.
+ * Requires an Error instance with clientMessage (string), serverDetails
+ * (non-null object), and code (number). A plain object with these fields
+ * does not satisfy the guard.
  */
 export function isSanitizableError(err: unknown): err is Error & SanitizableError & { code: number } {
     if (!(err instanceof Error)) return false;

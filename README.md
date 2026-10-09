@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
-  <strong>Production-ready gRPC/ConnectRPC framework for Node.js 22.13+</strong>
+  <strong>gRPC/ConnectRPC framework for Node.js microservices</strong>
 </p>
 
 <p align="center">
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.13-brightgreen" alt="Node.js"></a>
+  <a href="https://connectum.dev/en/guide/runtime-compatibility"><img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-brightgreen" alt="Node.js runtime compatibility"></a>
   <a href="https://nodejs.org/api/typescript.html"><img src="https://img.shields.io/badge/TypeScript-Native-blue" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 </p>
@@ -26,7 +26,9 @@
 
 ---
 
-Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript execution via Node.js type stripping — no build step. Zero-config defaults with full customization through interceptors, protocols, and lifecycle hooks.
+Connectum provides modular packages for gRPC and ConnectRPC services. Published packages contain compiled JavaScript; running an application's TypeScript source directly has separate runtime requirements. See [Runtime Compatibility](https://connectum.dev/en/guide/runtime-compatibility).
+
+> This README documents the 1.3 release line. Installing from npm resolves the latest published package versions, which may predate changes on the main branch of this repository.
 
 ## Packages
 
@@ -38,7 +40,7 @@ Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript 
 | [`@connectum/healthcheck`](packages/healthcheck) | `Healthcheck()` — gRPC Health Check protocol + HTTP `/healthz`, `healthcheckManager` |
 | [`@connectum/reflection`](packages/reflection) | `Reflection()` — gRPC Server Reflection v1/v1alpha, `collectFileProtos()` |
 | [`@connectum/otel`](packages/otel) | `initProvider()` — OpenTelemetry tracing, metrics, logging; `traced()`, `getTracer()`, `getMeter()` |
-| [`@connectum/cli`](packages/cli) | `connectum proto sync` — sync proto types from a running server via reflection |
+| [`@connectum/cli`](packages/cli) | Scaffold projects, add services, and sync proto types from a running server |
 | [`@connectum/events`](packages/events) | `createEventBus()` — proto-first pub/sub with middleware (retry, DLQ), `MemoryAdapter` |
 | [`@connectum/events-nats`](packages/events-nats) | NATS JetStream adapter for EventBus |
 | [`@connectum/events-kafka`](packages/events-kafka) | Apache Kafka / Redpanda adapter for EventBus |
@@ -46,6 +48,7 @@ Modular framework for building gRPC/ConnectRPC microservices. Native TypeScript 
 | [`@connectum/events-amqp`](packages/events-amqp) | AMQP / RabbitMQ adapter for EventBus |
 | [`@connectum/protoc-gen-catalog`](packages/protoc-gen-catalog) | Buf plugin generating the typed service catalog (`ctx.call` / `ctx.stream`) |
 | [`@connectum/testing`](packages/testing) | `createTestServer()`, `mockResolver()`, `createMockContext()` — testing utilities |
+| [`@connectum/test-fixtures`](packages/test-fixtures) | Transport-free mock requests, descriptors, streams, and assertion helpers |
 
 ## Documentation
 

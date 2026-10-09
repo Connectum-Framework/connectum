@@ -3,10 +3,14 @@
  *
  * AMQP/RabbitMQ adapter for the `@connectum/events` event bus.
  *
- * Provides at-least-once delivery through AMQP 0-9-1 (RabbitMQ)
- * with topic exchanges, consumer groups via named queues,
+ * Provides AMQP 0-9-1 (RabbitMQ) publishing and consumption with topic
+ * exchanges, consumer groups via named queues,
  * dead-letter exchange support, and metadata propagation
  * via message headers.
+ * Delivery and retention depend on broker topology and publish settings:
+ * unroutable publishes are detected only when `publisherOptions.mandatory`
+ * is enabled, and subscriptions without a named group use private,
+ * non-durable, auto-delete queues.
  *
  * @example
  * ```typescript

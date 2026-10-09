@@ -25,6 +25,7 @@ import type { RetryOptions } from "./types.ts";
  * ```typescript
  * import { createServer } from '@connectum/core';
  * import { createRetryInterceptor } from '@connectum/interceptors';
+ * import { Code } from '@connectrpc/connect';
  *
  * const server = createServer({
  *   services: [myRoutes],

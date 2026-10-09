@@ -88,21 +88,27 @@ export interface CatalogClient {
 /**
  * Build a standalone {@link CatalogClient} from a {@link ServiceCatalog} and a
  * {@link RemoteResolver}.
+ * The example assumes a catalog generated from the Quickstart Greeter proto
+ * and that service running at the configured HTTP/2 endpoint.
  *
  * @example
  * ```ts
  * import { createCatalogClient, mapResolver } from "@connectum/core";
- * import { serviceCatalog } from "./gen/catalog.ts"; // @connectum/protoc-gen-catalog
+ * import { createGrpcTransport } from "@connectrpc/connect-node";
+ * import { serviceCatalog } from "./gen/catalog.gen.ts";
  *
  * const client = createCatalogClient({
  *   catalog: serviceCatalog,
  *   resolver: mapResolver({
- *     "fleet.v1.FleetService": createGrpcTransport({ baseUrl: process.env.FLEET_ADDR }),
+ *     "greeter.v1.GreeterService": createGrpcTransport({
+ *       baseUrl: process.env.GREETER_URL ?? "http://localhost:5000",
+ *     }),
  *   }),
  * });
  *
  * // Fully typed off the generated catalog — same surface as ctx.call:
- * const trip = await client.call("trip.v1.TripService/StartTrip", { vehicleId });
+ * const greeting = await client.call("greeter.v1.GreeterService/SayHello", { name: "Alice" });
+ * console.log(greeting.message); // "Hello, Alice!"
  * ```
  */
 export function createCatalogClient(options: CreateCatalogClientOptions): CatalogClient {

@@ -1,532 +1,73 @@
 # @connectum/events
 
-Universal event adapter layer for Connectum: proto-first pub/sub with pluggable broker adapters.
+This README documents `@connectum/events` 1.3 and later.
 
-**@connectum/events** provides a transport-agnostic EventBus for publishing and subscribing to events using protobuf schemas. Swap between NATS, Kafka, Redis Streams, or in-memory adapter without changing application code.
+Proto-first event publishing and subscription with middleware, a memory adapter,
+and pluggable broker adapters.
 
-**Layer**: 1 (Extension) | **Node.js**: >=22.13.0 | **License**: Apache-2.0
-
-## Features
-
-- **createEventBus()** -- factory with explicit lifecycle (`start()` / `stop()`)
-- **createBroadcastSubscribers()** -- 1->N fan-out wiring: one event delivered to N independent reactors, each on its own bus + consumer group
-- **Proto-first** -- publish and subscribe using `@bufbuild/protobuf` message schemas
-- **Pluggable Adapters** -- swap NATS, Kafka, Redis Streams, or in-memory without code changes
-- **EventRouter** -- type-safe handler registration mirroring ConnectRouter pattern
-- **Middleware Pipeline** -- composable middleware with built-in retry and DLQ
-- **Wildcard Subscriptions** -- NATS-style patterns (`*` single segment, `>` greedy)
-- **MemoryAdapter** -- zero-dependency in-memory adapter for testing
-- **Graceful Shutdown** -- integrates with `@connectum/core` via `EventBusLike` interface
-- **Auto-ack** -- successful handler completion auto-acknowledges if neither `ack()` nor `nack()` called
-
-## Installation
+## Install
 
 ```bash
 pnpm add @connectum/events
 ```
 
-**Peer dependencies:** `@connectum/core`, `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`. npm 7+, pnpm and Bun install missing peers automatically; with Yarn, add them yourself. See [Peer dependencies on protobuf and Connect](https://connectum.dev/en/migration/peer-dependencies).
+The package requires Node.js `>=22.13.0`. Peer dependencies are
+`@connectum/core`, `@bufbuild/protobuf` `^2.16.0`, and
+`@connectrpc/connect` `^2.2.0`. Use a broker adapter for persistent delivery;
+the memory adapter is for tests and local development. See
+[peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies)
+and [adapter selection](https://connectum.dev/en/guide/events/adapters).
 
-You also need a broker adapter:
+## Start here
 
-```bash
-pnpm add @connectum/events-nats    # NATS JetStream
-pnpm add @connectum/events-kafka   # Kafka / Redpanda
-pnpm add @connectum/events-redis   # Redis Streams
-```
-
-## Quick Start
-
-### Minimal Example (in-memory)
+Prerequisite: start from the public
+[`examples/with-events-dlq`](https://github.com/Connectum-Framework/examples/tree/main/with-events-dlq)
+project. Run `pnpm install` and `pnpm buf:generate` to generate its
+`InventoryReservedSchema`. Save the snippet as `src/publish-example.ts` and run
+`node src/publish-example.ts` on Node.js `>=25.2.0`. This snippet uses memory
+delivery, so it does not require the example's NATS broker. See the
+[events getting started guide](https://connectum.dev/en/guide/events/getting-started)
+to register handlers and choose a persistent adapter.
 
 ```typescript
 import { createEventBus, MemoryAdapter } from '@connectum/events';
-import { UserCreatedSchema } from '#gen/events_pb.js';
+import { InventoryReservedSchema, OrderEventHandlers } from '#gen/orders/v1/orders_pb.ts';
 
 const bus = createEventBus({
   adapter: MemoryAdapter(),
+  routes: [(events) => events.service(OrderEventHandlers, {
+    async onInventoryReserved(event) {
+      console.log(`Reserved ${event.quantity} ${event.product} for ${event.orderId}`);
+    },
+  })],
 });
 
 await bus.start();
-
-// Publish an event
-await bus.publish(UserCreatedSchema, { id: '1', name: 'Alice' });
-
+await bus.publish(InventoryReservedSchema, {
+  orderId: 'order-1', product: 'book', quantity: 1,
+});
 await bus.stop();
 ```
 
-### With Routes and Middleware
-
-```typescript
-import { createEventBus } from '@connectum/events';
-import { NatsAdapter } from '@connectum/events-nats';
-import { UserCreatedSchema } from '#gen/events_pb.js';
-import { UserService } from '#gen/user_pb.js';
-
-const bus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  routes: [eventRoutes],
-  middleware: {
-    retry: { maxRetries: 3, backoff: 'exponential' },
-    dlq: { topic: 'service.dlq' },
-  },
-});
-
-await bus.start();
-```
-
-### Integration with @connectum/core
-
-```typescript
-import { createServer } from '@connectum/core';
-import { createEventBus } from '@connectum/events';
-import { NatsAdapter } from '@connectum/events-nats';
-
-const eventBus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  routes: [eventRoutes],
-});
-
-const server = createServer({
-  services: [routes],
-  port: 5000,
-  eventBus, // Lifecycle managed by server
-});
-
-await server.start(); // Also starts eventBus
-```
-
-### EventRouter (type-safe handlers)
-
-```typescript
-import type { EventRouter } from '@connectum/events';
-import { UserService } from '#gen/user_pb.js';
-import { UserCreatedSchema } from '#gen/events_pb.js';
-
-export default (router: EventRouter) => {
-  router.service(UserService, {
-    async userCreated(event, ctx) {
-      // event is typed from the proto schema (first positional arg)
-      console.log(`User created: ${event.name}`);
-      // Auto-ack on successful return
-    },
-  });
-};
-```
-
-## Middleware
-
-The middleware pipeline wraps event handlers in the order:
-
-```text
-Custom[0] → Custom[1] → ... → DLQ → Retry → Handler
-```
-
-### Retry Middleware
-
-Retries failed handlers with configurable backoff strategy.
-
-```typescript
-const bus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  middleware: {
-    retry: {
-      maxRetries: 3,           // Max retry attempts (default: 3)
-      backoff: 'exponential',  // 'exponential' | 'linear' | 'fixed'
-      initialDelay: 200,       // Initial delay in ms (default: 1000)
-      maxDelay: 30000,         // Max delay in ms (default: 30000)
-      retryableErrors: (err) => !(err instanceof ValidationError),
-    },
-  },
-});
-```
-
-### DLQ Middleware
-
-Routes permanently failed events to a dead-letter queue topic.
-
-```typescript
-const bus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  middleware: {
-    dlq: {
-      topic: 'service.dlq',        // DLQ topic name (required)
-      errorSerializer: (err) => (err instanceof Error ? err.message : String(err)),
-    },
-  },
-});
-```
-
-### Custom Middleware
-
-```typescript
-import type { EventMiddleware } from '@connectum/events';
-
-const loggingMiddleware: EventMiddleware = async (event, ctx, next) => {
-  console.log(`Processing event: ${ctx.eventType}`);
-  const start = Date.now();
-  await next();
-  console.log(`Processed in ${Date.now() - start}ms`);
-};
-
-const bus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  middleware: {
-    custom: [loggingMiddleware],
-    retry: { maxRetries: 3 },
-    dlq: { topic: 'service.dlq' },
-  },
-});
-```
-
-### Typed Errors
-
-Control retry behavior declaratively by throwing typed error classes:
-
-```typescript
-import { NonRetryableError, RetryableError } from '@connectum/events';
-
-// Skip retry entirely (e.g., validation errors)
-throw new NonRetryableError('Invalid payload schema');
-
-// Force retry regardless of retryableErrors predicate
-throw new RetryableError('Temporary connection lost', { cause: originalError });
-```
-
-**Priority**: `NonRetryableError` > `RetryableError` > `retryableErrors` predicate > retry all (default).
-
-Both classes use `Symbol.for()` branding for cross-realm compatibility.
-
-## API Reference
-
-### createEventBus()
-
-```typescript
-import { createEventBus } from '@connectum/events';
-
-function createEventBus(options: EventBusOptions): EventBus
-```
-
-**Parameters (`EventBusOptions`):**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `adapter` | `EventAdapter` | required | Broker adapter (NATS, Kafka, Redis, Memory) |
-| `routes` | `EventRoute[]` | `[]` | Event route handlers (subscriber side) |
-| `publishes` | `DescService[]` | `[]` | Event service descriptors this process publishes to (publisher side, no subscription) |
-| `strictTopics` | `boolean` | `false` | Throw on an unresolved publish topic instead of silently falling back to the message `typeName` |
-| `middleware` | `MiddlewareConfig` | `{}` | Middleware configuration |
-| `group` | `string` | `undefined` | Consumer group name |
-| `signal` | `AbortSignal` | `undefined` | External abort signal |
-| `handlerTimeout` | `number` | `30000` | Per-handler timeout in ms |
-| `drainTimeout` | `number` | `30000` | Max ms to wait for in-flight handlers during shutdown |
-| `drainPublishTimeout` | `number` | `undefined` | Opt-in: max ms to wait for in-flight `publish()` promises during `stop()`, before the adapter disconnects. Runs concurrently with the handler drain. `undefined`/`0` = disabled (unchanged behavior). Since 1.3.0 |
-
-> **Publisher-only processes:** when a service publishes an event but does not subscribe to it (the usual split-microservices shape), it has no `routes`, so `publish()` would fall back to the message `typeName` — silently emitting to the wrong topic whenever the event declares a custom `(connectum.events.v1.event).topic`. List the event service descriptors in `publishes` so the declared topic is resolved from the proto option end-to-end, instead of hand-maintaining raw topic strings:
->
-> ```typescript
-> import { OrderEventService } from '#gen/order/v1/order_pb.js';
->
-> const bus = createEventBus({ adapter, publishes: [OrderEventService] });
-> await bus.start();
-> await bus.publish(OrderPlacedSchema, order); // → declared topic, not "order.v1.OrderPlaced"
-> ```
->
-> **`strictTopics` (opt-in, default `false`):** the same silent fallback also happens for any event covered by neither `routes` nor `publishes` and published without an explicit `PublishOptions.topic` — `publish()` emits to the raw `schema.typeName`. Set `strictTopics: true` to make that unresolved-topic case **throw** at the call site instead of silently misconfiguring. Backward-compatible; available since 1.1.0.
-
-### createBroadcastSubscribers()
-
-```typescript
-import { createBroadcastSubscribers } from '@connectum/events';
-
-function createBroadcastSubscribers(
-  options: BroadcastSubscribersOptions,
-): Array<EventBus & EventBusLike>
-```
-
-Available since 1.1.0.
-
-First-class 1->N fan-out wiring. Delivering ONE published event to N **independent** reactors (each reacting on its own) requires one `EventBus` **per reactor**, each with its own consumer group:
-
-- the per-bus duplicate-topic guard rejects two routes resolving to the same topic on one bus (it throws `Duplicate event topic "..." on one EventBus`), and
-- on a real broker, a **shared** group load-balances (one reactor "steals" each event) while **distinct** groups give each reactor its own durable consumer.
-
-`createBroadcastSubscribers()` builds that one-bus-per-reactor wiring from a list of reactors, so callers do not hand-roll N `createEventBus` calls. It **throws** if two reactors share a consumer group.
-
-The returned buses are **not started** -- start (and later stop) them yourself.
-
-```typescript
-import { createBroadcastSubscribers } from '@connectum/events';
-import { NatsAdapter } from '@connectum/events-nats';
-
-// Per-bus adapter factory: each reactor bus gets its own connection / durable consumer
-const buses = createBroadcastSubscribers({
-  adapter: () => NatsAdapter({ servers: 'nats://localhost:4222' }),
-  reactors: [
-    { group: 'pricing', routes: [pricingRoutes] },
-    { group: 'audit', routes: [auditRoutes] },
-    { group: 'notify', routes: [notifyRoutes] },
-  ],
-});
-
-await Promise.all(buses.map((bus) => bus.start()));
-
-// On shutdown:
-await Promise.all(buses.map((bus) => bus.stop()));
-```
-
-For in-process tests, pass a single shared `MemoryAdapter()` instance instead of a factory (all buses share the in-memory registry):
-
-```typescript
-import { createBroadcastSubscribers, MemoryAdapter } from '@connectum/events';
-
-const buses = createBroadcastSubscribers({
-  adapter: MemoryAdapter(), // one shared instance
-  reactors: [
-    { group: 'pricing', routes: [pricingRoutes] },
-    { group: 'audit', routes: [auditRoutes] },
-  ],
-});
-
-await Promise.all(buses.map((bus) => bus.start()));
-```
-
-**Parameters (`BroadcastSubscribersOptions`):**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `adapter` | `EventAdapter \| EventAdapterFactory` | required | One shared adapter instance (fine for `MemoryAdapter` in tests) OR an `EventAdapterFactory` invoked once per reactor (use for real brokers so each bus gets its own connection / durable consumer) |
-| `reactors` | `BroadcastReactor[]` | required | The independent reactors -- each becomes its own EventBus with its own group |
-| `handlerTimeout` | `number` | `30000` | Shared per-bus handler timeout in ms |
-| `drainTimeout` | `number` | `30000` | Shared per-bus drain timeout in ms |
-| `drainPublishTimeout` | `number` | `undefined` | Shared per-bus opt-in publish drain budget at `stop()` (ms). Since 1.3.0 |
-| `signal` | `AbortSignal` | `undefined` | Shared abort signal for graceful shutdown |
-
-**`BroadcastReactor`:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `group` | `string` | required | Consumer group -- MUST be distinct per reactor for true fan-out (a shared group load-balances) |
-| `routes` | `EventRoute[]` | required | The event routes (handlers) this reactor subscribes with |
-| `middleware` | `MiddlewareConfig` | `undefined` | Optional per-reactor middleware (retry / DLQ / custom) |
-
-### EventBus Interface
-
-```typescript
-interface EventBus {
-  // A passed signal overrides the construction-time EventBusOptions.signal
-  start(options?: { signal?: AbortSignal }): Promise<void>;
-  stop(): Promise<void>;
-  publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, options?: PublishOptions): Promise<void>;
-}
-```
-
-### PublishOptions
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `metadata` | `Record<string, string>` | `undefined` | Event metadata / headers |
-| `topic` | `string` | `undefined` | Override the schema-derived event type / topic name |
-| `group` | `string` | `undefined` | Named group tag for workflow grouping |
-| `key` | `string` | `undefined` | Partition key (Kafka) or routing key |
-
-### EventContext
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `eventType` | `string` | Event type / topic name |
-| `eventId` | `string` | Unique event identifier |
-| `publishedAt` | `Date` | When the event was published |
-| `attempt` | `number` | Delivery attempt number (1-based) |
-| `metadata` | `ReadonlyMap<string, string>` | Event metadata |
-| `signal` | `AbortSignal` | Abort signal (shutdown + timeout) |
-| `ack()` | `() => Promise<void>` | Acknowledge event (idempotent) |
-| `nack(requeue?)` | `(requeue?: boolean) => Promise<void>` | Negative-acknowledge event |
-
-### DlqOptions
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `topic` | `string` | required | DLQ topic name |
-| `errorSerializer` | `(error: unknown) => string` | `error.name` only | Custom error serialization |
-
-### RetryOptions
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `maxRetries` | `number` | `3` | Maximum retry attempts |
-| `backoff` | `'exponential' \| 'linear' \| 'fixed'` | `'exponential'` | Backoff strategy |
-| `initialDelay` | `number` | `1000` | Initial delay in ms |
-| `maxDelay` | `number` | `30000` | Maximum delay in ms |
-| `multiplier` | `number` | `2` | Multiplier for exponential backoff |
-| `retryableErrors` | `(err: unknown) => boolean` | All errors | Filter for retryable errors |
-
-## MemoryAdapter
-
-Zero-dependency in-memory adapter for unit and integration tests.
-
-```typescript
-import { createEventBus, MemoryAdapter } from '@connectum/events';
-
-const bus = createEventBus({
-  adapter: MemoryAdapter(),
-  routes: [myRoutes],
-});
-
-await bus.start();
-
-// Publish and consume synchronously in-process
-await bus.publish(MyEventSchema, { value: 42 });
-
-await bus.stop();
-```
-
-Supports wildcard subscriptions (`*` and `>` patterns).
-
-## Graceful Shutdown
-
-EventBus tracks in-flight message handlers and waits for them to complete during `stop()`:
-
-```typescript
-const bus = createEventBus({
-  adapter: NatsAdapter({ servers: 'nats://localhost:4222' }),
-  routes: [eventRoutes],
-  drainTimeout: 15_000, // Wait up to 15s for handlers (default: 30s)
-});
-
-// During stop():
-// 1. Stop accepting new messages (nack with requeue)
-// 2. Wait for in-flight handlers up to drainTimeout
-// 3. Force-abort remaining via AbortSignal
-// 4. Disconnect adapter
-await bus.stop();
-```
-
-Set `drainTimeout: 0` for immediate abort (skip drain).
-
-### Publishers and Shutdown
-
-`stop()` drains **consumer handlers**; in-flight `publish()` promises are not tracked by default (`drainTimeout` does not cover them — opt in via `drainPublishTimeout`, see below). An at-least-once producer must settle its publishes **before** stopping:
-
-```typescript
-// Track publishes you must not lose:
-const pending = new Set<Promise<void>>();
-
-const p = bus.publish(OrderCreatedSchema, order);
-pending.add(p);
-p.catch(() => {}).finally(() => pending.delete(p));
-
-// On shutdown — settle them BEFORE stop():
-await Promise.allSettled([...pending]);
-await bus.stop();
-```
-
-Two related boundaries:
-
-- **Publishing from a draining handler is rejected.** Once `stop()` begins, `publish()` throws — including from handlers that are still draining. Relay topologies (consume → transform → publish) therefore lose the in-flight tail at shutdown; the design discussion is tracked in [#212](https://github.com/Connectum-Framework/connectum/issues/212).
-- **An opt-in symmetric publish drain** ships since 1.3.0: set `drainPublishTimeout` and `stop()` waits (up to that budget, concurrently with the handler drain — the slower of the two, never the sum) for publishes started before `stop()` to settle, before the adapter disconnects and would fail their confirms. Tracked promises carry a no-op observer, so a post-deadline settlement never becomes an `unhandledRejection`; the caller's own `publish()` promise still rejects/resolves as usual. The manual await-before-stop recipe above remains valid and is still the only option for publishes you must not lose past the drain budget.
-
-```typescript
-const bus = createEventBus({
-  adapter,
-  routes: [eventRoutes],
-  drainPublishTimeout: 10_000, // wait up to 10s for in-flight publishes at stop()
-});
-```
-
-## Dependency Injection and Testing
-
-**Primary pattern — inject an `EventAdapter` instance.** Construct the adapter at your composition root and pass it in; a test swaps it for a double without touching the wiring:
-
-```typescript
-// Composition root (production):
-const adapter = NatsAdapter({ servers: process.env.NATS_URL! });
-const bus = createEventBus({ adapter, routes: [eventRoutes] });
-```
-
-```typescript
-// Test: the same wiring, a different instance.
-const bus = createEventBus({ adapter: MemoryAdapter(), routes: [eventRoutes] });
-```
-
-**Secondary pattern — `EventAdapterFactory`** (`() => EventAdapter`, exported since 1.3.0): a zero-argument factory for the places where each consumer needs its OWN broker connection — `createBroadcastSubscribers` invokes it once per reactor. Prefer the instance elsewhere: a test double with its own configuration does not fit a zero-argument factory signature without a wrapper closure.
-
-**Test doubles:**
-
-- `MemoryAdapter` (exported here) — in-process pub/sub for the generic happy path: routing, handlers, middleware, DLQ flows.
-- Broker-specific failure semantics (typed AMQP error taxonomy, recovery/lifecycle behavior) cannot be modeled generically — use the programmable `FakeAmqpAdapter` from the `@connectum/events-amqp/testing` subpath (since 1.3.0; see the [events-amqp Testing section](../events-amqp/README.md#testing)).
-- For real-broker integration semantics, see each adapter package's testing notes.
-
-## Exports Summary
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `createEventBus` | function | Factory for creating an EventBus |
-| `createBroadcastSubscribers` | function | Builds one-bus-per-reactor 1->N fan-out wiring from a list of reactors |
-| `deriveServiceName` | function | Derives a consumer identity (`package@hostname`) from proto service names |
-| `NonRetryableError` | class | Error that skips retry middleware |
-| `RetryableError` | class | Error that forces retry |
-| `EventRouterImpl` | class | Event router implementation |
-| `MemoryAdapter` | function | In-memory adapter factory |
-| `dlqMiddleware` | function | DLQ middleware factory |
-| `retryMiddleware` | function | Retry middleware factory |
-| `composeMiddleware` | function | Middleware composition utility |
-| `createEventContext` | function | EventContext factory |
-| `resolveTopicName` | function | Topic name resolution from proto |
-| `matchPattern` | function | NATS-style wildcard matching |
-| `EventAdapter` | type | Adapter interface |
-| `EventAdapterFactory` | type | Zero-arg factory producing a fresh adapter (per-reactor connections; since 1.3.0) |
-| `EventBus` | type | EventBus interface |
-| `EventBusOptions` | type | Options for `createEventBus()` |
-| `BroadcastSubscribersOptions` | type | Options for `createBroadcastSubscribers()` |
-| `BroadcastReactor` | type | One independent broadcast reactor (group + routes + optional middleware) |
-| `EventContext` | type | Handler context interface |
-| `EventRouter` | type | Router interface |
-| `PublishOptions` | type | Publish options |
-| `EventMiddleware` | type | Middleware function type |
-| `RetryOptions` | type | Retry middleware options |
-| `DlqOptions` | type | DLQ middleware options |
-| `RawEvent` | type | Raw event from adapter |
-| `RawEventHandler` | type | Raw event handler type |
-| `EventSubscription` | type | Subscription handle |
-| `MiddlewareConfig` | type | Middleware configuration |
-
-For the complete, always-current list of exported symbols and types, see the [API Reference](https://connectum.dev/en/api/).
-
-### Generated option descriptors (`@connectum/events/gen/connectum/events/v1/options_pb.js`)
-
-Since 1.3.0. The generated code of `connectum/events/v1/options.proto`: `file_connectum_events_v1_options`, the `event` extension, and the `EventOptions` schema and type. The package's own topic resolution uses this same module.
-
-Import it from your own generated code instead of generating a local copy of the option proto: run protoc-gen-es (2.15.0 or later) with `map_imports=connectum/events/v1/:@connectum/events/gen`, and exclude your copy of the option proto from the generated inputs (`exclude_paths`). `connectum init --events` sets this up.
-
-## Dependencies
-
-### Internal
-
-- `@connectum/core` -- `EventBusLike` interface for server integration
-
-### External
-
-- `@bufbuild/protobuf` -- Protocol Buffers runtime (serialization/deserialization)
-
-## Requirements
-
-- **Node.js**: >=22.13.0
-- **pnpm**: >=11.0.0
-- **TypeScript**: >=5.7.2 (for type checking)
-
-## Documentation
-
-- [EventBus Guide](https://connectum.dev/en/guide/events)
-- [Getting Started](https://connectum.dev/en/guide/events/getting-started)
-- [Middleware](https://connectum.dev/en/guide/events/middleware)
-- [Adapters](https://connectum.dev/en/guide/events/adapters)
-- [ADR-026: EventBus Architecture](https://connectum.dev/en/contributing/adr/026-eventbus-architecture)
+## Constraints
+
+- `MemoryAdapter` does not persist messages and does not provide consumer groups.
+- Broker adapters can redeliver messages when a handler does not settle them;
+  actual retention and redelivery depend on the broker configuration. Handlers
+  should be idempotent and complete side effects before settlement. EventBus
+  automatically acknowledges successful handlers; use `ack()` only when manual
+  settlement is needed.
+- Install the adapter for your broker separately: `@connectum/events-nats`,
+  `@connectum/events-kafka`, `@connectum/events-redis`, or
+  `@connectum/events-amqp`.
+
+## Learn and reference
+
+- [Package overview](https://connectum.dev/en/packages/events)
+- [Events guide](https://connectum.dev/en/guide/events)
+- [Middleware guide](https://connectum.dev/en/guide/events/middleware)
+- [API reference](https://connectum.dev/en/api/@connectum/events/)
 
 ## License
 
 Apache-2.0
-
----
-
-**Part of [@connectum](../../README.md)** -- Universal framework for production-ready gRPC/ConnectRPC microservices

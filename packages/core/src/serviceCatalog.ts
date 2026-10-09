@@ -24,8 +24,8 @@ export type ServiceCatalog = Readonly<Record<string, DescService>>;
  *
  * `@connectum/protoc-gen-catalog` augments this with one entry per unary RPC,
  * keyed `"<typeName>/<method>"` → `{ request; response }`. It starts empty so
- * that a project with no generated catalog still type-checks (calls are then
- * untyped rather than a hard error).
+ * applications that do not use catalog calls need no generated augmentation.
+ * Without registered keys, `ctx.call` has no callable procedure names.
  */
 // biome-ignore lint/suspicious/noEmptyInterface: module-augmentation target, populated by codegen
 export interface ConnectumCallMap {}
@@ -72,7 +72,7 @@ export function defineCatalog<const T extends Record<string, DescService>>(recor
  *
  * Throws {@link CatalogConfigError} on a duplicate `typeName`, or on a key that
  * does not equal its descriptor's `typeName`. TypeScript cannot catch a duplicate
- * whose two descriptors have an identical shape (polyrepo finding F3), so this
+ * whose two descriptors have an identical shape, so this
  * runtime check is mandatory rather than optional — a silent collision would
  * route calls to the wrong service.
  */

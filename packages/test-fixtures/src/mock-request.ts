@@ -13,12 +13,14 @@ const DEFAULT_METHOD = "TestMethod";
  * Create a mock ConnectRPC {@link https://connectrpc.com/docs/node/interceptors | UnaryRequest}
  * object suitable for testing interceptors.
  *
- * All fields have sensible defaults, so calling `createMockRequest()` with no
- * arguments returns a fully valid request that can be passed straight into an
- * interceptor under test.
+ * This is a minimal request fixture for interceptors that read the supplied
+ * service name, method name, headers, URL, stream flag, or message. It omits
+ * other ConnectRPC request fields, so use a real request when the code under
+ * test depends on the full `UnaryRequest` contract.
  *
  * @param options - Optional overrides for request fields.
- * @returns A plain object matching the ConnectRPC `UnaryRequest` shape.
+ * @returns A partial request object with `service.typeName`, `method.name`,
+ *   `header`, `url`, `stream`, and `message` fields.
  *
  * @example
  * ```ts
