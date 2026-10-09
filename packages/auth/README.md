@@ -50,6 +50,7 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
         jwksUri: process.env.JWKS_URI!,
         issuer: process.env.JWT_ISSUER!,
         audience: 'my-api',
+        skipMethods: ['grpc.health.v1.Health/*'],
       }),
       ...createDefaultInterceptors({ errorHandler: false }),
     ],
@@ -57,6 +58,11 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   });
 }
 ```
+
+Health and reflection methods are not skipped automatically: `skipMethods`
+above leaves the gRPC health service open for probes, while reflection and the
+greeter still require a token. The HTTP `/healthz` endpoint
+answers without a token.
 
 Handlers can read the verified identity with `requireAuthContext()` from
 `@connectum/auth`.
