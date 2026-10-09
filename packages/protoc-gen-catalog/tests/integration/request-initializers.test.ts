@@ -132,7 +132,10 @@ describe("protoc-gen-connectum-catalog request initializer acceptance", () => {
 
             const generatedCatalog = readFileSync(resolve(workDir, "gen/catalog.gen.ts"), "utf8");
             assert.ok((generatedCatalog.match(/MessageInitShape<typeof /g) ?? []).length >= 5);
-            assert.match(generatedCatalog, /response: (?!MessageInitShape)/);
+            // Responses stay full messages in every entry; a lookahead match would pass
+            // as long as a single entry kept its full-message response.
+            assert.doesNotMatch(generatedCatalog, /response: [^;}]*MessageInitShape/);
+            assert.ok((generatedCatalog.match(/response: /g) ?? []).length >= 5);
             assert.match(generatedCatalog, /kind: "server-stream"/);
             assert.match(generatedCatalog, /kind: "client-stream"/);
             assert.match(generatedCatalog, /kind: "bidi"/);
