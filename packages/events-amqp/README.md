@@ -322,7 +322,7 @@ exchange type and on who creates the bindings (`topologyMode`):
 | `topic` | translated (`*`, terminal `>` as `*.#`) | exactly the events the pattern matches | matching events | matching events |
 | `direct` | the pattern as a literal key | only events whose routing key equals the pattern; a wildcard pattern would never match, so `*`/`>` is rejected | equal-key events | equal-key events |
 | `fanout` | none that filters (the routing key is ignored) | every message, whatever the pattern | matching events; the rest are acknowledged | every message |
-| `headers` | an argument-less binding, which matches everything | every message, whatever the pattern | matching events; the rest are acknowledged | every message |
+| `headers` | an argument-less binding, which matches everything; none when `topology.bindings` binds the queue to the exchange | every message, whatever the pattern; with declared bindings, exactly what they select | matching events among those delivered; the rest are acknowledged | everything the queue receives |
 
 With `topologyMode: "check"` or `"skip"` the adapter binds nothing and
 the operator's bindings decide what reaches the queue; the pattern then only
@@ -335,17 +335,91 @@ Consequences worth knowing:
 - On a direct exchange with `topologyMode: "assert"`, `subscribe()` throws a
   `TypeError` for a complete `*` or `>` segment before any queue is declared.
 - On fanout and headers exchanges every pattern is accepted, and the queue
-  receives every message published to the exchange. A literal such as
+  receives every message published to the exchange, except that on a headers
+  exchange a selective binding declared for the queue in `topology.bindings`
+  limits it to the messages that binding matches. A literal such as
   `user.created` does not narrow it either; use a topic exchange when the broker
   should do the filtering.
 - The adapter publishes no header carrying the event type, so a headers
-  exchange cannot route by event type. In `assert` mode its argument-less
-  binding on a queue listed in `topology.queues` also defeats selective
-  `x-match` bindings declared there. Selective routing by headers works only
-  with `topologyMode: "check"` or `"skip"`, where the application owns the
-  bindings and the adapter adds none.
+  exchange cannot route by event type, and the adapter cannot derive header
+  bindings from a pattern. Selective routing by headers belongs to the
+  application: declare the bindings in `topology.bindings` (see
+  [Selective routing on a headers exchange](#selective-routing-on-a-headers-exchange)),
+  or use `topologyMode: "check"` or `"skip"` and create them yourself.
+- A headers exchange delivers a message when any one binding of the queue
+  matches. In `assert` mode the adapter therefore adds its argument-less binding
+  only when `topology.bindings` declares no binding of that queue to the
+  exchange; a binding created outside the topology is not seen, so the
+  argument-less binding is added next to it and the queue receives everything.
 - An exchange's type cannot be changed by redeclaring it (the broker answers
   `406 PRECONDITION_FAILED`); moving to another type means a new exchange.
+
+#### Selective routing on a headers exchange
+
+Declare the queue and its `x-match` binding in the topology. The adapter binds
+nothing of its own to that queue, so only messages whose headers match reach it:
+
+```typescript
+const queue = 'orders.eu';
+
+const adapter = AmqpAdapter({
+  url: 'amqp://localhost:5672',
+  exchange: 'orders',
+  exchangeType: 'headers',
+  topology: {
+    queues: [{ name: queue, durable: true }],
+    bindings: [
+      { queue, source: 'orders', routingKey: '', arguments: { 'x-match': 'all', region: 'eu' } },
+    ],
+  },
+  queueOverrides: { eu: { queue } },
+});
+
+// Receives only messages published with the header `region: eu`.
+await adapter.subscribe(
+  ['order.created'],
+  async (event, ack) => {
+    console.log(event.eventType);
+    await ack();
+  },
+  { group: 'eu' },
+);
+```
+
+To keep the catch-all for a queue, declare no binding for it, or declare the
+binding without arguments. Bindings created outside the topology are not seen
+by the adapter; to rely on them use `topologyMode: "check"` or `"skip"`.
+
+> **Behavior change in `assert` mode.** Before this rule, the adapter's
+> argument-less binding was added next to the declared ones, so a queue with a
+> selective declared binding still received every message. It now receives only
+> what the declared bindings select. To keep the old behavior, remove the
+> selective binding from `topology.bindings` or declare it without arguments.
+
+**Upgrading a durable queue the previous version bound.** The previous version
+bound a durable queue with an argument-less binding, and the broker keeps that
+binding after the upgrade. The adapter stops adding it but never removes
+bindings, because it cannot tell its own from one an operator created; until the
+operator removes it, the queue still receives every message and the declared
+`x-match` binding filters nothing. Remove the leftover once. Each option below
+was run against RabbitMQ 4.3.6:
+
+- amqplib, with the routing key the old binding was made with (the subscription
+  pattern) and no arguments: `await channel.unbindQueue(queue, exchange, pattern)`.
+- The management HTTP API (the `rabbitmq_management` plugin; `guest:guest` is the
+  default user, `%2F` the default vhost). The leftover is the entry with empty
+  `arguments`; its `properties_key` goes into the `DELETE`:
+
+  ```bash
+  curl -s -u guest:guest http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>
+  curl -s -u guest:guest -X DELETE http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>/<properties_key>
+  ```
+
+  The `DELETE` answers `204`; the next `GET` lists only the declared binding.
+- Delete the queue and let the adapter declare it again with the declared
+  binding: `rabbitmqctl delete_queue <queue>`. Its messages are lost.
+
+`rabbitmqctl list_bindings` shows what the broker holds for the queue.
 
 ### Consumer Groups
 
@@ -599,7 +673,7 @@ const result = await fake.control.deliver('order.created', payload);
 // result: { delivered, acked, nacked, requeued, failed }
 ```
 
-Parity contract: pass `exchangeType` (and `topologyMode`, default `assert`) to model the real exchange: `subscribe()` accepts and rejects exactly the patterns the real adapter does, and `deliver()` routes by that type (topic and direct by the EventBus matcher, fanout and headers to every subscription). Lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
+Parity contract: pass `exchangeType` (and `topologyMode`, default `assert`) to model the real exchange: `subscribe()` accepts and rejects exactly the patterns the real adapter does, and `deliver()` routes by that type (topic and direct by the EventBus matcher, fanout and headers to every subscription). One exception to that parity: the fake does not model `topology`, so declared header bindings are not modeled and a headers fake delivers every message even where the real adapter, with `x-match` bindings declared for the queue, would deliver only the matching ones. Lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
 
 Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`; a lost consumer returns only through `restoreConsumers()`, on attempt 1, and `consumer-restore-failed` is never reported; a subscription without a group is named `fake.sub-N` by registration order; the `recovery` option only decides `willRestore`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 
