@@ -1048,7 +1048,95 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("consumer group: partitions are shared, each message is delivered once, and a leaving member's partitions move to the survivor", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    /**
+     * A wildcard subscription whose service restarts after a matching topic appeared.
+     *
+     * A service runs with `fromBeginning: false` (the adapter default) and group `G`. Topic `root.late` is created
+     * and five messages are published to it, `restartAfterMs` later the service is stopped and started again with the
+     * same group, and a sixth message is published. Returns the late-topic messages the group handled in total, across
+     * both runs of the service.
+     *
+     * Whether the first five are handled depends only on whether discovery had already seen `root.late` by the
+     * restart. If it had, the first run consumed and committed them. If it had not, no run ever held an offset of `G`
+     * for `root.late`, so after the restart the group starts at the end of the topic, which is how Kafka treats a
+     * group without a committed offset when `fromBeginning` is off, and the five are never handled.
+     */
+    async function lateTopicAcrossRestart(options: { topicDiscoveryInterval: number | false; restartAfterMs: number; label: string }): Promise<string[]> {
+        const root = uniqueName("it.restart");
+        const early = await createTopic(`${root}.early`);
+        const group = uniqueName("group");
+        const lateHandled: string[] = [];
+        const earlyHandled: string[] = [];
+        const handler = async (event: RawEvent, ack: () => Promise<void>): Promise<void> => {
+            (event.eventType.endsWith(".late") ? lateHandled : earlyHandled).push(text(event.payload));
+            await ack();
+        };
+
+        const firstRun = newAdapter({ fromBeginning: false, topicDiscoveryInterval: options.topicDiscoveryInterval });
+        await firstRun.connect();
+        try {
+            const subscription = await firstRun.subscribe([`${root}.*`], handler, { group });
+            try {
+                await waitForStableGroup(group, 1);
+                const late = await createTopic(`${root}.late`);
+                for (let i = 1; i <= 5; i++) {
+                    await firstRun.publish(late, bytes(`l${i}`));
+                }
+                await sleep(options.restartAfterMs);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await firstRun.disconnect();
+        }
+        const handledByFirstRun = lateHandled.length;
+
+        const secondRun = newAdapter({ fromBeginning: false, topicDiscoveryInterval: options.topicDiscoveryInterval });
+        await secondRun.connect();
+        try {
+            const subscription = await secondRun.subscribe([`${root}.*`], handler, { group });
+            try {
+                await waitForStableGroup(group, 1);
+                // The sentinel is delivered only once the restarted consumer is fetching, which is when it has resolved
+                // its start position on every assigned partition; the sixth message is published after that.
+                await secondRun.publish(early, bytes("sentinel"));
+                await waitFor(() => earlyHandled.includes("sentinel"), "the sentinel handled by the restarted service", () => earlyHandled);
+                await secondRun.publish(`${root}.late`, bytes("l6"));
+                await waitFor(() => lateHandled.includes("l6"), "the sixth message handled by the restarted service", () => lateHandled);
+                await sleep(3_000);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await secondRun.disconnect();
+        }
+
+        const neverHandled = ["l1", "l2", "l3", "l4", "l5", "l6"].filter((m) => !lateHandled.includes(m)).length;
+        console.log(`${options.label}: handled by the first run ${handledByFirstRun}, handled in total ${lateHandled.length}, never handled ${neverHandled}`);
+        return lateHandled;
+    }
+
+    it("a service restarted after discovery saw the new topic handles everything published to it", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: 1_000, restartAfterMs: 8_000, label: "restart after discovery" });
+        assert.deepEqual([...handled].sort(), ["l1", "l2", "l3", "l4", "l5", "l6"], "all six handled, each exactly once");
+    });
+
+    // The two scenarios below pin down a property of Kafka, not a defect to fix: a consumer group that has no committed
+    // offset for a topic starts at the end of it when `fromBeginning` is off. A message published to a topic that the
+    // group has never held an offset for is therefore lost to the group if the service restarts before it has
+    // subscribed that topic. Discovery is on by default exactly because it shrinks that exposure from "until the next
+    // restart, however late" to "one interval"; these tests fix the measured remainder so it cannot grow unnoticed.
+    it("with topicDiscoveryInterval false the messages published to a new topic before a restart are never handled", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: false, restartAfterMs: 5_000, label: "discovery off" });
+        assert.deepEqual(handled, ["l6"], "only the message published after the restart is handled; the five before it are lost to the group");
+    });
+
+    it("a restart that happens before the first discovery check loses the same messages: the exposure is one interval", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: 60_000, restartAfterMs: 3_000, label: "restart before discovery" });
+        assert.deepEqual(handled, ["l6"], "discovery had not run yet, so the restart loses the five like it does without discovery");
+    });
+
+    it("consumer group: partitions are shared, each message is delivered once, and a leaving member's partitions move to the survivor",{ timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const topic = await createTopic(uniqueName("it.rebalance"), 2);
         const group = uniqueName("group");
         const seenByA: string[] = [];
