@@ -88,7 +88,9 @@ auditConfig:
   # release exists (npm latest is 3.0.3, the advisory has no first_patched_version),
   # so an override is impossible. Reached only through the dev-only chain
   # @exodus/test > fast-glob > micromatch, whose input is our own glob list; the
-  # production audit is clean. Remove this entry as soon as `npm view braces
-  # versions` lists a release above 3.0.3 and lift braces with an override.
+  # production audit is clean. A release above 3.0.3 does not by itself prove the
+  # depth guard is present: remove this entry only after confirming in the advisory
+  # or the release source that the guard exists, then lift braces to that version
+  # with an override.
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
