@@ -48,6 +48,11 @@ as well as a full generated message. Nested messages, oneofs, maps, and field
 names retain the checks defined by `@bufbuild/protobuf`. Responses remain full
 generated messages, and method keys and stream-kind literals do not change.
 
+Migration: the request slot is `MessageInit<T>`, so `$typeName` is optional on it
+and it is no longer assignable to `MessageShape<typeof RequestSchema>`. Take the
+full-message type from the schema (`MessageShape<typeof RequestSchema>`) or
+normalise a value with `create(RequestSchema, request)`.
+
 Regenerate `catalog.gen.ts` after upgrading the plugin to get initializer
 request typing. Existing generated catalogs remain valid and continue to accept
 full messages, but they keep their original full-message-only request type until
