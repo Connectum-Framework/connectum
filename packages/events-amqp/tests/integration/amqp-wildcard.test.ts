@@ -334,7 +334,7 @@ describe(`AMQP wildcard routing on ${IMAGE} (testcontainers)`, { skip: RUN ? fal
         });
     }
 
-    it("headers: the adapter's argument-less binding supersedes an operator's selective binding in assert mode", async () => {
+    it("headers: bindings declared in the topology are the subscription's bindings in assert mode", async () => {
         const exchange = `it.wildcard-headers-assert.${randomUUID()}`;
         const queue = `${exchange}.q`;
         const adapter = AmqpAdapter({
@@ -361,8 +361,9 @@ describe(`AMQP wildcard routing on ${IMAGE} (testcontainers)`, { skip: RUN ? fal
             );
             await adapter.publish("kind-a", new Uint8Array([1]), { metadata: { kind: "a" } });
             await adapter.publish("kind-b", new Uint8Array([1]), { metadata: { kind: "b" } });
-            await waitFor(() => received.length >= 2);
-            assert.deepEqual([...received].sort(), ["kind-a:a", "kind-b:b"]);
+            await waitFor(() => received.length >= 1);
+            await sleep(250);
+            assert.deepEqual(received, ["kind-a:a"]);
         } finally {
             await adapter.disconnect();
         }

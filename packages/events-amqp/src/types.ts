@@ -46,12 +46,15 @@ export interface AmqpAdapterOptions {
      *   message whatever the pattern; the EventBus dispatches only matching
      *   handlers and acknowledges the rest, while a handler passed straight to
      *   `adapter.subscribe()` sees every message.
-     * - `"headers"`: the adapter publishes no header carrying the event type
-     *   and binds without arguments, which matches every message, so the
-     *   behavior is the same as for `"fanout"`. In `"assert"` mode that
-     *   argument-less binding on a queue listed in `topology.queues` also
-     *   defeats selective `x-match` bindings declared there; selective routing
-     *   by headers works only with `"check"` or `"skip"`.
+     * - `"headers"`: the adapter publishes no header carrying the event type,
+     *   so it cannot derive header bindings from a pattern. In `"assert"` mode
+     *   it binds the queue without arguments, which matches every message (the
+     *   behavior of `"fanout"`), unless `topology.bindings` binds that queue
+     *   to the exchange: then those declared bindings alone decide what the
+     *   queue receives and the adapter adds none. A binding created outside the
+     *   topology is not seen, and the argument-less binding would also deliver
+     *   what it excludes; use `"check"` or `"skip"` for such bindings, or
+     *   declare them in the topology.
      *
      * @default "topic"
      */
