@@ -93,12 +93,18 @@ interface Harness {
      * server finishes its script regardless of how the client reads.
      */
     readonly probeTracksClient: boolean;
+    /**
+     * Whether the transport enforces a call's `timeoutMs` itself. A deadline is the transport's job, as with a
+     * standard Connect client; the scripted transport below ignores it, so a deadline is only observable on the wire.
+     */
+    readonly enforcesDeadline: boolean;
     serve<T>(script: Script, probe: Probe, use: (transport: Transport) => Promise<T>): Promise<T>;
 }
 
 const inMemory: Harness = {
     name: "in-memory transport",
     probeTracksClient: true,
+    enforcesDeadline: false,
     async serve(script, probe, use) {
         const transport: Transport = {
             unary: () => {
@@ -132,6 +138,7 @@ function grpcFrame(message: Count): Buffer {
 const wire: Harness = {
     name: "gRPC over HTTP/2 on loopback",
     probeTracksClient: false,
+    enforcesDeadline: true,
     async serve(script, probe, use) {
         const http2: Http2Server = createHttp2Server();
         const sessions = new Set<ServerHttp2Session>();
@@ -384,6 +391,40 @@ for (const harness of [inMemory, wire]) {
                 );
                 await settle();
                 assert.strictEqual(probe.finalized, true, "the peer's response stream must be finalized after cancellation");
+            });
+
+            it("releases close() with DeadlineExceeded when the terminal status does not arrive within timeoutMs", { skip: harness.enforcesDeadline ? false : "the scripted transport does not enforce deadlines" }, async () => {
+                const probe = newProbe();
+                await runCase(
+                    async function* (p) {
+                        yield count(1);
+                        // The status never arrives on its own: only the call's deadline can end the wait. The
+                        // fallback timer keeps a transport that does not forward the abort from hanging the suite.
+                        await new Promise<void>((resolve) => {
+                            const fallback = setTimeout(resolve, 5_000);
+                            p.signal?.addEventListener(
+                                "abort",
+                                () => {
+                                    clearTimeout(fallback);
+                                    resolve();
+                                },
+                                { once: true },
+                            );
+                        });
+                        throw new ConnectError("peer released", Code.Canceled);
+                    },
+                    probe,
+                    async (open) => {
+                        const handle = open({ timeoutMs: 300 });
+                        send(handle);
+                        const startedAt = Date.now();
+                        await assert.rejects(
+                            () => handle.close(),
+                            (err: unknown) => err instanceof ConnectError && err.code === Code.DeadlineExceeded,
+                        );
+                        assert.ok(Date.now() - startedAt < 3_000, "close() must be released by the deadline, not by the peer's own timer");
+                    },
+                );
             });
         });
     }
