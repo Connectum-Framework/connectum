@@ -52,15 +52,85 @@ const PUBLISH_ID_HEADER = "x-connectum-publish-id";
 /**
  * Convert an EventBus wildcard pattern to an AMQP routing key pattern.
  *
- * EventBus uses NATS-style wildcards:
- * - `*` matches a single token (same in AMQP topic exchange)
- * - `>` matches one or more tokens (AMQP uses `#`)
+ * EventBus uses complete dot-separated wildcard tokens. RabbitMQ's `*` matches
+ * one topic segment and `#` matches zero or more; translating terminal `>` to
+ * `*.#` preserves its one-or-more rule.
+ * The translation is meaningful on a topic exchange only. `subscribe()` also
+ * rejects a complete `#` segment on topic exchanges (RabbitMQ treats it as a
+ * wildcard while EventBus treats it as literal text) and a complete `*` or `>`
+ * on a direct exchange when `topologyMode` is `"assert"` (the binding would be
+ * a literal key that never matches); fanout and headers exchanges accept any
+ * pattern because their queue receives every message.
  *
  * @param pattern - EventBus wildcard pattern
  * @returns AMQP routing key pattern
+ * @throws {TypeError} When a complete `>` segment is not terminal.
  */
 export function toAmqpPattern(pattern: string): string {
-    return pattern.replace(/>/g, "#");
+    const segments = splitPattern(pattern);
+
+    if (segments[segments.length - 1] === ">") {
+        return [...segments.slice(0, -1), "*", "#"].join(".");
+    }
+
+    return pattern;
+}
+
+/** Split a pattern into segments, rejecting a complete `>` segment that is not terminal. */
+function splitPattern(pattern: string): string[] {
+    const segments = pattern.split(".");
+    const greaterThanIndex = segments.indexOf(">");
+    if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
+        throw new TypeError(`AMQP wildcard pattern "${pattern}" uses ">" outside the terminal segment`);
+    }
+    return segments;
+}
+
+/** Exchange kinds the adapter can declare, as accepted by {@link AmqpAdapterOptions.exchangeType}. */
+type ExchangeKind = NonNullable<AmqpAdapterOptions["exchangeType"]>;
+
+/**
+ * Reject subscription patterns the adapter would turn into a binding that can
+ * never receive a message, or that RabbitMQ would read differently from the
+ * EventBus matcher. Embedded `*`, `>`, and `#` characters are literal segment
+ * content in the shared matcher, so only complete segments count as tokens.
+ *
+ * The EventBus owns handler selection (it matches the pattern against each
+ * delivered event type and acknowledges events without a handler); the adapter
+ * only has to make sure the broker delivers a superset of the wanted events,
+ * never a subset. Accordingly:
+ *
+ * - a complete `>` that is not terminal is rejected everywhere, since it
+ *   matches nothing in the shared matcher;
+ * - on a topic exchange a complete `#` segment is rejected, because RabbitMQ
+ *   treats it as a wildcard while the EventBus treats it as literal text;
+ * - on a direct exchange a complete `*` or `>` is rejected only in
+ *   `topologyMode: "assert"`, where the adapter binds the queue to the pattern
+ *   as a literal key and the queue would receive nothing; with `check` or
+ *   `skip` the operator's bindings decide delivery and the pattern merely
+ *   selects handlers;
+ * - fanout and headers exchanges deliver every message to the queue whatever
+ *   the pattern (the adapter's headers binding carries no arguments), which is
+ *   a superset, so any pattern is accepted.
+ *
+ * Shared by the real adapter and `FakeAmqpAdapter` so both accept and reject
+ * exactly the same subscriptions.
+ */
+export function validateSubscriptionPatterns(patterns: readonly string[], options: { readonly exchangeType: ExchangeKind; readonly topologyMode: AmqpTopologyMode }): void {
+    const { exchangeType, topologyMode } = options;
+    for (const pattern of patterns) {
+        const segments = splitPattern(pattern);
+
+        if (exchangeType === "topic" && segments.includes("#")) {
+            throw new TypeError(`AMQP topic subscription pattern "${pattern}" contains "#", which RabbitMQ treats as a wildcard`);
+        }
+
+        if (exchangeType === "direct" && topologyMode === AmqpTopologyMode.ASSERT && segments.some((segment) => segment === "*" || segment === ">")) {
+            throw new TypeError(
+                `AmqpAdapter: subscription pattern "${pattern}" uses a wildcard, but a direct exchange matches binding keys literally, so a queue bound to "${pattern}" would never receive a message. Use a topic exchange, subscribe to exact event names, or own the bindings yourself with topologyMode "check" or "skip".`,
+            );
+        }
+    }
 }
 
 /**
@@ -2464,6 +2534,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             if (!connection) {
                 throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
             }
+
+            validateSubscriptionPatterns(patterns, { exchangeType, topologyMode });
 
             const record: SubscriptionRecord = {
                 patterns,

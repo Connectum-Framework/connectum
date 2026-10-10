@@ -374,6 +374,7 @@ function createCatalogClient(options: CreateCatalogClientOptions): CatalogClient
 |-----------|------|---------|-------------|
 | `catalog` | `ServiceCatalog` | required | The service catalog backing typed dispatch — the same object passed to `createServer({ catalog })` |
 | `resolver` | `RemoteResolver` | required | Resolves every target's transport (`singleTransportResolver` / `mapResolver` / `dnsResolver` / `perServiceEnvResolver`) |
+| `outgoingInterceptors` | `readonly Interceptor[]` | `[]` | Client-side interceptors run once around every call/stream, outside the resolver transport's own interceptors. Keep application policy here or on the transport — not both |
 
 **Returns:** `CatalogClient` — `{ call, stream }`, keyed off the generated `ConnectumCallMap` / `ConnectumStreamMap`.
 
@@ -440,7 +441,7 @@ const trip = await client.call('trip.v1.TripService/StartTrip', { vehicleId: 've
 | `mergeCatalogs` | function | Merge multiple catalogs into one |
 | `CatalogConfigError` | class | Error thrown for invalid catalog configuration |
 | `createCatalogClient` | function | Standalone, catalog-typed `call` / `stream` client usable outside a `Server` (since 1.1.0) |
-| `CreateCatalogClientOptions` | type | Options for `createCatalogClient()` (`catalog` + `resolver`) |
+| `CreateCatalogClientOptions` | type | Options for `createCatalogClient()` (`catalog` + `resolver` + optional `outgoingInterceptors`) |
 | `CatalogClient` | type | The standalone catalog client returned by `createCatalogClient()` (`call` + `stream`) |
 | `createLocalTransport` | function | Create an in-process transport for same-process service calls |
 | `CreateLocalTransportOptions` | type | Options for `createLocalTransport()` (client-side interceptors) |

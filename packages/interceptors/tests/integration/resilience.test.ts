@@ -36,6 +36,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -81,6 +82,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -137,6 +139,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -178,6 +181,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -231,6 +235,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -283,6 +288,7 @@ describe('Resilience Pattern Integration', () => {
 
         const streamingReq = {
             url: 'http://localhost/test.Service/StreamMethod',
+            signal: new AbortController().signal,
             stream: true, // Streaming request
             message: {},
             service: { typeName: 'test.Service' },

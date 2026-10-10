@@ -229,6 +229,11 @@ export function openServerStream(resolve: ResolveStream, descMethod: DescMethodS
  * single response. Resolution is lazy — a resolver/transport failure surfaces
  * on `await close()` (the response IIFE), never on factory invocation.
  *
+ * `close()` settles only once the response stream has reached its terminal
+ * status, mirroring `@connectrpc/connect`'s client-streaming call: exactly one
+ * response followed by success resolves; no response, a surplus response or a
+ * failure after the response rejects.
+ *
  * @internal
  */
 export function openClientStream(resolve: ResolveStream, descMethod: DescMethodStreaming<DescMessage, DescMessage>): ClientStreamHandle<unknown, unknown> {
@@ -237,10 +242,25 @@ export function openClientStream(resolve: ResolveStream, descMethod: DescMethodS
         try {
             const { transport, frame } = resolve();
             const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, queue.iterable, frame.contextValues);
+            // Drive the response stream to its terminal status instead of
+            // returning at the first message: a failure (or a surplus message)
+            // that follows the response must reject, and a wrapping interceptor
+            // only finishes its span when the stream ends — the response wrapper
+            // Connect hands out has no `return()`, so abandoning the loop early
+            // would leave that span started and never ended.
+            let single: unknown;
+            let received = 0;
             for await (const message of response.message) {
-                return message;
+                if (received === 0) single = message;
+                received++;
             }
-            throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
+            if (received === 0) {
+                throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced no response.`, Code.Internal);
+            }
+            if (received > 1) {
+                throw new ConnectError(`ctx.stream: client-streaming "${descMethod.name}" produced more than one response.`, Code.Internal);
+            }
+            return single;
         } catch (error) {
             throw sanitizeCallError(error);
         }
