@@ -21,6 +21,12 @@ interface Harness {
     heartbeats: number;
     /** Most `heartbeat()` calls that were awaiting their answer at the same moment. */
     maxConcurrentHeartbeats: number;
+    /**
+     * Resolves once `heartbeat()` has been called `count` times in total. Rejects after `timeoutMs`
+     * so a timer that never fires fails the test instead of hanging it; the bound is far above the
+     * nominal time because it only has to separate "slow host" from "no heartbeat at all".
+     */
+    whenHeartbeats: (count: number, timeoutMs?: number) => Promise<void>;
     run: () => Promise<void>;
 }
 
@@ -51,6 +57,7 @@ function harness(options: {
     let isRunningCalls = 0;
     let concurrentHeartbeats = 0;
     const errorLogs: unknown[][] = [];
+    const heartbeatWaiters: { count: number; resolve: () => void }[] = [];
     const state: Harness = {
         commits,
         resolved,
@@ -58,6 +65,23 @@ function harness(options: {
         errorLogs,
         heartbeats: 0,
         maxConcurrentHeartbeats: 0,
+        whenHeartbeats: (count, timeoutMs = 10_000) =>
+            new Promise<void>((resolve, reject) => {
+                if (state.heartbeats >= count) {
+                    resolve();
+                    return;
+                }
+                const timer = setTimeout(() => {
+                    reject(new Error(`expected ${count} heartbeats within ${timeoutMs} ms, saw ${state.heartbeats}`));
+                }, timeoutMs);
+                heartbeatWaiters.push({
+                    count,
+                    resolve: () => {
+                        clearTimeout(timer);
+                        resolve();
+                    },
+                });
+            }),
         run: async () => {
             const consume = createBatchConsumer({
                 handler: options.handler,
@@ -98,6 +122,10 @@ function harness(options: {
                 heartbeat: async () => {
                     state.heartbeats++;
                     const call = state.heartbeats;
+                    for (const waiter of heartbeatWaiters.filter((w) => w.count <= call)) {
+                        heartbeatWaiters.splice(heartbeatWaiters.indexOf(waiter), 1);
+                        waiter.resolve();
+                    }
                     concurrentHeartbeats++;
                     state.maxConcurrentHeartbeats = Math.max(state.maxConcurrentHeartbeats, concurrentHeartbeats);
                     try {
@@ -522,17 +550,26 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
 
     it("heartbeats repeatedly while the handler is busy", async () => {
         let atAck = 0;
+        let waitFailure: unknown;
         const h = harness({
             messages: [{ offset: "10", value: "a" }],
             heartbeatInterval: interval,
             handler: async (_event, ack) => {
-                await sleep(170);
+                // The handler stays busy until the timer has beaten five times: the count is
+                // what is asserted, not how many ticks fit into a wall-clock window, which a
+                // loaded host shrinks.
+                try {
+                    await h.whenHeartbeats(5);
+                } catch (error) {
+                    waitFailure = error;
+                }
                 atAck = h.heartbeats;
                 await ack();
             },
         });
         await h.run();
-        assert.ok(atAck >= 5, `expected at least 5 heartbeats during a 170 ms handler, saw ${atAck}`);
+        assert.equal(waitFailure, undefined, "the timer kept beating while the handler was busy");
+        assert.ok(atAck >= 5, `expected at least 5 heartbeats during one handler turn, saw ${atAck}`);
     });
 
     it("does not heartbeat from the timer when the handler is faster than a tick", async () => {

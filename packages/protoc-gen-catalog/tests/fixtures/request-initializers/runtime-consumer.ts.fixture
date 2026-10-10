@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import { create, isFieldSet, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
+import { createServer, defineService } from "@connectum/core";
+import { NestedSchema, RequestSchema, RequestService, ResponseSchema } from "./gen/catalog/request/v1/request_pb.ts";
+import { serviceCatalog } from "./gen/catalog.gen.ts";
+
+const method = "catalog.request.v1.RequestService";
+const nicknameField = RequestSchema.fields.find((field) => field.name === "nickname");
+
+function request(name: string, includeNickname = true): MessageInitShape<typeof RequestSchema> {
+    return {
+        name,
+        nested: { label: "nested" },
+        items: [{ label: "repeated" }],
+        nestedByKey: { primary: { label: "mapped" } },
+        destination: { case: "email", value: "user@example.test" },
+        ...(includeNickname ? { nickname: "present" } : {}),
+    };
+}
+
+function assertRequest(input: MessageShape<typeof RequestSchema>, name: string, hasNickname: boolean): void {
+    if (!nicknameField) throw new Error("the proto fixture has an explicit-presence nickname field");
+    assert.equal(input.$typeName, RequestSchema.typeName);
+    assert.equal(input.name, name);
+    assert.ok(input.nested, "the nested initializer must survive dispatch");
+    assert.equal(input.nested.$typeName, NestedSchema.typeName);
+    assert.equal(input.nested.label, "nested");
+    assert.equal(input.items.length, 1);
+    const repeatedItem = input.items[0];
+    assert.ok(repeatedItem);
+    assert.equal(repeatedItem.$typeName, NestedSchema.typeName);
+    assert.equal(repeatedItem.label, "repeated");
+    const mappedValue = input.nestedByKey.primary;
+    assert.ok(mappedValue, "the map entry must survive dispatch");
+    assert.equal(mappedValue.$typeName, NestedSchema.typeName);
+    assert.equal(mappedValue.label, "mapped");
+    assert.equal(input.destination.case, "email");
+    if (input.destination.case === "email") {
+        assert.equal(input.destination.value, "user@example.test");
+    } else {
+        assert.fail("the initializer's oneof alternative must survive dispatch");
+    }
+    assert.equal(isFieldSet(input, nicknameField), hasNickname);
+    assert.equal(input.nickname, hasNickname ? "present" : undefined);
+}
+
+const fullRequest = create(RequestSchema, request("full"));
+
+const server = createServer({
+    catalog: serviceCatalog,
+    services: [
+        defineService(RequestService, {
+            async unary(input, ctx) {
+                assertRequest(input, input.name, input.nickname === "present");
+                if (input.name !== "driver") return create(ResponseSchema, { output: `unary:${input.name}` });
+
+                const unaryPlain = await ctx.call(`${method}/Unary`, request("plain"));
+                const unaryMessage = await ctx.call(`${method}/Unary`, fullRequest);
+                const omittedOptional = await ctx.call(`${method}/Unary`, request("optional-omitted", false));
+                assert.equal(unaryPlain.output, "unary:plain");
+                assert.equal(unaryMessage.output, "unary:full");
+                assert.equal(omittedOptional.output, "unary:optional-omitted");
+                assert.equal(unaryPlain.$typeName, ResponseSchema.typeName);
+                assert.equal(unaryMessage.$typeName, ResponseSchema.typeName);
+
+                const serverStreamPlain: string[] = [];
+                for await (const response of ctx.stream(`${method}/ServerStream`)(request("server-plain"))) {
+                    serverStreamPlain.push(response.output);
+                    assert.equal(response.$typeName, ResponseSchema.typeName);
+                }
+                const serverStreamMessage: string[] = [];
+                for await (const response of ctx.stream(`${method}/ServerStream`)(fullRequest)) {
+                    serverStreamMessage.push(response.output);
+                }
+                assert.deepEqual(serverStreamPlain, ["server:server-plain"]);
+                assert.deepEqual(serverStreamMessage, ["server:full"]);
+
+                const clientStream = ctx.stream(`${method}/ClientStream`)();
+                clientStream.send(request("client-plain"));
+                clientStream.send(fullRequest);
+                const clientResponse = await clientStream.close();
+                assert.equal(clientResponse.output, "client-plain|full");
+                assert.equal(clientResponse.$typeName, ResponseSchema.typeName);
+
+                const bidiStream = ctx.stream(`${method}/BidiStream`)();
+                bidiStream.send(request("bidi-plain"));
+                bidiStream.send(fullRequest);
+                bidiStream.close();
+                const bidiResponses: string[] = [];
+                for await (const response of bidiStream.responses) {
+                    bidiResponses.push(response.output);
+                    assert.equal(response.$typeName, ResponseSchema.typeName);
+                }
+                assert.deepEqual(bidiResponses, ["bidi:bidi-plain", "bidi:full"]);
+
+                return create(ResponseSchema, { output: "runtime acceptance passed" });
+            },
+            async *serverStream(input) {
+                assertRequest(input, input.name, input.nickname === "present");
+                yield create(ResponseSchema, { output: `server:${input.name}` });
+            },
+            async clientStream(inputs) {
+                const names: string[] = [];
+                for await (const input of inputs) {
+                    assertRequest(input, input.name, input.nickname === "present");
+                    names.push(input.name);
+                }
+                return create(ResponseSchema, { output: names.join("|") });
+            },
+            async *bidiStream(inputs) {
+                for await (const input of inputs) {
+                    assertRequest(input, input.name, input.nickname === "present");
+                    yield create(ResponseSchema, { output: `bidi:${input.name}` });
+                }
+            },
+        }),
+    ],
+});
+
+const result = await server.localClient(RequestService).unary(create(RequestSchema, request("driver", false)));
+assert.equal(result.output, "runtime acceptance passed");
+assert.equal(result.$typeName, ResponseSchema.typeName);
+console.log("Generated catalog dispatch accepted plain and full-message inputs for all RPC kinds.");

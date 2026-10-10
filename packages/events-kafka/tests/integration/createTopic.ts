@@ -9,6 +9,21 @@ const POLL_INTERVAL_MS = 50;
 const TRANSIENT_METADATA_ERRORS = new Set(["UNKNOWN_TOPIC_OR_PARTITION", "LEADER_NOT_AVAILABLE"]);
 
 /**
+ * Whether a metadata failure only means "not yet". KafkaJS wraps a retriable error whose own retries ran out in
+ * `KafkaJSNumberOfRetriesExceeded`, which has no `type` of its own and keeps the original error in `cause`, so the
+ * chain is followed (a few levels at most) before the type is read.
+ */
+export function isTransientMetadataError(error: unknown): boolean {
+    let current: unknown = error;
+    for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth++) {
+        const { type, cause } = current as { type?: unknown; cause?: unknown };
+        if (typeof type === "string") return TRANSIENT_METADATA_ERRORS.has(type);
+        current = cause;
+    }
+    return false;
+}
+
+/**
  * Create a topic and return only once the broker answers metadata requests for it with a leader on every partition.
  *
  * `admin.createTopics({ waitForLeaders: true })` is not enough: KafkaJS follows the controller's acknowledgement
@@ -30,8 +45,7 @@ export async function createTopicWithLeader(admin: Admin, topic: string, partiti
                 return;
             }
         } catch (error) {
-            const type = (error as { type?: string }).type;
-            if (type === undefined || !TRANSIENT_METADATA_ERRORS.has(type)) throw error;
+            if (!isTransientMetadataError(error)) throw error;
         }
         assert.ok(Date.now() < deadline, `topic ${topic} had no leader on every partition within ${READY_TIMEOUT_MS}ms`);
         await sleep(POLL_INTERVAL_MS);
