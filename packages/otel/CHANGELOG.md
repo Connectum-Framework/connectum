@@ -1,5 +1,117 @@
 # @connectum/otel
 
+## 1.3.0
+
+### Minor Changes
+
+- [#310](https://github.com/Connectum-Framework/connectum/pull/310) [`fd8f5ea`](https://github.com/Connectum-Framework/connectum/commit/fd8f5eaa2f5bce151f49953e91b9b8a1b14d03d0) Thanks [@intech](https://github.com/intech)! - `@connectum/otel`: the OTLP/HTTP exporters no longer fail when no collector endpoint is configured.
+  
+  With `OTEL_TRACES_EXPORTER=otlp/http` (or the metrics/logs equivalents) and no `OTEL_EXPORTER_OTLP_ENDPOINT`, creating the provider used to throw `Could not parse user-provided export URL: 'undefined/v1/traces'`. The exporter now falls back to its default, `http://localhost:4318/v1/<signal>`; an empty `OTEL_EXPORTER_OTLP_ENDPOINT` counts as not set. A malformed endpoint still fails at construction.
+  
+  The documented OpenTelemetry environment contract is now honoured:
+  
+  - `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER` accept the standard value `otlp`. The transport follows `OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL`, then `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc`, `http/protobuf`, `http/json`). `http/protobuf`, which is also the default when neither is set, sends protobuf-encoded OTLP/HTTP (`Content-Type: application/x-protobuf`) as the OpenTelemetry specification defines; `http/json` sends JSON. `otlp/http` (JSON, unchanged), the new `otlp/http-protobuf` and `otlp/grpc` are explicit and ignore the protocol variables. The package gains the three `@opentelemetry/exporter-*-otlp-proto` dependencies.
+  - `OTEL_EXPORTER_OTLP_<TRACES|METRICS|LOGS>_ENDPOINT` is used as given and now takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT` for OTLP/HTTP exporters; previously the base endpoint silently won when both were set.
+  
+  `ExporterType` gains `OTLP_HTTP_PROTOBUF` (`"otlp/http-protobuf"`), so `settings` overrides can select the binary encoding too.
+  
+  `@connectum/testing`: `InMemoryMetricCollector` names its aggregation temporality (`AggregationTemporality.DELTA`) instead of the bare `0`, and the comment that called it CUMULATIVE is corrected. Behaviour is unchanged.
+
+- [#278](https://github.com/Connectum-Framework/connectum/pull/278) [`f4dc088`](https://github.com/Connectum-Framework/connectum/commit/f4dc0888255c9c9cf1c2e9bba2b18a7341bcf95d) Thanks [@intech](https://github.com/intech)! - feat(otel): export the `OtelProvider` type returned by `getProvider()`
+  
+  - `@connectum/otel`: `getProvider()` returned a type the package did not
+    export, so callers could not name it to store or pass the provider on. It is
+    now exported (from the root entry and from `@connectum/otel/provider`) as an
+    interface — `tracer`, `meter`, `logger` and `shutdown()` — with no public
+    constructor: the package still keeps exactly one provider per process.
+    `provider.shutdown()` does not reset that instance; `shutdownProvider()` does.
+  - `@connectum/testing`: the `InMemorySpanCollector` docs named a
+    `registerGlobal` method that does not exist. They now describe the real way to
+    make the collector global: `trace.setGlobalTracerProvider(collector.provider)`,
+    then `trace.disable()` before `dispose()`.
+  - `@connectum/healthcheck`: the `ServingStatus` docs list the enum values of the
+    gRPC Health Checking Protocol it re-exports.
+
+- [#334](https://github.com/Connectum-Framework/connectum/pull/334) [`2b09e10`](https://github.com/Connectum-Framework/connectum/commit/2b09e1080bd3d4d1af923254f7b637b7bb664d77) Thanks [@intech](https://github.com/intech)! - fix: the server span is now the active span inside server-streaming and bidirectional handlers.
+  
+  `trace.getActiveSpan()` used to be empty in such a handler over HTTP (and returned the caller's or the client span in-process), in every phase: at the start, after an `await`, after a `yield` and in `finally`. A span the handler started, including through `traced()`, was therefore not a child of the server span. `createOtelInterceptor()` now runs the creation of the response stream and each of its `next`, `return` and `throw` steps in the context that carries the server span, so the whole handler runs under it and its spans are parented to it. Unary and client-streaming handlers, span names, attributes, events, status and metrics are unchanged. The scope ends with each step: the code that consumes the stream keeps its own active span and concurrent streams stay separate.
+  
+  The helper `scopeAsyncIterable` is exported from `@connectum/otel/shared` next to `wrapAsyncIterable`; no other API changes.
+  
+  The request stream is pulled by code below the interceptor (the handler, or an interceptor placed after it), so it already runs under the server span and is not re-scoped: an interceptor placed before `createOtelInterceptor()` that wraps the request stream still sees the server span while it is pulled, as before. Wrappers of the response stream run under the server span only when they are placed after `createOtelInterceptor()`; put `createLoggerInterceptor()` after it to have its response and completion records correlated with the span. In-process, the generator that produces the request messages of a bidirectional call now also runs under the server span, as it already did for client-streaming calls.
+
+- [#282](https://github.com/Connectum-Framework/connectum/pull/282) [`36ce828`](https://github.com/Connectum-Framework/connectum/commit/36ce828cd36d84285e657b843b65ddbf28111107) Thanks [@intech](https://github.com/intech)! - feat: declare protobuf and Connect as peer dependencies, so an application runs with one copy of each
+  
+  `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` were regular dependencies. An application that pinned its own version could end up with a second copy that nothing reported: message and service types generated against one copy then stopped type-checking against the other, and a `connect-node` next to a different `connect` formed a pair `connect-node` does not support (it requires one exact `connect` version).
+  
+  - `@connectum/core`, `auth`, `events`, `healthcheck`, `interceptors`, `otel`, `reflection`, `testing` and `test-fixtures` now declare `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0` in `peerDependencies`; `core` and `testing` also declare `@connectrpc/connect-node` `^2.2.0`.
+  - `auth`, `events` and `interceptors` declare `@connectum/core` as a peer dependency instead of a dependency, so they use the application's own `@connectum/core`.
+  - `@connectum/interceptors` now depends on `@bufbuild/protovalidate` directly. The validation interceptor imports it whether or not validation is enabled; it used to install only because npm, pnpm and Bun add missing peers of `@connectrpc/validate`.
+  - `@connectum/cli` and `@connectum/protoc-gen-catalog` are unchanged: they are executables, and `@bufbuild/protoplugin` pins `@bufbuild/protobuf` exactly, so they keep their own copy and are outside the single-copy guarantee.
+  
+  With pins inside these ranges, or no pins at all, npm, pnpm and Bun now install exactly one copy of each library for the application and every Connectum runtime package. This includes `@connectum/reflection`, which now serves gRPC Server Reflection with Connectum's own implementation instead of a third-party library that kept its own protobuf / Connect copy.
+  
+  `createServer()` now checks the `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` that `@connectum/core` actually loaded against these ranges, and throws `PeerDependencyVersionError` (exported from `@connectum/core`) naming the package, the loaded version and its location, the required range and the fix. Lockstep is checked at startup too: the `@connectrpc/connect` that `@connectrpc/connect-node` itself loads must be the exact version connect-node declares, and the same copy `@connectum/core` loads. This makes an out-of-range version a visible startup failure on every package manager, including the ones that only warn at install time. When the version cannot be determined — `@connectum/core` bundled into the application, or a runtime without `import.meta.resolve` — the check is skipped rather than guessed.
+  
+  **BREAKING (installation and startup):** an install or a start that worked before can now fail.
+  
+  - npm refuses an application whose `@bufbuild/protobuf`, `@connectrpc/connect` or `@connectrpc/connect-node` pin is outside the ranges above, with `ERESOLVE unable to resolve dependency tree`. pnpm prints `Issues with peer dependencies found` (`pnpm peers check` names the library) and keeps the application's too-old copy; Bun warns in the same way, but stays silent about a too-old `@bufbuild/protobuf` when a code generator such as `protoc-gen-es` brings its own in-range copy. On pnpm and Bun the application then stops at `createServer()` with `PeerDependencyVersionError`.
+  - Yarn does not install missing peer dependencies: Yarn users add `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` (and `@connectum/core` next to `auth`, `events` or `interceptors`) to their own `package.json`.
+  
+  Under strict Semantic Versioning this is a major change, and Connectum's breaking-changes strategy does not plan breaking changes for minor versions. It ships in 1.3.0 as an explicit, recorded exception, so that applications get the single-copy fix now rather than with 2.0.
+  
+  Migration: raise any pin of `@bufbuild/protobuf` to `^2.16.0` and of `@connectrpc/connect` / `@connectrpc/connect-node` to `^2.2.0`, keeping `connect` and `connect-node` on the same version — or remove the pins and let npm, pnpm or Bun install the peers. Do not work around a conflict with `--legacy-peer-deps` or `--force`: that reinstates the duplicate copies. Generate code with `protoc-gen-es` 2.16 or later.
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Clear the remaining dependency advisories, and keep one `@bufbuild/protobuf` in the
+  workspace.
+  
+  `@bufbuild/buf` moves to 1.72.0. `@bufbuild/protoplugin` now moves together with
+  `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` under the single-instance pin: it
+  had lagged one release behind and pinned a second copy of `@bufbuild/protobuf`, which
+  is exactly the split the pin exists to prevent -- two instances break
+  `@connectrpc/connect`'s protobuf peer and the reflection DTS build. The protobuf-es and
+  connect-es versions this release requires are in the protobuf-es 2.16 / Connect 2.2
+  entry.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#311](https://github.com/Connectum-Framework/connectum/pull/311) [`45510a5`](https://github.com/Connectum-Framework/connectum/commit/45510a5fad8b369fe04bd7358659471e0819c329) Thanks [@intech](https://github.com/intech)! - `@connectum/otel`: `shutdownProvider()` no longer leaves the provider in a broken state, and a provider created after a shutdown now works.
+  
+  - When stopping failed (for example an unreachable OTLP collector), `getProvider()` kept handing out the half-stopped provider and a repeated `shutdownProvider()` returned the same error. The provider is now released whether stopping succeeds or fails; the call still rejects with the failure.
+  - Tracing, metrics and logging used to be stopped one after another, so a failing first signal left the other two running with unflushed buffers. They are now stopped independently; one failure is rethrown as it is, several as an `AggregateError`.
+  - The OpenTelemetry API global registrations (trace, context, propagation, metrics, logs) survived a shutdown, so a provider created afterwards was refused as a duplicate and its `meter` became a no-op: RPC metrics disappeared without a message. Shutdown now releases exactly the registrations the provider took and leaves those held by other code alone, and the provider's `meter` comes from its own meter provider.
+  - `createOtelInterceptor` and `createOtelClientInterceptor` created before a shutdown kept recording into the stopped meter provider; they now follow the current one.
+  
+  The package now lists `@opentelemetry/context-async-hooks` and `@opentelemetry/core` as dependencies (they were development-only) because the provider registers the context manager and the propagator itself.
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
+- [#292](https://github.com/Connectum-Framework/connectum/pull/292) [`b555978`](https://github.com/Connectum-Framework/connectum/commit/b5559789145656d823b9277f0406e51a14c6251a) Thanks [@intech](https://github.com/intech)! - Each package now evaluates its modules once, whichever subpath you import.
+  
+  These packages were built with one bundle per subpath, and every bundle carried its own copy of the modules it used. In `@connectum/otel` that meant one provider singleton per subpath: `getProvider()` from `@connectum/otel` and from `@connectum/otel/provider` returned different providers, and the second one's global registration failed with `Attempted duplicate registration of API: trace`, so a tracer or meter taken through a subpath belonged to a provider OpenTelemetry was not using. Likewise `ServerState` from `@connectum/core` and `@connectum/core/types` were two objects, and collectors created by `@connectum/testing/parity` were not `instanceof` the classes exported by `@connectum/testing`.
+  
+  The builds now share modules between subpaths, so every subpath hands out the same provider, classes and functions. The `exports` maps are unchanged; `dist` gains shared chunk files.
+
+- [#308](https://github.com/Connectum-Framework/connectum/pull/308) [`6f342ac`](https://github.com/Connectum-Framework/connectum/commit/6f342acfb59c296020435b779d7c8f7bd79acee6) Thanks [@intech](https://github.com/intech)! - Internal hardening, no behaviour change: the linter now enforces a stricter rule set
+  (no import cycles, no namespace imports, no bitwise operators, no `== null`, no `var`,
+  no unguarded `for...in`, and others), and the sources were brought in line with it.
+  
+  The CIDR check behind the gateway trust source is now plain integer arithmetic instead
+  of signed 32-bit shifts, so no prefix length can flip the high bit; every prefix
+  boundary, including `/0`, `/1`, `/31` and `/32`, is covered by a test. The catalog
+  generator emits its `catalog.gen.ts` through `print(...)` calls rather than tagged
+  templates; a test pins the exact generated text line for line.
+
 ## 1.2.0
 
 ## 1.1.0

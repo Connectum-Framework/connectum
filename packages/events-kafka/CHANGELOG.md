@@ -1,5 +1,43 @@
 # @connectum/events-kafka
 
+## 1.3.0
+
+### Minor Changes
+
+- [#322](https://github.com/Connectum-Framework/connectum/pull/322) [`291e6f8`](https://github.com/Connectum-Framework/connectum/commit/291e6f82212c27846089b16d0d836fded933b17b) Thanks [@intech](https://github.com/intech)! - Add `consumerOptions.commitStrategy` to choose when the consumer group's offset is committed.
+  `"per-message"` (the default, unchanged behavior) sends one `OffsetCommit` request for every
+  acknowledged message. `"per-batch"` makes `ack()` remember the message and sends a single
+  `OffsetCommit` for the last acknowledged one when the adapter stops working on the batch: at its
+  end, at a requeued or unsettled message, when the handler throws, when the consumer stops and
+  when the group membership is lost. Acknowledged messages are not left uncommitted on any of
+  these exits, and an unsettled message is never committed. The trade-off is a larger window of
+  duplicates: if the process dies between an `ack()` and the end of the batch, every message
+  acknowledged in that batch is delivered again, so handlers must be idempotent. Any other value
+  makes `KafkaAdapter()` throw a `RangeError`.
+
+- [#332](https://github.com/Connectum-Framework/connectum/pull/332) [`75588bd`](https://github.com/Connectum-Framework/connectum/commit/75588bdb286dff48ceb2d992aa0d27c28b2671e3) Thanks [@intech](https://github.com/intech)! - fix: a wildcard no longer subscribes Kafka's internal topics; feat: `consumerOptions.topicDiscoveryInterval` picks up topics created after the subscription
+  
+  - A pattern that opens with a wildcard (`>`, `*`, `*.created`) no longer matches topics whose name starts with `__`, the prefix Kafka and Redpanda use for their internal topics (`__consumer_offsets`, `__transaction_state`). A catch-all `>` used to subscribe `__consumer_offsets` and hand its binary records to the event handler. Literal topic names, a pattern that spells the prefix out (`__audit.>`) and names with a single leading underscore are unaffected, so `>` still receives a topic such as Redpanda's `_schemas`.
+  - New `consumerOptions.topicDiscoveryInterval` (`number | false`, milliseconds), **on by default at 300000** (five minutes). KafkaJS expands a wildcard once, when `subscribe()` runs, so a matching topic created later was never consumed until a restart, and the restart read it from the end: what was published to it in between was never handled (measured: 5 of 6 messages). Now the adapter lists the broker's topics every interval and, when a matching topic has appeared, restarts the subscription's consumer to include it, reading the topic from its first message; the discovery is logged with the topic names. The restart rebalances the consumer group (a pause of a few seconds; messages being handled are delivered again) and happens only when there is a new topic. In a group of several members every member must discover the topic before it is read completely, because KafkaJS assigns partitions only from the topic list of the group leader: the delay is up to the longest `topicDiscoveryInterval` among the members, and nothing is lost meanwhile. **Changes the default behaviour of wildcard subscriptions**: one metadata request per wildcard subscription per interval on an extra admin connection, and a group rebalance when a matching topic appears. Set `false` to keep the fixed topic list of earlier versions. A restart inside one interval still misses what was published to a new topic before it.
+
+### Patch Changes
+
+- [#299](https://github.com/Connectum-Framework/connectum/pull/299) [`57a1ab4`](https://github.com/Connectum-Framework/connectum/commit/57a1ab480ab7399a095037d4fa637137b65ca97d) Thanks [@intech](https://github.com/intech)! - fix: acknowledgement now commits the consumer-group offset, and unsettled messages are redelivered in order
+  
+  - `ack()` and `nack(false)` commit the message offset; previously nothing was committed, so a restarted group received acknowledged messages again, and messages published while a group was stopped could be lost.
+  - A handler that throws while its message is still uncommitted, calls `nack(true)`, or (when the adapter is used without the EventBus, which acknowledges a normal return itself) returns without settling ends the batch: that message and the rest of the partition's batch are delivered again, in order. An `ack()` or `nack(false)` that already committed the offset prevents redelivery even if the handler throws afterwards. Previously the message and the rest of its batch were skipped and never redelivered. A failed commit stops the batch and is surfaced to KafkaJS.
+  - A handler error is now logged with topic, partition and offset instead of being swallowed.
+  - New `consumerOptions.redeliveryDelay` (milliseconds, default `1000`) pauses the partition between redeliveries of an unsettled message; `0` redelivers immediately. On an otherwise idle consumer the observed gap is a whole fetch cycle (5 s in KafkaJS) even for smaller values. A message that fails on every delivery blocks its partition until the handler succeeds, `nack(false)` is called, or the DLQ middleware moves it.
+  - `fromBeginning` still defaults to `false`; the README now states what that means for a group without a committed offset.
+
+- [#318](https://github.com/Connectum-Framework/connectum/pull/318) [`850e531`](https://github.com/Connectum-Framework/connectum/commit/850e531c5436d8615ad47888a93b41af5566036a) Thanks [@intech](https://github.com/intech)! - Fix a handler that runs longer than the consumer's `sessionTimeout` being dropped from its
+  group and the message redelivered forever. KafkaJS sends a heartbeat only when asked, and the
+  adapter asked only between messages, so during a long handler the broker saw no heartbeat,
+  removed the member, and every `ack()` then failed with "The coordinator is not aware of this
+  member". The adapter now heartbeats in the background for as long as a handler runs and stops as
+  soon as the handler returns or throws. If a heartbeat fails and the message was not
+  committed, the failure is handed to KafkaJS so the consumer rejoins the group. No option changes.
+
 ## 1.2.0
 
 ## 1.1.0
