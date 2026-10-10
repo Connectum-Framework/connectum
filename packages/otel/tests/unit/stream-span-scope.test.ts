@@ -225,15 +225,16 @@ describe("server span scope inside streaming handlers", () => {
                 const cleaned = observations?.find((o) => o.phase === "finally");
                 assert.ok(started?.active, "the handler started under a span");
                 assert.ok(cleaned, "handler finally block ran after the abort");
+                // The cleanup runs under the span the handler started under on both transports.
+                // Over HTTP the transport pulls the stream to its end through the scoped iterator.
+                // In-process, the abort listener finishes the handler directly, outside any iterator
+                // step this interceptor can scope, so the context of that cleanup is the one the
+                // stream was created in, which the core binds when it registers the listener.
+                assert.strictEqual(cleaned.active, started.active, "cleanup runs under the span the handler started under");
                 if (transport === "http") {
-                    // Over HTTP the transport pulls the stream to its end through the scoped
-                    // iterator, so the cleanup runs under the span and the span ends.
-                    assert.strictEqual(cleaned.active, started.active, "cleanup runs under the span the handler started under");
+                    // The span itself ends only when the transport pulls the stream to its end.
                     assert.strictEqual(serverSpan(SERVER_SPAN_NAMES.server).spanId, started.active);
                 }
-                // In-process, the abort listener of the stream bridge finishes the handler
-                // directly, outside any iterator step this interceptor can scope; the context
-                // of that cleanup is the bridge's responsibility, not asserted here.
             });
 
             it("unary: handler keeps the server span active (unchanged)", { timeout: 30_000 }, async () => {
