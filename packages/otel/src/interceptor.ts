@@ -18,7 +18,7 @@ import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./att
 import { getMeter } from "./meter.ts";
 import type { RpcServerMetrics } from "./metrics.ts";
 import { createRpcServerMetrics } from "./metrics.ts";
-import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, detectConnectumTransport, estimateMessageSize, wrapAsyncIterable } from "./shared.ts";
+import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, detectConnectumTransport, estimateMessageSize, scopeAsyncIterable, wrapAsyncIterable } from "./shared.ts";
 import { getTracer } from "./tracer.ts";
 import type { OtelInterceptorOptions } from "./types.ts";
 
@@ -107,8 +107,9 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
 
         // 4. Context propagation: extract trace context from request headers
         const headers = Object.fromEntries(req.header.entries());
-        const extractedContext = propagation.extract(context.active(), headers);
-        const parentContext = trustRemote ? extractedContext : context.active();
+        const callerContext = context.active();
+        const extractedContext = propagation.extract(callerContext, headers);
+        const parentContext = trustRemote ? extractedContext : callerContext;
 
         // 5. Start timing
         const startTime = performance.now();
@@ -173,8 +174,19 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         }
 
         return tracer.startActiveSpan(spanName, spanOptions, parentContext, async (span) => {
+            // The context that carries this span: streaming handlers are pulled outside
+            // this callback and must be run in it again (see below).
+            const spanContext = context.active();
             try {
-                // Wrap streaming request messages for instrumentation
+                // Wrap streaming request messages for instrumentation. The request
+                // stream is pulled by code below this interceptor (the handler, or an
+                // interceptor placed after this one), which already runs inside this
+                // callback and so under the server span; it is deliberately not
+                // re-scoped. Re-scoping it to the caller's context would take the
+                // server span away from interceptors placed before this one that wrap
+                // the request stream (the logger, for one). Which context the
+                // in-process producer of the messages runs in is a property of the
+                // in-process transport, not of this interceptor.
                 const instrumentedReq = req.stream
                     ? Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
                           message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages),
@@ -195,8 +207,12 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
 
                 // Wrap streaming response messages for instrumentation
                 if (response.stream) {
+                    // The handler body of a streaming call runs when the transport pulls
+                    // messages, after this callback has returned. Running each pull in the
+                    // context that carries this span keeps the span active for the handler
+                    // and parents the spans it starts to this one.
                     const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true),
+                        message: scopeAsyncIterable(wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true), spanContext),
                     });
                     recordMetrics(duration, 0);
                     return wrappedResponse;
