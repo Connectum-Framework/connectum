@@ -26,7 +26,7 @@ import { createServer as createHttp2Server, type Http2Server, type ServerHttp2Se
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import type { CallOptions, ClientStreamHandle } from "@connectum/core";
 import { createCatalogClient, createServer, defineCatalog, defineService, singleTransportResolver } from "@connectum/core";
@@ -210,9 +210,39 @@ async function serveOneResponseThen(status: { code: number; message?: string } |
     }
 }
 
+/**
+ * An interceptor that settles `received` when the first response message is handed to the reader of the call.
+ * Mounted first, it is the outermost wrapper, so it observes what the code reading the responses receives.
+ */
+function observeFirstResponse(): { readonly interceptor: Interceptor; readonly received: Promise<void> } {
+    let mark!: () => void;
+    const received = new Promise<void>((resolve) => {
+        mark = resolve;
+    });
+    const interceptor: Interceptor = (next) => async (req) => {
+        const res = await next(req);
+        if (!res.stream) return res;
+        const inner = res.message;
+        return {
+            ...res,
+            message: (async function* () {
+                let first = true;
+                for await (const message of inner) {
+                    if (first) {
+                        first = false;
+                        mark();
+                    }
+                    yield message;
+                }
+            })(),
+        };
+    };
+    return { interceptor, received };
+}
+
 describe("catalog client-stream span — standalone catalog client over gRPC with a transport-level interceptor", () => {
-    function clientFor(baseUrl: string) {
-        const transport = createGrpcTransport({ baseUrl, interceptors: [createOtelClientInterceptor({ serverAddress: "test-server" })] });
+    function clientFor(baseUrl: string, observers: Interceptor[] = []) {
+        const transport = createGrpcTransport({ baseUrl, interceptors: [...observers, createOtelClientInterceptor({ serverAddress: "test-server" })] });
         const client = createCatalogClient({ catalog: newCatalog(), resolver: singleTransportResolver(transport) });
         return client.stream as unknown as (method: string) => (options?: CallOptions) => ClientStreamHandle<unknown, Count>;
     }
@@ -244,12 +274,14 @@ describe("catalog client-stream span — standalone catalog client over gRPC wit
     it("a call canceled while the terminal status is pending rejects as canceled and ends exactly one span with ERROR status", async () => {
         await serveOneResponseThen("never", async (baseUrl) => {
             const controller = new AbortController();
-            const handle = clientFor(baseUrl)(CLIENT_STREAM)({ signal: controller.signal });
+            const seen = observeFirstResponse();
+            const handle = clientFor(baseUrl, [seen.interceptor])(CLIENT_STREAM)({ signal: controller.signal });
             handle.send(create(ItemSchema, { value: "a", sequence: 0 }));
             const closing = handle.close();
             const assertion = assert.rejects(closing, (err: unknown) => err instanceof ConnectError && err.code === Code.Canceled);
-            // Give the response frame time to arrive, so the abort lands while
-            // the call waits for its terminal status.
+            // The abort must land while the call waits for its terminal status, so wait until the response has
+            // really reached the reader, then give the reader its turns to process it.
+            await seen.received;
             for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
             assert.strictEqual(counter.ended, 0, "the span must still be open while the terminal status is pending");
             controller.abort();

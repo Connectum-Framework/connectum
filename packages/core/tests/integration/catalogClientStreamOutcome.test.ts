@@ -62,6 +62,13 @@ interface Probe {
      * transport, the closing of the HTTP/2 stream for the wire server.
      */
     signal: AbortSignal | undefined;
+    /**
+     * Settles when the first response message has been handed to the code that reads the call's responses, as
+     * seen from the transport's client side. Waiting on it, rather than on event-loop turns, is what proves that
+     * the call is parked on its terminal status and not merely on a response that is still in flight.
+     */
+    readonly firstResponse: Promise<void>;
+    markFirstResponse(): void;
 }
 
 type Script = (probe: Probe) => AsyncGenerator<Count>;
@@ -71,7 +78,39 @@ function count(total: number): Count {
 }
 
 function newProbe(): Probe {
-    return { reachedEnd: false, finalized: false, signal: undefined };
+    let mark!: () => void;
+    const firstResponse = new Promise<void>((resolve) => {
+        mark = resolve;
+    });
+    return { reachedEnd: false, finalized: false, signal: undefined, firstResponse, markFirstResponse: mark };
+}
+
+/**
+ * Wraps `transport` so that `probe.firstResponse` settles at the moment the first response message leaves the
+ * transport towards the code under test. The wrapper still drives the inner response stream itself, so the
+ * end-of-stream observations of the harness are unchanged.
+ */
+function observeFirstResponse(transport: Transport, probe: Probe): Transport {
+    return {
+        unary: (...args) => transport.unary(...args),
+        stream: async (...args) => {
+            const response = await transport.stream(...args);
+            const inner = response.message;
+            return {
+                ...response,
+                message: (async function* () {
+                    let first = true;
+                    for await (const message of inner) {
+                        if (first) {
+                            first = false;
+                            probe.markFirstResponse();
+                        }
+                        yield message;
+                    }
+                })(),
+            } as typeof response;
+        },
+    };
 }
 
 /** Runs `script` with the probe bookkeeping every harness shares. */
@@ -122,7 +161,7 @@ const inMemory: Harness = {
                 } as unknown as StreamResponse<never, never>;
             },
         };
-        return use(transport);
+        return use(observeFirstResponse(transport, probe));
     },
 };
 
@@ -169,7 +208,7 @@ const wire: Harness = {
         await new Promise<void>((resolve) => http2.listen(0, "127.0.0.1", resolve));
         const { port } = http2.address() as AddressInfo;
         try {
-            return await use(createGrpcTransport({ baseUrl: `http://127.0.0.1:${port}` }));
+            return await use(observeFirstResponse(createGrpcTransport({ baseUrl: `http://127.0.0.1:${port}` }), probe));
         } finally {
             for (const session of sessions) session.destroy();
             await new Promise<void>((resolve) => http2.close(() => resolve()));
@@ -297,6 +336,7 @@ for (const harness of [inMemory, wire]) {
                                 throw error;
                             },
                         );
+                        await probe.firstResponse;
                         await settle();
                         assert.strictEqual(settled, false, "close() settled although the terminal status had not arrived");
                         trailers.open();
@@ -384,6 +424,7 @@ for (const harness of [inMemory, wire]) {
                             () => handle.close(),
                             (err: unknown) => err instanceof ConnectError && err.code === Code.Canceled,
                         );
+                        await probe.firstResponse;
                         await settle();
                         controller.abort();
                         await assertion;
