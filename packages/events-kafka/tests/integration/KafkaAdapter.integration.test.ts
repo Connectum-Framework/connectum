@@ -87,8 +87,10 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
      * Adapter for one scenario. A positive redelivery pause costs a whole KafkaJS fetch cycle (5 s)
      * per redelivery on an idle consumer, so scenarios that are not about pacing redeliver at once
      * (`redeliveryDelay: 0`); `adapterDefaultRedelivery` leaves the option unset to exercise the default.
+     * Topic discovery stays at the adapter default (on, five minutes) unless a scenario sets
+     * `topicDiscoveryInterval`, so a wildcard scenario keeps one extra admin connection open.
      */
-    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number }): EventAdapter {
+    function newAdapter(extra?: { fromBeginning?: boolean; redeliveryDelay?: number; adapterDefaultRedelivery?: boolean; sessionTimeout?: number; topicDiscoveryInterval?: number | false }): EventAdapter {
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
@@ -96,6 +98,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             consumerOptions: {
                 fromBeginning: extra?.fromBeginning ?? true,
                 ...(extra?.sessionTimeout !== undefined && { sessionTimeout: extra.sessionTimeout }),
+                ...(extra?.topicDiscoveryInterval !== undefined && { topicDiscoveryInterval: extra.topicDiscoveryInterval }),
                 ...(extra?.adapterDefaultRedelivery !== true && { redeliveryDelay: extra?.redeliveryDelay ?? 0 }),
             },
         });
@@ -825,7 +828,315 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }
     });
 
-    it("consumer group: partitions are shared, each message is delivered once, and a leaving member's partitions move to the survivor", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+    it("a leading wildcard does not subscribe the broker's internal topics", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        // The internal offsets topic exists as soon as any group commits an offset; the control
+        // consumer below guarantees it holds records, so a subscription that included it would
+        // receive them.
+        const topic = await createTopic(uniqueName("it.internal"));
+        const control = newAdapter();
+        const seen = new Set<string>();
+        const adapter = newAdapter();
+
+        await control.connect();
+        await adapter.connect();
+        try {
+            const warm = await control.subscribe([topic], async (_event, ack) => ack(), { group: uniqueName("group") });
+            await control.publish(topic, bytes("warm"));
+            await sleep(2_000);
+            await warm.unsubscribe();
+
+            const subscription = await adapter.subscribe(
+                [">"],
+                async (event, ack) => {
+                    seen.add(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                await waitFor(() => seen.has(topic), "the ordinary topic was delivered");
+                await sleep(3_000);
+                assert.deepEqual(
+                    [...seen].filter((name) => name.startsWith("__")),
+                    [],
+                    "records of the broker's internal topics reached the handler",
+                );
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await control.disconnect();
+            await adapter.disconnect();
+        }
+    });
+
+    it("a wildcard still matches topics with a single leading underscore, and an explicit double-underscore prefix", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.under");
+        const [single, doubled] = (await Promise.all([createTopic(`_${root}.a`), createTopic(`__${root}.a`)])) as [string, string];
+        const seen = new Set<string>();
+        const adapter = newAdapter();
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`_${root}.*`, `__${root}.*`],
+                async (event, ack) => {
+                    seen.add(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                await adapter.publish(single, bytes("s"));
+                await adapter.publish(doubled, bytes("d"));
+                await waitFor(() => seen.size === 2, "both topics delivered", () => [...seen]);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: a topic created after the subscription is delivered, including what was published right after its creation", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.late");
+        const early = await createTopic(`${root}.early`);
+        const received: string[] = [];
+        const group = uniqueName("group");
+        const adapter = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(`${event.eventType}:${text(event.payload)}`);
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await adapter.publish(early, bytes("before"));
+                await waitFor(() => received.length === 1, "the existing topic delivered");
+                await waitForStableGroup(group, 1);
+
+                const late = await createTopic(`${root}.late`);
+                await adapter.publish(late, bytes("first"));
+                await waitFor(() => received.includes(`${late}:first`), "the late topic delivered", () => received);
+
+                await adapter.publish(late, bytes("second"));
+                await adapter.publish(early, bytes("after"));
+                await waitFor(() => received.length === 4, "later messages of both topics delivered", () => received);
+                await sleep(2_000);
+
+                assert.deepEqual([...received].sort(), [`${early}:after`, `${early}:before`, `${late}:first`, `${late}:second`].sort(), "every message exactly once");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: a subscription that matched no topic when it started picks up the first one that appears", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.empty");
+        const received: string[] = [];
+        const adapter = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(event.eventType);
+                    await ack();
+                },
+                { group: uniqueName("group") },
+            );
+            try {
+                const first = await createTopic(`${root}.first`);
+                await adapter.publish(first, bytes("x"));
+                await waitFor(() => received.length === 1, "the first topic delivered", () => received);
+                assert.deepEqual(received, [first]);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    it("topicDiscoveryInterval: two members of a group both discover a new multi-partition topic and share it without duplicates", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.late2");
+        await createTopic(`${root}.early`, 2);
+        const group = uniqueName("group");
+        const seenByA: string[] = [];
+        const seenByB: string[] = [];
+        const adapterA = newAdapter({ topicDiscoveryInterval: 1_000 });
+        const adapterB = newAdapter({ topicDiscoveryInterval: 1_000 });
+
+        await adapterA.connect();
+        await adapterB.connect();
+        try {
+            const subA = await adapterA.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    seenByA.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            const subB = await adapterB.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    seenByB.push(text(event.payload));
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await waitForStableGroup(group, 2);
+                const late = await createTopic(`${root}.late`, 4);
+                const expected: string[] = [];
+                for (let i = 0; i < 12; i++) {
+                    expected.push(`m${i}`);
+                    await adapterA.publish(late, bytes(`m${i}`), { key: `k${i}` });
+                }
+                await waitFor(() => seenByA.length + seenByB.length >= 12, "all messages of the late topic delivered", () => ({ a: seenByA, b: seenByB }), 40_000);
+                await sleep(2_000);
+
+                assert.deepEqual([...seenByA, ...seenByB].sort(), expected.sort(), "every message exactly once across the group");
+            } finally {
+                await subA.unsubscribe();
+                await subB.unsubscribe();
+            }
+        } finally {
+            await adapterA.disconnect();
+            await adapterB.disconnect();
+        }
+    });
+
+    it("with topicDiscoveryInterval false a topic created after the subscription is not picked up", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const root = uniqueName("it.nolate");
+        const early = await createTopic(`${root}.early`);
+        const received: string[] = [];
+        const group = uniqueName("group");
+        const adapter = newAdapter({ topicDiscoveryInterval: false });
+
+        await adapter.connect();
+        try {
+            const subscription = await adapter.subscribe(
+                [`${root}.*`],
+                async (event, ack) => {
+                    received.push(event.eventType);
+                    await ack();
+                },
+                { group },
+            );
+            try {
+                await adapter.publish(early, bytes("x"));
+                await waitFor(() => received.length === 1, "the existing topic delivered");
+                const late = await createTopic(`${root}.late`);
+                await adapter.publish(late, bytes("y"));
+                await sleep(8_000);
+                assert.deepEqual(received, [early], "the subscription's topic list is fixed when subscribe() runs");
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await adapter.disconnect();
+        }
+    });
+
+    /**
+     * A wildcard subscription whose service restarts after a matching topic appeared.
+     *
+     * A service runs with `fromBeginning: false` (the adapter default) and group `G`. Topic `root.late` is created
+     * and five messages are published to it, `restartAfterMs` later the service is stopped and started again with the
+     * same group, and a sixth message is published. Returns the late-topic messages the group handled in total, across
+     * both runs of the service.
+     *
+     * Whether the first five are handled depends only on whether discovery had already seen `root.late` by the
+     * restart. If it had, the first run consumed and committed them. If it had not, no run ever held an offset of `G`
+     * for `root.late`, so after the restart the group starts at the end of the topic, which is how Kafka treats a
+     * group without a committed offset when `fromBeginning` is off, and the five are never handled.
+     */
+    async function lateTopicAcrossRestart(options: { topicDiscoveryInterval: number | false; restartAfterMs: number; label: string }): Promise<string[]> {
+        const root = uniqueName("it.restart");
+        const early = await createTopic(`${root}.early`);
+        const group = uniqueName("group");
+        const lateHandled: string[] = [];
+        const earlyHandled: string[] = [];
+        const handler = async (event: RawEvent, ack: () => Promise<void>): Promise<void> => {
+            (event.eventType.endsWith(".late") ? lateHandled : earlyHandled).push(text(event.payload));
+            await ack();
+        };
+
+        const firstRun = newAdapter({ fromBeginning: false, topicDiscoveryInterval: options.topicDiscoveryInterval });
+        await firstRun.connect();
+        try {
+            const subscription = await firstRun.subscribe([`${root}.*`], handler, { group });
+            try {
+                await waitForStableGroup(group, 1);
+                const late = await createTopic(`${root}.late`);
+                for (let i = 1; i <= 5; i++) {
+                    await firstRun.publish(late, bytes(`l${i}`));
+                }
+                await sleep(options.restartAfterMs);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await firstRun.disconnect();
+        }
+        const handledByFirstRun = lateHandled.length;
+
+        const secondRun = newAdapter({ fromBeginning: false, topicDiscoveryInterval: options.topicDiscoveryInterval });
+        await secondRun.connect();
+        try {
+            const subscription = await secondRun.subscribe([`${root}.*`], handler, { group });
+            try {
+                await waitForStableGroup(group, 1);
+                // The sentinel is delivered only once the restarted consumer is fetching, which is when it has resolved
+                // its start position on every assigned partition; the sixth message is published after that.
+                await secondRun.publish(early, bytes("sentinel"));
+                await waitFor(() => earlyHandled.includes("sentinel"), "the sentinel handled by the restarted service", () => earlyHandled);
+                await secondRun.publish(`${root}.late`, bytes("l6"));
+                await waitFor(() => lateHandled.includes("l6"), "the sixth message handled by the restarted service", () => lateHandled);
+                await sleep(3_000);
+            } finally {
+                await subscription.unsubscribe();
+            }
+        } finally {
+            await secondRun.disconnect();
+        }
+
+        const neverHandled = ["l1", "l2", "l3", "l4", "l5", "l6"].filter((m) => !lateHandled.includes(m)).length;
+        console.log(`${options.label}: handled by the first run ${handledByFirstRun}, handled in total ${lateHandled.length}, never handled ${neverHandled}`);
+        return lateHandled;
+    }
+
+    it("a service restarted after discovery saw the new topic handles everything published to it", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: 1_000, restartAfterMs: 8_000, label: "restart after discovery" });
+        assert.deepEqual([...handled].sort(), ["l1", "l2", "l3", "l4", "l5", "l6"], "all six handled, each exactly once");
+    });
+
+    // The two scenarios below pin down a property of Kafka, not a defect to fix: a consumer group that has no committed
+    // offset for a topic starts at the end of it when `fromBeginning` is off. A message published to a topic that the
+    // group has never held an offset for is therefore lost to the group if the service restarts before it has
+    // subscribed that topic. Discovery is on by default exactly because it shrinks that exposure from "until the next
+    // restart, however late" to "one interval"; these tests fix the measured remainder so it cannot grow unnoticed.
+    it("with topicDiscoveryInterval false the messages published to a new topic before a restart are never handled", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: false, restartAfterMs: 5_000, label: "discovery off" });
+        assert.deepEqual(handled, ["l6"], "only the message published after the restart is handled; the five before it are lost to the group");
+    });
+
+    it("a restart that happens before the first discovery check loses the same messages: the exposure is one interval", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
+        const handled = await lateTopicAcrossRestart({ topicDiscoveryInterval: 60_000, restartAfterMs: 3_000, label: "restart before discovery" });
+        assert.deepEqual(handled, ["l6"], "discovery had not run yet, so the restart loses the five like it does without discovery");
+    });
+
+    it("consumer group: partitions are shared, each message is delivered once, and a leaving member's partitions move to the survivor",{ timeout: SCENARIO_TIMEOUT_MS }, async () => {
         const topic = await createTopic(uniqueName("it.rebalance"), 2);
         const group = uniqueName("group");
         const seenByA: string[] = [];
