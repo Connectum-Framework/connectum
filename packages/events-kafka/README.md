@@ -201,6 +201,17 @@ with a new group.
 
 Event metadata is transmitted as Kafka message headers (Buffer-encoded).
 
+### Known `TimeoutNegativeWarning` from kafkajs
+
+On Node.js 26, a process using `kafkajs` 2.2.4 can print once at startup:
+
+```text
+(node:1234) TimeoutNegativeWarning: -1791406932367 is a negative number.
+Timeout duration was set to 1.
+```
+
+The warning comes from inside `kafkajs`, not from this adapter: `--trace-warnings` shows the stack ending in `RequestQueue.scheduleCheckPendingRequests` → `checkPendingRequests` → `fulfillRequest` → `Connection.processData` → `Socket.onData`. When the request queue is empty its throttle marker is `-1`, so `scheduleCheckPendingRequests` computes `-1 - Date.now()` and passes the negative result to `setTimeout`. Node replaces the delay with 1 ms, so behavior is unaffected; only the warning is noise. No adapter option reaches this code path. It was observed with the `with-events-kafka` example services against Apache Kafka 4.2.0; the broker integration suite of this package, run with the same flag on the same Node.js and broker, did not print it.
+
 ## Dependencies
 
 ### External
@@ -214,7 +225,7 @@ Event metadata is transmitted as Kafka message headers (Buffer-encoded).
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **Kafka**: >=2.0 (or Redpanda)
+- **Kafka**: the integration suite passes on Apache Kafka 4.2.0; other broker versions and Redpanda are not covered by it
 
 ## Documentation
 

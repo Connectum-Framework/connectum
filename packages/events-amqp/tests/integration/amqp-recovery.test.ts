@@ -30,6 +30,7 @@ import { GenericContainer, Network, type StartedNetwork, type StartedTestContain
 import { AmqpAdapter, isConnectionLostError } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
 import type { AmqpLifecycleEvent } from "../../src/types.ts";
+import { RABBITMQ_IMAGE } from "./brokerImage.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -111,7 +112,7 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
     }
 
     before(async () => {
-        container = await new GenericContainer("rabbitmq:4-alpine").withExposedPorts(5672).start();
+        container = await new GenericContainer(RABBITMQ_IMAGE).withExposedPorts(5672).start();
         url = `amqp://guest:guest@${container.getHost()}:${container.getMappedPort(5672)}`;
     });
 
@@ -2219,7 +2220,7 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
 
     before(async () => {
         network = await new Network().start();
-        rabbit = await new GenericContainer("rabbitmq:4-alpine").withNetwork(network).withNetworkAliases("rabbitmq").withExposedPorts(5672).start();
+        rabbit = await new GenericContainer(RABBITMQ_IMAGE).withNetwork(network).withNetworkAliases("rabbitmq").withExposedPorts(5672).start();
         toxiproxy = await new ToxiProxyContainer("ghcr.io/shopify/toxiproxy:2.5.0").withNetwork(network).start();
         // The proxy forwards to the broker over the shared network; the adapter
         // dials the proxy's host-mapped endpoint, so toggling the proxy controls

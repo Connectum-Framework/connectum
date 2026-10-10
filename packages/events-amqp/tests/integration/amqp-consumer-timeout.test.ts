@@ -11,6 +11,7 @@ import { after, before, describe, it } from "node:test";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import type { AmqpLifecycleEvent, AmqpQueueOverride } from "../../src/types.ts";
+import { RABBITMQ_IMAGE } from "./brokerImage.ts";
 
 const RUN = process.env.RUN_RECOVERY_TESTS === "1";
 
@@ -36,21 +37,39 @@ interface Observation {
 describe("AMQP consumer acknowledgement timeout (testcontainers)", { skip: RUN ? false : "RUN_RECOVERY_TESTS != 1", concurrency: 1 }, () => {
     let container: StartedTestContainer;
     let url: string;
+    /** How the broker ends a consumer that outlives `consumer_timeout`; it depends on the broker line. */
+    let expectedCause: "cancelled" | "channel-closed";
 
     before(async () => {
-        container = await new GenericContainer("rabbitmq:4-alpine")
+        container = await new GenericContainer(RABBITMQ_IMAGE)
             .withExposedPorts(5672)
             .withCopyContentToContainer([{ content: "consumer_timeout = 60000\n", target: "/etc/rabbitmq/conf.d/99-consumer-timeout.conf" }])
             .start();
         url = `amqp://guest:guest@${container.getHost()}:${container.getMappedPort(5672)}`;
+
+        // Measured: 4.3.1 and 4.3.6 cancel the consumer and keep the channel; 4.2.8, 4.1.8 and 3.13.7
+        // close the whole channel. Where the behaviour changes is inferred, not measured: only these
+        // five releases were run, so another release of 4.0 or 4.3 is assumed to follow its line.
+        const version = await container.exec(["rabbitmqctl", "version"]);
+        const parsed = /^(\d+)\.(\d+)/.exec(version.stdout.trim());
+        assert.ok(version.exitCode === 0 && parsed !== null, `could not read the broker version: ${version.output}`);
+        const [, majorText = "0", minorText = "0"] = parsed;
+        const major = Number(majorText);
+        const minor = Number(minorText);
+        expectedCause = major > 4 || (major === 4 && minor >= 3) ? "cancelled" : "channel-closed";
     });
 
     after(async () => {
         await container?.stop();
     });
 
-    /** A handler that never settles holds one delivery until the broker's acknowledgement timeout ends the consumer. */
-    async function observeStuckHandler(exchange: string, override: AmqpQueueOverride | undefined, windowMs = 120_000): Promise<Observation> {
+    /**
+     * A handler that never settles holds one delivery until the broker's acknowledgement timeout ends the consumer.
+     * The window is a deadline, not a delay: the broker lines before 4.3 end the consumer after about two minutes
+     * (the check runs on a period of the configured timeout), so the window leaves room for the restoration and
+     * the redelivery behind that point.
+     */
+    async function observeStuckHandler(exchange: string, override: AmqpQueueOverride | undefined, windowMs = 180_000): Promise<Observation> {
         const events: Observation["events"] = [];
         const deliveries: Observation["deliveries"] = [];
         const startedAt = Date.now();
@@ -82,13 +101,13 @@ describe("AMQP consumer acknowledgement timeout (testcontainers)", { skip: RUN ?
         return { deliveries, events };
     }
 
-    it("a quorum queue ends a consumer stuck past the timeout with a cancel; it is restored and the message comes back", { timeout: 240_000 }, async () => {
+    it("a quorum queue ends a consumer stuck past the timeout; it is restored and the message comes back", { timeout: 240_000 }, async () => {
         const seen = await observeStuckHandler("toq", { queue: "toq.quorum", arguments: { "x-queue-type": "quorum" } });
 
         const lost = seen.events.find((e) => e.event.type === "consumer-lost");
         assert.ok(lost?.event.type === "consumer-lost", "the broker ended the stuck consumer");
         assert.equal(lost.event.queue, "toq.quorum");
-        assert.equal(lost.event.cause, "cancelled", "a quorum queue cancels the consumer; the channel stays open");
+        assert.equal(lost.event.cause, expectedCause, `the loss cause the ${RABBITMQ_IMAGE} broker line produces`);
         assert.equal(lost.event.willRestore, true);
         assert.ok(lost.at >= 55_000, `the consumer was ended by the 60 s timeout, not earlier (at ${lost.at} ms)`);
 
