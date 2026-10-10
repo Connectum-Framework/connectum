@@ -435,7 +435,7 @@ describe("outgoingInterceptors — call context is preserved on a resolver route
         const server = createServer({ services: [], catalog, outgoingInterceptors: [slow], remoteResolver: singleTransportResolver(target) });
         await server.client(StreamingService).echo(create(ItemSchema, { value: "", sequence: 0 }), { timeoutMs: 1000 });
         assert.ok(seenTimeout !== null, "the router transport must forward the timeout header");
-        assert.ok(Number(seenTimeout) <= 955, `wire timeout must be the remaining budget (<= 950 ms), got ${seenTimeout}`);
+        assert.ok(Number(seenTimeout) <= 955, `wire timeout must be the remaining budget (<= 955 ms, the 50 ms wait plus timer slack), got ${seenTimeout}`);
     });
 
     it("an explicit signal cancels a call parked inside the chain", async () => {
@@ -466,6 +466,48 @@ describe("outgoingInterceptors — call context is preserved on a resolver route
         });
         assert.strictEqual(seenValues, handlerValues, "the same ContextValues object must reach the chain");
         assert.strictEqual(seenHeader, "1");
+    });
+
+    it("streaming kinds: the inner transport receives the remaining budget and the handler's own ContextValues", async () => {
+        // The recorder sits where the resolver's transport sits, so it sees exactly what the decorator hands
+        // inward after the chain has run: a regression that forwards the original timeout or drops the
+        // handler's values would pass every assertion that only looks at the chain's side.
+        const received: Array<{ kind: string; timeoutMs: number | undefined; values: unknown }> = [];
+        const inner = opaqueTransport();
+        const recorder: Transport = {
+            unary: (...args) => inner.unary(...args),
+            stream: (method, signal, timeoutMs, header, input, contextValues) => {
+                received.push({ kind: method.name, timeoutMs, values: contextValues });
+                return inner.stream(method, signal, timeoutMs, header, input, contextValues);
+            },
+        };
+        const slow: Interceptor = (next) => async (req) => {
+            await sleep(50);
+            return next(req);
+        };
+        const server = createServer({ services: [], catalog, outgoingInterceptors: [slow], remoteResolver: singleTransportResolver(recorder) });
+        let handlerValues: unknown;
+        await inHandler(server, async (ctx) => {
+            handlerValues = ctx.values;
+            for await (const _item of ctx.stream("streaming.v1.StreamingService/Server")(create(ItemSchema, { value: "s", sequence: 1 }), { timeoutMs: 1000 })) {
+                // drain
+            }
+            const bidi = ctx.stream("streaming.v1.StreamingService/Bidi")({ timeoutMs: 1000 });
+            bidi.send(create(ItemSchema, { value: "b", sequence: 0 }));
+            bidi.close();
+            for await (const _item of bidi.responses) {
+                // drain
+            }
+            return "done";
+        });
+        assert.deepStrictEqual(
+            received.map((r) => r.kind),
+            ["Server", "Bidi"],
+        );
+        for (const r of received) {
+            assert.ok(r.timeoutMs !== undefined && r.timeoutMs <= 955, `${r.kind}: the inner transport must get the remaining budget (<= 955 ms, the 50 ms wait plus timer slack), got ${r.timeoutMs}`);
+            assert.strictEqual(r.values, handlerValues, `${r.kind}: the handler's ContextValues must reach the inner transport`);
+        }
     });
 
     it("cancelling a server stream mid-way: the chain observes exactly what it observes on a native Connect transport", async () => {
