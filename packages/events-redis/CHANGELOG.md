@@ -1,5 +1,17 @@
 # @connectum/events-redis
 
+## 1.3.0
+
+### Minor Changes
+
+- [#254](https://github.com/Connectum-Framework/connectum/pull/254) [`d9f9fb4`](https://github.com/Connectum-Framework/connectum/commit/d9f9fb4f3360a906a0404a0feeda45d026a5cadd) Thanks [@intech](https://github.com/intech)! - Add configurable RESP2 and RESP3 Redis Streams support while preserving RESP2 as the backward-compatible default, and refresh the Redis, AMQP testcontainer, and authentication dependencies.
+
+### Patch Changes
+
+- [#317](https://github.com/Connectum-Framework/connectum/pull/317) [`d63985f`](https://github.com/Connectum-Framework/connectum/commit/d63985ffbd4014b5804e3dd73d3c58de39b16922) Thanks [@intech](https://github.com/intech)! - `RedisAdapter` no longer lets one failing entry block the redelivery of pending entries. When the handler threw on an entry claimed by `XAUTOCLAIM`, the rest of that batch was skipped (already claimed, so not eligible again for 30 s) and the failure was logged as `XAUTOCLAIM error (non-fatal)` without the entry id. Each reclaimed entry is now handled on its own: the failure is logged as `handler error for entry <entryId>`, the entry stays pending, and the remaining entries are delivered. The reclaim pass also continues from the `next-start-id` that `XAUTOCLAIM` returns instead of always starting at `0-0`, so stale entries behind more than `count * 10` recently delivered pending entries are reached. No option, event or default changes.
+
+- [#332](https://github.com/Connectum-Framework/connectum/pull/332) [`75588bd`](https://github.com/Connectum-Framework/connectum/commit/75588bdb286dff48ceb2d992aa0d27c28b2671e3) Thanks [@intech](https://github.com/intech)! - docs: the README states that `*` and `>` patterns are rejected when the subscription is made (`RedisAdapter: wildcard pattern "..." is not supported. Redis Streams requires explicit topic names.`), and an integration test now pins that behaviour against a real broker.
+
 ## 1.2.0
 
 ## 1.1.0

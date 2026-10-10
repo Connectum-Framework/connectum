@@ -1,5 +1,82 @@
 # @connectum/events
 
+## 1.3.0
+
+### Minor Changes
+
+- [#223](https://github.com/Connectum-Framework/connectum/pull/223) [`774ef46`](https://github.com/Connectum-Framework/connectum/commit/774ef46e743ce528b554115553cddf19233bf52b) Thanks [@intech](https://github.com/intech)! - feat: named `EventAdapterFactory` type + official DI/testing guidance ([#204](https://github.com/Connectum-Framework/connectum/issues/204))
+  
+  - New exported `EventAdapterFactory` (`() => EventAdapter`) — the previously inline factory shape of `createBroadcastSubscribers`' `adapter` option, now a named public type (per-adapter named types are deliberately not added).
+  - README gains a "Dependency Injection and Testing" section: the primary pattern is injecting an `EventAdapter` instance at the composition root (a configured test double does not fit a zero-argument factory without a wrapper); the factory is the secondary pattern for per-consumer connections (broadcast reactors). Test-double guidance: `MemoryAdapter` for the generic happy path; broker-specific failure semantics via the upcoming `@connectum/events-amqp/testing` fake ([#203](https://github.com/Connectum-Framework/connectum/issues/203)).
+  - Types + docs only — zero runtime change.
+
+- [#220](https://github.com/Connectum-Framework/connectum/pull/220) [`8962afa`](https://github.com/Connectum-Framework/connectum/commit/8962afa7d50cc67c1a385e0441a8ff00378871f6) Thanks [@intech](https://github.com/intech)! - feat: `drainPublishTimeout` — opt-in symmetric publish drain on shutdown ([#196](https://github.com/Connectum-Framework/connectum/issues/196))
+  
+  - New `EventBusOptions.drainPublishTimeout`: during `stop()`, wait up to the budget for in-flight `publish()` promises (started before `stop()`) to settle, before the adapter disconnects and would fail their confirms. Bus-level (L1): zero adapter-contract changes — nats/kafka/redis/amqp get the drain for free.
+  - Runs concurrently with the handler drain (`drainTimeout`) — shutdown waits for the slower of the two budgets, never their sum.
+  - Tracked promises carry a no-op observer: a publish settling (even rejecting) after the deadline never becomes an `unhandledRejection`; the caller's own `publish()` promise is unaffected.
+  - Default `undefined` (and `0`/negative) — disabled: `stop()` behavior stays bit-for-bit (pinned by a regression test).
+  - Documented limitation: publishes issued from draining handlers are not covered — the stopping gate rejects them (relay-pattern design tracked in [#212](https://github.com/Connectum-Framework/connectum/issues/212)).
+
+- [#284](https://github.com/Connectum-Framework/connectum/pull/284) [`b85184a`](https://github.com/Connectum-Framework/connectum/commit/b85184a1b3cd61833e52c8c8aabd880ee4b1f85b) Thanks [@intech](https://github.com/intech)! - Generated code can import Connectum's option descriptors from the packages, and `connectum init` no longer generates its own copies.
+  
+  - `@connectum/auth` exports `./gen/connectum/auth/v1/options_pb.js` (`file_connectum_auth_v1_options`, `method_auth`, `service_auth`, the `MethodAuth` / `ServiceAuth` / `AuthRequirements` schemas and types), and `@connectum/events` exports `./gen/connectum/events/v1/options_pb.js` (`file_connectum_events_v1_options`, `event`, the `EventOptions` schema and type). Each subpath is the module the package itself uses, so a package evaluates its option proto once and hands out the same descriptor objects through every entry. Point protoc-gen-es (2.15.0 or later) at them with `map_imports=connectum/auth/v1/:@connectum/auth/gen` / `map_imports=connectum/events/v1/:@connectum/events/gen`. `@connectum/events` is now built with code splitting, so its `dist/index.js` imports a shared chunk.
+  - `connectum init --auth` / `--events`: the generated `buf.gen.yaml` compiles Connectum's option protos without generating them (one `directory: proto` input, the vendored events option proto under `exclude_paths`) and maps their imports to the packages, so `gen/` no longer holds `connectum/{auth,events}/v1/options_pb.ts`. Every `@connectum/*` dependency of such a project is set to one range: the highest `@connectum/*` requirement of the fetched base, or `^1.3.0` if that is higher (also with `--ref`), so no base entry is lowered. Projects without auth or events are generated exactly as before. Existing projects keep working unchanged.
+
+- [#282](https://github.com/Connectum-Framework/connectum/pull/282) [`36ce828`](https://github.com/Connectum-Framework/connectum/commit/36ce828cd36d84285e657b843b65ddbf28111107) Thanks [@intech](https://github.com/intech)! - feat: declare protobuf and Connect as peer dependencies, so an application runs with one copy of each
+  
+  `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` were regular dependencies. An application that pinned its own version could end up with a second copy that nothing reported: message and service types generated against one copy then stopped type-checking against the other, and a `connect-node` next to a different `connect` formed a pair `connect-node` does not support (it requires one exact `connect` version).
+  
+  - `@connectum/core`, `auth`, `events`, `healthcheck`, `interceptors`, `otel`, `reflection`, `testing` and `test-fixtures` now declare `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0` in `peerDependencies`; `core` and `testing` also declare `@connectrpc/connect-node` `^2.2.0`.
+  - `auth`, `events` and `interceptors` declare `@connectum/core` as a peer dependency instead of a dependency, so they use the application's own `@connectum/core`.
+  - `@connectum/interceptors` now depends on `@bufbuild/protovalidate` directly. The validation interceptor imports it whether or not validation is enabled; it used to install only because npm, pnpm and Bun add missing peers of `@connectrpc/validate`.
+  - `@connectum/cli` and `@connectum/protoc-gen-catalog` are unchanged: they are executables, and `@bufbuild/protoplugin` pins `@bufbuild/protobuf` exactly, so they keep their own copy and are outside the single-copy guarantee.
+  
+  With pins inside these ranges, or no pins at all, npm, pnpm and Bun now install exactly one copy of each library for the application and every Connectum runtime package. This includes `@connectum/reflection`, which now serves gRPC Server Reflection with Connectum's own implementation instead of a third-party library that kept its own protobuf / Connect copy.
+  
+  `createServer()` now checks the `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` that `@connectum/core` actually loaded against these ranges, and throws `PeerDependencyVersionError` (exported from `@connectum/core`) naming the package, the loaded version and its location, the required range and the fix. Lockstep is checked at startup too: the `@connectrpc/connect` that `@connectrpc/connect-node` itself loads must be the exact version connect-node declares, and the same copy `@connectum/core` loads. This makes an out-of-range version a visible startup failure on every package manager, including the ones that only warn at install time. When the version cannot be determined — `@connectum/core` bundled into the application, or a runtime without `import.meta.resolve` — the check is skipped rather than guessed.
+  
+  **BREAKING (installation and startup):** an install or a start that worked before can now fail.
+  
+  - npm refuses an application whose `@bufbuild/protobuf`, `@connectrpc/connect` or `@connectrpc/connect-node` pin is outside the ranges above, with `ERESOLVE unable to resolve dependency tree`. pnpm prints `Issues with peer dependencies found` (`pnpm peers check` names the library) and keeps the application's too-old copy; Bun warns in the same way, but stays silent about a too-old `@bufbuild/protobuf` when a code generator such as `protoc-gen-es` brings its own in-range copy. On pnpm and Bun the application then stops at `createServer()` with `PeerDependencyVersionError`.
+  - Yarn does not install missing peer dependencies: Yarn users add `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` (and `@connectum/core` next to `auth`, `events` or `interceptors`) to their own `package.json`.
+  
+  Under strict Semantic Versioning this is a major change, and Connectum's breaking-changes strategy does not plan breaking changes for minor versions. It ships in 1.3.0 as an explicit, recorded exception, so that applications get the single-copy fix now rather than with 2.0.
+  
+  Migration: raise any pin of `@bufbuild/protobuf` to `^2.16.0` and of `@connectrpc/connect` / `@connectrpc/connect-node` to `^2.2.0`, keeping `connect` and `connect-node` on the same version — or remove the pins and let npm, pnpm or Bun install the peers. Do not work around a conflict with `--legacy-peer-deps` or `--force`: that reinstates the duplicate copies. Generate code with `protoc-gen-es` 2.16 or later.
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Clear the remaining dependency advisories, and keep one `@bufbuild/protobuf` in the
+  workspace.
+  
+  `@bufbuild/buf` moves to 1.72.0. `@bufbuild/protoplugin` now moves together with
+  `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` under the single-instance pin: it
+  had lagged one release behind and pinned a second copy of `@bufbuild/protobuf`, which
+  is exactly the split the pin exists to prevent -- two instances break
+  `@connectrpc/connect`'s protobuf peer and the reflection DTS build. The protobuf-es and
+  connect-es versions this release requires are in the protobuf-es 2.16 / Connect 2.2
+  entry.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#316](https://github.com/Connectum-Framework/connectum/pull/316) [`78f720c`](https://github.com/Connectum-Framework/connectum/commit/78f720ca18b116e76aee21b7abd534b33fbb5cac) Thanks [@intech](https://github.com/intech)! - `EventBus.stop()` now honours `drainTimeout` on the Redis, Kafka and NATS adapters. Closing a subscription on these adapters waits for the handler that is running, and the bus used to wait for that close before it started the drain, so a stuck handler (for example one in a retry backoff) was released only by `handlerTimeout`: with a 5 s `drainTimeout`, `stop()` took about 30 s on Redis. The close and the drain now run at the same time; after `drainTimeout` the handler's signal aborts with the reason `"Drain timeout exceeded"`, which lets the close finish. The adapter is still disconnected only after both have finished. No option, event or default changes.
+
+- [#214](https://github.com/Connectum-Framework/connectum/pull/214) [`e2b613b`](https://github.com/Connectum-Framework/connectum/commit/e2b613bad73024bf5b00c41717c063aac3665859) Thanks [@intech](https://github.com/intech)! - docs: recovery backoff tuning and publisher shutdown guidance
+  
+  - **events-amqp**: accurate reconnect-delay semantics in README and `AmqpRecoveryOptions` JSDoc — amqplib's strategy is symmetric jitter around the exponential base (not equal-jitter), and since amqplib 2.2.0 (the new minimum) the base is capped at `maxDelay / (1 + jitter)`, so a delay never exceeds `maxDelay`. Documented the exact full-jitter recipe: `jitter: 1`, `initialDelay: I/2`, `maxDelay: C` gives a delay uniform in `[0, min(I × factor^(n−1), C)]`.
+  - **events**: new "Publishers and Shutdown" README section — `stop()` drains consumer handlers only; await-before-stop recipe for at-least-once producers; the stopping-gate limitation for publishes from draining handlers ([#212](https://github.com/Connectum-Framework/connectum/issues/212)); the planned opt-in `drainPublishTimeout` ([#196](https://github.com/Connectum-Framework/connectum/issues/196)).
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
 ## 1.2.0
 
 ### Patch Changes
