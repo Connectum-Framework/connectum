@@ -8,8 +8,8 @@
  */
 
 import { ConnectError } from "@connectrpc/connect";
-import type { Attributes, Span } from "@opentelemetry/api";
-import { SpanStatusCode } from "@opentelemetry/api";
+import type { Attributes, Context, Span } from "@opentelemetry/api";
+import { context, SpanStatusCode } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
@@ -68,6 +68,8 @@ export function estimateMessageSize(message: unknown): number {
  *
  * Captures the span via closure (not AsyncLocalStorage) to avoid
  * the Node.js ALS context loss in async generators (nodejs/node#42237).
+ * Recording events this way does not make the span the active span for the
+ * code that produces the messages; use {@link scopeAsyncIterable} for that.
  *
  * When `endSpanOnComplete` is true, the span lifecycle is managed by the
  * generator itself: the span is ended in the `finally` block, which runs
@@ -116,6 +118,52 @@ export async function* wrapAsyncIterable<T>(
             span.end();
         }
     }
+}
+
+/**
+ * Runs every step of an async iterable inside a fixed OpenTelemetry context.
+ *
+ * A streaming handler is an async generator whose body does not run when the
+ * interceptor returns the response: it runs later, step by step, each time the
+ * transport pulls the next message. By then `startActiveSpan` has already
+ * returned, so without this scope the handler runs with whatever context the
+ * puller happens to have and `trace.getActiveSpan()` is empty. Creating the
+ * iterator and calling `next()`, `return()` and `throw()` under `scope` makes
+ * the span in `scope` the active span for the handler's code, including its
+ * `finally` block, and parents any span the handler starts to it.
+ *
+ * The scope covers only the synchronous start of each step and the
+ * continuations that start from it. It is never entered permanently: the code
+ * that called `next()` keeps its own context once the call returns. The
+ * returned iterator holds `scope` for as long as the iterator itself is
+ * reachable. Only the steps taken through the returned iterator are scoped:
+ * code that finishes the underlying generator directly (calling `return()` on
+ * it, not on the returned iterator) bypasses the scope.
+ *
+ * @param iterable - The iterable whose steps must run inside `scope`
+ * @param scope - The context to run each step in (carrying the active span)
+ * @returns An iterable producing the same values, with every step run in `scope`
+ */
+export function scopeAsyncIterable<T>(iterable: AsyncIterable<T>, scope: Context): AsyncIterable<T> {
+    return {
+        [Symbol.asyncIterator](): AsyncIterator<T> {
+            const iterator = context.with(scope, () => iterable[Symbol.asyncIterator]());
+            const scoped: AsyncIterator<T> = {
+                next: (...args) => context.with(scope, () => iterator.next(...args)),
+            };
+            // `return` and `throw` are optional in the protocol; mirror their
+            // absence so a consumer that probes for them sees the source's shape.
+            if (iterator.return) {
+                const sourceReturn = iterator.return.bind(iterator);
+                scoped.return = (value) => context.with(scope, () => sourceReturn(value));
+            }
+            if (iterator.throw) {
+                const sourceThrow = iterator.throw.bind(iterator);
+                scoped.throw = (error) => context.with(scope, () => sourceThrow(error));
+            }
+            return scoped;
+        },
+    };
 }
 
 /**
