@@ -48,9 +48,14 @@ describe("AMQP consumer acknowledgement timeout (testcontainers)", { skip: RUN ?
         url = `amqp://guest:guest@${container.getHost()}:${container.getMappedPort(5672)}`;
 
         // Measured: 4.3.1 and 4.3.6 cancel the consumer and keep the channel; 4.2.8, 4.1.8 and 3.13.7
-        // close the whole channel. The 4.3.0 boundary is inferred, not measured.
-        const { output } = await container.exec(["rabbitmqctl", "version"]);
-        const [major = 0, minor = 0] = output.trim().split(".").map(Number);
+        // close the whole channel. Where the behaviour changes is inferred, not measured: only these
+        // five releases were run, so another release of 4.0 or 4.3 is assumed to follow its line.
+        const version = await container.exec(["rabbitmqctl", "version"]);
+        const parsed = /^(\d+)\.(\d+)/.exec(version.stdout.trim());
+        assert.ok(version.exitCode === 0 && parsed !== null, `could not read the broker version: ${version.output}`);
+        const [, majorText = "0", minorText = "0"] = parsed;
+        const major = Number(majorText);
+        const minor = Number(minorText);
         expectedCause = major > 4 || (major === 4 && minor >= 3) ? "cancelled" : "channel-closed";
     });
 
@@ -58,8 +63,13 @@ describe("AMQP consumer acknowledgement timeout (testcontainers)", { skip: RUN ?
         await container?.stop();
     });
 
-    /** A handler that never settles holds one delivery until the broker's acknowledgement timeout ends the consumer. */
-    async function observeStuckHandler(exchange: string, override: AmqpQueueOverride | undefined, windowMs = 120_000): Promise<Observation> {
+    /**
+     * A handler that never settles holds one delivery until the broker's acknowledgement timeout ends the consumer.
+     * The window is a deadline, not a delay: the broker lines before 4.3 end the consumer after about two minutes
+     * (the check runs on a period of the configured timeout), so the window leaves room for the restoration and
+     * the redelivery behind that point.
+     */
+    async function observeStuckHandler(exchange: string, override: AmqpQueueOverride | undefined, windowMs = 180_000): Promise<Observation> {
         const events: Observation["events"] = [];
         const deliveries: Observation["deliveries"] = [];
         const startedAt = Date.now();

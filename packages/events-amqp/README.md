@@ -615,7 +615,7 @@ AMQP_TEST_URL=amqp://guest:guest@localhost:15672 pnpm --filter @connectum/events
 
 Probe the broker as the `rabbitmq` user. A `docker exec` as root that reaches the container before the server has written its Erlang cookie creates the cookie itself (mode 400, owner root); the server then cannot read it and exits with `.erlang.cookie: eacces`. The image boots without any extra flag.
 
-The recovery, consumer-loss, consumer-timeout, hardening and ungrouped-queue suites start their own brokers through testcontainers (Docker required) and run only with `RUN_RECOVERY_TESTS=1`. They use `rabbitmq:4.3.6-alpine`; set `AMQP_BROKER_IMAGE` to run them against another version.
+The recovery, consumer-loss, consumer-timeout, hardening, ungrouped-queue and wildcard-routing suites start their own brokers through testcontainers (Docker required) and run only with `RUN_RECOVERY_TESTS=1`. They use `rabbitmq:4.3.6-alpine`; set `AMQP_BROKER_IMAGE` to run them against another version. The hardening and ungrouped-queue suites take a comma separated list from `AMQP_HARDENING_BROKER_IMAGES` and `AMQP_UNGROUPED_BROKER_IMAGES`, which win over `AMQP_BROKER_IMAGE` for those two suites.
 
 ## Dependencies
 
@@ -630,7 +630,7 @@ The recovery, consumer-loss, consumer-timeout, hardening and ungrouped-queue sui
 ## Requirements
 
 - **Node.js**: >=22.13.0
-- **RabbitMQ**: the integration suites pass on 3.13.7, 4.1.8, 4.2.8 and 4.3.6; older releases are not tested
+- **RabbitMQ**: every integration suite runs on 4.3.6 in CI; the consumer-timeout suite was also run on 3.13.7, 4.1.8 and 4.2.8. The other suites were not run on those three lines, and older releases are not tested
 
 ## Documentation
 
