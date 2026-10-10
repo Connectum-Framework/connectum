@@ -33,7 +33,8 @@ import { DurationSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
-import type { Server } from "../../src/types.ts";
+import type { ProtocolRegistration, Server } from "../../src/types.ts";
+import { respondUnknownProcedure } from "../../src/unknownProcedure.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 /** One row per error code: gRPC number, Connect code string, Connect HTTP status. */
@@ -84,10 +85,10 @@ function failure(code: number, message: string, withDetail = false): ConnectErro
     return new ConnectError(message, code as Code, undefined, withDetail ? [{ desc: DurationSchema, value: create(DurationSchema, { seconds: 5n }) }] : undefined);
 }
 
-function rawPost(port: number, path: string, headers: Record<string, string>, body: Buffer): Promise<RawResponse> {
+function rawPost(port: number, path: string, headers: Record<string, string>, body: Buffer, method = "POST"): Promise<RawResponse> {
     const session = connect(`http://127.0.0.1:${port}`);
     return new Promise<RawResponse>((resolve, reject) => {
-        const request = session.request({ ":method": "POST", ":path": path, ...headers });
+        const request = session.request({ ":method": method, ":path": path, ...headers });
         // A server that fails to produce a response must fail the test, not hang it.
         request.setTimeout(5_000, () => {
             request.close(constants.NGHTTP2_CANCEL);
@@ -108,7 +109,8 @@ function rawPost(port: number, path: string, headers: Record<string, string>, bo
         request.on("end", () => resolve({ status, headers: responseHeaders, trailers, body: Buffer.concat(chunks) }));
         request.on("error", reject);
         session.on("error", reject);
-        request.end(body);
+        // http2 ends a GET request by itself; a second end() would fail.
+        if (method !== "GET") request.end(body);
     }).finally(() => {
         session.close();
     });
@@ -458,20 +460,45 @@ function clientReadsCode(res: RawResponse, protocol: "connect" | "grpc" | "grpc-
     return inferred[res.status] ?? "unknown";
 }
 
-describe("unknown procedure is read by a protocol-following client as unimplemented", () => {
+const UNKNOWN_PATH = "/streaming.v1.StreamingService/NoSuchMethod";
+const UNKNOWN_SERVICE_PATH = "/nosuch.v1.NoService/Echo";
+const NOT_FOUND_PREFIX = "procedure not found: ";
+
+/** Statuses and trailers a gRPC response carries, wherever it put them (headers for Trailers-Only, trailers otherwise). */
+function grpcStatusOf(res: RawResponse): { status: string | undefined; message: string | undefined } {
+    const source = res.headers["grpc-status"] !== undefined ? res.headers : res.trailers;
+    return { status: singleHeader(source["grpc-status"]), message: singleHeader(source["grpc-message"]) };
+}
+
+describe("a call to an unknown procedure is answered in the protocol of the request", () => {
     let server: Server;
     let port = 0;
 
     before(async () => {
         const service = defineService(StreamingService, {
-            echo: () => create(ItemSchema, { value: "ok" }),
-            async *server() {},
+            echo: () => {
+                if (behavior.error !== undefined) throw behavior.error;
+                return create(ItemSchema, { value: "ok" });
+            },
+            async *server() {
+                if (behavior.error !== undefined) throw behavior.error;
+            },
             client: async () => {
                 throw new ConnectError("unused", Code.Unimplemented);
             },
             async *bidi() {},
         });
-        server = createServer({ services: [service], port: 0, host: "127.0.0.1", allowHTTP1: false });
+        const claimed: ProtocolRegistration = {
+            name: "claims-a-procedure-shaped-path",
+            register: () => {},
+            httpHandler: (req, res) => {
+                if (req.url !== "/claimed.v1.Thing/Get") return false;
+                res.statusCode = 204;
+                res.end();
+                return true;
+            },
+        };
+        server = createServer({ services: [service], port: 0, host: "127.0.0.1", allowHTTP1: false, protocols: [claimed] });
         await server.start();
         port = server.address?.port ?? 0;
     });
@@ -480,19 +507,164 @@ describe("unknown procedure is read by a protocol-following client as unimplemen
         if (server.state === "running") await server.stop();
     });
 
-    const paths = ["/streaming.v1.StreamingService/NoSuchMethod", "/nosuch.v1.NoService/Echo"];
+    for (const path of [UNKNOWN_PATH, UNKNOWN_SERVICE_PATH]) {
+        describe(path, () => {
+            it("Connect unary: HTTP 501 and a JSON error whose code is unimplemented", async () => {
+                const res = await rawPost(port, path, connectUnary, itemJson);
+                assert.equal(res.status, 501);
+                assert.match(singleHeader(res.headers["content-type"]) ?? "", /^application\/json/);
+                assert.deepEqual(JSON.parse(res.body.toString("utf8")), { code: "unimplemented", message: `${NOT_FOUND_PREFIX}${path}` });
+                assert.equal(clientReadsCode(res, "connect"), "unimplemented");
+            });
 
-    for (const path of paths) {
-        it(`Connect unary ${path}`, async () => {
-            assert.equal(clientReadsCode(await rawPost(port, path, connectUnary, itemJson), "connect"), "unimplemented");
-        });
-        it(`gRPC ${path}`, async () => {
-            assert.equal(clientReadsCode(await rawPost(port, path, grpc, envelope(0, itemProto)), "grpc"), "unimplemented");
-        });
-        it(`gRPC-Web ${path}`, async () => {
-            assert.equal(clientReadsCode(await rawPost(port, path, grpcWeb, envelope(0, itemProto)), "grpc-web"), "unimplemented");
+            it("Connect streaming: HTTP 200 with a single end-of-stream envelope carrying the error", async () => {
+                const res = await rawPost(port, path, connectStream, envelope(0, itemJson));
+                assert.equal(res.status, 200);
+                assert.equal(singleHeader(res.headers["content-type"]), "application/connect+json");
+                const frames = readEnvelopes(res.body);
+                assert.equal(frames.length, 1);
+                assert.equal(frames[0]?.flags, 0x02);
+                assert.deepEqual(JSON.parse(frames[0]?.payload.toString("utf8") ?? ""), { error: { code: "unimplemented", message: `${NOT_FOUND_PREFIX}${path}` } });
+            });
+
+            it("gRPC: grpc-status 12, the path in a percent-encoded grpc-message and no body", async () => {
+                const res = await rawPost(port, path, grpc, envelope(0, itemProto));
+                assert.equal(res.status, 200);
+                assert.match(singleHeader(res.headers["content-type"]) ?? "", /^application\/grpc/);
+                const { status, message } = grpcStatusOf(res);
+                assert.equal(status, "12");
+                assertGrpcMessageAlphabet(message ?? "");
+                assert.equal(percentDecode(message ?? ""), `${NOT_FOUND_PREFIX}${path}`);
+                assert.equal(res.body.length, 0);
+                assert.equal(clientReadsCode(res, "grpc"), "unimplemented");
+            });
+
+            it("gRPC-Web: a single trailers frame carrying grpc-status 12", async () => {
+                const res = await rawPost(port, path, grpcWeb, envelope(0, itemProto));
+                assert.equal(res.status, 200);
+                assert.equal(singleHeader(res.headers["content-type"]), "application/grpc-web+proto");
+                const frames = readEnvelopes(res.body);
+                assert.equal(frames.length, 1);
+                assert.equal(frames[0]?.flags, 0x80);
+                const trailers = parseTrailerBlock(frames[0]?.payload ?? Buffer.alloc(0));
+                assert.equal(trailers["grpc-status"], "12");
+                assertGrpcMessageAlphabet(trailers["grpc-message"] ?? "");
+                assert.equal(percentDecode(trailers["grpc-message"] ?? ""), `${NOT_FOUND_PREFIX}${path}`);
+                assert.equal(clientReadsCode(res, "grpc-web"), "unimplemented");
+            });
         });
     }
+
+    describe("matches what a handler that throws unimplemented sends", () => {
+        const thrown = (): void => {
+            behavior.error = failure(12, "thrown");
+        };
+
+        it("Connect unary: same HTTP status, content type and error code", async () => {
+            thrown();
+            const real = await rawPost(port, ITEM_PATH, connectUnary, itemJson);
+            const unknown = await rawPost(port, UNKNOWN_PATH, connectUnary, itemJson);
+            assert.equal(unknown.status, real.status);
+            assert.equal(singleHeader(unknown.headers["content-type"]), singleHeader(real.headers["content-type"]));
+            assert.equal(JSON.parse(unknown.body.toString("utf8")).code, JSON.parse(real.body.toString("utf8")).code);
+        });
+
+        it("Connect streaming: same end-of-stream flag and error code", async () => {
+            thrown();
+            const real = readEnvelopes((await rawPost(port, SERVER_STREAM_PATH, connectStream, envelope(0, itemJson))).body);
+            const unknown = readEnvelopes((await rawPost(port, UNKNOWN_PATH, connectStream, envelope(0, itemJson))).body);
+            assert.equal(unknown.at(-1)?.flags, real.at(-1)?.flags);
+            assert.equal(JSON.parse(unknown.at(-1)?.payload.toString("utf8") ?? "").error.code, JSON.parse(real.at(-1)?.payload.toString("utf8") ?? "").error.code);
+        });
+
+        it("gRPC: same grpc-status", async () => {
+            thrown();
+            const real = grpcStatusOf(await rawPost(port, ITEM_PATH, grpc, envelope(0, itemProto)));
+            const unknown = grpcStatusOf(await rawPost(port, UNKNOWN_PATH, grpc, envelope(0, itemProto)));
+            assert.equal(unknown.status, real.status);
+        });
+
+        it("gRPC-Web: same grpc-status in a trailers frame", async () => {
+            thrown();
+            const trailersOf = (res: RawResponse) => {
+                const frame = readEnvelopes(res.body).find((f) => (f.flags & 0x80) === 0x80);
+                return parseTrailerBlock(frame?.payload ?? Buffer.alloc(0))["grpc-status"];
+            };
+            const real = trailersOf(await rawPost(port, ITEM_PATH, grpcWeb, envelope(0, itemProto)));
+            const unknown = trailersOf(await rawPost(port, UNKNOWN_PATH, grpcWeb, envelope(0, itemProto)));
+            assert.equal(unknown, real);
+        });
+    });
+
+    describe("the requested path cannot alter or inflate the response", () => {
+        it("keeps at most 200 characters of a long path", async () => {
+            const long = `/svc/${"a".repeat(5_000)}`;
+            const res = await rawPost(port, long, connectUnary, itemJson);
+            const message: string = JSON.parse(res.body.toString("utf8")).message;
+            assert.equal(message.startsWith(`${NOT_FOUND_PREFIX}/svc/aaa`), true);
+            assert.ok(message.length < 300, `message must stay bounded, got ${message.length} characters`);
+        });
+
+        it("percent-encodes a path that imitates header or trailer lines in grpc-message", async () => {
+            const hostile = "/svc/%0D%0Agrpc-status:%200";
+            const viaGrpc = await rawPost(port, hostile, grpc, envelope(0, itemProto));
+            const grpcResult = grpcStatusOf(viaGrpc);
+            assert.equal(grpcResult.status, "12");
+            assertGrpcMessageAlphabet(grpcResult.message ?? "");
+            assert.equal(percentDecode(grpcResult.message ?? ""), `${NOT_FOUND_PREFIX}${hostile}`);
+
+            const viaWeb = await rawPost(port, hostile, grpcWeb, envelope(0, itemProto));
+            const frames = readEnvelopes(viaWeb.body);
+            assert.equal(frames.length, 1);
+            const trailers = parseTrailerBlock(frames[0]?.payload ?? Buffer.alloc(0));
+            assert.deepEqual(Object.keys(trailers).sort(), ["grpc-message", "grpc-status"]);
+            assert.equal(trailers["grpc-status"], "12");
+        });
+    });
+
+    describe("requests that are not served RPC calls keep the plain 404", () => {
+        const plain404 = (res: RawResponse): void => {
+            assert.equal(res.status, 404);
+            assert.equal(res.body.toString("utf8"), "Not Found");
+        };
+
+        it("GET to an unknown path", async () => {
+            plain404(await rawPost(port, "/nothing-here", {}, Buffer.alloc(0), "GET"));
+        });
+
+        it("GET to a procedure-shaped path (Connect GET unary is not served)", async () => {
+            plain404(await rawPost(port, `${UNKNOWN_PATH}?encoding=json&message=%7B%7D`, { "connect-protocol-version": "1" }, Buffer.alloc(0), "GET"));
+        });
+
+        it("GET that carries the content type of a served protocol", async () => {
+            for (const contentType of ["application/json", "application/grpc", "application/grpc-web+proto"]) {
+                plain404(await rawPost(port, UNKNOWN_PATH, { "content-type": contentType }, Buffer.alloc(0), "GET"));
+            }
+        });
+
+        it("POST with a content type of no served protocol", async () => {
+            plain404(await rawPost(port, UNKNOWN_PATH, { "content-type": "text/plain" }, Buffer.from("x")));
+        });
+
+        it("POST without a content type", async () => {
+            plain404(await rawPost(port, UNKNOWN_PATH, {}, Buffer.from("x")));
+        });
+
+        it("grpc-web-text, which the server does not serve", async () => {
+            plain404(await rawPost(port, UNKNOWN_PATH, { "content-type": "application/grpc-web-text" }, Buffer.from("x")));
+        });
+
+        for (const path of ["/", "/onlyone", "/a/b/c", "/a//"]) {
+            it(`a path that is not /<service>/<method>: ${path}`, async () => {
+                plain404(await rawPost(port, path, connectUnary, itemJson));
+            });
+        }
+    });
+
+    it("a protocol HTTP handler answers a procedure-shaped path before the unknown-procedure response", async () => {
+        const res = await rawPost(port, "/claimed.v1.Thing/Get", connectUnary, itemJson);
+        assert.equal(res.status, 204);
+    });
 
     it("a served method is not mistaken for unknown", async () => {
         behavior.error = undefined;
@@ -501,6 +673,56 @@ describe("unknown procedure is read by a protocol-following client as unimplemen
         assert.deepEqual(JSON.parse(res.body.toString("utf8")), { value: "ok" });
     });
 });
+
+describe("the unknown-procedure message is encoded byte by byte", () => {
+    function capture(url: string, contentType: string): { handled: boolean; status: number; headers: Record<string, unknown>; body: Buffer } {
+        const out = { status: 0, headers: {} as Record<string, unknown>, chunks: [] as Buffer[] };
+        const res = {
+            set statusCode(status: number) {
+                out.status = status;
+            },
+            setHeader(name: string, value: unknown) {
+                out.headers[name] = value;
+            },
+            end(chunk?: Buffer) {
+                if (chunk) out.chunks.push(chunk);
+            },
+        };
+        const handled = respondUnknownProcedure({ method: "POST", url, headers: { "content-type": contentType } } as never, res as never);
+        return { handled, status: out.status, headers: out.headers, body: Buffer.concat(out.chunks) };
+    }
+
+    it("turns non-ASCII characters of the path into UTF-8 percent escapes in grpc-message", () => {
+        const result = capture("/svc/Ош", "application/grpc");
+        const message = String(result.headers["grpc-message"]);
+        assertGrpcMessageAlphabet(message);
+        assert.equal(message, "procedure not found: /svc/%D0%9E%D1%88");
+        assert.equal(percentDecode(message), `${NOT_FOUND_PREFIX}/svc/Ош`);
+    });
+
+    it("answers JSON and proto variants of every protocol with the matching content type", () => {
+        const cases: [string, string][] = [
+            ["application/grpc+json", "application/grpc+json"],
+            ["application/grpc", "application/grpc+proto"],
+            ["application/grpc-web+json", "application/grpc-web+json"],
+            ["application/grpc-web", "application/grpc-web+proto"],
+            ["application/connect+proto", "application/connect+proto"],
+            ["application/connect+json; charset=utf-8", "application/connect+json"],
+        ];
+        for (const [requested, answered] of cases) {
+            const result = capture("/svc/m", requested);
+            assert.equal(result.handled, true, requested);
+            assert.equal(result.headers["content-type"], answered, requested);
+        }
+    });
+
+    it("leaves a request that is not an RPC call untouched", () => {
+        const result = capture("/svc/m", "text/plain");
+        assert.equal(result.handled, false);
+        assert.equal(result.status, 0);
+    });
+});
+
 
 describe("the protocol oracle rejects deviating encodings", () => {
     it("grpc-message with a raw non-ASCII byte is rejected", () => {
