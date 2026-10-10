@@ -178,14 +178,18 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
             // this callback and must be run in it again (see below).
             const spanContext = context.active();
             try {
-                // Wrap streaming request messages for instrumentation. The handler pulls
-                // them, but their producer is the caller (in-process) or the connection
-                // (HTTP), not the handler: pulling in the caller's context keeps the
-                // server span from leaking into the producer's code and keeps in-process
-                // calls shaped like HTTP ones.
+                // Wrap streaming request messages for instrumentation. The request
+                // stream is pulled by code below this interceptor (the handler, or an
+                // interceptor placed after this one), which already runs inside this
+                // callback and so under the server span; it is deliberately not
+                // re-scoped. Re-scoping it to the caller's context would take the
+                // server span away from interceptors placed before this one that wrap
+                // the request stream (the logger, for one). Which context the
+                // in-process producer of the messages runs in is a property of the
+                // in-process transport, not of this interceptor.
                 const instrumentedReq = req.stream
                     ? Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
-                          message: scopeAsyncIterable(wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages), callerContext),
+                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages),
                       })
                     : req;
 

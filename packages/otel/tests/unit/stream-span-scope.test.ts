@@ -28,7 +28,6 @@ import { context, type Span, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ItemSchema, StreamingService } from "../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts";
-import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 
@@ -265,45 +264,58 @@ describe("server span scope inside streaming handlers", () => {
                 assert.deepStrictEqual(seen, [span.spanId, span.spanId]);
             });
 
-            for (const withClientSpan of [false, true]) {
-                it(`the producer of a request stream keeps the caller's context, not the server span (client interceptor: ${withClientSpan})`, { timeout: 30_000 }, async () => {
-                    const into = new Map<string, Observation[]>();
-                    const producerSaw: Array<string | undefined> = [];
-                    async function* producer() {
-                        for (let i = 0; i < 2; i++) {
-                            producerSaw.push(activeId());
-                            await nextImmediate();
-                            yield create(ItemSchema, { value: "k" });
+            // An interceptor that wraps the request stream runs its wrapper whenever the
+            // code below it pulls a message. That code (the handler, or an interceptor
+            // after the otel one) already runs under the server span, so the wrapper must
+            // see the server span regardless of which side of `createOtelInterceptor()`
+            // it is placed on. The logger interceptor is such a wrapper.
+            const REQUEST_KINDS = {
+                client: {
+                    span: "streaming.v1.StreamingService/Client",
+                    run: async (client: Client<typeof StreamingService>) => {
+                        await client.client(oneItem("k"));
+                    },
+                },
+                server: {
+                    span: SERVER_SPAN_NAMES.server,
+                    run: async (client: Client<typeof StreamingService>) => {
+                        for await (const _ of client.server(create(ItemSchema, { value: "k" }))) {
+                            /* drain */
                         }
-                    }
-                    const callerSpan = collector.provider.getTracer("caller").startSpan("caller");
-                    const clientInterceptors = withClientSpan ? [createOtelClientInterceptor({ serverAddress: "localhost" })] : [];
-                    await withClient(
-                        transport,
-                        into,
-                        async (client) => {
-                            await context.with(trace.setSpan(context.active(), callerSpan), async () => {
-                                await client.client(producer());
-                                for await (const _ of client.bidi(producer())) {
-                                    /* drain */
+                    },
+                },
+                bidi: {
+                    span: SERVER_SPAN_NAMES.bidi,
+                    run: async (client: Client<typeof StreamingService>) => {
+                        for await (const _ of client.bidi(oneItem("k"))) {
+                            /* drain */
+                        }
+                    },
+                },
+            } as const;
+
+            for (const order of ["wrapper before otel", "wrapper after otel"] as const) {
+                for (const [kind, { span, run }] of Object.entries(REQUEST_KINDS)) {
+                    it(`${kind}: a request-stream wrapper pulled under the server span (${order})`, { timeout: 30_000 }, async () => {
+                        const seen: Array<string | undefined> = [];
+                        const wrapper: Interceptor = (next) => async (req) => {
+                            if (!req.stream) return next(req);
+                            const source = req.message;
+                            async function* tap() {
+                                for await (const message of source) {
+                                    seen.push(activeId());
+                                    yield message;
                                 }
-                            });
-                        },
-                        undefined,
-                        clientInterceptors,
-                    );
-                    callerSpan.end();
-                    const spans = collector.flush();
-                    const serverIds = new Set(spans.filter((s) => s.kind === SpanKind.SERVER).map((s) => s.spanId));
-                    const clientIds = new Set(spans.filter((s) => s.kind === SpanKind.CLIENT).map((s) => s.spanId));
-                    assert.strictEqual(serverIds.size, 2);
-                    assert.strictEqual(producerSaw.length, 4);
-                    for (const id of producerSaw) {
-                        assert.ok(id !== undefined && !serverIds.has(id), "the producer does not run under a server span");
-                        if (withClientSpan) assert.ok(clientIds.has(id), "the producer runs under the client span of its own call");
-                        else assert.strictEqual(id, callerSpan.spanContext().spanId, "the producer runs under the caller's span");
-                    }
-                });
+                            }
+                            return next({ ...req, message: tap() });
+                        };
+                        const otel = createOtelInterceptor({ recordMessages: true });
+                        await withClient(transport, new Map(), run, order === "wrapper before otel" ? [wrapper, otel] : [otel, wrapper]);
+                        const serverSpanId = serverSpan(span).spanId;
+                        assert.ok(seen.length >= 1, "the wrapper saw at least one request message");
+                        for (const id of seen) assert.strictEqual(id, serverSpanId, "the wrapper runs under the server span");
+                    });
+                }
             }
 
             it("the scope does not leak into the stream consumer", { timeout: 30_000 }, async () => {

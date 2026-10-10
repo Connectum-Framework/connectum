@@ -134,8 +134,11 @@ export async function* wrapAsyncIterable<T>(
  *
  * The scope covers only the synchronous start of each step and the
  * continuations that start from it. It is never entered permanently: the code
- * that called `next()` keeps its own context once the call returns, and no
- * step keeps `scope` reachable after the iterator is finished.
+ * that called `next()` keeps its own context once the call returns. The
+ * returned iterator holds `scope` for as long as the iterator itself is
+ * reachable. Only the steps taken through the returned iterator are scoped:
+ * code that finishes the underlying generator directly (calling `return()` on
+ * it, not on the returned iterator) bypasses the scope.
  *
  * @param iterable - The iterable whose steps must run inside `scope`
  * @param scope - The context to run each step in (carrying the active span)
