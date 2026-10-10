@@ -177,6 +177,68 @@ jobs:
           REDIS_TEST_URL: redis://localhost:6379
         run: pnpm --filter @connectum/events-redis test:integration
 
+  # ── NATS JetStream integration (required) ──────────────────────────────
+  # Runs the events-nats integration tests against real JetStream servers: the
+  # oldest line the package supports (2.9, which has no consumer metadata), the
+  # last 2.10 patch and a current one, because servers differ in which consumer
+  # configurations they accept. A service container cannot pass `-js`, so the
+  # server is started with docker run. The tests skip silently without
+  # NATS_TEST_URL, so the step asserts that nothing was skipped.
+  test-nats-broker:
+    name: "NATS JetStream (${{ matrix.nats.name }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        nats:
+          - name: nats-2.9.25
+            image: nats:2.9.25-alpine
+          - name: nats-2.10.29
+            image: nats:2.10.29-alpine
+          - name: nats-2.15.0
+            image: nats:2.15.0-alpine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Start NATS with JetStream
+        run: |
+          docker run -d --name nats -p 4222:4222 "${{ matrix.nats.image }}" -js
+          for _ in $(seq 1 30); do
+            if docker logs nats 2>&1 | grep -q "Server is ready"; then exit 0; fi
+            sleep 1
+          done
+          docker logs nats
+          exit 1
+
+      - name: NATS adapter integration tests
+        env:
+          NATS_TEST_URL: nats://localhost:4222
+        run: |
+          set -o pipefail
+          pnpm --filter @connectum/events-nats test:integration 2>&1 | tee nats-integration.log
+          sed -E 's/\x1b\[[0-9;]*m//g' nats-integration.log > nats-integration.plain.log
+          if ! grep -Eq '^ℹ skipped 0$' nats-integration.plain.log; then
+            echo "::error::NATS integration tests were skipped or the summary is missing"
+            exit 1
+          fi
+          if ! grep -Eq '^ℹ pass [1-9][0-9]*$' nats-integration.plain.log; then
+            echo "::error::No NATS integration test passed"
+            exit 1
+          fi
+
   # ── Kafka broker integration (required) ────────────────────────────────
   # Runs the events-kafka integration tests against a real single-node Kafka
   # (KRaft) service container. The suite proves offset commits, redelivery

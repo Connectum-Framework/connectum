@@ -364,13 +364,21 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
     });
 
     it("a queue deleted again right after a restoration is restored on a longer delay", { timeout: 60_000 }, async () => {
-        const events: AmqpLifecycleEvent[] = [];
+        const events: Array<{ at: number; event: AmqpLifecycleEvent }> = [];
+        const ofType = <T extends AmqpLifecycleEvent["type"]>(type: T): Array<{ at: number; event: Extract<AmqpLifecycleEvent, { type: T }> }> =>
+            events.flatMap((e) => (e.event.type === type ? [{ at: e.at, event: e.event as Extract<AmqpLifecycleEvent, { type: T }> }] : []));
         const adapter = AmqpAdapter({
             url,
             exchange: "loss.repeat",
             exchangeType: "topic",
-            recovery: { initialDelay: 200, maxDelay: 2_000, jitter: 0 },
-            lifecycle: { onLifecycle: (event) => events.push(event) },
+            // The backoff series restarts only after a restored consumer has
+            // stayed up for `maxDelay`. The second deletion must land inside
+            // that window, and it goes through `rabbitmqctl` in the container
+            // (measured 0.5-4.8 s per call, longer on a loaded host), so the
+            // window is the adapter's default, far beyond that latency. The
+            // delays under test stay 200 ms and then 400 ms.
+            recovery: { initialDelay: 200, maxDelay: 30_000, jitter: 0 },
+            lifecycle: { onLifecycle: (event) => events.push({ at: Date.now(), event }) },
         });
         await adapter.connect();
         try {
@@ -385,16 +393,26 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
             );
 
             await ctl("delete_queue", "loss.repeat.g");
-            await waitFor(() => events.filter((e) => e.type === "consumer-restored").length === 1);
+            await waitFor(() => ofType("consumer-restored").length === 1);
 
-            const secondLossAt = Date.now();
             await ctl("delete_queue", "loss.repeat.g");
-            await waitFor(() => events.filter((e) => e.type === "consumer-restored").length === 2);
-            const secondRestoreTook = Date.now() - secondLossAt;
+            await waitFor(() => ofType("consumer-restored").length === 2);
 
-            const attempts = events.flatMap((e) => (e.type === "consumer-restored" ? [e.attempt] : []));
-            assert.deepEqual(attempts, [1, 2], "the attempt number keeps growing while restorations follow each other");
-            assert.ok(secondRestoreTook >= 400, `the second restoration waited the grown delay (took ${secondRestoreTook} ms, expected at least 400)`);
+            const restored = ofType("consumer-restored");
+            const lost = ofType("consumer-lost");
+            assert.deepEqual(
+                restored.map((r) => r.event.attempt),
+                [1, 2],
+                "the attempt number keeps growing while restorations follow each other",
+            );
+            // The delay is the gap between the loss report and the restoration
+            // report, both stamped when the adapter emits them; nothing the test
+            // does (rabbitmqctl, polling) lies between the two.
+            const secondLost = lost[1];
+            const secondRestored = restored[1];
+            assert.ok(secondLost && secondRestored, "both losses and both restorations were reported");
+            const secondDelay = secondRestored.at - secondLost.at;
+            assert.ok(secondDelay >= 400, `the second restoration waited the grown delay (${secondDelay} ms between the loss and the restoration, expected at least 400)`);
 
             await adapter.publish("loss.repeat.evt", encode("after"));
             await waitFor(() => received.length === 1);
@@ -409,10 +427,14 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
             url,
             exchange: "loss.dropmid",
             exchangeType: "topic",
-            // The delay is far longer than one rabbitmqctl call (about half a
-            // second through container.exec), so the connection is dropped while
-            // the first restoration attempt is still waiting.
-            recovery: { initialDelay: 4_000, maxDelay: 8_000, jitter: 0 },
+            // The delay must outlast one rabbitmqctl call made through
+            // container.exec, so the connection is dropped while the first
+            // restoration attempt is still waiting. A call takes 0.5-4.8 s on a
+            // loaded host (a 4 s delay was overrun in 1 of 100 runs), hence 15 s.
+            // The reconnect uses the same delay, so the restoration timer fires
+            // while the connection is still down; the next scenario covers a
+            // timer that outlives the reconnect.
+            recovery: { initialDelay: 15_000, maxDelay: 30_000, jitter: 0 },
             lifecycle: { onLifecycle: (event) => events.push(event) },
         });
         await adapter.connect();
@@ -437,7 +459,7 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
                 "the drop landed inside the first backoff, before any restoration attempt",
             );
             // Outlast the cancelled attempt's delay: a timer that survived the drop would fire now.
-            await sleep(5_000);
+            await sleep(16_000);
 
             const consumers = await consumersOn("loss.dropmid.g");
             assert.equal(consumers.length, 1, `exactly one consumer on the queue, got: ${JSON.stringify(consumers)}`);
@@ -448,6 +470,68 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
             );
 
             await adapter.publish("loss.dropmid.evt", encode("once"));
+            await waitFor(() => received.length >= 1);
+            await sleep(500);
+            assert.deepEqual(received, ["once"], "one consumer, one delivery");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    it("a restoration timer still pending when the connection recovers never fires on the recovered connection", { timeout: 90_000 }, async () => {
+        // The connection reconnect and the restoration share the same delay
+        // knobs, so with a first backoff the restoration timer always fires
+        // while the connection is still down and is turned away by the
+        // "no live connection" check; the scenario above exercises only that
+        // layer. To reach the layer that cancels the timer itself, the timer
+        // must outlive the reconnect: after a second quick loss the
+        // restoration waits `initialDelay * factor` (24 s) while the
+        // reconnect after the drop waits `initialDelay` (3 s).
+        const events: Array<{ at: number; event: AmqpLifecycleEvent }> = [];
+        const ofType = <T extends AmqpLifecycleEvent["type"]>(type: T): Array<{ at: number; event: Extract<AmqpLifecycleEvent, { type: T }> }> =>
+            events.flatMap((e) => (e.event.type === type ? [{ at: e.at, event: e.event as Extract<AmqpLifecycleEvent, { type: T }> }] : []));
+        const secondDelay = 24_000;
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "loss.timerout",
+            exchangeType: "topic",
+            recovery: { initialDelay: 3_000, factor: 8, maxDelay: 60_000, jitter: 0 },
+            lifecycle: { onLifecycle: (event) => events.push({ at: Date.now(), event }) },
+        });
+        await adapter.connect();
+        try {
+            const received: string[] = [];
+            await adapter.subscribe(
+                ["loss.timerout.evt"],
+                async (event, ack) => {
+                    received.push(decode(event.payload));
+                    await ack();
+                },
+                { group: "g" },
+            );
+
+            await ctl("delete_queue", "loss.timerout.g");
+            await waitFor(() => ofType("consumer-restored").length === 1);
+            await ctl("delete_queue", "loss.timerout.g");
+            await waitFor(() => ofType("consumer-lost").length === 2);
+            const secondLostAt = ofType("consumer-lost")[1]?.at ?? 0;
+
+            await ctl("close_all_connections", "test-drop-with-pending-restore");
+            await waitFor(() => ofType("connected").length >= 2);
+            assert.ok(
+                Date.now() < secondLostAt + secondDelay - 5_000,
+                "the connection recovered well inside the second backoff, so its timer is still pending",
+            );
+
+            // Outlast the pending timer: one that survived the recovery fires now.
+            await sleep(secondLostAt + secondDelay + 2_000 - Date.now());
+
+            assert.equal(ofType("consumer-restored").length, 1, "the pending restoration was cancelled by the recovery: no second consumer-restored");
+            assert.equal(ofType("consumer-restore-failed").length, 0, "no restoration attempt ran on the recovered connection");
+            const consumers = await consumersOn("loss.timerout.g");
+            assert.equal(consumers.length, 1, `exactly one consumer on the queue, got: ${JSON.stringify(consumers)}`);
+
+            await adapter.publish("loss.timerout.evt", encode("once"));
             await waitFor(() => received.length >= 1);
             await sleep(500);
             assert.deepEqual(received, ["once"], "one consumer, one delivery");

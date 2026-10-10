@@ -114,7 +114,7 @@ function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter
 | `url` | `string` | required | AMQP connection URL |
 | `socketOptions` | `Record<string, unknown>` | `undefined` | Socket options for connection |
 | `exchange` | `string` | `'connectum.events'` | Exchange name |
-| `exchangeType` | `'topic' \| 'direct' \| 'fanout' \| 'headers'` | `'topic'` | Exchange type |
+| `exchangeType` | `'topic' \| 'direct' \| 'fanout' \| 'headers'` | `'topic'` | Exchange type; decides which subscription patterns are accepted and what the queue receives (see [Exchange types and subscription patterns](#exchange-types-and-subscription-patterns)) |
 | `exchangeOptions` | `AmqpExchangeOptions` | `{}` | Exchange assertion options |
 | `queueOptions` | `AmqpQueueOptions` | `{}` | Default queue assertion options |
 | `consumerOptions` | `AmqpConsumerOptions` | `{}` | Consumer options |
@@ -279,12 +279,73 @@ Routing Key:  "user.created"
 EventBus wildcard patterns are converted to AMQP topic patterns:
 
 ```text
-EventBus  →  AMQP
-*         →  *     (single token -- same in both)
->         →  #     (multi-token greedy match)
+EventBus pattern  →  AMQP topic binding
+*                 →  *       (exactly one segment)
+terminal >        →  *.#     (one or more trailing segments)
 
-Example: "order.>"  →  "order.#"
+Example: "order.>"  →  "order.*.#"
 ```
+
+Only a complete `>` segment at the end of a pattern is supported. A complete
+`>` segment elsewhere throws before the adapter creates or binds a queue.
+Characters embedded in a segment, such as `user*` or `user>`, remain literal.
+A complete `#` segment is rejected on topic exchanges because RabbitMQ
+interprets it as a wildcard, while the EventBus matcher treats it as literal
+text. On non-topic exchanges `#` remains an ordinary routing-key literal (or is
+ignored according to the exchange type). What the other exchange types do with
+wildcard subscriptions is listed in
+[Exchange types and subscription patterns](#exchange-types-and-subscription-patterns).
+
+When upgrading an existing named-group queue, the adapter adds the corrected
+binding but does not remove an older, broader binding. Add the new binding
+before removing the old one so the queue remains bound throughout the change:
+
+```typescript
+await channel.bindQueue(queue, exchange, 'user.*.#');
+await channel.unbindQueue(queue, exchange, 'user.#');
+```
+
+This changes routing only; it does not delete the queue or its queued messages.
+Check every binding on externally managed queues before removing one, because
+another consumer may still rely on it.
+
+### Exchange types and subscription patterns
+
+The EventBus selects handlers: for each delivered event it looks for a handler
+by exact event type, then by wildcard pattern, and acknowledges an event that
+has none. The adapter's part is to make the broker deliver every event a
+subscription wants, never a subset. How narrowly it can do so depends on the
+exchange type and on who creates the bindings (`topologyMode`):
+
+| Exchange type | Binding made from the pattern (`assert`) | Queue receives | EventBus handler gets | A handler passed to `adapter.subscribe()` gets |
+|---------------|------------------------------------------|----------------|-----------------------|-----------------------------------------------|
+| `topic` | translated (`*`, terminal `>` as `*.#`) | exactly the events the pattern matches | matching events | matching events |
+| `direct` | the pattern as a literal key | only events whose routing key equals the pattern; a wildcard pattern would never match, so `*`/`>` is rejected | equal-key events | equal-key events |
+| `fanout` | none that filters (the routing key is ignored) | every message, whatever the pattern | matching events; the rest are acknowledged | every message |
+| `headers` | an argument-less binding, which matches everything | every message, whatever the pattern | matching events; the rest are acknowledged | every message |
+
+With `topologyMode: "check"` or `"skip"` the adapter binds nothing and
+the operator's bindings decide what reaches the queue; the pattern then only
+selects handlers, so no pattern is rejected for the exchange type. For example,
+a direct exchange whose queue the operator bound to `user.created` and
+`user.deleted` accepts the subscription `user.*` and delivers exactly those two.
+
+Consequences worth knowing:
+
+- On a direct exchange with `topologyMode: "assert"`, `subscribe()` throws a
+  `TypeError` for a complete `*` or `>` segment before any queue is declared.
+- On fanout and headers exchanges every pattern is accepted, and the queue
+  receives every message published to the exchange. A literal such as
+  `user.created` does not narrow it either; use a topic exchange when the broker
+  should do the filtering.
+- The adapter publishes no header carrying the event type, so a headers
+  exchange cannot route by event type. In `assert` mode its argument-less
+  binding on a queue listed in `topology.queues` also defeats selective
+  `x-match` bindings declared there. Selective routing by headers works only
+  with `topologyMode: "check"` or `"skip"`, where the application owns the
+  bindings and the adapter adds none.
+- An exchange's type cannot be changed by redeclaring it (the broker answers
+  `406 PRECONDITION_FAILED`); moving to another type means a new exchange.
 
 ### Consumer Groups
 
@@ -538,7 +599,7 @@ const result = await fake.control.deliver('order.created', payload);
 // result: { delivered, acked, nacked, requeued, failed }
 ```
 
-Parity contract: lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
+Parity contract: pass `exchangeType` (and `topologyMode`, default `assert`) to model the real exchange: `subscribe()` accepts and rejects exactly the patterns the real adapter does, and `deliver()` routes by that type (topic and direct by the EventBus matcher, fanout and headers to every subscription). Lifecycle events go through the real adapter's dispatch (union ordering, the deprecated flat shim, and exception isolation match by construction); errors are the real typed classes — `instanceof` holds across the subpath boundary (shared build chunk, pinned by a dist test); the state machine mirrors the real adapter (`connect()` on a live/recovering adapter throws `already connected`, while after `exhaustRecovery()` it starts clean without the old subscriptions and `publish()`/`subscribe()` reject with the real adapter's `AmqpConnectionError`; a mid-recovery `subscribe()` parks and settles with the recovery outcome; `setup-failed` and fail-fast gate on `AmqpTopologyError` exactly like the real probe); incoming envelope headers (`x-event-id`, `x-published-at`) are honored and stripped like the real consumer.
 
 Documented divergences: no timing (recovery advances only via explicit `control` calls; `reconnecting.delay` is `0`; a lost consumer returns only through `restoreConsumers()`, on attempt 1, and `consumer-restore-failed` is never reported; a subscription without a group is named `fake.sub-N` by registration order; the `recovery` option only decides `willRestore`); handler `ack`/`nack` calls are recorded in the `deliver()` result, at most one per delivery per handler (the first wins, as in the real adapter), but do not drive redelivery — re-deliver explicitly with `attempt + 1` (handler rejections are swallowed and counted as `failed`, like the real nack-on-error consumer); `control.published` records the bus-facing call, not the wire envelope; a queued topology `failSetup` at `connect()` without fail-fast reports and proceeds instead of blocking forever. For the generic happy path prefer `MemoryAdapter` from `@connectum/events`; for real-broker semantics see the integration suite.
 

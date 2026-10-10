@@ -103,6 +103,7 @@ function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter
 | `consumerOptions.fromBeginning` | `boolean` | `false` | Where a consumer group with no committed offset starts: the beginning of the topic (`true`) or its end (`false`). A group that has committed offsets always resumes from them |
 | `consumerOptions.allowAutoTopicCreation` | `boolean` | `false` | Allow automatic topic creation |
 | `consumerOptions.redeliveryDelay` | `number` | `1000` | Milliseconds a partition is paused after a message was left unsettled, before it is delivered again. `0` redelivers immediately; the maximum is `2147483647` |
+| `consumerOptions.topicDiscoveryInterval` | `number \| false` | `300000` | Milliseconds between checks of a wildcard subscription for newly created matching topics (see [Wildcard Conversion](#wildcard-conversion)). `false` means the topic list is fixed when `subscribe()` runs. A positive number up to `2147483647` |
 
 ## How It Works
 
@@ -124,6 +125,25 @@ NATS-style wildcards are converted to Kafka regex patterns:
 | `user.*` | `/^user\.[^.]+$/` | `user.created`, `user.deleted` |
 | `user.>` | `/^user\..+$/` | `user.created`, `user.profile.updated` |
 | `user.created` | Literal topic | `user.created` only |
+| `>` | `/^(?!__).+$/` | every topic except those starting with `__` |
+| `*` | `/^(?!__)[^.]+$/` | every single-segment topic except those starting with `__` |
+
+A pattern that **opens with a wildcard** does not match topics whose name starts with `__`. That is exactly the set of topics the brokers mark as internal (Kafka: `__consumer_offsets`, `__transaction_state`; Redpanda: `__consumer_offsets`); without the exclusion a catch-all `>` would feed the broker's binary bookkeeping records to your handler. The rule has no switch and no exception list. A pattern that spells the prefix out (`__audit.>`) and a literal topic name (`__audit`) are unaffected, as are names with a single leading underscore. Other topics your platform keeps are ordinary topic names to the adapter, and a catch-all `>` **receives** them: Redpanda's Schema Registry topic `_schemas` is one (its records are not events). Use a narrower pattern, such as `orders.>`, when you do not want them.
+
+**A wildcard is expanded once, when `subscribe()` runs, and refreshed every `consumerOptions.topicDiscoveryInterval` (default 5 minutes).** KafkaJS turns the regex into the list of topics that exist at that moment and the consumer group joins with that list; KafkaJS itself never looks again (a NATS consumer filter, by contrast, is evaluated by the server for every message). The adapter therefore checks the broker for newly created matching topics at the interval. Check more often by setting a shorter one:
+
+```typescript
+KafkaAdapter({
+  brokers: ['localhost:9092'],
+  consumerOptions: { topicDiscoveryInterval: 30_000 },
+});
+```
+
+Every interval the adapter lists the broker's topics; when a matching topic has appeared it restarts the subscription's consumer to include it. The restart rebalances the consumer group (consumption pauses for a few seconds, and messages being handled at that moment are delivered again) and happens only when there is a new topic; an unchanged topic list costs one metadata request per wildcard subscription per interval, on an extra admin connection. A discovered topic is read from its first message regardless of `fromBeginning`. Subscriptions made only of literal topic names are never checked. If listing topics fails at the start of the subscription, `subscribe()` rejects with that error (the same metadata request expands the wildcard, and a discovery started from an empty list would read the history of every existing topic). If it fails in a later check (for example the credentials may not describe the cluster), the failure is logged and the check repeats at the next interval, so a permanent failure logs once per interval. Each discovery is logged with the names of the topics (`[KafkaAdapter] topic discovery: subscribing N new topic(s) ...`), so a rebalance it causes can be told from one caused by a failing member. The remaining window is one interval: if the service restarts before a check has seen a newly created matching topic, the group has no committed offset for it and starts at its end (unless `fromBeginning` is set), so what was published to that topic before the restart is not handled; with `topicDiscoveryInterval: false` the window lasts until the restart, however late it happens.
+
+**Set it to `false` to keep the topic list fixed** (the behaviour of earlier versions). Then a matching topic created later is not consumed until the service restarts, and the restart reads it from the end unless `fromBeginning` is set: what was published to the topic before the restart is never handled by the group. The same window exists with the checks on when the service restarts before a check has seen the topic; it is at most one interval long.
+
+**In a group of several members the delay is the longest interval among them.** KafkaJS assigns partitions only from the topic list of the group's leader, and a member drops assigned topics it has not subscribed to itself, so a new topic is read completely only after every member has discovered it. Nothing is lost meanwhile: in a measurement with two members at 1 s and 20 s, all 12 messages published to the new topic arrived, the last one 15.3 s after the topic was created (15.1 s on Redpanda; the exact delay depends on where the 20 s check falls). Give the members of a group the same interval.
 
 ### Partition Key
 

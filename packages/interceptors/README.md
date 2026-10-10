@@ -40,10 +40,10 @@ errorHandler -> timeout -> bulkhead -> circuitBreaker -> retry -> fallback -> va
 | # | Interceptor | Default | Purpose |
 |---|-------------|---------|---------|
 | 1 | errorHandler | enabled | Catch-all error normalization (must be first) |
-| 2 | timeout | **opt-in** (30s when enabled) | Enforce deadline before processing starts |
+| 2 | timeout | **opt-in** (30s when enabled) | Bound caller waiting and propagate cancellation |
 | 3 | bulkhead | **opt-in** (10/10 when enabled) | Concurrency limiting |
 | 4 | circuitBreaker | **opt-in** (5 failures when enabled) | Cascading failure prevention (outbound pattern, see below) |
-| 5 | retry | **opt-in** (3 attempts when enabled) | Retry transient failures with exponential backoff |
+| 5 | retry | **opt-in** (3 retries when enabled) | Retry transient failures with exponential backoff |
 | 6 | fallback | **opt-in** | Graceful degradation (requires a handler function) |
 | 7 | validation | enabled | `@connectrpc/validate` (`createValidateInterceptor()`) |
 | 8 | serializer | **opt-in** | JSON serialization of protobuf responses |
@@ -57,7 +57,7 @@ incident (a server-side circuit breaker tripped by expected business errors).
 **Why this order** (applies to whichever interceptors you enable; `interceptors[0]` is outermost in Connect-ES):
 
 1. **errorHandler** -- outer layer, catches all errors from the entire chain
-2. **timeout** -- fail fast for slow requests before processing starts
+2. **timeout** -- bound waiting for the inner chain and propagate cancellation
 3. **bulkhead** -- limit concurrent load to protect resources
 4. **circuitBreaker** -- fast rejection during cascading failures; **wraps retry**, so one logical request increments the failure counter at most once regardless of retry attempts (guaranteed)
 5. **retry** -- retry for transient failures
@@ -239,7 +239,15 @@ const interceptor = createErrorHandlerInterceptor({
 
 #### Timeout
 
-Prevents request hanging by setting a maximum execution time.
+Bounds waiting for a response and propagates cancellation through `req.signal`.
+Its own deadline returns `DeadlineExceeded`. Caller cancellation preserves an
+existing caller `ConnectError`, including its code and metadata/details; other
+caller reasons become `Canceled`.
+The first cancellation cause wins.
+
+Handlers and I/O must observe the signal to stop work. Cancellation does not
+roll back side effects or forcibly stop code that ignores the signal. An outer
+timeout can return while that work still occupies a bulkhead slot.
 
 ```typescript
 import { createTimeoutInterceptor } from "@connectum/interceptors";
@@ -249,6 +257,10 @@ const interceptor = createTimeoutInterceptor({
   skipStreaming: true,   // Skip streaming calls (default: true)
 });
 ```
+
+With `skipStreaming: false`, the timeout covers opening the streaming response.
+It clears its timer when the response opens, so later iteration can continue
+longer than `duration`. Caller cancellation still reaches the opened stream.
 
 **Response on timeout:**
 ```json
@@ -314,7 +326,13 @@ const interceptor = createCircuitBreakerInterceptor({
 
 Retries failed unary calls with exponential backoff. Built on [cockatiel](https://github.com/connor4312/cockatiel).
 
+Cancellation interrupts a pending backoff and prevents another attempt. An
+already running handler is awaited so its enclosing bulkhead accounts for the
+actual work; a late success after cancellation becomes a cancellation error.
+Use retries only for idempotent operations.
+
 ```typescript
+import { Code } from "@connectrpc/connect";
 import { createRetryInterceptor } from "@connectum/interceptors";
 
 const interceptor = createRetryInterceptor({
@@ -329,11 +347,11 @@ const interceptor = createRetryInterceptor({
 });
 ```
 
-**Backoff strategy:**
-- Attempt 1: delay `initialDelay` (200 ms)
-- Attempt 2: delay `initialDelay * 2` (400 ms)
-- Attempt 3: delay `initialDelay * 4` (800 ms)
-- ... and so on, but no more than `maxDelay`
+The first attempt runs immediately. Each permitted retry uses Cockatiel's
+exponential decorrelated jitter, bounded by `maxDelay`; delays are randomized,
+not a fixed `200/400/800 ms` sequence. `maxRetries: 3` permits up to four total
+attempts. With `skipStreaming: false`, retry handles failures while opening the
+response; it does not restart an opened stream after an iteration error.
 
 #### Fallback
 
@@ -599,7 +617,7 @@ Use this approach for cases not covered by `createMethodFilterInterceptor` patte
 
 The `skipStreaming`, `skipGrpcServices`, and `skipHealthCheck` options in individual interceptors are **not** routing concerns. They are technical limitations of the interceptors themselves:
 
-- **`skipStreaming`** (retry, timeout, bulkhead, circuit-breaker, fallback): Resilience interceptors wrap the entire call. For streaming this is technically incorrect -- you cannot retry a stream, limit timeout for a long-lived connection, or replace a stream with a fallback value.
+- **`skipStreaming`** (retry, timeout, bulkhead, circuit-breaker, fallback): Streaming is skipped by default. Opting in wraps opening the response, rather than its subsequent iteration. A timeout cannot impose a whole-stream deadline this way, and a retry cannot resume a stream that already opened.
 - **`skipGrpcServices`** (serializer): JSON serialization for gRPC binary protocol is technically impossible. This is a protocol error guard.
 - **`skipHealthCheck`** (logger): Convenience shortcut for excluding health check from logs.
 
@@ -826,6 +844,34 @@ const server = createServer({
 ```
 
 ## Migration
+
+### Cancellation behavior in 1.3
+
+Timeout now forwards its own deadline and caller cancellation to downstream
+work. Retry interrupts backoff, avoids future attempts after cancellation and
+rejects a late success from cancelled work. Callers that previously observed a
+late successful response or an extra retry must now handle cancellation errors.
+Observe `req.signal` in custom interceptors and `ctx.signal` in RPC handlers,
+and pass it to cancellable I/O. Unaware work
+can still finish and commit side effects, so cancellation is not a rollback.
+
+**Timeout and circuit breaker.** In the default order the timeout is outside the
+circuit breaker, which wraps retry. An expired timeout aborts the inner chain
+with a `DeadlineExceeded` error, so the breaker now records it as a failure:
+`DeadlineExceeded` is one of the codes counted by the default failure predicate
+(`INFRASTRUCTURE_CODES`, `src/circuit-breaker.ts`). Repeated timeouts of a
+cooperative handler open the circuit. Before, the breaker never saw the timeout
+itself, only whatever the abandoned handler eventually returned. For a handler
+that ignores the signal the failure is recorded when that handler settles, not
+when the caller gets its deadline error, and only because retry converts the
+late result into the cancellation error. Caller cancellation with the default
+`Canceled` code is not counted; a caller `ConnectError` reason with an
+infrastructure code such as `Unavailable` is counted under its own code. To keep
+timeouts from tripping the breaker, exclude `DeadlineExceeded` in
+`failurePredicate` (see [Circuit breaker: placement and error classification](#circuit-breaker-placement-and-error-classification)).
+
+Options, defaults and chain order are unchanged. `skipStreaming: false` remains
+opening-only; caller cancellation continues to work after successful opening.
 
 ### Removed Interceptors
 
