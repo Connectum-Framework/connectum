@@ -87,6 +87,7 @@
     "@bufbuild/protobuf": "catalog:",
     "@bufbuild/protoc-gen-es": "catalog:",
     "@connectrpc/connect": "catalog:",
+    "@connectrpc/connect-node": "catalog:",
     "@connectum/core": "workspace:^",
     "@connectum/testing": "workspace:^",
     "c8": "catalog:",
