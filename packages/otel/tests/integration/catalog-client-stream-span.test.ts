@@ -145,6 +145,9 @@ describe("catalog client-stream span — ctx.stream to a local service through o
         assert.strictEqual(span.status.code, SpanStatusCode.OK);
     });
 
+    // A failure raised before any response was produced already surfaced before the fix, so this case guards the ERROR
+    // status of the single span rather than the lifetime of the call; the lifetime is guarded by the cases around it
+    // that deliver a response first and the terminal status later.
     it("a failed call rejects and ends exactly one span with ERROR status", async () => {
         let outcome: { value?: Count; error?: unknown } | undefined;
         const server = makeServer(
