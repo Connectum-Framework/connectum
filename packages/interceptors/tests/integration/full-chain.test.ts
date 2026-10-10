@@ -59,6 +59,7 @@ describe('Full Interceptor Chain Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -117,6 +118,7 @@ describe('Full Interceptor Chain Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/FailingMethod',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -157,6 +159,7 @@ describe('Full Interceptor Chain Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/SlowMethod',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -196,6 +199,7 @@ describe('Full Interceptor Chain Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
             service: { typeName: 'test.Service' },
@@ -253,6 +257,7 @@ describe('Full Interceptor Chain Integration', () => {
         // Health check request
         const healthCheckReq = {
             url: 'http://localhost/grpc.health.v1.Health/Check',
+            signal: new AbortController().signal,
             stream: false,
             message: {},
             service: { typeName: 'grpc.health.v1.Health' },
