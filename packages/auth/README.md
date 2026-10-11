@@ -65,10 +65,8 @@ greeter still require a token. The HTTP `/healthz` endpoint
 answers without a token.
 
 Handlers can read the verified identity with `requireAuthContext()` from
-`@connectum/auth`. The context is scoped to the callback, not to a value it
-returns: if the handler is an `async function*`, iterate the generator inside
-the callback, because a generator created inside the callback but consumed after
-it has returned does not see the context.
+`@connectum/auth`. For a streaming call the identity stays available to the
+handler for the whole call, including after its first `await` or `yield`.
 
 ## Security constraints
 

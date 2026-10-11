@@ -7,6 +7,16 @@
  * The listening port is made ephemeral; the documented HTTP/1 variant is run
  * separately. An export exposes the example's server to the probe. The probe
  * checks responses, input boundaries and configured protocols, then cleans up.
+ *
+ * What this check depends on, and what it does not cover:
+ * - It needs network access and is not deterministic: the consumer project is
+ *   installed with `pnpm install --no-frozen-lockfile` (dependency ranges are
+ *   resolved at run time), Buf dependencies are resolved against the BSR, and
+ *   the examples come from the working copy given by `--examples`.
+ * - It writes only below `.tmp/` of this repository and removes it unless
+ *   `--keep` is given.
+ * - It executes the examples of eight package READMEs, the Quickstart and the
+ *   authentication/TLS guides, not every README. It is not part of CI.
  */
 
 import assert from "node:assert/strict";

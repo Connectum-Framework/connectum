@@ -61,6 +61,41 @@ await bus.stop();
   `@connectum/events-kafka`, `@connectum/events-redis`, or
   `@connectum/events-amqp`.
 
+## Dependency injection and testing
+
+**Primary pattern: inject an `EventAdapter` instance.** Construct the adapter at
+your composition root and pass it in; a test swaps it for a double without
+touching the wiring:
+
+```typescript
+// Composition root (production):
+const adapter = NatsAdapter({ servers: process.env.NATS_URL! });
+const bus = createEventBus({ adapter, routes: [eventRoutes] });
+```
+
+```typescript
+// Test: the same wiring, a different instance.
+const bus = createEventBus({ adapter: MemoryAdapter(), routes: [eventRoutes] });
+```
+
+**Secondary pattern: `EventAdapterFactory`** (`() => EventAdapter`, exported
+since 1.3.0): a zero-argument factory for the places where each consumer needs
+its own broker connection; `createBroadcastSubscribers` invokes it once per
+reactor. Prefer the instance elsewhere: a test double with its own configuration
+does not fit a zero-argument factory signature without a wrapper closure.
+
+**Test doubles:**
+
+- `MemoryAdapter` (exported here) is in-process pub/sub for the generic happy
+  path: routing, handlers, middleware, DLQ flows.
+- Broker-specific failure semantics (the typed AMQP error taxonomy, recovery and
+  lifecycle behavior) cannot be modeled generically. Use the programmable
+  `FakeAmqpAdapter` from the `@connectum/events-amqp/testing` subpath (since
+  1.3.0; see its
+  [API reference](https://connectum.dev/en/api/@connectum/events-amqp/testing/)).
+- For real-broker integration semantics, see each adapter package's testing
+  notes.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/events)

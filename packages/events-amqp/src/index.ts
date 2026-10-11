@@ -9,8 +9,9 @@
  * via message headers.
  * Delivery and retention depend on broker topology and publish settings:
  * unroutable publishes are detected only when `publisherOptions.mandatory`
- * is enabled, and subscriptions without a named group use private,
- * non-durable, auto-delete queues.
+ * is enabled. In the default `assert` mode, subscriptions without a named group
+ * use private, non-durable, auto-delete queues; `check` and `skip` do not create
+ * that queue.
  *
  * @example
  * ```typescript

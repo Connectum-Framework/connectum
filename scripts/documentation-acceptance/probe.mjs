@@ -78,7 +78,10 @@ try {
         else assert.equal((await client.sayHello({ name: "" }, options)).message, "Hello, world!");
         // No schema argument: buf must discover Health through server reflection.
         const args = ["curl", "--protocol", "grpc", "--http2-prior-knowledge", "--data", "{}"];
-        if (authorization) args.push("--header", `Authorization: ${authorization}`, "--reflect-header", "*");
+        // The health call carries no credential: the README leaves it open with `skipMethods`, and a
+        // token on this call would let the check pass without that setting. Only the reflection
+        // requests that discover its schema carry the token, because reflection is not skipped.
+        if (authorization) args.push("--reflect-header", `Authorization: ${authorization}`);
         args.push(`${baseUrl}/grpc.health.v1.Health/Check`);
         if (mode === "readme-core") {
             // The core-only example deliberately does not register health/reflection.

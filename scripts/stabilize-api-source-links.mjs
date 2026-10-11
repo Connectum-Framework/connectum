@@ -42,10 +42,10 @@ function* markdownFiles(dir) {
 }
 
 /**
- * Rewrite TypeDoc source references outside fenced code blocks.
+ * Resolve a source path displayed by TypeDoc to a tracked repository path.
  *
- * `trackedPaths` must be the repository's exact `git ls-files` paths, so a
- * source-looking reference to generated or dependency files remains prose.
+ * Returns `null` when the path is not a tracked framework file, so a
+ * source-looking reference to a generated or dependency file stays prose.
  */
 function sourcePathFor(displayPath, packageName, trackedPaths) {
     const lookupPath = displayPath.replaceAll("\\_", "_");
@@ -71,7 +71,9 @@ function sourcePathFor(displayPath, packageName, trackedPaths) {
 }
 
 /**
- * short TypeDoc source paths need package context to avoid linking to another package.
+ * Return the `@connectum` package that owns an API page, or `null` for a page that
+ * belongs to none. Short TypeDoc source paths need this package context, so that
+ * they are not linked to another package.
  */
 function packageNameForApiFile(file) {
     const [scope, packageName] = relative(API_DIR, file).split(sep);
@@ -79,6 +81,12 @@ function packageNameForApiFile(file) {
     return packageName;
 }
 
+/**
+ * Rewrite TypeDoc source references outside fenced code blocks to stable links.
+ *
+ * `trackedPaths` must be the repository's exact `git ls-files` paths, so a
+ * source-looking reference to a generated or dependency file remains prose.
+ */
 export function stabilizeSourceLinks(markdown, trackedPaths, packageName = null) {
     const tracked = trackedPaths instanceof Set ? trackedPaths : new Set(trackedPaths);
     const parts = markdown.replace(SHA_LINK, STABLE).split(/(\r?\n)/);

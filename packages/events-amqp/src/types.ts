@@ -394,7 +394,7 @@ export interface AmqpQueueDeclaration {
 }
 
 export interface AmqpBindingDeclaration {
-    /** Destination queue name. If both destination fields are set, runtime uses this queue. */
+    /** Destination queue name. Set exactly one of `queue` and `exchange`; the result of setting both is not part of the contract. */
     readonly queue?: string;
     /** Destination exchange name (exchange-to-exchange binding). */
     readonly exchange?: string;

@@ -44,6 +44,13 @@ Every integration suite runs on RabbitMQ 4.3.6 in CI; the consumer-timeout suite
 was also run on 3.13.7, 4.1.8 and 4.2.8. The other suites were not run on those
 three lines, and older releases are not tested.
 
+How a consumer that outlives `consumer_timeout` ends depends on the line. On the
+4.3 releases that were run (4.3.1 and 4.3.6) the broker cancels the consumer and
+keeps the channel (`cause: "cancelled"` in the `consumer-lost` lifecycle event);
+on 3.13.7, 4.1.8 and 4.2.8 it closes the whole channel after about two minutes
+(`cause: "channel-closed"`). Where the behavior changes between those releases
+is inferred, not measured: only these releases were run.
+
 ## Running the integration suites against a real broker
 
 The happy-path suite needs only a reachable broker and skips without `AMQP_TEST_URL`:
