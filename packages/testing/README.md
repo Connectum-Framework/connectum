@@ -521,7 +521,7 @@ const res = await orderHandler(create(CreateOrderSchema, { sku: "x" }), ctx);
 |--------|------|---------|-------------|
 | `catalog` | `ServiceCatalog` | — | The catalog the handler-under-test calls into (required) |
 | `mocks` | `MockService[]` | — | Mock implementations served via the resolver path (required) |
-| `outgoingInterceptors` | `Interceptor[]` | `[]` | Outgoing interceptors (applied exactly as in production) |
+| `outgoingInterceptors` | `Interceptor[]` | `[]` | Outgoing interceptors, run once around every mocked call exactly as production runs them on a resolver route (transport-tagging interceptors observe a mock route as `http`) |
 | `requestHeader` | `HeadersInit` | — | Inbound headers (seen by `ctx.requestHeader` + propagation) |
 | `timeoutMs` | `number` | — | Inbound deadline in ms (drives the `ctx.timeoutMs()` cascade) |
 | `propagateHeaders` | `string[]` | — | Header names propagated onto outgoing calls |

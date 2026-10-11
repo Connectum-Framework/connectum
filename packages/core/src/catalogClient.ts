@@ -25,7 +25,7 @@
  */
 
 import type { DescMessage, DescMethodStreaming, DescMethodUnary } from "@bufbuild/protobuf";
-import { Code, ConnectError, type Transport } from "@connectrpc/connect";
+import { Code, ConnectError, type Interceptor, type Transport } from "@connectrpc/connect";
 import {
     type CallFrame,
     dispatchUnaryCall,
@@ -37,6 +37,7 @@ import {
     resolveRemoteTransportOrThrow,
 } from "./catalogDispatcher.ts";
 import type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle } from "./context.ts";
+import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
 
@@ -56,6 +57,16 @@ export interface CreateCatalogClientOptions {
      * target makes that call fail with `Code.Unavailable`.
      */
     resolver: RemoteResolver;
+    /**
+     * Client-side interceptors applied once around every `call`/`stream` this
+     * client makes, outside the interceptors of the resolver's transport.
+     * Empty by default: a standalone client has no `Server` to inherit a chain
+     * from, and a resolver whose transports already carry the application's
+     * policy keeps working unchanged. Do not configure the same policy here and
+     * on the resolver's transport — the framework cannot see inside a
+     * `Transport` and would run it twice.
+     */
+    outgoingInterceptors?: readonly Interceptor[];
 }
 
 /**
@@ -107,6 +118,7 @@ export interface CatalogClient {
  */
 export function createCatalogClient(options: CreateCatalogClientOptions): CatalogClient {
     const { catalog, resolver } = options;
+    const outgoing = [...(options.outgoingInterceptors ?? [])];
 
     // Cache the resolved transport per unique (typeName, endpoint) key, matching
     // the Server's `_resolveRemoteTransport` so the resolver runs at most once
@@ -117,7 +129,7 @@ export function createCatalogClient(options: CreateCatalogClientOptions): Catalo
         const key = `${typeName} ${endpoint ?? ""}`;
         const cached = transportCache.get(key);
         if (cached !== undefined) return cached;
-        const transport = resolveRemoteTransportOrThrow(resolver, typeName, endpoint, caller);
+        const transport = withOutgoingInterceptors(resolveRemoteTransportOrThrow(resolver, typeName, endpoint, caller), outgoing);
         transportCache.set(key, transport);
         return transport;
     }
