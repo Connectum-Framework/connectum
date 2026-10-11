@@ -135,9 +135,6 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
     // swallowed.
     const clientDeadlines: unknown[] = [];
     const onUnhandled = (reason: unknown) => clientDeadlines.push(reason);
-    if (mode === "deadline") {
-        process.on("unhandledRejection", onUnhandled);
-    }
     const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, pace) });
     started.push(server);
     const client = clientFor(server, transport);
@@ -158,28 +155,36 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
         await (transport === "local-ambient" ? authContextStorage.run(AMBIENT_CALLER, inTelemetry) : inTelemetry());
     };
 
-    for (let first = 0; first < ITERATIONS; first += WAVE) {
-        const wave: Array<Promise<void>> = [];
-        for (let round = first; round < Math.min(first + WAVE, ITERATIONS); round++) {
-            wave.push(oneIdentity(`${scenario}-${round}-A`, round), oneIdentity(`${scenario}-${round}-B`, round));
-        }
-        await Promise.all(wave);
-    }
-
     let cleanedBeforeStop = 0;
-    if (mode === "early-break") {
-        // Leaving the loop is not a cancellation: the handler stays parked at its last `yield` until
-        // something else ends the call, here the server shutting down.
-        await sleep(150);
-        cleanedBeforeStop = probe.cleanups.size;
-        await server.stop();
+    let allCleaned = false;
+    // The hook is removed in `finally`: a call, a server shutdown or an assertion below can throw, and a
+    // listener left installed would swallow the unhandled rejections of every later test in this process.
+    if (mode === "deadline") {
+        process.on("unhandledRejection", onUnhandled);
     }
+    try {
+        for (let first = 0; first < ITERATIONS; first += WAVE) {
+            const wave: Array<Promise<void>> = [];
+            for (let round = first; round < Math.min(first + WAVE, ITERATIONS); round++) {
+                wave.push(oneIdentity(`${scenario}-${round}-A`, round), oneIdentity(`${scenario}-${round}-B`, round));
+            }
+            await Promise.all(wave);
+        }
 
-    const allCleaned = await eventually(() => tags.every((tag) => (probe.cleanups.get(tag)?.count ?? 0) >= 1), 5_000);
-    // Give a duplicate cleanup the chance to show up before counting.
-    await sleep(50);
+        if (mode === "early-break") {
+            // Leaving the loop is not a cancellation: the handler stays parked at its last `yield` until
+            // something else ends the call, here the server shutting down.
+            await sleep(150);
+            cleanedBeforeStop = probe.cleanups.size;
+            await server.stop();
+        }
 
-    process.off("unhandledRejection", onUnhandled);
+        allCleaned = await eventually(() => tags.every((tag) => (probe.cleanups.get(tag)?.count ?? 0) >= 1), 5_000);
+        // Give a duplicate cleanup the chance to show up before counting.
+        await sleep(50);
+    } finally {
+        process.off("unhandledRejection", onUnhandled);
+    }
     const foreignRejections = clientDeadlines.filter((reason) => ConnectError.from(reason).code !== Code.DeadlineExceeded);
     const wrongCount = tags.filter((tag) => probe.cleanups.get(tag)?.count !== 1);
     const wrongIdentity = tags.filter((tag) => probe.cleanups.get(tag)?.seen !== expectedCleanupIdentity(tag));
