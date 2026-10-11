@@ -38,6 +38,90 @@ Make handlers idempotent and complete side effects before settlement. See the
 [AMQP reliability guide](https://connectum.dev/en/guide/events/amqp-reliability)
 for recovery, routing, and settlement behavior.
 
+## Selective routing on a headers exchange
+
+On a headers exchange the adapter cannot derive bindings from a subscription
+pattern; selective routing belongs to the application. A headers exchange
+delivers a message when any one binding of the queue matches, so in `assert`
+mode the adapter adds its own argument-less binding only when
+`topology.bindings` declares no binding of that queue to the exchange; a binding
+created outside the topology is not seen, and the argument-less binding is added
+next to it.
+
+Declare the queue and its `x-match` binding in the topology. The adapter binds
+nothing of its own to that queue, so only messages whose headers match reach it:
+
+```typescript
+const queue = 'orders.eu';
+
+const adapter = AmqpAdapter({
+  url: 'amqp://localhost:5672',
+  exchange: 'orders',
+  exchangeType: 'headers',
+  topology: {
+    queues: [{ name: queue, durable: true }],
+    bindings: [
+      { queue, source: 'orders', routingKey: '', arguments: { 'x-match': 'all', region: 'eu' } },
+    ],
+  },
+  queueOverrides: { eu: { queue } },
+});
+
+// Receives only messages published with the header `region: eu`.
+await adapter.subscribe(
+  ['order.created'],
+  async (event, ack) => {
+    console.log(event.eventType);
+    await ack();
+  },
+  { group: 'eu' },
+);
+```
+
+To keep the catch-all for a queue, declare no binding for it, or declare the
+binding without arguments. Bindings created outside the topology are not seen
+by the adapter; to rely on them use `topologyMode: "check"` or `"skip"`.
+
+> **Behavior change in `assert` mode.** Before this rule, the adapter's
+> argument-less binding was added next to the declared ones, so a queue with a
+> selective declared binding still received every message. It now receives only
+> what the declared bindings select. To keep the old behavior, remove the
+> selective binding from `topology.bindings` or declare it without arguments.
+
+## Upgrading a durable queue the previous version bound
+
+The previous version bound a durable queue with an argument-less binding for each subscription
+pattern, and the broker keeps those bindings after the upgrade. The adapter
+stops adding them but never removes bindings, because it cannot tell its own
+from one an operator created; until the operator removes them, the queue still
+receives every message and the declared `x-match` binding filters nothing.
+Remove every such leftover once (a queue subscribed with several patterns has
+one per pattern). The routing key of a leftover is the subscription pattern as
+the previous version converted it: a `>` became `#` (`user.>` was bound as
+`user.#`), so unbinding with the pattern as written does not remove it. Read the
+exact keys from the broker (`rabbitmqctl list_bindings`, or the management API
+below) rather than deriving them. The options below were run against RabbitMQ
+4.3.6 with a literal key and with a `>` pattern:
+
+- amqplib, with the exact routing key of the leftover and no arguments:
+  `await channel.unbindQueue(queue, exchange, routingKey)`. An unbind whose key
+  matches no binding completes without an error and removes nothing, so check
+  the list afterwards.
+- The management HTTP API (the `rabbitmq_management` plugin; `guest:guest` is the
+  default user, `%2F` the default vhost). The leftover is the entry with empty
+  `arguments`; its `properties_key` goes into the `DELETE`:
+
+  ```bash
+  curl -s -u guest:guest http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>
+  curl -s -u guest:guest -X DELETE http://localhost:15672/api/bindings/%2F/e/<exchange>/q/<queue>/<properties_key>
+  ```
+
+  The `DELETE` answers `204`; the next `GET` lists only the declared binding.
+- Delete the queue and let the adapter declare it again with the declared
+  binding: `rabbitmqctl delete_queue <queue>`. Its messages are lost.
+
+`rabbitmqctl list_bindings` shows what the broker holds for the queue.
+
 ## RabbitMQ versions
 
 Every integration suite runs on RabbitMQ 4.3.6 in CI; the consumer-timeout suite
