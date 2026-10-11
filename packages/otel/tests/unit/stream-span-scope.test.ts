@@ -28,6 +28,7 @@ import { context, type Span, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ItemSchema, StreamingService } from "../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts";
+import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 
@@ -317,6 +318,51 @@ describe("server span scope inside streaming handlers", () => {
                         for (const id of seen) assert.strictEqual(id, serverSpanId, "the wrapper runs under the server span");
                     });
                 }
+            }
+
+            // The generator that produces the request messages belongs to the caller. Over HTTP the
+            // transport advances it in the caller's context; in-process the handler pulls it from its own
+            // code, so the transport binds it to the context of the call site. Either way it never runs
+            // under the server span.
+            for (const withClientSpan of [false, true]) {
+                it(`the producer of a request stream runs in the caller's context, not under the server span (client interceptor: ${withClientSpan})`, { timeout: 30_000 }, async () => {
+                    const into = new Map<string, Observation[]>();
+                    const producerSaw: Array<string | undefined> = [];
+                    async function* producer() {
+                        for (let i = 0; i < 2; i++) {
+                            producerSaw.push(activeId());
+                            await nextImmediate();
+                            yield create(ItemSchema, { value: "k" });
+                        }
+                    }
+                    const callerSpan = collector.provider.getTracer("caller").startSpan("caller");
+                    const clientInterceptors = withClientSpan ? [createOtelClientInterceptor({ serverAddress: "localhost" })] : [];
+                    await withClient(
+                        transport,
+                        into,
+                        async (client) => {
+                            await context.with(trace.setSpan(context.active(), callerSpan), async () => {
+                                await client.client(producer());
+                                for await (const _ of client.bidi(producer())) {
+                                    /* drain */
+                                }
+                            });
+                        },
+                        undefined,
+                        clientInterceptors,
+                    );
+                    callerSpan.end();
+                    const spans = collector.flush();
+                    const serverIds = new Set(spans.filter((s) => s.kind === SpanKind.SERVER).map((s) => s.spanId));
+                    const clientIds = new Set(spans.filter((s) => s.kind === SpanKind.CLIENT).map((s) => s.spanId));
+                    assert.strictEqual(serverIds.size, 2);
+                    assert.strictEqual(producerSaw.length, 4);
+                    for (const id of producerSaw) {
+                        assert.ok(id !== undefined && !serverIds.has(id), "the producer does not run under a server span");
+                        if (withClientSpan) assert.ok(clientIds.has(id), "the producer runs under the client span of its own call");
+                        else assert.strictEqual(id, callerSpan.spanContext().spanId, "the producer runs under the caller's span");
+                    }
+                });
             }
 
             it("the scope does not leak into the stream consumer", { timeout: 30_000 }, async () => {
