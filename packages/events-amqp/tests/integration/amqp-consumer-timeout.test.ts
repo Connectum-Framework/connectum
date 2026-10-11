@@ -51,7 +51,9 @@ describe("AMQP consumer acknowledgement timeout (testcontainers)", { skip: RUN ?
         // close the whole channel. Where the behaviour changes is inferred, not measured: only these
         // five releases were run, so another release of 4.0 or 4.3 is assumed to follow its line.
         const version = await container.exec(["rabbitmqctl", "version"]);
-        const parsed = /^(\d+)\.(\d+)/.exec(version.stdout.trim());
+        // The whole output must be a release number (optionally with a pre-release suffix), so a
+        // warning or trailing text is reported as an unreadable version, not read as a prefix.
+        const parsed = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(version.stdout.trim());
         assert.ok(version.exitCode === 0 && parsed !== null, `could not read the broker version: ${version.output}`);
         const [, majorText = "0", minorText = "0"] = parsed;
         const major = Number(majorText);
