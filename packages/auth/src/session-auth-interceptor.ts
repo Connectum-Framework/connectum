@@ -11,9 +11,9 @@
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { LruCache } from "./cache.ts";
-import { authContextStorage } from "./context.ts";
 import { setAuthHeaders } from "./headers.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, SessionAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -87,7 +87,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             if (propagateHeaders) {
                 setAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await authContextStorage.run(cached, () => next(req));
+            return await runWithAuthContext(cached, () => next(req));
         }
 
         // Verify session — pass full headers for cookie-based auth
@@ -115,6 +115,6 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             setAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
-        return await authContextStorage.run(authContext, () => next(req));
+        return await runWithAuthContext(authContext, () => next(req));
     };
 }

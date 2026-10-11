@@ -28,7 +28,30 @@ export interface AmqpAdapterOptions {
     readonly exchange?: string;
 
     /**
-     * Exchange type.
+     * Exchange type. The EventBus selects handlers by matching each delivered
+     * event type against the subscription patterns and acknowledges events
+     * without a handler; the adapter only guarantees that the broker delivers
+     * every wanted event, never a subset of them.
+     *
+     * - `"topic"`: patterns are translated for the broker (`*` is one segment,
+     *   a terminal `>` becomes `*.#`, one or more trailing segments). A
+     *   complete `#` segment is rejected, since RabbitMQ would read it as a
+     *   wildcard while the EventBus reads it as text.
+     * - `"direct"`: the queue is bound to the exact routing key. With
+     *   `topologyMode: "assert"` a subscription using a complete `*` or `>` is
+     *   rejected, because the literal binding would never receive a message.
+     *   With `"check"` or `"skip"` the adapter binds nothing, the operator's
+     *   bindings decide delivery and the pattern only selects handlers.
+     * - `"fanout"`: the routing key is ignored, so the queue receives every
+     *   message whatever the pattern; the EventBus dispatches only matching
+     *   handlers and acknowledges the rest, while a handler passed straight to
+     *   `adapter.subscribe()` sees every message.
+     * - `"headers"`: the adapter publishes no header carrying the event type
+     *   and binds without arguments, which matches every message, so the
+     *   behavior is the same as for `"fanout"`. In `"assert"` mode that
+     *   argument-less binding on a queue listed in `topology.queues` also
+     *   defeats selective `x-match` bindings declared there; selective routing
+     *   by headers works only with `"check"` or `"skip"`.
      *
      * @default "topic"
      */

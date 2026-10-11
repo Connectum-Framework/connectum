@@ -1,0 +1,121 @@
+import { create, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
+import type { ConnectumCallMap, Context } from "@connectum/core";
+import { RequestSchema as OtherRequestSchema } from "./gen/catalog/other/v1/other_pb.ts";
+import { RequestSchema, type Response, type ResponseSchema } from "./gen/catalog/request/v1/request_pb.ts";
+import "./gen/catalog.gen.ts";
+
+declare const context: Context;
+
+const plainRequest: MessageInitShape<typeof RequestSchema> = {
+    name: "Anna",
+    nested: { label: "child" },
+    items: [{ label: "item" }],
+    nestedByKey: { primary: { label: "mapped" } },
+    destination: { case: "email", value: "anna@example.test" },
+};
+
+const oracle: MessageInitShape<typeof RequestSchema> = plainRequest;
+create(RequestSchema, oracle);
+const collidingNameOracle: MessageInitShape<typeof OtherRequestSchema> = { id: 7 };
+create(OtherRequestSchema, collidingNameOracle);
+context.call("catalog.other.v1.OtherService/Get", { id: 7 });
+
+const unaryResponse = context.call("catalog.request.v1.RequestService/Unary", plainRequest);
+const unaryResponseTypeName: Promise<"catalog.request.v1.Response"> = unaryResponse.then((response) => response.$typeName);
+void unaryResponseTypeName;
+
+const fullRequest = create(RequestSchema, { name: "Full message" });
+context.call("catalog.request.v1.RequestService/Unary", fullRequest);
+
+const serverResponses = context.stream("catalog.request.v1.RequestService/ServerStream")(plainRequest);
+const serverResponseCheck: AsyncIterable<Response> = serverResponses;
+void serverResponseCheck;
+
+const clientStream = context.stream("catalog.request.v1.RequestService/ClientStream")();
+clientStream.send(plainRequest);
+clientStream.send(fullRequest);
+const clientResponseTypeName: Promise<"catalog.request.v1.Response"> = clientStream.close().then((response) => response.$typeName);
+void clientResponseTypeName;
+
+const bidiStream = context.stream("catalog.request.v1.RequestService/BidiStream")();
+bidiStream.send(plainRequest);
+bidiStream.send(fullRequest);
+const bidiResponseCheck: AsyncIterable<Response> = bidiStream.responses;
+void bidiResponseCheck;
+
+const omittedOptionalField: MessageInitShape<typeof RequestSchema> = { name: "optional omitted" };
+create(RequestSchema, omittedOptionalField);
+
+const readonlyItems: ReadonlyArray<{ label: string }> = [{ label: "readonly" }];
+// @ts-expect-error The protobuf initializer oracle keeps repeated mutable-array semantics.
+const readonlyArrayInput: MessageInitShape<typeof RequestSchema> = { items: readonlyItems };
+void readonlyArrayInput;
+
+// @ts-expect-error An initializer cannot contain fields absent from the protobuf descriptor.
+context.call("catalog.request.v1.RequestService/Unary", { name: "unknown field", extra: true });
+
+// @ts-expect-error The nested initializer is checked against Nested's fields.
+context.call("catalog.request.v1.RequestService/Unary", { nested: { missing: true } });
+
+// @ts-expect-error The oneof discriminant must name a declared alternative.
+context.call("catalog.request.v1.RequestService/Unary", { destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error Map values are checked as nested protobuf initializers.
+context.call("catalog.request.v1.RequestService/Unary", { nestedByKey: { primary: { missing: true } } });
+
+const explicitUndefinedOptional: MessageInitShape<typeof RequestSchema> = { nickname: undefined };
+context.call("catalog.request.v1.RequestService/Unary", explicitUndefinedOptional);
+
+// @ts-expect-error A unary method key is not a streaming method key.
+context.stream("catalog.request.v1.RequestService/Unary");
+
+// @ts-expect-error A client-streaming method is not callable as unary.
+context.call("catalog.request.v1.RequestService/ClientStream", plainRequest);
+
+// @ts-expect-error Unknown procedure keys are absent from the generated augmentation.
+context.call("catalog.request.v1.RequestService/Missing", plainRequest);
+
+// @ts-expect-error Same-named messages from a different proto package retain their own schema fields.
+context.call("catalog.other.v1.OtherService/Get", { name: "wrong package shape" });
+
+const fullResponseName: typeof ResponseSchema.typeName = (await unaryResponse).$typeName;
+void fullResponseName;
+
+// @ts-expect-error A server-stream request rejects fields absent from the protobuf descriptor.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ name: "unknown field", extra: true });
+
+// @ts-expect-error A server-stream request checks the oneof discriminant.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A server-stream request checks map values as nested protobuf initializers.
+context.stream("catalog.request.v1.RequestService/ServerStream")({ nestedByKey: { primary: { missing: true } } });
+
+// @ts-expect-error A client-stream send rejects fields absent from the protobuf descriptor.
+clientStream.send({ name: "unknown field", extra: true });
+
+// @ts-expect-error A client-stream send checks the oneof discriminant.
+clientStream.send({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A client-stream send checks map values as nested protobuf initializers.
+clientStream.send({ nestedByKey: { primary: { missing: true } } });
+
+// @ts-expect-error A bidi send rejects fields absent from the protobuf descriptor.
+bidiStream.send({ name: "unknown field", extra: true });
+
+// @ts-expect-error A bidi send checks the oneof discriminant.
+bidiStream.send({ destination: { case: "phone", value: "123" } });
+
+// @ts-expect-error A bidi send checks map values as nested protobuf initializers.
+bidiStream.send({ nestedByKey: { primary: { missing: true } } });
+
+declare const unaryRequestSlot: ConnectumCallMap["catalog.request.v1.RequestService/Unary"]["request"];
+
+// @ts-expect-error The request slot may hold a plain initializer, so it is not assignable to the full message type.
+export const messageFromSlot: MessageShape<typeof RequestSchema> = unaryRequestSlot;
+
+export const normalizedFromSlot: MessageShape<typeof RequestSchema> = create(RequestSchema, unaryRequestSlot);
+
+// @ts-expect-error Members read from the request slot are optional, so $typeName is not a definite literal.
+export const slotTypeName: "catalog.request.v1.Request" = unaryRequestSlot.$typeName;
+
+export const normalizedTypeName: "catalog.request.v1.Request" = normalizedFromSlot.$typeName;

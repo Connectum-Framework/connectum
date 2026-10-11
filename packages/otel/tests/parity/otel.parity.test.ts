@@ -514,3 +514,82 @@ test("parity 7a.bonus: `connectum.transport` attribute differs between transport
     await spansHttp.dispose();
     await spansLocal.dispose();
 });
+
+// ---------------------------------------------------------------------------
+// 7a.11 — Spans started inside streaming handlers hang off the server span
+// ---------------------------------------------------------------------------
+
+test("parity 7a.11: spans started in streaming handlers are children of the server span on both transports", async () => {
+    const handlerSpan = (phase: string) => {
+        trace.getTracer("handler").startActiveSpan(`handler.${phase}`, (span) => {
+            span.end();
+        });
+    };
+    const services = [
+        defineService(StreamingService, {
+            echo: (req) => create(ItemSchema, { value: req.value }),
+            async client(requests) {
+                handlerSpan("client-start");
+                let total = 0;
+                for await (const _ of requests) total++;
+                return { total };
+            },
+            async *server(req) {
+                handlerSpan("server-start");
+                await new Promise((resolve) => setImmediate(resolve));
+                handlerSpan("server-after-await");
+                yield create(ItemSchema, { value: req.value });
+                handlerSpan("server-after-yield");
+            },
+            async *bidi(requests) {
+                handlerSpan("bidi-start");
+                for await (const item of requests) {
+                    await new Promise((resolve) => setImmediate(resolve));
+                    handlerSpan("bidi-after-await");
+                    yield item;
+                    handlerSpan("bidi-after-yield");
+                }
+            },
+        }),
+    ];
+    const { http, local } = await runBothTransports({
+        services,
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            const client = createClient(StreamingService, fn);
+            const one = async function* () {
+                yield create(ItemSchema, { value: "m" });
+            };
+            await client.client(one());
+            for await (const _ of client.server(create(ItemSchema, { value: "s" }))) {
+                /* drain */
+            }
+            for await (const _ of client.bidi(one())) {
+                /* drain */
+            }
+        },
+    });
+
+    for (const [label, run] of [
+        ["http", http],
+        ["local", local],
+    ] as const) {
+        const serverSpans = new Map(run.spans.filter((s) => s.kind === SpanKind.SERVER).map((s) => [s.name.split("/")[1], s.spanId]));
+        const expectedParent: Record<string, string | undefined> = {
+            "handler.client-start": serverSpans.get("Client"),
+            "handler.server-start": serverSpans.get("Server"),
+            "handler.server-after-await": serverSpans.get("Server"),
+            "handler.server-after-yield": serverSpans.get("Server"),
+            "handler.bidi-start": serverSpans.get("Bidi"),
+            "handler.bidi-after-await": serverSpans.get("Bidi"),
+            "handler.bidi-after-yield": serverSpans.get("Bidi"),
+        };
+        const handlerSpans = run.spans.filter((s) => s.name.startsWith("handler."));
+        assert.strictEqual(handlerSpans.length, Object.keys(expectedParent).length, `${label}: every handler span was exported`);
+        for (const s of handlerSpans) {
+            assert.ok(expectedParent[s.name], `${label}: ${s.name} has a server span to hang off`);
+            assert.strictEqual(s.parentSpanId, expectedParent[s.name], `${label}: ${s.name} is a child of its call's server span`);
+        }
+    }
+    assert.deepStrictEqual(maskSpans(local.spans), maskSpans(http.spans), "span shape mismatch between transports");
+});

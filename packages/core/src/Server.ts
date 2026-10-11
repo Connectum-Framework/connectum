@@ -19,6 +19,7 @@ import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
+import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { TransportManager } from "./TransportManager.ts";
@@ -383,6 +384,9 @@ class ServerImpl extends EventEmitter implements Server {
      * `null` is an operational miss → `ConnectError(Code.Unavailable)`.
      * `Code.Unimplemented` is reserved for a runtime `ctx.call` dispatch miss.
      *
+     * Both branches carry `outgoingInterceptors`; `localClient()` is the plain
+     * in-process client.
+     *
      * @example
      * ```typescript
      * const inventory = server.client(InventoryService); // local or remote — same call
@@ -390,7 +394,9 @@ class ServerImpl extends EventEmitter implements Server {
      */
     client<T extends DescService>(service: T, options?: ServerClientOptions): Client<T> {
         if (this.hasService(service)) {
-            return this.localClient(service);
+            // The catalog-routed client carries `outgoingInterceptors` on every
+            // route; `localClient()` stays the plain in-process surface.
+            return createClient(service, this._getCatalogLocalTransport());
         }
         if (!this._options.remoteResolver) {
             throw new CatalogConfigError(
@@ -418,14 +424,20 @@ class ServerImpl extends EventEmitter implements Server {
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
-        const transport = this._options.remoteResolver?.(ctx) ?? null;
-        if (transport) this._remoteTransports.set(key, transport);
+        const resolved = this._options.remoteResolver?.(ctx) ?? null;
+        if (resolved === null) return null;
+        // The resolver's transport is opaque (its own interceptors are fixed at
+        // construction), so the server's outgoing chain is applied around it —
+        // once per call, outside the transport's own middleware. With an empty
+        // chain the resolver's transport is cached as is.
+        const transport = withOutgoingInterceptors(resolved, this._outgoingInterceptors);
+        this._remoteTransports.set(key, transport);
         return transport;
     }
 
     /**
-     * In-process transport used by `ctx.call` to dispatch to locally-mounted
-     * services. Carries `outgoingInterceptors` on the client side (so the OTel
+     * In-process transport used by `ctx.call` and `server.client()` to dispatch
+     * to locally-mounted services. Carries `outgoingInterceptors` on the client side (so the OTel
      * client interceptor and any user-supplied outgoing interceptor wrap the
      * call), distinguishing it from {@link localClient}'s plain transport.
      * Lazily built and memoized.

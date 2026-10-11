@@ -54,6 +54,39 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 
+## Cancellation behavior in 1.3
+
+Timeout now forwards its own deadline and caller cancellation to downstream
+work. Retry interrupts backoff, avoids future attempts after cancellation and
+rejects a late success from cancelled work. Callers that previously observed a
+late successful response or an extra retry must now handle cancellation errors.
+Observe `req.signal` in custom interceptors and `ctx.signal` in RPC handlers,
+and pass it to cancellable I/O. Unaware work can still finish and commit side
+effects, so cancellation is not a rollback.
+
+Timeout's own deadline returns `DeadlineExceeded`. Caller cancellation preserves
+an existing caller `ConnectError`, including its code and metadata/details; other
+caller reasons become `Canceled`. The first cancellation cause wins. With
+`skipStreaming: false` the timeout and retry cover opening the streaming
+response; caller cancellation still reaches an opened stream.
+
+**Timeout and circuit breaker.** In the default order the timeout is outside the
+circuit breaker, which wraps retry. An expired timeout aborts the inner chain
+with a `DeadlineExceeded` error, so the breaker now records it as a failure:
+`DeadlineExceeded` is one of the codes counted by the default failure predicate.
+Repeated timeouts of a cooperative handler open the circuit. Before, the breaker
+never saw the timeout itself, only whatever the abandoned handler eventually
+returned. For a handler that ignores the signal the failure is recorded when that
+handler settles, not when the caller gets its deadline error, and only because
+retry converts the late result into the cancellation error. Caller cancellation
+with the default `Canceled` code is not counted; a caller `ConnectError` reason
+with an infrastructure code such as `Unavailable` is counted under its own code.
+To keep timeouts from tripping the breaker, exclude `DeadlineExceeded` in
+`failurePredicate`; see the
+[circuit breaker guide](https://connectum.dev/en/guide/interceptors/built-in#circuit-breaker-placement-and-error-classification).
+
+Options, defaults and chain order are unchanged.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/interceptors)

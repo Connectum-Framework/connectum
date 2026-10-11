@@ -20,7 +20,11 @@
  *   gave up accepts a fresh `connect()` without its old subscriptions;
  *   a mid-recovery `subscribe()` PARKS and settles with the recovery outcome;
  *   the probe-then-recover `connect()` semantics gate on `AmqpTopologyError`
- *   exactly like the real probe.
+ *   exactly like the real probe;
+ * - exchange-type routing: `deliver()` follows the configured `exchangeType`
+ *   (fanout and headers queues receive every message, the EventBus alone picks
+ *   handlers) and `subscribe()` validates patterns for that type and
+ *   `topologyMode` exactly like the real adapter.
  *
  * Deliberately NOT modeled (documented divergences):
  * - timing: there is no backoff — recovery advances only via explicit
@@ -56,13 +60,36 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { matchPattern } from "@connectum/events";
-import { dispatchLifecycle } from "./AmqpAdapter.ts";
+import { dispatchLifecycle, validateSubscriptionPatterns } from "./AmqpAdapter.ts";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpTopologyError } from "./errors.ts";
 import type { AmqpConsumerLossCause, AmqpLifecycleCallbacks } from "./types.ts";
+import { AmqpTopologyMode } from "./types.ts";
 
 /** Options for {@link FakeAmqpAdapter}. */
 export interface FakeAmqpAdapterOptions {
+    /**
+     * Mirror of the real option. `subscribe()` applies the real adapter's
+     * pattern validation for this exchange type and {@link topologyMode}, and
+     * `deliver()` routes like the broker would: `topic` and `direct` by the
+     * shared EventBus matcher (a direct subscription is a literal key unless
+     * the operator owns the bindings), `fanout` and `headers` to every live
+     * subscription regardless of its pattern, as the queue receives every
+     * message there and the EventBus alone picks handlers.
+     *
+     * @default "topic"
+     */
+    readonly exchangeType?: "topic" | "direct" | "fanout" | "headers";
+    /**
+     * Mirror of the real option, used for pattern validation only: a wildcard
+     * subscription on a direct exchange is rejected in `"assert"` (the adapter
+     * would bind a literal key that never matches) and accepted in `"check"`
+     * and `"skip"` (the operator's bindings decide). The fake models no
+     * topology, so nothing else changes with this option.
+     *
+     * @default "assert"
+     */
+    readonly topologyMode?: AmqpTopologyMode;
     /** The same lifecycle surface as the real adapter (union + flat shim). */
     readonly lifecycle?: AmqpLifecycleCallbacks;
     /**
@@ -182,11 +209,13 @@ export interface FakeAmqpControl {
     /** Successfully acked publishes, in order. */
     readonly published: readonly FakePublishedRecord[];
     /**
-     * Deliver an event to matching subscriptions (NATS-style wildcard
-     * matching, one consumer per distinct group — competing-consumer parity;
-     * requires the connected state, like a real broker). Internal envelope
-     * keys (`x-event-id`, `x-published-at`, `x-connectum-publish-id`) are
-     * honored and stripped from handler-visible metadata, mirroring the real
+     * Deliver an event to the subscriptions the configured exchange type routes
+     * it to (see {@link FakeAmqpAdapterOptions.exchangeType}: topic and direct
+     * use the shared EventBus wildcard matcher, fanout and headers reach every
+     * subscription), one consumer per distinct group — competing-consumer
+     * parity. Requires the connected state, like a real broker. Internal
+     * envelope keys (`x-event-id`, `x-published-at`, `x-connectum-publish-id`)
+     * are honored and stripped from handler-visible metadata, mirroring the real
      * consumer. Resolves with the settlement summary once every handler
      * settles; handler rejections are swallowed (counted in `failed`).
      */
@@ -246,6 +275,24 @@ interface ParkedSubscribe {
  */
 export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpAdapterInstance {
     const lifecycle = options.lifecycle;
+    const exchangeType = options.exchangeType ?? "topic";
+    const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
+
+    /**
+     * Whether a subscription's queue would receive an event with this routing
+     * key. Fanout ignores the routing key and a headers binding made without
+     * arguments matches everything, so those queues receive every message and
+     * the EventBus alone selects handlers. Topic and direct queues are reached
+     * through the pattern: a direct subscription is a literal key (wildcards
+     * are rejected at subscribe time unless the operator owns the bindings, in
+     * which case the pattern models what those bindings select).
+     */
+    function reachesQueue(patterns: readonly string[], eventType: string): boolean {
+        if (exchangeType === "fanout" || exchangeType === "headers") {
+            return true;
+        }
+        return patterns.some((pattern) => matchPattern(pattern, eventType));
+    }
 
     let state: ConnectionState = CONNECTION_STATE.CREATED;
     let reassertAttempt = 0;
@@ -436,7 +483,7 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
             const seenGroups = new Set<string>();
             const targets: FakeSubscription[] = [];
             for (const sub of subscriptions) {
-                if (!sub.active || sub.lost || !sub.patterns.some((pattern) => matchPattern(pattern, eventType))) {
+                if (!sub.active || sub.lost || !reachesQueue(sub.patterns, eventType)) {
                     continue;
                 }
                 if (sub.group === null) {
@@ -547,6 +594,10 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
             const group = subOptions?.group ?? null;
+            if (state !== CONNECTION_STATE.CONNECTED && state !== CONNECTION_STATE.RECOVERING) {
+                throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
+            }
+            validateSubscriptionPatterns(patterns, { exchangeType, topologyMode });
             if (state === CONNECTION_STATE.RECOVERING) {
                 // Parity: the real adapter accepts a mid-recovery subscribe —
                 // channel creation parks in the recovery wrapper's waiter
@@ -558,9 +609,6 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
                         reject,
                     });
                 });
-            }
-            if (state !== CONNECTION_STATE.CONNECTED) {
-                throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
             }
             return registerSubscription(patterns, handler, group);
         },

@@ -1,0 +1,20 @@
+import { create, type MessageShape } from "@bufbuild/protobuf";
+import type { ConnectumCallMap, Context } from "@connectum/core";
+import { RequestSchema } from "../gen/catalog/request/v1/request_pb.ts";
+import "../gen/legacy/catalog.gen.ts";
+
+declare const context: Context;
+
+const fullRequest = create(RequestSchema, { name: "legacy catalog" });
+context.call("catalog.request.v1.RequestService/Unary", fullRequest);
+context.stream("catalog.request.v1.RequestService/ServerStream")(fullRequest);
+context.stream("catalog.request.v1.RequestService/ClientStream")().send(fullRequest);
+context.stream("catalog.request.v1.RequestService/BidiStream")().send(fullRequest);
+
+// @ts-expect-error Old generated declarations still require a full Message; regenerate for initializer support.
+context.call("catalog.request.v1.RequestService/Unary", { name: "not accepted by old output" });
+
+declare const legacyUnaryRequestSlot: ConnectumCallMap["catalog.request.v1.RequestService/Unary"]["request"];
+
+export const legacySlotAsMessage: MessageShape<typeof RequestSchema> = legacyUnaryRequestSlot;
+export const legacySlotTypeName: "catalog.request.v1.Request" = legacyUnaryRequestSlot.$typeName;

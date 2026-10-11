@@ -13,6 +13,11 @@ import type { AuthContext } from "../types.ts";
  * Sets the provided AuthContext in AsyncLocalStorage for the duration
  * of the callback. Useful for testing handlers that call getAuthContext().
  *
+ * The context is scoped to the callback, not to a value it returns. For an
+ * `async function*` handler, iterate the generator inside `fn`: a generator
+ * created inside `fn` but consumed after `fn` has returned does not see the
+ * context.
+ *
  * @param context - Auth context to set
  * @param fn - Function to execute within the context
  * @returns Return value of fn
