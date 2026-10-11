@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package catalog.request.v1;
+
+message Nested {
+  string label = 1;
+}
+
+message Request {
+  string name = 1;
+  Nested nested = 2;
+  repeated Nested items = 3;
+  map<string, Nested> nested_by_key = 4;
+  oneof destination {
+    string email = 5;
+    Nested fallback = 6;
+  }
+  optional string nickname = 7;
+}
+
+message Response {
+  string output = 1;
+}
+
+service RequestService {
+  rpc Unary(Request) returns (Response);
+  rpc ServerStream(Request) returns (stream Response);
+  rpc ClientStream(stream Request) returns (Response);
+  rpc BidiStream(stream Request) returns (stream Response);
+}

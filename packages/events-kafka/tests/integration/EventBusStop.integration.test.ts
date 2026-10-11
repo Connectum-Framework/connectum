@@ -17,6 +17,7 @@ import { createEventBus } from "@connectum/events";
 import { EventOptionsSchema } from "@connectum/events/gen/connectum/events/v1/options_pb.js";
 import { Kafka, logLevel } from "kafkajs";
 import { KafkaAdapter } from "../../src/KafkaAdapter.ts";
+import { createTopicWithLeader } from "./createTopic.ts";
 
 const KAFKA_TEST_URL = process.env.KAFKA_TEST_URL;
 
@@ -43,7 +44,7 @@ describe("EventBus.stop() on Kafka", { skip: KAFKA_TEST_URL === undefined ? "KAF
         const admin = new Kafka({ clientId: "integration-stop-control", brokers, logLevel: logLevel.ERROR }).admin();
         await admin.connect();
         try {
-            await admin.createTopics({ waitForLeaders: true, topics: [{ topic, numPartitions: 1, replicationFactor: 1 }] });
+            await createTopicWithLeader(admin, topic);
 
             const newAdapter = () =>
                 KafkaAdapter({

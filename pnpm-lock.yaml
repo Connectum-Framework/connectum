@@ -223,6 +223,9 @@ importers:
       '@connectrpc/connect':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)
+      '@connectrpc/connect-node':
+        specifier: 'catalog:'
+        version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -600,6 +603,9 @@ importers:
       '@connectrpc/connect-node':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
+      '@connectum/auth':
+        specifier: workspace:^
+        version: link:../auth
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
@@ -628,6 +634,9 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@bufbuild/buf':
+        specifier: 'catalog:'
+        version: 1.72.0
       '@connectum/core':
         specifier: workspace:^
         version: link:../core

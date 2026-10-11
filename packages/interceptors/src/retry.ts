@@ -7,9 +7,11 @@
  * @module retry
  */
 
+import { setTimeout as delay } from "node:timers/promises";
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { ExponentialBackoff, handleWhen, retry } from "cockatiel";
+import type { IBackoff, IBackoffFactory, IRetryBackoffContext } from "cockatiel";
+import { ExponentialBackoff } from "cockatiel";
 import type { RetryOptions } from "./types.ts";
 
 /**
@@ -17,6 +19,13 @@ import type { RetryOptions } from "./types.ts";
  *
  * Automatically retries failed unary RPC calls with exponential backoff.
  * Only retries on configurable error codes (Unavailable and ResourceExhausted by default).
+ * Cancellation interrupts backoff and prevents future attempts. An already
+ * running handler is awaited so bulkheads continue to account for active work;
+ * handlers and I/O must observe the signal to stop promptly. A cancelled attempt
+ * cannot become a successful retry result when it completes later.
+ *
+ * Use retries only for idempotent operations. Streaming is skipped by default;
+ * opting in retries opening failures, not errors while consuming an opened stream.
  *
  * @param options - Retry options
  * @returns ConnectRPC interceptor
@@ -24,7 +33,9 @@ import type { RetryOptions } from "./types.ts";
  * @example Server-side usage with createServer
  * ```typescript
  * import { createServer } from '@connectum/core';
+ * import { Code } from '@connectrpc/connect';
  * import { createRetryInterceptor } from '@connectum/interceptors';
+ * import { myRoutes } from './routes.js';
  *
  * const server = createServer({
  *   services: [myRoutes],
@@ -57,19 +68,7 @@ export function createRetryInterceptor(options: RetryOptions = {}): Interceptor 
         throw new Error("maxDelay must be a non-negative finite number");
     }
 
-    // Create retry policy with exponential backoff using cockatiel.
-    // handleWhen filters errors so only retryable codes trigger retries;
-    // non-retryable errors propagate immediately without consuming attempts.
-    const retryPolicy = retry(
-        handleWhen((err) => {
-            const connectErr = ConnectError.from(err);
-            return retryableCodes.includes(connectErr.code);
-        }),
-        {
-            maxAttempts: maxRetries,
-            backoff: new ExponentialBackoff({ initialDelay, maxDelay }),
-        },
-    );
+    const factory: IBackoffFactory<IRetryBackoffContext<unknown>> = new ExponentialBackoff({ initialDelay, maxDelay });
 
     return (next) => async (req) => {
         // Skip streaming calls
@@ -77,8 +76,42 @@ export function createRetryInterceptor(options: RetryOptions = {}): Interceptor 
             return await next(req);
         }
 
-        return await retryPolicy.execute(async () => {
-            return await next(req);
-        });
+        let backoff: IBackoff<IRetryBackoffContext<unknown>> | undefined;
+        for (let retries = 0; ; retries++) {
+            if (req.signal.aborted) {
+                throw ConnectError.from(req.signal.reason, Code.Canceled);
+            }
+
+            try {
+                // Do not race active work against cancellation: its enclosing
+                // bulkhead must hold capacity until the handler really settles.
+                const result = await next(req);
+                if (req.signal.aborted) {
+                    throw ConnectError.from(req.signal.reason, Code.Canceled);
+                }
+                return result;
+            } catch (err) {
+                if (req.signal.aborted) {
+                    throw ConnectError.from(req.signal.reason, Code.Canceled);
+                }
+                if (!retryableCodes.includes(ConnectError.from(err).code) || retries >= maxRetries) {
+                    throw err;
+                }
+
+                const context: IRetryBackoffContext<unknown> = { attempt: retries + 1, signal: req.signal, result: { error: err } };
+                backoff = backoff ? backoff.next(context) : factory.next(context);
+                if (req.signal.aborted) {
+                    throw ConnectError.from(req.signal.reason, Code.Canceled);
+                }
+                try {
+                    await delay(backoff.duration, undefined, { signal: req.signal, ref: true });
+                } catch (delayError) {
+                    if (req.signal.aborted) {
+                        throw ConnectError.from(req.signal.reason, Code.Canceled);
+                    }
+                    throw delayError;
+                }
+            }
+        }
     };
 }

@@ -119,6 +119,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@connectum/auth": "workspace:^",
     "@connectum/core": "workspace:^",
     "@connectum/testing": "workspace:^",
     "@connectrpc/connect": "catalog:",

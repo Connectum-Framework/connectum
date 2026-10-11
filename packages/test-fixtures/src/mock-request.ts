@@ -10,15 +10,15 @@ const DEFAULT_SERVICE = "test.TestService";
 const DEFAULT_METHOD = "TestMethod";
 
 /**
- * Create a mock ConnectRPC {@link https://connectrpc.com/docs/node/interceptors | UnaryRequest}
- * object suitable for testing interceptors.
+ * Create a simplified ConnectRPC request fixture for interceptor unit tests.
  *
- * All fields have sensible defaults, so calling `createMockRequest()` with no
- * arguments returns a fully valid request that can be passed straight into an
- * interceptor under test.
+ * Provides common request fields and an independent, non-aborted signal.
+ * Service and method descriptors are minimal mocks. Tests that need
+ * requestMethod, contextValues or complete protobuf descriptors must supply
+ * those fields separately, or exercise an actual RPC transport.
  *
  * @param options - Optional overrides for request fields.
- * @returns A plain object matching the ConnectRPC `UnaryRequest` shape.
+ * @returns A plain object containing simplified request fields.
  *
  * @example
  * ```ts
@@ -30,7 +30,7 @@ const DEFAULT_METHOD = "TestMethod";
  * // req.url             === "http://localhost/acme.UserService/GetUser"
  * ```
  */
-// biome-ignore lint/suspicious/noExplicitAny: mock object matches ConnectRPC UnaryRequest shape
+// biome-ignore lint/suspicious/noExplicitAny: simplified fixture intentionally omits fields that tests may supply separately
 export function createMockRequest(options?: MockRequestOptions): any {
     const serviceName = options?.service ?? DEFAULT_SERVICE;
     const methodName = options?.method ?? DEFAULT_METHOD;
@@ -46,5 +46,6 @@ export function createMockRequest(options?: MockRequestOptions): any {
         url,
         stream,
         message,
+        signal: new AbortController().signal,
     };
 }

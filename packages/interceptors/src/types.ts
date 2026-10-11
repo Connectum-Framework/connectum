@@ -119,13 +119,16 @@ export interface SerializerOptions {
  */
 export interface RetryOptions {
     /**
-     * Maximum number of retries
+     * Maximum number of retries after the initial attempt.
+     * Non-negative finite fractional values retain the retry-count comparison:
+     * for example, 0.5 allows one retry.
      * @default 3
      */
     maxRetries?: number;
 
     /**
-     * Initial delay in milliseconds for exponential backoff
+     * Initial scale in milliseconds for exponential decorrelated jitter.
+     * Actual retry delays are randomized rather than a fixed sequence.
      * @default 200
      */
     initialDelay?: number;
@@ -137,7 +140,8 @@ export interface RetryOptions {
     maxDelay?: number;
 
     /**
-     * Skip retry for streaming requests
+     * Skip retry for streaming requests. If false, retry covers opening the
+     * response, not failures during iteration of an already opened stream.
      * @default true
      */
     skipStreaming?: boolean;
@@ -207,13 +211,16 @@ export interface CircuitBreakerOptions {
  */
 export interface TimeoutOptions {
     /**
-     * Request timeout in milliseconds
+     * Timeout in milliseconds for waiting on the downstream response.
+     * Expiration cancels downstream work cooperatively and returns DeadlineExceeded.
      * @default 30000 (30 seconds)
      */
     duration?: number;
 
     /**
-     * Skip timeout for streaming calls
+     * Skip timeout for streaming calls. If false, the timeout covers opening
+     * the response, not its subsequent iteration. Caller cancellation continues
+     * to reach the opened stream.
      * @default true
      */
     skipStreaming?: boolean;

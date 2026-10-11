@@ -540,9 +540,26 @@ export interface CreateServerOptions {
     remoteResolver?: RemoteResolver;
 
     /**
-     * Client-side interceptors applied to every outgoing `server.client()` /
-     * `ctx.call` call (cross-cutting concerns like auth or logging), so call
-     * sites stay free of boilerplate.
+     * Client-side interceptors for every catalog-routed call this server makes:
+     * `ctx.call` / `ctx.stream` and `server.client()`, whichever route the target
+     * takes — in-process when the service is mounted on this server, the
+     * `remoteResolver`'s transport otherwise (including `mockResolver` routes in
+     * tests). The chain runs exactly once per call, in source order (first element
+     * outermost), outside the interceptors of the resolver's transport, with the
+     * call's deadline budget already running. `server.localClient()` and
+     * `createLocalTransport()` stay plain.
+     *
+     * Put application policy here (identity, tracing, resilience) and keep only
+     * transport-specific middleware on the resolver's transports: the framework
+     * cannot see inside a `Transport`, so a policy configured in both places runs
+     * twice. On a resolver route an interceptor observes the synthetic
+     * `req.url` `https://catalog/<typeName>/<Method>`, `requestMethod: "POST"`
+     * and no protocol headers (a `Transport` does not expose its address, and it
+     * adds `content-type`, `connect-timeout-ms` and friends inside); wire-level
+     * policy — request signing over headers, an audience derived from the host —
+     * belongs on the resolver's transport, whose own interceptors see the wire
+     * request. `timeoutMs <= 0` means no deadline here, as on any Connect
+     * transport.
      */
     outgoingInterceptors?: readonly Interceptor[];
 
@@ -798,7 +815,9 @@ export interface Server extends EventEmitter {
      * service is registered on this `Server`, otherwise to the transport
      * supplied by the configured `remoteResolver` (e.g. a
      * `createGrpcTransport({ baseUrl })` to a remote peer). An optional
-     * `options.endpoint` hint is forwarded to the resolver.
+     * `options.endpoint` hint is forwarded to the resolver. Both routes run the
+     * server's {@link CreateServerOptions.outgoingInterceptors}; {@link Server.localClient}
+     * is the plain in-process client without them.
      *
      * Fail-fast (split error model): a non-local service with no `remoteResolver`
      * configured is a configuration mistake → throws {@link CatalogConfigError}

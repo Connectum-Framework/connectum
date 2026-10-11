@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package catalog.other.v1;
+
+message Request {
+  int32 id = 1;
+}
+
+message Response {
+  string result = 1;
+}
+
+service OtherService {
+  rpc Get(Request) returns (Response);
+}

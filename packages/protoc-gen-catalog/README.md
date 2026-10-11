@@ -27,7 +27,8 @@ One `catalog.gen.ts` per buf module, containing:
 // catalog.gen.ts (generated — DO NOT EDIT)
 import type {} from "@connectum/core";
 import { GreeterService } from "./greeter_pb.js";
-import type { SayHelloRequest, SayHelloResponse } from "./greeter_pb.js";
+import type { SayHelloRequestSchema, SayHelloResponse } from "./greeter_pb.js";
+import type { MessageInitShape } from "@bufbuild/protobuf";
 
 export const serviceCatalog = {
     "greeter.v1.GreeterService": GreeterService,
@@ -35,11 +36,27 @@ export const serviceCatalog = {
 
 declare module "@connectum/core" {
     interface ConnectumCallMap {
-        "greeter.v1.GreeterService/SayHello": { request: SayHelloRequest; response: SayHelloResponse };
+        "greeter.v1.GreeterService/SayHello": { request: MessageInitShape<typeof SayHelloRequestSchema>; response: SayHelloResponse };
     }
     interface ConnectumStreamMap {}
 }
 ```
+
+The generated request type comes from the protobuf input schema. Unary calls and
+stream sends accept a valid initializer object (for example, `{ name: "Anna" }`)
+as well as a full generated message. Nested messages, oneofs, maps, and field
+names retain the checks defined by `@bufbuild/protobuf`. Responses remain full
+generated messages, and method keys and stream-kind literals do not change.
+
+Migration: the request slot is `MessageInit<T>`, so `$typeName` is optional on it
+and it is no longer assignable to `MessageShape<typeof RequestSchema>`. Take the
+full-message type from the schema (`MessageShape<typeof RequestSchema>`) or
+normalise a value with `create(RequestSchema, request)`.
+
+Regenerate `catalog.gen.ts` after upgrading the plugin to get initializer
+request typing. Existing generated catalogs remain valid and continue to accept
+full messages, but they keep their original full-message-only request type until
+regenerated.
 
 ## Quick Start (`buf.gen.yaml`)
 

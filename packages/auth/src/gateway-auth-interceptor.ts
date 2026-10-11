@@ -12,9 +12,9 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { authContextStorage } from "./context.ts";
 import { setAuthHeaders } from "./headers.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 
 /**
@@ -202,6 +202,6 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
             setAuthHeaders(req.header, authContext);
         }
 
-        return await authContextStorage.run(authContext, () => next(req));
+        return await runWithAuthContext(authContext, () => next(req));
     };
 }

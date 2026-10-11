@@ -14,6 +14,7 @@ import type { RegisterContext, ServiceDefinition } from "./defineService.ts";
 import { finishStreamOnAbort } from "./finishStreamOnAbort.ts";
 import { LOCAL_TRANSPORT_HEADER } from "./localTransport.ts";
 import type { CreateServerOptions, NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "./types.ts";
+import { respondUnknownProcedure } from "./unknownProcedure.ts";
 
 /**
  * Second line of defense against a forged `connectum-internal-transport`
@@ -204,7 +205,12 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
                 }
             }
 
-            // Default fallback
+            // An RPC call to a procedure nobody serves gets `unimplemented` in
+            // its own protocol; anything else is a plain 404.
+            if (respondUnknownProcedure(req as NodeRequest, res as NodeResponse)) {
+                return;
+            }
+
             res.statusCode = 404;
             res.end("Not Found");
         },
