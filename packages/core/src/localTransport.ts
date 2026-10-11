@@ -88,7 +88,10 @@ const localTransportMarkerInterceptor: Interceptor = (next) => (req) => {
  * pump starts inside the transport below the whole client chain.
  */
 const callerRequestContextInterceptor: Interceptor = (next) => (req) => {
-    if (!req.stream) {
+    // A server-streaming call also arrives as a stream request: the client sends its single input as a
+    // one-element iterable that holds no caller code, so only client-streaming and bidirectional
+    // calls have a request generator to keep in the caller's context.
+    if (!req.stream || req.method.methodKind === "server_streaming") {
         return next(req);
     }
     const source = req.message;

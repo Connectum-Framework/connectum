@@ -174,3 +174,85 @@ for (const setup of ["local", "local-client-interceptor", "http", "http-client-i
         });
     }
 }
+
+// A handler that stops reading before the producer is exhausted finishes the caller's generator through
+// `return()`: the producer's `finally` then runs because of the handler, and it must still run in the
+// caller's context, not in the one the handler stopped in.
+const stopsEarly = defineService(StreamingService, {
+    echo: async (req) => create(ItemSchema, { value: req.value }),
+    client: async (requests) => {
+        for await (const _item of requests) {
+            break;
+        }
+        return { total: 1 };
+    },
+    server: async function* (req) {
+        yield create(ItemSchema, { value: req.value });
+    },
+    bidi: async function* (requests) {
+        for await (const item of requests) {
+            yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+            break;
+        }
+    },
+});
+
+for (const setup of ["local", "local-client-interceptor", "http", "http-client-interceptor"] as const) {
+    for (const kind of ["client", "bidi"] as const) {
+        describe(`${setup} ${kind}: request producer context when the handler stops early`, () => {
+            it("finishes the caller's generator in the caller's context", { timeout: 60_000 }, async () => {
+                const server = createServer({ services: [stopsEarly], port: 0, allowHTTP1: false, interceptors: [serverScoping], shutdown: { timeout: 1_000 } });
+                started.push(server);
+                await server.start();
+                const client = clientFor(server, setup);
+
+                const tag = `${kind}-early`;
+                const seen: Array<string | undefined> = [];
+                let finished!: () => void;
+                const finalized = new Promise<void>((resolve) => {
+                    finished = resolve;
+                });
+                async function* endless() {
+                    try {
+                        for (let i = 0; i < 1_000; i++) {
+                            seen.push(scope.getStore());
+                            yield create(ItemSchema, { value: tag, sequence: i });
+                            await sleep(1);
+                        }
+                    } finally {
+                        seen.push(scope.getStore());
+                        finished();
+                    }
+                }
+
+                await scope.run(`caller:${tag}`, async () => {
+                    const headers = { "x-tag": tag };
+                    if (kind === "client") {
+                        await client.client(endless(), { headers });
+                    } else {
+                        for await (const _item of client.bidi(endless(), { headers })) {
+                            // drain
+                        }
+                    }
+                });
+                await Promise.race([finalized, sleep(5_000).then(() => assert.fail("the caller's generator was never finished"))]);
+
+                const expected = expectedFor(setup, tag);
+                assert.ok(seen.length >= 2, "the producer ran and was finished");
+                // The steps that the handler pulled run in the context the call was made in.
+                const pulled = seen.slice(0, -1);
+                assert.deepStrictEqual(
+                    pulled.filter((value) => value !== expected),
+                    [],
+                    "every step the handler pulled ran in the caller's context",
+                );
+                // The `finally` runs because the call ended. Which of the caller's own contexts it finds itself in
+                // (the call site or the innermost client interceptor) depends on who finishes the iterator first,
+                // the transport's cancellation path or the request pipe, and is the same boundary on both
+                // transports; what must hold is that it never runs under the server's scope.
+                const final = seen[seen.length - 1];
+                assert.ok(final === expected || final === `caller:${tag}`, `the producer's finally ran under ${String(final)}, not in the caller's context`);
+            });
+        });
+    }
+}
