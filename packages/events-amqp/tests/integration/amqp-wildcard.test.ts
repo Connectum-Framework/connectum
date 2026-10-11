@@ -11,9 +11,10 @@ import { createEventBus, matchPattern } from "@connectum/events";
 import { connect } from "amqplib";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
+import { RABBITMQ_IMAGE } from "./brokerImage.ts";
 
 const RUN = process.env.RUN_RECOVERY_TESTS === "1";
-const IMAGE = "rabbitmq:4.3.6-alpine";
+const IMAGE = RABBITMQ_IMAGE;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));

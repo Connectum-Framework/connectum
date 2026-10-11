@@ -15,6 +15,7 @@ import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpTopologyError } from "../../src/errors.ts";
 import type { AmqpLifecycleEvent } from "../../src/types.ts";
+import { RABBITMQ_IMAGE } from "./brokerImage.ts";
 
 const RUN = process.env.RUN_RECOVERY_TESTS === "1";
 
@@ -58,7 +59,7 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
     }
 
     before(async () => {
-        container = await new GenericContainer("rabbitmq:4-alpine").withExposedPorts(5672).start();
+        container = await new GenericContainer(RABBITMQ_IMAGE).withExposedPorts(5672).start();
         url = `amqp://guest:guest@${container.getHost()}:${container.getMappedPort(5672)}`;
     });
 

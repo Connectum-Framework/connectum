@@ -19,9 +19,10 @@ import { GenericContainer, type StartedTestContainer, Wait } from "testcontainer
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpConnectionError, AmqpPublishTimeoutError } from "../../src/errors.ts";
 import type { AmqpLifecycleEvent } from "../../src/types.ts";
+import { RABBITMQ_IMAGE } from "./brokerImage.ts";
 
 const RUN = process.env.RUN_RECOVERY_TESTS === "1";
-const IMAGES = (process.env.AMQP_HARDENING_BROKER_IMAGES ?? "rabbitmq:4-alpine")
+const IMAGES = (process.env.AMQP_HARDENING_BROKER_IMAGES ?? RABBITMQ_IMAGE)
     .split(",")
     .map((image) => image.trim())
     .filter((image) => image !== "");
