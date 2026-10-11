@@ -397,15 +397,23 @@ by the adapter; to rely on them use `topologyMode: "check"` or `"skip"`.
 > selective binding from `topology.bindings` or declare it without arguments.
 
 **Upgrading a durable queue the previous version bound.** The previous version
-bound a durable queue with an argument-less binding, and the broker keeps that
-binding after the upgrade. The adapter stops adding it but never removes
-bindings, because it cannot tell its own from one an operator created; until the
-operator removes it, the queue still receives every message and the declared
-`x-match` binding filters nothing. Remove the leftover once. Each option below
-was run against RabbitMQ 4.3.6:
+bound a durable queue with an argument-less binding for each subscription
+pattern, and the broker keeps those bindings after the upgrade. The adapter
+stops adding them but never removes bindings, because it cannot tell its own
+from one an operator created; until the operator removes them, the queue still
+receives every message and the declared `x-match` binding filters nothing.
+Remove every such leftover once (a queue subscribed with several patterns has
+one per pattern). The routing key of a leftover is the subscription pattern as
+the previous version converted it: a `>` became `#` (`user.>` was bound as
+`user.#`), so unbinding with the pattern as written does not remove it. Read the
+exact keys from the broker (`rabbitmqctl list_bindings`, or the management API
+below) rather than deriving them. The options below were run against RabbitMQ
+4.3.6 with a literal key and with a `>` pattern:
 
-- amqplib, with the routing key the old binding was made with (the subscription
-  pattern) and no arguments: `await channel.unbindQueue(queue, exchange, pattern)`.
+- amqplib, with the exact routing key of the leftover and no arguments:
+  `await channel.unbindQueue(queue, exchange, routingKey)`. An unbind whose key
+  matches no binding completes without an error and removes nothing, so check
+  the list afterwards.
 - The management HTTP API (the `rabbitmq_management` plugin; `guest:guest` is the
   default user, `%2F` the default vhost). The leftover is the entry with empty
   `arguments`; its `properties_key` goes into the `DELETE`:

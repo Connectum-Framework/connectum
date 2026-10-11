@@ -243,6 +243,40 @@ describe(`AMQP headers exchange bindings on ${IMAGE} (testcontainers)`, { skip: 
         assert.deepEqual(remaining[0]?.arguments, SELECTIVE);
     });
 
+    it("upgrade: a leftover of a `>` pattern was bound under `#`; unbinding with the pattern as written removes nothing", { timeout: 60_000 }, async () => {
+        const exchange = `it.headers-upgrade-wildcard.${randomUUID()}`;
+        const queue = `${exchange}.q`;
+
+        // The previous version converted `kind.>` to `kind.#` for the routing key
+        // and bound the queue with no arguments; the operator's selective binding
+        // sits next to it.
+        const conn = await connect(url);
+        const channel = await conn.createChannel();
+        try {
+            await channel.assertExchange(exchange, "headers", { durable: true });
+            await channel.assertQueue(queue, { durable: true });
+            await channel.bindQueue(queue, exchange, "kind.#");
+            await channel.bindQueue(queue, exchange, "", { ...SELECTIVE });
+            assert.equal((await bindingsOf(exchange, queue)).length, 2);
+
+            // The pattern as written is not the key: the broker accepts the call
+            // and the leftover stays.
+            await channel.unbindQueue(queue, exchange, "kind.>");
+            const afterWrongKey = await bindingsOf(exchange, queue);
+            assert.equal(afterWrongKey.length, 2, "unbinding with the pattern as written removed nothing");
+            assert.ok(afterWrongKey.some((b) => b.routingKey === "kind.#" && Object.keys(b.arguments).length === 0));
+
+            // The exact key the broker lists removes it.
+            await channel.unbindQueue(queue, exchange, "kind.#");
+            const afterExactKey = await bindingsOf(exchange, queue);
+            assert.equal(afterExactKey.length, 1);
+            assert.deepEqual(afterExactKey[0]?.arguments, SELECTIVE);
+        } finally {
+            await channel.close().catch(() => undefined);
+            await conn.close().catch(() => undefined);
+        }
+    });
+
     it("upgrade: the management API lists the leftover binding and deleting it by properties_key restores filtering", { timeout: 60_000 }, async () => {
         const exchange = `it.headers-upgrade-api.${randomUUID()}`;
         const queue = `${exchange}.q`;
