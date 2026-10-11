@@ -17,6 +17,7 @@ import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
 import type {
     AmqpAdapterOptions,
+    AmqpBindingDeclaration,
     AmqpConsumerLossCause,
     AmqpLifecycleCallbacks,
     AmqpLifecycleEvent,
@@ -131,6 +132,32 @@ export function validateSubscriptionPatterns(patterns: readonly string[], option
             );
         }
     }
+}
+
+/**
+ * Whether the subscription bindings of `queue` on `exchange` are the ones the
+ * topology declares, so the adapter adds none of its own.
+ *
+ * A headers exchange ignores the routing key and routes on binding arguments
+ * the adapter cannot derive from a pattern (the published frame carries no
+ * event-type header), so the only binding the adapter can make is
+ * argument-less — a catch-all. The exchange delivers a message when ANY
+ * binding of the queue matches, so that catch-all would also deliver what the
+ * operator's selective `x-match` bindings exclude. When `topology.bindings`
+ * binds the queue to the exchange, those bindings are the subscription's.
+ * On the other exchange types the adapter's own binding carries the pattern
+ * and is what guarantees delivery, so it is always added.
+ */
+export function topologyOwnsSubscriptionBindings(options: {
+    readonly exchangeType: ExchangeKind;
+    readonly exchange: string;
+    readonly queue: string;
+    readonly bindings: readonly AmqpBindingDeclaration[] | undefined;
+}): boolean {
+    if (options.exchangeType !== "headers") {
+        return false;
+    }
+    return options.bindings?.some((b) => b.queue === options.queue && b.source === options.exchange) ?? false;
 }
 
 /**
@@ -1698,10 +1725,15 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
         // its full arguments by applyTopology — re-asserting it here without
         // those arguments would be PRECONDITION_FAILED (406). Only bind.
         const declaredInTopology = options.topology?.queues?.some((q) => q.name === queueName) ?? false;
+        // On a headers exchange the adapter's own binding would be a catch-all
+        // that defeats the selective bindings the topology declares for this
+        // queue; those declared bindings are the subscription's instead.
+        const skipOwnBindings = topologyOwnsSubscriptionBindings({ exchangeType, exchange, queue: queueName, bindings: options.topology?.bindings });
+        const ownBindings = (): string[] => (skipOwnBindings ? [] : record.patterns.map(toAmqpPattern));
 
         if (topologyMode === AmqpTopologyMode.ASSERT && declaredInTopology) {
             try {
-                for (const amqpPattern of record.patterns.map(toAmqpPattern)) {
+                for (const amqpPattern of ownBindings()) {
                     await topologyOp(
                         `Failed to bind topology-declared queue '${queueName}'`,
                         { kind: "binding", source: exchange, destination: queueName, destinationType: "queue", routingKey: amqpPattern },
@@ -1746,7 +1778,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     }),
                 );
 
-                for (const amqpPattern of record.patterns.map(toAmqpPattern)) {
+                for (const amqpPattern of ownBindings()) {
                     await topologyOp(
                         `Failed to declare queue '${queueName}'`,
                         { kind: "binding", source: exchange, destination: queueName, destinationType: "queue", routingKey: amqpPattern },

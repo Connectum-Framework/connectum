@@ -20,6 +20,7 @@ import {
     normalizePublishTimeout,
     resolveDisconnectCause,
     toAmqpPattern,
+    topologyOwnsSubscriptionBindings,
     trackChannelClose,
     validateSubscriptionPatterns,
     wireRecoveryLifecycle,
@@ -594,6 +595,51 @@ describe("validateSubscriptionPatterns", () => {
     it("accepts an empty pattern list", () => {
         for (const exchangeType of EXCHANGE_TYPES) {
             assert.doesNotThrow(() => validateSubscriptionPatterns([], { exchangeType, topologyMode: "assert" }), exchangeType);
+        }
+    });
+});
+
+describe("topologyOwnsSubscriptionBindings", () => {
+    const exchange = "orders";
+    const queue = "orders.g";
+    const selective = { "x-match": "all", kind: "a" };
+
+    it("is true on a headers exchange when a declared binding joins the subscription queue to the adapter's exchange", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [{ queue, source: exchange, routingKey: "", arguments: selective }] }), true);
+    });
+
+    it("counts a declared binding without arguments too: it is the operator's catch-all", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [{ queue, source: exchange, routingKey: "" }] }), true);
+    });
+
+    it("is true when any one of several declared bindings matches", () => {
+        const bindings = [
+            { queue: "other", source: exchange, routingKey: "" },
+            { queue, source: exchange, routingKey: "", arguments: selective },
+        ];
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings }), true);
+    });
+
+    it("is false on a headers exchange without declared bindings", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: undefined }), false);
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [] }), false);
+    });
+
+    it("is false when the declared binding belongs to another queue", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [{ queue: "orders.other", source: exchange, routingKey: "", arguments: selective }] }), false);
+    });
+
+    it("is false when the declared binding comes from another exchange", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [{ queue, source: "billing", routingKey: "", arguments: selective }] }), false);
+    });
+
+    it("is false for an exchange-to-exchange binding, which names no queue", () => {
+        assert.equal(topologyOwnsSubscriptionBindings({ exchangeType: "headers", exchange, queue, bindings: [{ exchange: queue, source: exchange, routingKey: "", arguments: selective }] }), false);
+    });
+
+    it("is false on topic, direct and fanout even when the declared binding joins the queue to the exchange: the adapter's own binding carries the pattern there", () => {
+        for (const exchangeType of ["topic", "direct", "fanout"] as const) {
+            assert.equal(topologyOwnsSubscriptionBindings({ exchangeType, exchange, queue, bindings: [{ queue, source: exchange, routingKey: "user.created" }] }), false, exchangeType);
         }
     });
 });

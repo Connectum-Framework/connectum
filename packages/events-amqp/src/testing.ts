@@ -27,6 +27,9 @@
  *   `topologyMode` exactly like the real adapter.
  *
  * Deliberately NOT modeled (documented divergences):
+ * - declared header bindings: `topology` is not modeled, so a headers fake
+ *   delivers every message, while the real adapter delivers only what the
+ *   `x-match` bindings declared for the queue in `topology.bindings` select;
  * - timing: there is no backoff — recovery advances only via explicit
  *   {@link FakeAmqpControl.completeRecovery} / {@link FakeAmqpControl.exhaustRecovery}
  *   calls, and `reconnecting.delay` is always `0`; a lost consumer comes back
@@ -75,7 +78,11 @@ export interface FakeAmqpAdapterOptions {
      * shared EventBus matcher (a direct subscription is a literal key unless
      * the operator owns the bindings), `fanout` and `headers` to every live
      * subscription regardless of its pattern, as the queue receives every
-     * message there and the EventBus alone picks handlers.
+     * message there and the EventBus alone picks handlers. The fake does not
+     * model `topology`, so declared header bindings are not modeled either: a
+     * headers fake delivers every message even where the real adapter, with
+     * selective `x-match` bindings declared for the queue, would deliver only
+     * the matching ones.
      *
      * @default "topic"
      */
