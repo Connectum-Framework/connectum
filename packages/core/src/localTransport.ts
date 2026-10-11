@@ -8,6 +8,7 @@
  * @module localTransport
  */
 
+import { AsyncResource } from "node:async_hooks";
 import type { Interceptor, Transport } from "@connectrpc/connect";
 import { createRouterTransport } from "@connectrpc/connect";
 import { finishStreamOnAbort } from "./finishStreamOnAbort.ts";
@@ -69,6 +70,53 @@ const localTransportMarkerInterceptor: Interceptor = (next) => (req) => {
 };
 
 /**
+ * Internal interceptor that keeps the caller's request stream in the caller's
+ * async context.
+ *
+ * Over HTTP the client transport pumps the request messages of a
+ * client-streaming or bidirectional call into the socket, so the caller's
+ * generator runs in the context of the call site. In-process there is no
+ * pump: the server-side handler pulls the caller's generator from inside its
+ * own code, which runs under whatever a server interceptor scoped around the
+ * handler (a verified identity, a trace, a tenant). The caller's generator
+ * would then observe the server's values instead of its own. Binding every
+ * step of the request iterator (creation, `next`, `return`, `throw`) to the
+ * context captured here gives the generator the context it has over HTTP.
+ *
+ * Appended after the user-supplied client interceptors so the captured
+ * context is the innermost client-side one, as it is over HTTP, where the
+ * pump starts inside the transport below the whole client chain.
+ */
+const callerRequestContextInterceptor: Interceptor = (next) => (req) => {
+    // A server-streaming call also arrives as a stream request: the client sends its single input as a
+    // one-element iterable that holds no caller code, so only client-streaming and bidirectional
+    // calls have a request generator to keep in the caller's context.
+    if (!req.stream || req.method.methodKind === "server_streaming") {
+        return next(req);
+    }
+    const source = req.message;
+    const scope = new AsyncResource("createLocalTransport.request");
+    const bound: AsyncIterable<unknown> = {
+        [Symbol.asyncIterator]() {
+            const iterator = scope.runInAsyncScope(() => source[Symbol.asyncIterator]());
+            const result: AsyncIterator<unknown> = {
+                next: scope.bind((...args: [] | [unknown]) => iterator.next(...args)),
+            };
+            if (iterator.return) {
+                const forward = iterator.return;
+                result.return = scope.bind((...args: [] | [unknown]) => forward.apply(iterator, args));
+            }
+            if (iterator.throw) {
+                const forward = iterator.throw;
+                result.throw = scope.bind((...args: [] | [unknown]) => forward.apply(iterator, args));
+            }
+            return result;
+        },
+    };
+    return next(Object.assign(Object.create(Object.getPrototypeOf(req)), req, { message: bound }));
+};
+
+/**
  * Server-internal accessor surface — implemented by `ServerImpl`. We re-declare
  * the shape here (rather than exporting a public mixin) so that the contract
  * stays internal to `@connectum/core`.
@@ -107,6 +155,15 @@ function asInternals(server: Server): ServerInternals {
  * `break` is not a cancellation: the handler keeps running until one of the
  * above happens.
  *
+ * Request streams: the caller's request stream of a client-streaming or
+ * bidirectional call is advanced in the caller's async context, below the
+ * client-side interceptors, as it is over HTTP, not in the handler's. The
+ * caller's generator therefore observes the caller's own `AsyncLocalStorage`
+ * values (identity, trace, application values) and never the ones a
+ * server-side interceptor scoped around the handler. On cancellation its
+ * `return`/`throw` run in the context that raised the abort, on both
+ * transports.
+ *
  * The synthetic origin observed by interceptors reading `req.url` is
  * `https://in-memory/<service>/<method>` (set by the underlying ConnectRPC
  * router transport — see `@connectrpc/connect`'s `router-transport.ts`).
@@ -131,7 +188,11 @@ export function createLocalTransport(server: Server, options?: CreateLocalTransp
             // attribute the call as `connectum.transport=in-process`).
             // Conversely, forged markers arriving over HTTP are stripped
             // before any server-side interceptor observes them.
-            interceptors: [localTransportMarkerInterceptor, ...(options?.interceptors ?? [])],
+            //
+            // `callerRequestContextInterceptor` goes last: the context it binds
+            // the caller's request stream to must be the one below every
+            // client-side interceptor, as the HTTP pump's is.
+            interceptors: [localTransportMarkerInterceptor, ...(options?.interceptors ?? []), callerRequestContextInterceptor],
         },
         router: {
             // Apply server-side interceptors identically to how the HTTP
