@@ -17,6 +17,7 @@
  * @module finishStreamOnAbort
  */
 
+import { AsyncResource } from "node:async_hooks";
 import type { Interceptor, StreamResponse } from "@connectrpc/connect";
 
 /**
@@ -48,6 +49,16 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                 let pulling = false;
                 let finished = false;
 
+                // Cleanup is triggered from the abort listener, which runs in whatever async
+                // context aborted the signal (a socket event, a timer, a shutdown). The handler's
+                // `finally` must still see the AsyncLocalStorage values that were active when the
+                // call's iterator was created, such as the verified caller identity and the
+                // telemetry scope, so the cleanup is bound to the context captured here.
+                const scope = new AsyncResource("finishStreamOnAbort");
+                const closeIterator = scope.bind(async (): Promise<void> => {
+                    await iterator.return?.();
+                });
+
                 const finish = async (): Promise<void> => {
                     if (finished) {
                         return;
@@ -55,7 +66,7 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                     finished = true;
                     req.signal.removeEventListener("abort", onAbort);
                     try {
-                        await iterator.return?.();
+                        await closeIterator();
                     } catch {
                         // see the interceptor documentation: nobody is left to receive this error
                     }
