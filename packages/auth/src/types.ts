@@ -227,6 +227,14 @@ export interface JwtAuthInterceptorOptions {
      */
     maxTokenAge?: number | string | undefined;
     /**
+     * Reject a token that has no `exp` (expiration time) claim. A signed token
+     * without `exp` never expires, so a leaked one stays valid until the signing
+     * key is rotated; RFC 9068 requires `exp` in JWT access tokens. Set `false`
+     * only for a trusted issuer that cannot add `exp`.
+     * @default true
+     */
+    requireExpiration?: boolean | undefined;
+    /**
      * Methods to skip authentication for.
      * @default []
      */
@@ -413,6 +421,12 @@ export interface SignedTokenIssuer {
     readonly algorithms?: string[] | undefined;
     /** Maximum token age (seconds or string like "2h"). */
     readonly maxTokenAge?: number | string | undefined;
+    /**
+     * Reject a token from this issuer that has no `exp` claim: a signed token
+     * without `exp` never expires. Set `false` only for an issuer that cannot add it.
+     * @default true
+     */
+    readonly requireExpiration?: boolean | undefined;
     /**
      * Mapping from token claims to AuthContext fields (dot-notation paths).
      * `subject` defaults to `sub ?? iss`; `roles`/`scopes` to none unless mapped.
