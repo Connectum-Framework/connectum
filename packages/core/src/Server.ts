@@ -262,6 +262,13 @@ class ServerImpl extends EventEmitter implements Server {
             return this._stopPromise;
         }
 
+        // Already stopped: nothing left to do. A repeated stop() is an expected
+        // case (a signal handler and a manual call, or a retried shutdown hook),
+        // so it resolves without touching the transport or emitting events again.
+        if (this._state === ServerState.STOPPED) {
+            return;
+        }
+
         if (this._state !== ServerState.RUNNING) {
             throw new Error(`Cannot stop server: current state is "${this._state}", expected "${ServerState.RUNNING}"`);
         }
