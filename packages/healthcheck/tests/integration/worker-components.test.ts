@@ -152,3 +152,88 @@ describe("RPC-less worker health components", () => {
         assert.strictEqual(await httpStatus(serverUrl, "/healthz"), 503);
     });
 });
+
+describe("a server with nothing to report", () => {
+    let server: Server;
+    let serverUrl: string;
+
+    before(async () => {
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck({ httpEnabled: true, manager: createHealthcheckManager() })],
+            interceptors: [],
+            allowHTTP1: false,
+        });
+        await server.start();
+        serverUrl = `http://localhost:${server.address?.port}`;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    // An empty registry has no evidence that anything is ready, so it must not
+    // report ready: a worker has to register a component to become healthy.
+    it("/healthz is 503 when no service and no component is registered", async () => {
+        assert.strictEqual(await httpStatus(serverUrl, "/healthz"), 503);
+    });
+});
+
+describe("a service that disappears from the registry", () => {
+    let server: Server;
+    let serverUrl: string;
+    let manager: ReturnType<typeof createHealthcheckManager>;
+
+    before(async () => {
+        manager = createHealthcheckManager();
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck({ httpEnabled: true, manager, watchInterval: 50 })],
+            interceptors: [],
+            allowHTTP1: false,
+        });
+        await server.start();
+        serverUrl = `http://localhost:${server.address?.port}`;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    it("is reported as SERVICE_UNKNOWN to an open Watch stream within one watch interval", async () => {
+        manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+        manager.update(ServingStatus.SERVING, "svc.v1.Bar");
+
+        const client = createClient(Health, createGrpcTransport({ baseUrl: serverUrl }));
+        const controller = new AbortController();
+        const received: ServingStatus[] = [];
+        const watching = (async () => {
+            try {
+                for await (const update of client.watch({ service: "svc.v1.Bar" }, { signal: controller.signal })) {
+                    received.push(update.status);
+                    if (received.length >= 2) {
+                        controller.abort();
+                    }
+                }
+            } catch {
+                // AbortError on cancel is expected
+            }
+        })();
+
+        // Let the stream deliver the initial status, then re-initialize without Bar.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        manager.initialize(["svc.v1.Foo"]);
+
+        await watching;
+
+        assert.strictEqual(received[0], ServingStatus.SERVING, "initial status");
+        assert.strictEqual(received[1], ServingStatus.SERVICE_UNKNOWN, "removal observed by the open stream");
+        assert.strictEqual(manager.getStatus("svc.v1.Bar"), undefined);
+    });
+});
