@@ -38,7 +38,7 @@ const ATTR_SERVICE_INSTANCE_ID = "service.instance.id";
  * Options for initializing the OpenTelemetry provider
  */
 export interface ProviderOptions {
-    /** Override service name (defaults to OTEL_SERVICE_NAME or npm_package_name) */
+    /** Override service name (defaults to OTEL_SERVICE_NAME, then service.name in OTEL_RESOURCE_ATTRIBUTES, then npm_package_name) */
     serviceName?: string;
     /** Override service version (defaults to npm_package_version) */
     serviceVersion?: string;
@@ -83,8 +83,41 @@ export function parseOtelResourceAttributesEnv(raw: string | undefined): Record<
     return result;
 }
 
+/** Inputs for {@link resolveServiceName}. */
+export interface ServiceNameInputs {
+    /** Name passed in code (`ProviderOptions.serviceName`). */
+    explicit?: string | undefined;
+    /** Environment source (defaults to `process.env`). */
+    env?: { OTEL_SERVICE_NAME?: string; OTEL_RESOURCE_ATTRIBUTES?: string; npm_package_name?: string } | undefined;
+}
+
+/**
+ * Resolve the `service.name` the provider reports.
+ *
+ * Precedence (highest first): the explicit `serviceName` option →
+ * `OTEL_SERVICE_NAME` → `service.name` inside `OTEL_RESOURCE_ATTRIBUTES` →
+ * `npm_package_name` → `"unknown-service"`. `OTEL_SERVICE_NAME` outranks the
+ * resource-attributes entry, as the OpenTelemetry SDK environment-variable
+ * specification requires. Empty values are treated as unset.
+ */
+export function resolveServiceName(inputs: ServiceNameInputs = {}): string {
+    const env = inputs.env ?? process.env;
+    return (
+        nonEmpty(inputs.explicit) ??
+        nonEmpty(env.OTEL_SERVICE_NAME) ??
+        nonEmpty(parseOtelResourceAttributesEnv(env.OTEL_RESOURCE_ATTRIBUTES)[ATTR_SERVICE_NAME]) ??
+        nonEmpty(env.npm_package_name) ??
+        "unknown-service"
+    );
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+    return value === undefined || value === "" ? undefined : value;
+}
+
 /** Inputs for {@link buildResourceAttributes}. */
 export interface ResourceAttributeInputs {
+    /** The final service name (see {@link resolveServiceName}); it is not overridden by `OTEL_RESOURCE_ATTRIBUTES`. */
     serviceName: string;
     serviceVersion: string;
     instanceId?: string | undefined;
@@ -96,18 +129,19 @@ export interface ResourceAttributeInputs {
 /**
  * Build the flat resource-attribute record shared by traces, metrics, and logs.
  *
- * Precedence (lowest to highest): `service.name`/`service.version` → env
+ * Precedence (lowest to highest): `service.version` → env
  * (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SERVICE_INSTANCE_ID`) → explicit
- * `resourceAttributes` → explicit `instanceId`.
+ * `resourceAttributes` → explicit `instanceId`. `service.name` is the already
+ * resolved `serviceName` and is never overridden by the env attributes.
  */
 export function buildResourceAttributes(inputs: ResourceAttributeInputs): Record<string, string | number | boolean> {
     const env = inputs.env ?? process.env;
 
     const attributes: Record<string, string | number | boolean> = {
-        [ATTR_SERVICE_NAME]: inputs.serviceName,
         [ATTR_SERVICE_VERSION]: inputs.serviceVersion,
         // Env-provided attributes (lower precedence than explicit options).
         ...parseOtelResourceAttributesEnv(env.OTEL_RESOURCE_ATTRIBUTES),
+        [ATTR_SERVICE_NAME]: inputs.serviceName,
     };
 
     const envInstanceId = env.OTEL_SERVICE_INSTANCE_ID;
@@ -204,7 +238,7 @@ class OtelProviderImpl implements OtelProvider {
         this.collectorOptions = getCollectorOptions();
 
         const metadata = getServiceMetadata();
-        this.serviceName = options?.serviceName ?? metadata.name;
+        this.serviceName = resolveServiceName({ explicit: options?.serviceName });
         this.serviceVersion = options?.serviceVersion ?? metadata.version;
 
         // Build the resource once and share it across traces, metrics, and logs
