@@ -4,7 +4,7 @@
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
-import { buildResourceAttributes, getProvider, initProvider, parseOtelResourceAttributesEnv, shutdownProvider } from "../../src/provider.ts";
+import { buildResourceAttributes, getProvider, initProvider, parseOtelResourceAttributesEnv, resolveServiceName, shutdownProvider } from "../../src/provider.ts";
 
 const ATTR_SERVICE_NAME = "service.name";
 const ATTR_SERVICE_VERSION = "service.version";
@@ -127,5 +127,40 @@ describe("buildResourceAttributes", () => {
 		const attrs = buildResourceAttributes({ ...base, resourceAttributes: { replica: 3, primary: true }, env: {} });
 		assert.strictEqual(attrs.replica, 3);
 		assert.strictEqual(attrs.primary, true);
+	});
+
+	it("keeps the resolved service name when OTEL_RESOURCE_ATTRIBUTES also names the service", () => {
+		const attrs = buildResourceAttributes({ ...base, env: { OTEL_RESOURCE_ATTRIBUTES: "service.name=from-attrs,facility=f1" } });
+		assert.strictEqual(attrs[ATTR_SERVICE_NAME], "svc");
+		assert.strictEqual(attrs.facility, "f1");
+	});
+});
+
+// The OpenTelemetry SDK environment-variable specification: OTEL_SERVICE_NAME
+// takes priority over `service.name` in OTEL_RESOURCE_ATTRIBUTES. Connectum adds
+// the explicit option above both and the package name / "unknown-service" below.
+describe("resolveServiceName", () => {
+	it("prefers OTEL_SERVICE_NAME over service.name in OTEL_RESOURCE_ATTRIBUTES", () => {
+		const name = resolveServiceName({ env: { OTEL_SERVICE_NAME: "from-env", OTEL_RESOURCE_ATTRIBUTES: "service.name=from-attrs" } });
+		assert.strictEqual(name, "from-env");
+	});
+
+	it("falls back to service.name in OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME is unset or empty", () => {
+		assert.strictEqual(resolveServiceName({ env: { OTEL_RESOURCE_ATTRIBUTES: "service.name=from-attrs" } }), "from-attrs");
+		assert.strictEqual(resolveServiceName({ env: { OTEL_SERVICE_NAME: "", OTEL_RESOURCE_ATTRIBUTES: "a=b, service.name = from-attrs" } }), "from-attrs");
+	});
+
+	it("lets the explicit option beat both environment variables", () => {
+		const name = resolveServiceName({ explicit: "from-code", env: { OTEL_SERVICE_NAME: "from-env", OTEL_RESOURCE_ATTRIBUTES: "service.name=from-attrs" } });
+		assert.strictEqual(name, "from-code");
+	});
+
+	it("uses the package name, then 'unknown-service', when nothing else names the service", () => {
+		assert.strictEqual(resolveServiceName({ env: { npm_package_name: "pkg" } }), "pkg");
+		assert.strictEqual(resolveServiceName({ env: {} }), "unknown-service");
+	});
+
+	it("ranks an attribute service.name above the package name", () => {
+		assert.strictEqual(resolveServiceName({ env: { npm_package_name: "pkg", OTEL_RESOURCE_ATTRIBUTES: "service.name=from-attrs" } }), "from-attrs");
 	});
 });
