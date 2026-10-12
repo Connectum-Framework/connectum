@@ -20,11 +20,20 @@ import type { Server } from "@connectum/core";
 import { createServer, defineCatalog, defineService } from "@connectum/core";
 // The core package's test fixture: the healthcheck package ships no proto of
 // its own besides Health, and a catalog call needs a second service.
-import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../../../core/tests/fixtures/echo/v1/echo_pb.ts";
+import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../../../core/tests/fixtures/echo/v1/echo_pb.ts";
 import { Health } from "../../gen/grpc/health/v1/health_pb.js";
 import { Healthcheck } from "../../src/Healthcheck.ts";
 import { createHealthcheckManager } from "../../src/HealthcheckManager.ts";
 import { ServingStatus } from "../../src/types.ts";
+
+// The typed `ctx.call` key set belongs to the consuming project; this test
+// declares the one call it makes instead of relying on another package's tests
+// having augmented the interface.
+declare module "@connectum/core" {
+    interface ConnectumCallMap {
+        "echo.v1.EchoService/Echo": { request: EchoRequest; response: EchoResponse };
+    }
+}
 
 /** Stands in for an application service tracked by the manager. */
 const APP_SERVICE = "test.v1.TestService";
