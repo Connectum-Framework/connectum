@@ -96,7 +96,8 @@ export interface LoggerOptions {
  */
 export interface SerializerOptions {
     /**
-     * Skip serialization for gRPC services
+     * Skip services whose protobuf type name starts with `grpc.`.
+     * The check applies to the service namespace, regardless of wire protocol.
      * @default true
      */
     skipGrpcServices?: boolean;

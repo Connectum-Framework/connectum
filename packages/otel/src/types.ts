@@ -40,8 +40,8 @@ export interface OtelBaseOptions {
     attributeFilter?: OtelAttributeFilter;
 
     /**
-     * Include request/response message content in span events.
-     * WARNING: May contain sensitive data.
+     * Record request/response message events with direction, sequence number,
+     * and estimated size. Message payloads are not included in these events.
      * @default false
      */
     recordMessages?: boolean;
@@ -111,7 +111,7 @@ export interface TracedOptions {
      * Record function arguments as span attributes.
      * - `false` (default): no args recorded
      * - `true`: all args recorded
-     * - `string[]`: whitelist of argument names/indices
+     * - `string[]`: whitelist of zero-based argument indices encoded as strings
      */
     recordArgs?: boolean | string[];
 
@@ -147,7 +147,7 @@ export interface TraceAllOptions {
      * Record method arguments as span attributes.
      * - `false` (default): no args recorded
      * - `true`: all args recorded
-     * - `string[]`: whitelist of argument names/indices
+     * - `string[]`: whitelist of zero-based argument indices encoded as strings
      */
     recordArgs?: boolean | string[];
 

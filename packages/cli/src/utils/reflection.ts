@@ -271,7 +271,11 @@ export async function fetchReflectionData(url: string, options: ReflectionOption
  *
  * @example
  * ```typescript
+ * import { mkdirSync, writeFileSync } from "node:fs";
+ * import { fetchFileDescriptorSetBinary } from "@connectum/cli/utils/reflection";
+ *
  * const binpb = await fetchFileDescriptorSetBinary("http://localhost:5000");
+ * mkdirSync(".tmp", { recursive: true });
  * writeFileSync(".tmp/descriptors.binpb", binpb);
  * // Then: buf generate .tmp/descriptors.binpb --output ./gen
  * ```

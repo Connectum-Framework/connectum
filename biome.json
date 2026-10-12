@@ -83,7 +83,7 @@
   ],
   "overrides": [
     {
-      "includes": ["**/packages/*/src/**", "**/packages/*/tests/interop/**"],
+      "includes": ["**/packages/*/src/**", "**/packages/*/tests/interop/**", "**/scripts/documentation-acceptance/probe.mjs"],
       "linter": {
         "rules": {
           "correctness": {

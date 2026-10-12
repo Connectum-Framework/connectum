@@ -15,11 +15,13 @@ import type { ErrorHandlerOptions } from "./types.ts";
 /**
  * Create error handler interceptor
  *
- * Catches all errors and transforms them into ConnectError instances
- * with proper error codes. Recognizes SanitizableError for safe
+ * Catches rejections from awaiting next(req) and transforms them into
+ * ConnectError instances with proper error codes. Recognizes SanitizableError for safe
  * client-facing messages while preserving server details for logging.
  *
- * IMPORTANT: This interceptor should be FIRST in the chain to catch all errors.
+ * Place this interceptor first to normalize rejections from downstream interceptors.
+ * It does not wrap response-stream iteration after next(req) returns, or errors
+ * from request gates that run before the interceptor chain.
  *
  * @param options - Error handler options
  * @returns ConnectRPC interceptor

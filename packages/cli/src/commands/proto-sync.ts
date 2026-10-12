@@ -36,7 +36,11 @@ export interface ProtoSyncOptions {
 }
 
 /**
- * Execute the proto sync pipeline.
+ * Fetch service descriptors from a running server and generate client types with `buf`.
+ *
+ * With `dryRun: true`, this only lists the services and proto files that would be
+ * synced. A full sync passes the fetched descriptor set to `buf generate` and
+ * removes its temporary descriptor file after the command finishes.
  *
  * @param options - Proto sync configuration
  */

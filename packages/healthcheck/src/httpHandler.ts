@@ -46,9 +46,12 @@ interface HttpHealthResponse {
 const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
 
 /**
- * Create HTTP health handler that mirrors gRPC healthcheck status
+ * Create an HTTP handler that reports the health manager's current status.
  *
- * Returns an HttpHandler compatible with the ProtocolRegistration interface.
+ * Configured paths return JSON with the service name, status, and timestamp.
+ * A `service` query parameter checks one service or component; without it,
+ * the handler reports overall health. Unknown named services return 404,
+ * unhealthy overall status returns 503, and unconfigured paths are not handled.
  *
  * @param manager - Healthcheck manager instance
  * @param healthPaths - HTTP health endpoint paths
@@ -99,7 +102,10 @@ export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths
 }
 
 /**
- * Parse service name from URL query string
+ * Read the optional `service` query parameter from a request URL.
+ *
+ * Returns `undefined` when the URL is absent, malformed, or has no `service`
+ * parameter. The host is used only to resolve relative URLs.
  *
  * @example
  * ```typescript

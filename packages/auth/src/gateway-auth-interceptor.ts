@@ -73,7 +73,8 @@ function isTrusted(headerValue: string, expectedValues: readonly string[]): bool
  *
  * Reads pre-authenticated identity from gateway-injected headers.
  * Trust is established by checking a designated header value against
- * a list of expected values (shared secrets or trusted IP ranges).
+ * a list of expected values (shared secrets or CIDR ranges applied to the header value).
+ * A trusted gateway must overwrite this header; it is not the connection's peer address.
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor

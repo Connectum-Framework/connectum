@@ -1,5 +1,7 @@
 # @connectum/test-fixtures
 
+This README documents `@connectum/test-fixtures` 1.3 and later.
+
 Lightweight mock factories, assertion helpers, and protobuf descriptor fixtures
 shared across `@connectum/*` test suites.
 
@@ -12,23 +14,44 @@ package depend on it without introducing build cycles.
 `^2.2.0`, so the fixtures build descriptors and errors from the same copies your
 code uses.
 
-## What lives here
+`@connectum/testing` re-exports these low-level helpers and adds a test server,
+in-process clients, telemetry collectors, and cross-transport parity tests.
 
-- `assertConnectError` — assertion helper for `ConnectError` thrown values
-- `createMockFn` — portable `node:test`-free spy factory
-- `createMockRequest` — fake unary ConnectRPC request
-- `createMockNext`, `createMockNextError`, `createMockNextSlow` — fake `next` handlers
-- `createMockStream` — async iterable for streaming tests
-- `createMockDescMessage`, `createMockDescField`, `createMockDescMethod` — protobuf descriptor mocks
-- `createFakeService`, `createFakeMethod` — generic `DescService`/`DescMethod` fixtures
+Most application tests should depend on `@connectum/testing`. Install
+`@connectum/test-fixtures` directly only when its low-level factories or
+descriptor fixtures are needed:
 
-For higher-level utilities (test server, in-process transport, OTel collectors,
-cross-transport parity driver) see `@connectum/testing`.
+```bash
+pnpm add -D @connectum/test-fixtures
+```
 
-## Compat re-export
+Install version 1.3 or later to get the API documented in this README.
 
-`@connectum/testing` re-exports every symbol from this package, so existing
-imports from `@connectum/testing` continue to work unchanged.
+## Start here
+
+Create a request and a spy for an interceptor test:
+
+```javascript
+import { createMockNext, createMockRequest } from '@connectum/test-fixtures';
+
+const request = createMockRequest({ service: 'acme.UserService', method: 'GetUser' });
+const next = createMockNext({ message: { id: 'user-1' } });
+const response = await next(request);
+
+console.log(response.message.id); // user-1
+console.log(next.mock.calls.length); // 1
+```
+
+Save this as `fixture-example.mjs` and run `node fixture-example.mjs`.
+In an interceptor test, pass `next` and `request` to the interceptor, then
+inspect the response and recorded calls. These factories use simplified
+descriptors; use a test server when a test needs transport behavior.
+
+## Learn and reference
+
+- [Package overview](https://connectum.dev/en/packages/test-fixtures)
+- [Testing guide](https://connectum.dev/en/guide/testing)
+- [API reference](https://connectum.dev/en/api/@connectum/test-fixtures/)
 
 ## License
 
@@ -36,4 +59,4 @@ Apache-2.0
 
 ---
 
-**Part of [@connectum](../../README.md)** — Universal framework for production-ready gRPC/ConnectRPC microservices
+**Part of [Connectum](../../README.md).**

@@ -74,7 +74,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
  * service or gateway. Returns undefined if required headers are missing.
  *
  * WARNING: Only use this in trusted environments (behind mTLS, mesh, etc.).
- * For untrusted environments, use createTrustedHeadersReader() instead.
+ * For gateway requests, use createGatewayAuthInterceptor() with a verified trust header.
  *
  * @param headers - Request headers to parse
  * @returns Parsed AuthContext or undefined if headers are missing

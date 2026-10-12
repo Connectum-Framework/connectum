@@ -1,10 +1,10 @@
 /**
  * Typed error taxonomy for the AMQP adapter.
  *
- * Every terminal publish/topology outcome is distinguishable by error class,
- * which is what an at-least-once producer needs for an
- * "advance cursor after confirm" pattern: a non-advanced message corresponds
- * to exactly one typed error explaining why.
+ * Every terminal publish/topology outcome is distinguishable by error class.
+ * For a cursor-advance-after-confirm workflow, enable mandatory publishing if
+ * unroutable events must be surfaced; publisher confirms alone do not prove a
+ * message was routed to a queue.
  *
  * Authoritative republish policy (do not infer it from class names):
  *
@@ -47,7 +47,7 @@ export class AmqpConnectionError extends AmqpAdapterError {}
 
 /**
  * The broker returned a `mandatory` message as unroutable
- * (`basic.return`): no queue is bound for the routing key.
+ * (`basic.return`): no queue matched the configured exchange bindings.
  */
 export class AmqpUnroutableError extends AmqpAdapterError {
     readonly routingKey: string;
@@ -84,9 +84,9 @@ export type AmqpTopologyObject =
       };
 
 /**
- * Topology declaration or verification failed: missing exchange/queue in
- * `check`/`skip` mode, or a conflicting redeclare (PRECONDITION_FAILED) in
- * `assert` mode.
+ * Topology declaration or verification failed: a missing configured object in
+ * `check` mode, a missing queue when consuming in `skip` mode, or a conflicting
+ * redeclare (PRECONDITION_FAILED) in `assert` mode.
  *
  * `object` identifies the failing topology object structurally (known at the
  * declare/check site — no broker-reply text parsing needed for CI drift
@@ -112,5 +112,5 @@ export class AmqpTopologyError extends AmqpAdapterError {
     }
 }
 
-/** Payload encoding/decoding failed in a custom serialization hook. */
+/** Payload encoding failed in a custom serialization hook. */
 export class AmqpSerializationError extends AmqpAdapterError {}

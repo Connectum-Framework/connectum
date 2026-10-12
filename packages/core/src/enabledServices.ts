@@ -4,7 +4,7 @@
  * `enabledServices` is a list of full proto `typeName`s that a process mounts
  * locally; everything else in the catalog is remote. Short service names are
  * NOT used — they collide (`catalog.v1.UsersService` and `auth.v1.UsersService`
- * both shorten to `users`; medium-compose finding F-E).
+ * both shorten to `users`).
  *
  * @module enabledServices
  */
@@ -13,7 +13,18 @@
  * Parse a comma-separated env value into a list of proto `typeName`s, trimming
  * whitespace and dropping empty entries. Returns `[]` for an empty/undefined value.
  *
- * @example `enabledServices: parseServicesEnv(process.env.CONNECTUM_SERVICES)`
+ * @example
+ * ```ts
+ * import { createServer, parseServicesEnv } from "@connectum/core";
+ * import { greeterService } from "./services/greeterService.ts";
+ *
+ * const server = createServer({
+ *   services: [greeterService],
+ *   enabledServices: parseServicesEnv(
+ *     process.env.CONNECTUM_SERVICES ?? greeterService.descriptor.typeName,
+ *   ),
+ * });
+ * ```
  */
 export function parseServicesEnv(value: string | undefined | null): string[] {
     if (!value) return [];

@@ -8,7 +8,11 @@ Connectum's gRPC Server Reflection, its Health service and the reflection client
 | `packages/healthcheck/tests/interop/health.interop.ts` | grpcurl, grpc_health_probe | `Check`, `List`, `Watch` as the upstream `health.proto` defines them, and the probe's exit codes |
 | `packages/cli/tests/interop/proto-sync.interop.ts` | the built `connectum` binary, grpcurl, buf | `proto sync` lists, fetches and generates the same thing grpcurl sees and buf generates from the sources |
 
-Each suite starts a real server in the test process on a free port. The clients run in Docker on the host network, which Docker provides on Linux only.
+Each suite starts a real server in the test process on a free port. The clients
+run in Docker with `--network host`. CI uses Linux; Docker Engine supports this
+mode on Linux, and Docker Desktop 4.34+ provides an opt-in host-network feature.
+See [Docker host networking](https://docs.docker.com/engine/network/drivers/host/).
+The Desktop setup has not been exercised by these suites' CI.
 
 ## Running
 

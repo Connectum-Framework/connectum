@@ -379,8 +379,8 @@ export interface EventBusOptions {
      * NOT covered: publishes issued from inside handlers (including the DLQ
      * republish) — those are governed by the handler drain and its post-abort
      * settle window; new `publish()` calls after `stop()` begins are rejected
-     * by the stopping gate (the relay-pattern design is tracked in
-     * https://github.com/Connectum-Framework/connectum/issues/212).
+     * by the stopping gate; handler-originated publishes are covered only by
+     * the handler drain and its post-abort settlement window.
      *
      * Budget note: `createServer`'s `shutdown.timeout` bounds the transport
      * phase, not the shutdown hooks that stop the bus — a large value here

@@ -71,6 +71,7 @@ export function defaultFailurePredicate(error: unknown): boolean {
  *
  * const transport = createConnectTransport({
  *   baseUrl: 'http://localhost:5000',
+ *   httpVersion: '1.1',
  *   interceptors: [
  *     createCircuitBreakerInterceptor({
  *       threshold: 5,           // Open after 5 consecutive failures

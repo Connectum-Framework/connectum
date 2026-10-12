@@ -101,8 +101,8 @@ export const ConnectumEnvSchema = z.object({
     HTTP_HEALTH_PATH: z.string().default("/healthz"),
 
     /**
-     * OpenTelemetry service name
-     * @default 'connectum-service'
+     * Optional OpenTelemetry service name. The core parser leaves it undefined
+     * when absent; provider defaults belong to the telemetry package.
      */
     OTEL_SERVICE_NAME: z.string().optional(),
 

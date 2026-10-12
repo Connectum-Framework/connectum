@@ -20,7 +20,9 @@ import type { MockNextOptions } from "./types.ts";
  * inspect `next.mock.calls` and `next.mock.callCount()` after the test.
  *
  * @param options - Optional overrides for the response payload and stream flag.
- * @returns A spy-enabled async function matching the ConnectRPC `next` signature.
+ * @returns a spy-enabled async function resolving to a partial response with
+ *   `stream` and `message` fields. Use a real `next` response when the code
+ *   under test reads response headers, trailers, or descriptors.
  *
  * @example
  * ```ts

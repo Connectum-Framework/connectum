@@ -163,7 +163,8 @@ export function getBatchSpanProcessorOptions(): BatchSpanProcessorOptions {
 /**
  * Gets service metadata from environment variables
  *
- * Uses OTEL_SERVICE_NAME as primary source, falls back to npm_package_name.
+ * Uses OTEL_SERVICE_NAME, then npm_package_name, then "unknown-service" for the name.
+ * The version comes from npm_package_version, falling back to "0.0.0".
  *
  * @returns Service name and version
  */

@@ -17,8 +17,9 @@ import { ConnectError } from "@connectrpc/connect";
  * after a successful call the compiler narrows `error` to `ConnectError`.
  *
  * **Note on message format**: ConnectError messages include a code prefix,
- * e.g. `[not_found] user not found`. The `messagePattern` is matched against
- * the full message string. Use a `RegExp` for flexible matching.
+ * e.g. `[not_found] user not found`. A supplied `messagePattern` is matched
+ * against the full message, but matching is refused when it exceeds 1000
+ * characters. Use a `RegExp` for flexible matching within that limit.
  *
  * @param error - The value to check (typically from a `catch` block).
  * @param expectedCode - Expected gRPC/Connect status code.

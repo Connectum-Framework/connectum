@@ -30,6 +30,10 @@ export function getTLSPath(): string {
 /**
  * Read TLS certificates from configuration
  *
+ * Explicit keyPath and certPath are used only when both are non-empty.
+ * Otherwise both files come from dirPath or getTLSPath(); a lone explicit
+ * path does not override either directory-based file.
+ *
  * @param options - TLS options
  * @returns TLS key and cert buffers
  */

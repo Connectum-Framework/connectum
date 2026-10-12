@@ -1,5 +1,5 @@
 /**
- * Programmable AMQP test double — the `@connectum/events-amqp/testing` subpath (#203).
+ * Programmable AMQP test double for the `@connectum/events-amqp/testing` subpath.
  *
  * `FakeAmqpAdapter` models the REAL adapter's observable contracts without a
  * broker and without importing `amqplib` at runtime:
