@@ -100,7 +100,7 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration
 
-  # ── AMQP broker integration (happy path, required) ─────────────────────
+  # ── AMQP broker integration (happy path) ───────────────────────────────
   # Runs the events-amqp happy-path integration tests against a real RabbitMQ
   # service container. Recovery scenarios live in the non-blocking job below.
   test-amqp-broker:
@@ -139,7 +139,7 @@ jobs:
           AMQP_TEST_URL: amqp://guest:guest@localhost:5672
         run: pnpm --filter @connectum/events-amqp test:integration
 
-  # ── Redis/Valkey protocol compatibility (required) ────────────────────
+  # ── Redis/Valkey protocol compatibility (required via "Broker matrices") ─
   test-redis-broker:
     name: "Redis protocol (${{ matrix.broker.name }})"
     runs-on: ubuntu-latest
@@ -177,7 +177,7 @@ jobs:
           REDIS_TEST_URL: redis://localhost:6379
         run: pnpm --filter @connectum/events-redis test:integration
 
-  # ── NATS JetStream integration (required) ──────────────────────────────
+  # ── NATS JetStream integration (required via "Broker matrices") ────────
   # Runs the events-nats integration tests against real JetStream servers: the
   # oldest line the package supports (2.9, which has no consumer metadata), the
   # last 2.10 patch and a current one, because servers differ in which consumer
@@ -238,6 +238,35 @@ jobs:
             echo "::error::No NATS integration test passed"
             exit 1
           fi
+
+  # ── Broker matrices (required) ─────────────────────────────────────────
+  # One stable status for branch protection. The Redis and NATS jobs are
+  # matrices whose cell names carry the image version, so requiring the cells
+  # directly would block every PR that bumps an image. `always()` keeps this job
+  # running when a cell fails: a skipped job counts as a success to GitHub, so a
+  # plain `needs` would let a failed matrix through. Anything other than a
+  # success (failure, cancelled, skipped) fails it.
+  broker-matrices:
+    name: Broker matrices
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [test-redis-broker, test-nats-broker]
+    if: ${{ always() }}
+    steps:
+      - name: Require every Redis and NATS cell to have succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS"
+          failed=0
+          for job in test-redis-broker test-nats-broker; do
+            result=$(echo "$NEEDS" | jq -r --arg job "$job" '.[$job].result')
+            if [ "$result" != "success" ]; then
+              echo "::error::$job finished as '$result'"
+              failed=1
+            fi
+          done
+          exit $failed
 
   # ── Kafka broker integration (required) ────────────────────────────────
   # Runs the events-kafka integration tests against a real single-node Kafka
