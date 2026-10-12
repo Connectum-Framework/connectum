@@ -119,7 +119,7 @@ jobs:
       # means the pinned base and the live example diverged. Fix the scaffold fragment,
       # then tag examples and bump DEFAULT_BASE_REF — do not bump the tag alone.
       - name: Scaffold and validate
-        run: test "${{ matrix.combo.name }}" != otel && pnpm scaffold:check --combo ${{ matrix.combo.name }}
+        run: pnpm scaffold:check --combo ${{ matrix.combo.name }}
 
   # One stable status for branch protection. The cell names carry the combination
   # name and the workflow only runs its cells when scaffold inputs changed, so
