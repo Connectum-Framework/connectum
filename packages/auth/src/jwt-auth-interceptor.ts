@@ -181,6 +181,9 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
     if (options.maxTokenAge) {
         verifyOptions.maxTokenAge = options.maxTokenAge;
     }
+    if (options.requireExpiration !== false) {
+        verifyOptions.requiredClaims = ["exp"];
+    }
 
     const verify = buildVerifier(options, verifyOptions);
 
