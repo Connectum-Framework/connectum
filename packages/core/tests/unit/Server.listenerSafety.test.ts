@@ -234,6 +234,26 @@ describe("lifecycle listener safety", () => {
             assert.deepStrictEqual(events, ["stopping", "error", "stop"]);
             assert.strictEqual(server.state, ServerState.STOPPED);
         });
+
+        it("callers that join a failing shutdown all reject with its error, and a later call resolves", async () => {
+            const server = make();
+            const hookError = new Error("hook failed");
+            server.onShutdown("failing", async () => {
+                throw hookError;
+            });
+            const errors: unknown[] = [];
+            server.on("error", (err) => errors.push(err));
+            await server.start();
+
+            const first = server.stop();
+            const second = server.stop();
+            await assert.rejects(() => first, hookError);
+            await assert.rejects(() => second, hookError);
+
+            // The server is STOPPED now: the failure was reported once and a repeated stop() has nothing to do.
+            await server.stop();
+            assert.deepStrictEqual(errors, [hookError]);
+        });
     });
 
     describe("signal-initiated shutdown", () => {

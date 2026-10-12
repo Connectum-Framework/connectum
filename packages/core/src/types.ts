@@ -611,9 +611,11 @@ export interface Server extends EventEmitter {
 
     /**
      * Stop the server gracefully. Concurrent calls during STOPPING join the
-     * in-progress shutdown; calls after it has completed are rejected.
+     * in-progress shutdown and settle with its outcome; a call after the server
+     * has stopped resolves immediately without doing anything or emitting events.
      *
-     * @throws Error unless the server is RUNNING or already stopping
+     * @throws Error if the server is not RUNNING, STOPPING or STOPPED (it was
+     * never started, or is still starting)
      */
     stop(): Promise<void>;
 
