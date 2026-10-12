@@ -1,6 +1,9 @@
-// Layer-2 behavioral smoke against the @137 (1.0.0) published artifacts.
-// Scope: gap functions NOT already exercised by example e2e — pure / in-process
-// only (no brokers). Each check is isolated; asserts real semantics where known.
+// Behavioral smoke against the PACKED artifacts of the release candidate.
+// Scope: functions not already exercised by the example e2e suites, with no
+// brokers and no auth interceptors. Server shutdown checks open loopback
+// sockets (HTTP/2 and TCP) to observe drain and force-close. Each check is
+// isolated and asserts real semantics where known. Signatures are not checked
+// here (this file runs type-stripped): usage.ts and usage-typecheck.mjs do that.
 import assert from "node:assert";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

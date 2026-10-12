@@ -7,9 +7,10 @@
 // checked only. Mirrors the documented patterns in examples/getting-started.
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { createServer, defineCatalog, defineService } from "@connectum/core";
+import { createServer, defineCatalog, defineService, type ServiceCatalog } from "@connectum/core";
 import { createEventBus, MemoryAdapter } from "@connectum/events";
 import { createDefaultInterceptors, defaultFailurePredicate } from "@connectum/interceptors";
+import { serviceCatalog } from "../gen/catalog.gen.ts";
 import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
 // defineService — handlers for all four RPC cardinalities, as a consumer writes them.
@@ -43,3 +44,27 @@ export const failureIsInfra: boolean = defaultFailurePredicate(new ConnectError(
 // message constructors round-trip with their generated schemas.
 const req = create(HelloRequestSchema, { name: "x" });
 export const reqName: string = req.name;
+
+// The catalog the published buf plugin generated (gen/catalog.gen.ts): its runtime
+// export must type as a ServiceCatalog, and its module augmentation of
+// ConnectumCallMap must type a plain-object `ctx.call` against the packed core. If
+// the generated file did not compile against the published packages, the key below
+// would not be assignable and this fixture would fail.
+export const generatedCatalog: ServiceCatalog = serviceCatalog;
+export const catalogBackedService = defineService(GreeterService, {
+    sayHello: async (reqMessage, ctx) => {
+        const reply = await ctx.call("greeter.v1.GreeterService/SayHello", { name: reqMessage.name });
+        return create(HelloReplySchema, { message: reply.message });
+    },
+    sayHelloStream: async function* (reqMessage) {
+        yield create(HelloReplySchema, { message: reqMessage.name });
+    },
+    sayHelloCollect: async (reqs) => {
+        let last = "";
+        for await (const r of reqs) last = r.name;
+        return create(HelloReplySchema, { message: last });
+    },
+    sayHelloChat: async function* (reqs) {
+        for await (const r of reqs) yield create(HelloReplySchema, { message: r.name });
+    },
+});
