@@ -443,16 +443,3 @@ describe("ctx.call — a local target's request gate applies to internal calls",
         assert.strictEqual(res.message, "outer:echo:x");
     });
 });
-
-describe("ctx.call — open items (escalated, not yet locked)", () => {
-    // Q15 / task 4.10: ctx.call is structurally impossible outside a handler —
-    // a Context only exists where a HandlerContext exists. There is no
-    // free-standing entrypoint to test; behaviour is not a deferred feature.
-    it.todo("ctx.call outside a handler context — structurally impossible; awaiting product decision");
-
-    // Disputed cell: construction-time server.client(Desc) with no catalog.
-    // spec.md/tasks 7.4 prose says FailedPrecondition; the user-approved Q15
-    // split (and current Server.ts) throws CatalogConfigError. Stale prose must
-    // be reconciled before this is asserted as a contract.
-    it.todo("server.client(Desc) with no catalog — CatalogConfigError vs FailedPrecondition pending spec reconciliation");
-});

@@ -106,6 +106,20 @@ describe("Server.client (unified auto-routing)", () => {
         );
     });
 
+    it("a missing remoteResolver is a configuration error, not an RPC error code", () => {
+        // The developer fixes this in code before running; it must not travel as
+        // a ConnectError (and never as Unimplemented, which means a dispatch miss).
+        const emptyServer = createServer({ services: [] });
+        let thrown: unknown;
+        try {
+            emptyServer.client(EchoService);
+        } catch (err) {
+            thrown = err;
+        }
+        assert.ok(thrown instanceof CatalogConfigError, `expected CatalogConfigError, got: ${String(thrown)}`);
+        assert.ok(!(thrown instanceof ConnectError), "a configuration mistake must not be a ConnectError");
+    });
+
     it("addService before materialize → client() routes to local", async () => {
         const server = createServer({ services: [] });
         server.addService(makeEchoRoutes());
