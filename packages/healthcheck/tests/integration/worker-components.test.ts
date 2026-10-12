@@ -213,10 +213,19 @@ describe("a service that disappears from the registry", () => {
         const client = createClient(Health, createGrpcTransport({ baseUrl: serverUrl }));
         const controller = new AbortController();
         const received: ServingStatus[] = [];
+        let firstUpdate: () => void = () => {};
+        const firstUpdateSeen = new Promise<void>((resolve) => {
+            firstUpdate = resolve;
+        });
+        // A regression must fail the test, not hang it: the stream is cancelled at the deadline.
+        const deadline = setTimeout(() => controller.abort(), 5_000);
         const watching = (async () => {
             try {
                 for await (const update of client.watch({ service: "svc.v1.Bar" }, { signal: controller.signal })) {
                     received.push(update.status);
+                    if (received.length === 1) {
+                        firstUpdate();
+                    }
                     if (received.length >= 2) {
                         controller.abort();
                     }
@@ -226,11 +235,12 @@ describe("a service that disappears from the registry", () => {
             }
         })();
 
-        // Let the stream deliver the initial status, then re-initialize without Bar.
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        // Re-initialize without Bar only once the stream has delivered the initial status.
+        await Promise.race([firstUpdateSeen, watching]);
         manager.initialize(["svc.v1.Foo"]);
 
         await watching;
+        clearTimeout(deadline);
 
         assert.strictEqual(received[0], ServingStatus.SERVING, "initial status");
         assert.strictEqual(received[1], ServingStatus.SERVICE_UNKNOWN, "removal observed by the open stream");
