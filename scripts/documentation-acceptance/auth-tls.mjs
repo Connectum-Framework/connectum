@@ -28,6 +28,7 @@ const candidateDir = parseOption("candidate-dir");
 const candidateNodeModules = join(candidateDir, "node_modules");
 if (!existsSync(candidateNodeModules)) throw new Error(`Candidate dependencies not found: ${candidateNodeModules}`);
 const keep = process.argv.includes("--keep");
+mkdirSync(join(repo, ".tmp"), { recursive: true });
 const work = mkdtempSync(join(repo, ".tmp/auth-tls-acceptance-"));
 const outcomes = [];
 

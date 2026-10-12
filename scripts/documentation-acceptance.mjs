@@ -1,6 +1,8 @@
 /**
  * Execute documentation examples as an isolated consumer of the packed candidate.
- * Run after build with sibling docs/examples checkouts:
+ * Packs the `dist` of every package as it is, without building: run
+ * `pnpm build` after any source edit, otherwise the tarballs carry old output.
+ * Run with sibling docs/examples checkouts:
  * pnpm docs:check --docs ../docs --examples ../examples
  *
  * The examples are extracted from Markdown rather than maintained as second copies.

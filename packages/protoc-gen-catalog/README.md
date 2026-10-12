@@ -66,7 +66,7 @@ service GreeterService {
 }
 ```
 
-With the Buf config below, `buf generate` writes the protobuf module to
+With the `buf.gen.yaml` from Quick Start below, `buf generate` writes the protobuf module to
 `gen/greeter/v1/greeter_pb.ts` and the catalog to `gen/catalog.gen.ts`. The
 catalog imports the generated service from `./greeter/v1/greeter_pb.js`.
 
