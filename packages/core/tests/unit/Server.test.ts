@@ -209,21 +209,41 @@ describe("createServer", () => {
             assert.strictEqual(server.isRunning, false);
         });
 
-        it("should throw if called after already stopped", async () => {
-            const service = createMockService();
-
+        // Contract (graceful-shutdown guide, "Idempotent stop()"): stop() is safe to
+        // call any number of times. After the first call the server is STOPPED and
+        // later calls neither throw nor repeat the shutdown.
+        it("resolves without error and without repeating the shutdown when called again after stopping", async () => {
             const server = createServer({
-                services: [service],
+                services: [createMockService()],
                 port: 0,
             });
+            const events: string[] = [];
+            server.on("stopping", () => events.push("stopping"));
+            server.on("stop", () => events.push("stop"));
+            server.on("error", () => events.push("error"));
 
             await server.start();
             await server.stop();
+            await server.stop();
+            await server.stop();
 
-            await assert.rejects(
-                () => server.stop(),
-                /Cannot stop server: current state is "stopped"/,
-            );
+            assert.deepStrictEqual(events, ["stopping", "stop"]);
+            assert.strictEqual(server.state, ServerState.STOPPED);
+        });
+
+        it("runs a registered shutdown hook exactly once across repeated stop() calls", async () => {
+            const server = createServer({
+                services: [createMockService()],
+                port: 0,
+            });
+            const hook = mock.fn(async () => {});
+            server.onShutdown("once", hook);
+
+            await server.start();
+            await Promise.all([server.stop(), server.stop()]);
+            await server.stop();
+
+            assert.strictEqual(hook.mock.calls.length, 1);
         });
     });
 
