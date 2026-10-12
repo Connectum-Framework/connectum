@@ -17,42 +17,56 @@ import { matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 
+/** One decimal octet: `0` or 1-3 digits without a leading zero, so `010` and `1e1` are not octets. */
+const OCTET = /^(?:0|[1-9]\d{0,2})$/;
+/** A CIDR prefix length: one or two plain digits (the range is checked separately). */
+const PREFIX = /^\d{1,2}$/;
+
 /**
- * Match an IP address against a pattern (exact or CIDR notation).
- *
- * Supports:
- * - Exact match: "10.0.0.1"
- * - CIDR range: "10.0.0.0/8"
+ * Parse a dotted-quad IPv4 address into an unsigned 32-bit integer, or `null`
+ * when the text is anything else. Parsing is strict on purpose: `Number()` and
+ * `parseInt()` accept empty parts, hex, exponents, signs and trailing junk, and
+ * such a value must never be read as an address inside a trusted range.
  */
-function isValidOctet(value: number): boolean {
-    return Number.isInteger(value) && value >= 0 && value <= 255;
+function parseIPv4(text: string): number | null {
+    const parts = text.split(".");
+    if (parts.length !== 4) return null;
+    let value = 0;
+    for (const part of parts) {
+        if (!OCTET.test(part)) return null;
+        const octet = Number(part);
+        if (octet > 255) return null;
+        // Plain arithmetic (a double holds 32 bits exactly), so no signed
+        // bit-shift can flip the high bit.
+        value = value * 256 + octet;
+    }
+    return value;
 }
 
+/**
+ * Match an IPv4 address against a pattern: an exact string or `a.b.c.d/prefix`.
+ *
+ * A pattern that is not a well-formed CIDR block (for example `10.0.0.0/33`,
+ * `10.0.0.0/abc`) matches nothing but its exact text: `expectedValues` also
+ * carries shared secrets, which may legitimately contain `/`, so a malformed
+ * block cannot be told apart from a secret and must not widen trust.
+ */
 function matchesIp(address: string, pattern: string): boolean {
     if (address === pattern) return true;
 
-    if (pattern.includes("/")) {
-        const [network, prefixStr] = pattern.split("/");
-        if (!network || !prefixStr) return false;
-        const prefix = Number.parseInt(prefixStr, 10);
-        if (Number.isNaN(prefix) || prefix < 0 || prefix > 32) return false;
-        const peerParts = address.split(".").map(Number);
-        const networkParts = network.split(".").map(Number);
-        if (peerParts.length !== 4 || networkParts.length !== 4) return false;
-        if (!peerParts.every(isValidOctet) || !networkParts.every(isValidOctet)) return false;
-        const [p0 = 0, p1 = 0, p2 = 0, p3 = 0] = peerParts;
-        const [n0 = 0, n1 = 0, n2 = 0, n3 = 0] = networkParts;
-        // Addresses as unsigned 32-bit integers in plain arithmetic (a double holds
-        // them exactly), so no signed bit-shift can flip the high bit.
-        const peerInt = ((p0 * 256 + p1) * 256 + p2) * 256 + p3;
-        const networkInt = ((n0 * 256 + n1) * 256 + n2) * 256 + n3;
-        // Two addresses share the first `prefix` bits exactly when they fall into
-        // the same aligned block of 2^(32 - prefix) addresses.
-        const blockSize = 2 ** (32 - prefix);
-        return Math.floor(peerInt / blockSize) === Math.floor(networkInt / blockSize);
-    }
-
-    return false;
+    const slash = pattern.indexOf("/");
+    if (slash === -1) return false;
+    const prefixText = pattern.slice(slash + 1);
+    if (!PREFIX.test(prefixText)) return false;
+    const prefix = Number(prefixText);
+    if (prefix > 32) return false;
+    const network = parseIPv4(pattern.slice(0, slash));
+    const peer = parseIPv4(address);
+    if (network === null || peer === null) return false;
+    // Two addresses share the first `prefix` bits exactly when they fall into
+    // the same aligned block of 2^(32 - prefix) addresses.
+    const blockSize = 2 ** (32 - prefix);
+    return Math.floor(peer / blockSize) === Math.floor(network / blockSize);
 }
 
 /**
