@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { resolveConfig } from "../../src/scaffold/config.ts";
+import { generateServiceImpl } from "../../src/scaffold/generateService.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { generateReadme, transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
@@ -92,5 +93,15 @@ describe("generateServer / generateReadme: --no-sample", () => {
         assert.doesNotMatch(readme, /Greeter/);
         const start = readme.indexOf("## Getting started");
         assert.ok(readme.indexOf("generate service <name>", start) < readme.indexOf("run start", start));
+    });
+
+    it("warns, with and without the sample, that a generated handler is a stub answering Unimplemented", () => {
+        // The warning is only true while the generated handler really throws Unimplemented.
+        assert.match(generateServiceImpl("billing", false), /Code\.Unimplemented/);
+        for (const config of [configOnly, { ...configOnly, sample: true }]) {
+            const readme = generateReadme(config);
+            assert.match(readme, /connectum generate service <name>/);
+            assert.match(readme, /throws\s+`Unimplemented`/);
+        }
     });
 });

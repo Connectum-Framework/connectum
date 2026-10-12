@@ -399,10 +399,16 @@ export function generateReadme(config: ScaffoldConfig): string {
         : `${pm} install\nnpx @connectum/cli generate service <name>   # buf needs at least one proto file\n${run("start")}`;
     const nextSteps = config.sample
         ? `Replace the sample \`Greeter\` service under \`proto/\` and \`src/services/\` with your
-own contract, then run \`buf generate\`.`
+own contract, then run \`buf generate\`.
+
+A service added with \`connectum generate service <name>\` starts as a stub: its handler throws
+\`Unimplemented\` until you replace the \`throw\` with your logic.`
         : `This project has no service yet. Run \`connectum generate service <name>\` to create
 the proto contract, the handler and a test, then register the service in
-\`src/server.ts\` as the command prints.`;
+\`src/server.ts\` as the command prints.
+
+The generated handler is a stub: it throws \`Unimplemented\` until you replace the \`throw\`
+with your logic.`;
     return `# ${config.name}
 
 A Connectum gRPC/ConnectRPC service scaffolded with \`connectum init\`.
