@@ -130,25 +130,29 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             publisherOptions: { mandatory: true, correlationHeader: false },
         });
         await adapter.connect();
+        // A plain amqplib consumer is the oracle: adapter.subscribe() strips internal
+        // headers on delivery, so it could not show a header that is on the wire.
+        const conn = await connect(url);
         try {
-            const seen: Array<ReadonlyMap<string, string>> = [];
-            const sub = await adapter.subscribe(
-                ["it.cleanwire.evt"],
-                async (event, ack) => {
-                    seen.push(event.metadata);
-                    await ack();
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.cleanwire", "it.cleanwire.evt");
+            const received: amqp.ConsumeMessage[] = [];
+            await ch.consume(
+                q.queue,
+                (m) => {
+                    if (m) received.push(m);
                 },
-                { group: "g1" },
+                { noAck: true },
             );
 
             await adapter.publish("it.cleanwire.evt", new Uint8Array([7]));
-            await waitFor(() => seen.length === 1);
+            await waitFor(() => received.length === 1);
 
-            // metadata strips internal headers anyway — verify no stray id key
-            assert.equal(seen[0]?.has("x-connectum-publish-id"), false);
-
-            await sub.unsubscribe();
+            const headers = (received[0]?.properties.headers ?? {}) as Record<string, unknown>;
+            assert.equal(headers["x-connectum-publish-id"], undefined, "the correlation header must not be on the wire");
         } finally {
+            await conn.close();
             await adapter.disconnect();
         }
     });

@@ -319,6 +319,7 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
         };
         if (cfg.audience !== undefined) verifyOptions.audience = cfg.audience;
         if (cfg.maxTokenAge !== undefined) verifyOptions.maxTokenAge = cfg.maxTokenAge;
+        if (cfg.requireExpiration !== false) verifyOptions.requiredClaims = ["exp"];
 
         let payload: JWTPayload;
         try {
