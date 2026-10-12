@@ -15,14 +15,12 @@ name: CLI Scaffold Matrix
 # live-broker event integration (the generated events test is the broker-free
 # MemoryAdapter smoke).
 
+# Pull requests trigger this workflow unconditionally, and the `changes` job decides
+# whether the cells are needed. A path filter on the trigger would leave the required
+# `Scaffold matrix` status absent on every PR that does not touch the CLI, and GitHub
+# would wait for it forever.
 on:
   pull_request:
-    paths:
-      - "packages/cli/**"
-      - "scripts/scaffold-check.mjs"
-      - "scripts/lib/**"
-      - "scripts/scaffold-check-fixtures/**"
-      - ".github/workflows/cli-scaffold-matrix.yml"
   push:
     branches: [main]
     paths:
@@ -37,10 +35,40 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
+  actions: read
 
 jobs:
+  changes:
+    name: scaffold inputs changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      # The same paths the workflow used to filter on. A push to main is already
+      # path-filtered by the trigger, so it is always relevant here.
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          if echo "$files" | grep -Eq '^(packages/cli/|scripts/scaffold-check\.mjs$|scripts/lib/|scripts/scaffold-check-fixtures/|\.github/workflows/cli-scaffold-matrix\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   discover:
     name: discover combinations
+    needs: changes
+    if: ${{ needs.changes.outputs.relevant == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -58,7 +86,8 @@ jobs:
 
   scaffold:
     name: "init ${{ matrix.combo.name }}"
-    needs: discover
+    needs: [changes, discover]
+    if: ${{ needs.changes.outputs.relevant == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -91,3 +120,59 @@ jobs:
       # then tag examples and bump DEFAULT_BASE_REF — do not bump the tag alone.
       - name: Scaffold and validate
         run: pnpm scaffold:check --combo ${{ matrix.combo.name }}
+
+  # One stable status for branch protection. The cell names carry the combination
+  # name and the workflow only runs its cells when scaffold inputs changed, so
+  # requiring the cells directly would hang every other PR. `always()` keeps this job
+  # running when a cell fails: a skipped job counts as a success to GitHub.
+  #
+  # `init base-drift` is deliberately not required: it scaffolds from the live
+  # examples@main, so its verdict can change without any change in this repository.
+  # It stays visible as its own cell and is reported here as a notice.
+  scaffold-matrix:
+    name: Scaffold matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, discover, scaffold]
+    if: ${{ always() }}
+    steps:
+      - name: Require every deterministic init cell to have succeeded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS"
+          if [ "$(echo "$NEEDS" | jq -r '.changes.result')" != "success" ]; then
+            echo "::error::changes finished as '$(echo "$NEEDS" | jq -r '.changes.result')'"
+            exit 1
+          fi
+          if [ "$(echo "$NEEDS" | jq -r '.changes.outputs.relevant')" != "true" ]; then
+            echo "No scaffold inputs changed; the cells were not needed."
+            exit 0
+          fi
+          if [ "$(echo "$NEEDS" | jq -r '.discover.result')" != "success" ]; then
+            echo "::error::discover finished as '$(echo "$NEEDS" | jq -r '.discover.result')'"
+            exit 1
+          fi
+          jobs=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name | startswith("init ")) | [.name, .conclusion] | @tsv')
+          echo "$jobs"
+          if [ -z "$jobs" ]; then
+            echo "::error::no init cell ran"
+            exit 1
+          fi
+          failed=0
+          while IFS=$'\t' read -r name conclusion; do
+            if [ "$name" = "init base-drift" ]; then
+              if [ "$conclusion" != "success" ]; then
+                echo "::notice::init base-drift finished as '$conclusion' (not required)"
+              fi
+              continue
+            fi
+            if [ "$conclusion" != "success" ]; then
+              echo "::error::$name finished as '$conclusion'"
+              failed=1
+            fi
+          done <<< "$jobs"
+          exit $failed

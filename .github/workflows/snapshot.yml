@@ -62,3 +62,30 @@ jobs:
       # the head SHA), then run the publish-boundary oracle + behavioral smoke.
       - name: Run release gate against the PR snapshot
         run: node scripts/release-gate/run.mjs --mode preview --ref "${{ github.event.pull_request.head.sha }}"
+
+  # One stable status for branch protection. The gate cells carry the Node
+  # version in their names, so requiring them directly would break on every
+  # runtime-matrix change. `always()` keeps this job running when a cell fails:
+  # a skipped job counts as a success to GitHub, so a plain `needs` would let a
+  # failed or skipped gate through. Anything other than a success fails it.
+  release-gate-matrix:
+    name: Release gate matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [snapshot, release-gate]
+    if: ${{ always() }}
+    steps:
+      - name: Require the snapshot and every gate cell to have succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS"
+          failed=0
+          for job in snapshot release-gate; do
+            result=$(echo "$NEEDS" | jq -r --arg job "$job" '.[$job].result')
+            if [ "$result" != "success" ]; then
+              echo "::error::$job finished as '$result'"
+              failed=1
+            fi
+          done
+          exit $failed
