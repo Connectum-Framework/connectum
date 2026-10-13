@@ -12,7 +12,7 @@ import {
     dispatchLifecycle,
     handleDelivery,
     isAutoRetriablePublishError,
-    isBrokerClosedCurrentChannel,
+    isBrokerClosedChannel,
     isConnectionLostError,
     isDeterministicTopologyDrift,
     normalizeInitialConnectBudget,
@@ -1483,40 +1483,41 @@ describe("resolveDisconnectCause", () => {
     });
 });
 
-describe("isBrokerClosedCurrentChannel", () => {
+describe("isBrokerClosedChannel", () => {
     const makeChannel = (): amqp.ConfirmChannel => ({}) as unknown as amqp.ConfirmChannel;
     const closedWith = (channel: amqp.ConfirmChannel, code: unknown): WeakMap<amqp.ConfirmChannel, Error> =>
         new WeakMap([[channel, Object.assign(new Error("Channel closed by server"), { code })]]);
 
-    it("stops on any broker reply code that closed the current channel: 403, 404, 406, 541", () => {
+    it("stops on any broker reply code that closed the attempt's channel: 403, 404, 406, 541", () => {
         for (const code of [403, 404, 406, 541]) {
             const channel = makeChannel();
-            assert.equal(isBrokerClosedCurrentChannel(channel, channel, closedWith(channel, code)), true, `code ${code}`);
+            assert.equal(isBrokerClosedChannel(channel, closedWith(channel, code)), true, `code ${code}`);
         }
     });
 
-    it("keeps retrying when the channel recovery has already replaced produced the code", () => {
+    it("judges the attempt's own channel: a refusal stays final after the channel was replaced", () => {
         const attempted = makeChannel();
         const replacement = makeChannel();
-        assert.equal(isBrokerClosedCurrentChannel(attempted, replacement, closedWith(attempted, 404)), false);
+        const errors = closedWith(attempted, 404);
+        assert.equal(isBrokerClosedChannel(attempted, errors), true);
+        assert.equal(isBrokerClosedChannel(replacement, errors), false, "the replacement channel has no recorded reply");
     });
 
     it("keeps retrying when the channel died with the connection and recorded no reply code", () => {
         const channel = makeChannel();
         const lost = new WeakMap<amqp.ConfirmChannel, Error>([[channel, new Error("channel closed")]]);
-        assert.equal(isBrokerClosedCurrentChannel(channel, channel, lost), false);
-        assert.equal(isBrokerClosedCurrentChannel(channel, channel, new WeakMap()), false, "no recorded error at all");
+        assert.equal(isBrokerClosedChannel(channel, lost), false);
+        assert.equal(isBrokerClosedChannel(channel, new WeakMap()), false, "no recorded error at all");
     });
 
     it("ignores a non-numeric code", () => {
         const channel = makeChannel();
-        assert.equal(isBrokerClosedCurrentChannel(channel, channel, closedWith(channel, "404")), false);
+        assert.equal(isBrokerClosedChannel(channel, closedWith(channel, "404")), false);
     });
 
     it("has nothing to judge without an attempted channel", () => {
         const channel = makeChannel();
-        assert.equal(isBrokerClosedCurrentChannel(null, channel, closedWith(channel, 404)), false);
-        assert.equal(isBrokerClosedCurrentChannel(null, null, new WeakMap()), false);
+        assert.equal(isBrokerClosedChannel(null, closedWith(channel, 404)), false);
     });
 });
 

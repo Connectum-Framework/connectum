@@ -550,21 +550,19 @@ export function resolveDisconnectCause(lastConnError: Error | null, closeCause: 
 
 /**
  * Whether the publish attempt that just failed hit a channel the broker closed
- * with a reply code (404 missing exchange, 403 internal exchange, 406, 541, ...)
- * and that channel is still the current one. The connection stays up, so
- * recovery never recreates it and a retry would meet the same closed channel.
- * Keyed on channel identity rather than a code list: any reply code kills a
- * channel the same way, a connection loss closes channels with no reply code,
- * and a code that arrived on a channel recovery has already replaced is
- * retriable.
+ * with a reply code (404 missing exchange, 403 internal exchange, 406, 541, ...).
+ * Such a refusal is deterministic: it is caused by the publish itself (or by the
+ * topology it targets), so repeating it can only get the same reply, and the
+ * publishes that were in flight on the same channel have an unknowable outcome.
+ * The adapter recreates the channel for later publishes, so "the channel is
+ * still current" no longer separates this case; the attempt's own recorded broker
+ * reply does. Keyed on the reply code rather than a code list: any code kills a
+ * channel the same way, whereas a connection loss closes channels with no reply
+ * code recorded and stays retriable.
  * Exported (not via the package barrel) for direct cross-runtime unit testing.
  */
-export function isBrokerClosedCurrentChannel(
-    attemptChannel: amqp.ConfirmChannel | null,
-    currentChannel: amqp.ConfirmChannel | null,
-    channelErrors: WeakMap<amqp.ConfirmChannel, Error>,
-): boolean {
-    if (attemptChannel === null || attemptChannel !== currentChannel) {
+export function isBrokerClosedChannel(attemptChannel: amqp.ConfirmChannel | null, channelErrors: WeakMap<amqp.ConfirmChannel, Error>): boolean {
+    if (attemptChannel === null) {
         return false;
     }
     const channelError = channelErrors.get(attemptChannel) as { code?: unknown } | undefined;
@@ -733,7 +731,7 @@ export function dispatchLifecycle(lifecycle: AmqpLifecycleCallbacks | undefined,
             }
             break;
         default:
-            // blocked / unblocked / settlement-skipped / consumer-lost / consumer-restored / consumer-restore-failed / lifecycle-error: union-only observability.
+            // blocked / unblocked / settlement-skipped / consumer-lost / consumer-restored / consumer-restore-failed / publish-channel-lost / publish-channel-restored / lifecycle-error: union-only observability.
             break;
     }
 }
@@ -1680,8 +1678,79 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             publishChannelErrors.set(ch, err);
         });
 
+        // The broker closed ONLY this channel with a reply code while the
+        // connection stays up: nothing but the next publish can replace it (see
+        // recreatePublishChannel). A close with no recorded reply code is a connection
+        // loss or our own close, which connection recovery owns.
+        ch.on("close", () => {
+            const reply = publishChannelErrors.get(ch);
+            if (typeof (reply as { code?: unknown } | undefined)?.code !== "number" || publishChannel !== ch || closing || !isCurrent()) {
+                return;
+            }
+            // A topology error while the connection is still being set up closes this
+            // channel too; that failure belongs to the setup (its own events and thrown
+            // error), and the adapter is not yet connected, so there is nothing to recreate.
+            if ((options.recovery !== false ? liveModel : connection) === null) {
+                return;
+            }
+            dispatchLifecycle(lifecycle, { type: "publish-channel-lost", error: reply as Error });
+        });
+
         publishChannel = ch;
         return ch;
+    }
+
+    /** The recreation of the publish channel in flight, shared by every publish that needs it. */
+    let publishChannelRecreation: Promise<void> | null = null;
+
+    /**
+     * Whether the current publish channel is one the broker closed with a reply
+     * code while the connection stays up, so only a recreation can bring it back.
+     */
+    function isPublishChannelBrokerClosed(): boolean {
+        const ch = publishChannel;
+        return ch !== null && closedPublishChannels.has(ch) && isBrokerClosedChannel(ch, publishChannelErrors);
+    }
+
+    /**
+     * Replace a broker-closed publish channel with a new one on the live
+     * connection, once for all publishes that need it. Recreation is driven by
+     * publishes (no timer of its own), so a permanently wrong topology costs one
+     * channel per failing publish at most. The topology is not declared again, and
+     * the pending-return tracking is left alone: it also belongs to concurrent
+     * publishes on the new channel.
+     *
+     * Resolves when the channel was recreated or is no longer the adapter's
+     * business (a disconnect or a newer connection took over); the caller then
+     * reads `publishChannel` again. A failed open rejects every waiting publish
+     * with `AmqpConnectionError`; the next publish tries again.
+     */
+    async function recreatePublishChannel(): Promise<void> {
+        if (publishChannelRecreation === null) {
+            // With recovery the raw model is `liveModel`; `connection` is then the recovering wrapper, which parks channel opens while the connection is down.
+            const recoveryEnabled = options.recovery !== false;
+            const currentModel = (): amqp.ChannelModel | null => (recoveryEnabled ? liveModel : connection);
+            const dead = publishChannel;
+            const model = currentModel();
+            if (!isPublishChannelBrokerClosed() || model === null || closing) {
+                return;
+            }
+            const gen = generation;
+            const isCurrent = (): boolean => !closing && generation === gen && publishChannel === dead && currentModel() === model;
+            publishChannelRecreation = (async () => {
+                try {
+                    const fresh = await setupPublishChannel(model, isCurrent);
+                    if (fresh !== null) {
+                        dispatchLifecycle(lifecycle, { type: "publish-channel-restored" });
+                    }
+                } catch (err) {
+                    throw new AmqpConnectionError(`Publish channel could not be recreated: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+                } finally {
+                    publishChannelRecreation = null;
+                }
+            })();
+        }
+        await publishChannelRecreation;
     }
 
     /**
@@ -2362,6 +2431,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             // With retry disabled the entry guard is the historical fail-fast;
             // with retry enabled a disconnected window is a RETRIABLE state
             // (the whole point of #195), so the guard moves into each attempt.
+            if (isPublishChannelBrokerClosed()) {
+                // The broker closed only the channel: replace it before judging whether we are connected.
+                await recreatePublishChannel();
+            }
             const chAtEntry = publishChannel;
             if (publishRetry === null && (!chAtEntry || closing || connection === null)) {
                 throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
@@ -2532,6 +2605,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     try {
                         // Re-resolve the CURRENT channel per attempt (recovery
                         // may have swapped it between retries).
+                        if (isPublishChannelBrokerClosed()) {
+                            await recreatePublishChannel();
+                        }
                         attemptChannel = publishChannel;
                         if (!attemptChannel || closing || connection === null) {
                             throw new AmqpConnectionError("AmqpAdapter: not connected (or recovery in progress)");
@@ -2541,7 +2617,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         if (closing || attempt >= publishRetry.maxRetries || !isAutoRetriablePublishError(err, publishRetry)) {
                             throw err;
                         }
-                        if (isBrokerClosedCurrentChannel(attemptChannel, publishChannel, publishChannelErrors)) {
+                        if (isBrokerClosedChannel(attemptChannel, publishChannelErrors)) {
                             throw err;
                         }
                         // No connection object at all (fatal topology stop,
