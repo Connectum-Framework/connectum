@@ -18,13 +18,12 @@ export {
     ATTR_NETWORK_PEER_PORT,
     ATTR_NETWORK_PROTOCOL_NAME,
     ATTR_NETWORK_TRANSPORT,
-    ATTR_RPC_CONNECT_RPC_STATUS_CODE,
     ATTR_RPC_MESSAGE_ID,
     ATTR_RPC_MESSAGE_TYPE,
     ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
     ATTR_RPC_METHOD,
-    ATTR_RPC_SERVICE,
-    ATTR_RPC_SYSTEM,
+    ATTR_RPC_RESPONSE_STATUS_CODE,
+    ATTR_RPC_SYSTEM_NAME,
     ATTR_SERVER_ADDRESS,
     ATTR_SERVER_PORT,
     CONNECTUM_INTERNAL_TRANSPORT_HEADER,
@@ -32,7 +31,7 @@ export {
     ConnectErrorCode,
     ConnectErrorCodeName,
     RPC_MESSAGE_EVENT,
-    RPC_SYSTEM_CONNECT_RPC,
+    RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
 // Client interceptor (outgoing RPC tracing + metrics)
 export { createOtelClientInterceptor } from "./client-interceptor.ts";
@@ -62,7 +61,7 @@ export type { OtelProvider, ProviderOptions } from "./provider.ts";
 // Provider management
 export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
 // Shared utilities (for advanced users)
-export { buildErrorAttributes, detectConnectumTransport, estimateMessageSize } from "./shared.ts";
+export { buildErrorAttributes, buildSuccessAttributes, detectConnectumTransport, estimateMessageSize } from "./shared.ts";
 export { traceAll } from "./traceAll.ts";
 // Deep tracing helpers (business logic instrumentation)
 export { traced } from "./traced.ts";

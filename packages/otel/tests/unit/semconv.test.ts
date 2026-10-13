@@ -23,13 +23,12 @@ import {
 	ATTR_NETWORK_PEER_PORT,
 	ATTR_NETWORK_PROTOCOL_NAME,
 	ATTR_NETWORK_TRANSPORT,
-	ATTR_RPC_CONNECT_RPC_STATUS_CODE,
 	ATTR_RPC_MESSAGE_ID,
 	ATTR_RPC_MESSAGE_TYPE,
 	ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
 	ATTR_RPC_METHOD,
-	ATTR_RPC_SERVICE,
-	ATTR_RPC_SYSTEM,
+	ATTR_RPC_RESPONSE_STATUS_CODE,
+	ATTR_RPC_SYSTEM_NAME,
 	ATTR_SERVER_ADDRESS,
 	ATTR_SERVER_PORT,
 	RPC_MESSAGE_EVENT,
@@ -264,13 +263,12 @@ describe("Semantic Conventions: metric names", () => {
 describe("Semantic Conventions: attribute names", () => {
 	describe("RPC attributes", () => {
 		const rpcAttributes = [
-			{ constant: ATTR_RPC_SYSTEM, expected: "rpc.system", name: "ATTR_RPC_SYSTEM" },
-			{ constant: ATTR_RPC_SERVICE, expected: "rpc.service", name: "ATTR_RPC_SERVICE" },
+			{ constant: ATTR_RPC_SYSTEM_NAME, expected: "rpc.system.name", name: "ATTR_RPC_SYSTEM_NAME" },
 			{ constant: ATTR_RPC_METHOD, expected: "rpc.method", name: "ATTR_RPC_METHOD" },
 			{
-				constant: ATTR_RPC_CONNECT_RPC_STATUS_CODE,
-				expected: "rpc.connect_rpc.status_code",
-				name: "ATTR_RPC_CONNECT_RPC_STATUS_CODE",
+				constant: ATTR_RPC_RESPONSE_STATUS_CODE,
+				expected: "rpc.response.status_code",
+				name: "ATTR_RPC_RESPONSE_STATUS_CODE",
 			},
 		];
 
@@ -334,10 +332,9 @@ describe("Semantic Conventions: attribute names", () => {
 	describe("attribute namespace compliance", () => {
 		it("all RPC attributes should be in the 'rpc.*' namespace", () => {
 			const rpcAttrs = [
-				ATTR_RPC_SYSTEM,
-				ATTR_RPC_SERVICE,
+				ATTR_RPC_SYSTEM_NAME,
 				ATTR_RPC_METHOD,
-				ATTR_RPC_CONNECT_RPC_STATUS_CODE,
+				ATTR_RPC_RESPONSE_STATUS_CODE,
 			];
 
 			for (const attr of rpcAttrs) {
