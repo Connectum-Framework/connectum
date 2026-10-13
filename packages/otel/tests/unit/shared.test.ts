@@ -20,13 +20,12 @@ import {
 	ATTR_ERROR_TYPE,
 	ATTR_NETWORK_PROTOCOL_NAME,
 	ATTR_NETWORK_TRANSPORT,
-	ATTR_RPC_CONNECT_RPC_STATUS_CODE,
 	ATTR_RPC_METHOD,
-	ATTR_RPC_SERVICE,
-	ATTR_RPC_SYSTEM,
+	ATTR_RPC_RESPONSE_STATUS_CODE,
+	ATTR_RPC_SYSTEM_NAME,
 	ATTR_SERVER_ADDRESS,
 	ATTR_SERVER_PORT,
-	RPC_SYSTEM_CONNECT_RPC,
+	RPC_SYSTEM_NAME_CONNECTRPC,
 } from "../../src/attributes.ts";
 import {
 	applyAttributeFilter,
@@ -85,12 +84,12 @@ describe("estimateMessageSize", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildErrorAttributes", () => {
-	it("should return error.type=ConnectErrorCodeName + rpc.connect_rpc.status_code for ConnectError", () => {
+	it("should return error.type=ConnectErrorCodeName + rpc.response.status_code for ConnectError", () => {
 		const error = new ConnectError("not found", Code.NotFound);
 		const attrs = buildErrorAttributes(error);
 
 		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "NOT_FOUND");
-		assert.strictEqual(attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE], Code.NotFound);
+		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 	});
 
 	it("should return error.type=constructor name for generic Error", () => {
@@ -99,9 +98,9 @@ describe("buildErrorAttributes", () => {
 
 		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "TypeError");
 		assert.strictEqual(
-			attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE],
+			attrs[ATTR_RPC_RESPONSE_STATUS_CODE],
 			undefined,
-			"should not include rpc.connect_rpc.status_code for generic Error",
+			"should not include rpc.response.status_code for generic Error",
 		);
 	});
 
@@ -128,7 +127,7 @@ describe("buildErrorAttributes", () => {
 		const attrs = buildErrorAttributes(error);
 
 		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "NOT_FOUND");
-		assert.strictEqual(attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE], 5);
+		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 	});
 
 	it("should handle ConnectError with Code.Internal (13)", () => {
@@ -136,7 +135,7 @@ describe("buildErrorAttributes", () => {
 		const attrs = buildErrorAttributes(error);
 
 		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "INTERNAL");
-		assert.strictEqual(attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE], 13);
+		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "INTERNAL");
 	});
 
 	it("should handle ConnectError with Code.InvalidArgument (3)", () => {
@@ -144,7 +143,7 @@ describe("buildErrorAttributes", () => {
 		const attrs = buildErrorAttributes(error);
 
 		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "INVALID_ARGUMENT");
-		assert.strictEqual(attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE], 3);
+		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "INVALID_ARGUMENT");
 	});
 });
 
@@ -160,9 +159,11 @@ describe("buildBaseAttributes", () => {
 			serverAddress: "localhost",
 		});
 
-		assert.strictEqual(attrs[ATTR_RPC_SYSTEM], RPC_SYSTEM_CONNECT_RPC);
-		assert.strictEqual(attrs[ATTR_RPC_SERVICE], "test.TestService");
-		assert.strictEqual(attrs[ATTR_RPC_METHOD], "TestMethod");
+		// Key spellings come from the OpenTelemetry RPC conventions for Connect, not from the constants.
+		assert.strictEqual(attrs["rpc.system.name"], "connectrpc");
+		assert.strictEqual(attrs["rpc.method"], "test.TestService/TestMethod");
+		assert.ok(!("rpc.service" in attrs), "rpc.service is folded into rpc.method");
+		assert.ok(!("rpc.system" in attrs), "rpc.system was replaced by rpc.system.name");
 		assert.strictEqual(attrs[ATTR_SERVER_ADDRESS], "localhost");
 		assert.strictEqual(attrs[ATTR_NETWORK_PROTOCOL_NAME], "connect_rpc");
 		assert.strictEqual(attrs[ATTR_NETWORK_TRANSPORT], "tcp");
@@ -193,7 +194,7 @@ describe("buildBaseAttributes", () => {
 		);
 	});
 
-	it("should always include rpc.system, rpc.service, rpc.method, server.address, network.protocol.name, network.transport", () => {
+	it("should always include rpc.system.name, rpc.method, server.address, network.protocol.name, network.transport", () => {
 		const attrs = buildBaseAttributes({
 			service: "my.Service",
 			method: "MyMethod",
@@ -201,8 +202,7 @@ describe("buildBaseAttributes", () => {
 		});
 
 		const expectedKeys = [
-			ATTR_RPC_SYSTEM,
-			ATTR_RPC_SERVICE,
+			ATTR_RPC_SYSTEM_NAME,
 			ATTR_RPC_METHOD,
 			ATTR_SERVER_ADDRESS,
 			ATTR_NETWORK_PROTOCOL_NAME,
@@ -222,8 +222,7 @@ describe("buildBaseAttributes", () => {
 describe("applyAttributeFilter", () => {
 	it("should return attrs unchanged when no filter", () => {
 		const attrs = {
-			[ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-			[ATTR_RPC_SERVICE]: "test.Service",
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 			[ATTR_RPC_METHOD]: "Method",
 		};
 
@@ -234,23 +233,20 @@ describe("applyAttributeFilter", () => {
 
 	it("should filter attributes based on filter function", () => {
 		const attrs = {
-			[ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-			[ATTR_RPC_SERVICE]: "test.Service",
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 			[ATTR_SERVER_PORT]: 5000,
 		};
 
 		const result = applyAttributeFilter(attrs, (key) => key !== ATTR_SERVER_PORT);
 
 		assert.deepStrictEqual(result, {
-			[ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-			[ATTR_RPC_SERVICE]: "test.Service",
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 		});
 	});
 
 	it("should return empty object when filter blocks all", () => {
 		const attrs = {
-			[ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-			[ATTR_RPC_SERVICE]: "test.Service",
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 		};
 
 		const result = applyAttributeFilter(attrs, () => false);
@@ -260,8 +256,7 @@ describe("applyAttributeFilter", () => {
 
 	it("should return all when filter allows all", () => {
 		const attrs = {
-			[ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-			[ATTR_RPC_SERVICE]: "test.Service",
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 			[ATTR_RPC_METHOD]: "Method",
 			[ATTR_SERVER_ADDRESS]: "localhost",
 		};

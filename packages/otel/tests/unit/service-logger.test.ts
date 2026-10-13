@@ -225,11 +225,11 @@ describe("getLogger", () => {
 		capture.restore();
 	});
 
-	it("should resolve name from active span rpc.service attribute", () => {
+	it("should resolve the service name from the active span rpc.method attribute", () => {
 		const capture = captureEmit();
 		const logger = getLogger();
 
-		sdkTracer.startActiveSpan("test-span", { attributes: { "rpc.service": "order.v1.OrderService" } }, (span) => {
+		sdkTracer.startActiveSpan("test-span", { attributes: { "rpc.method": "order.v1.OrderService/GetOrder" } }, (span) => {
 			logger.info("inside span");
 			span.end();
 		});
@@ -244,7 +244,7 @@ describe("getLogger", () => {
 		const capture = captureEmit();
 		const logger = getLogger("ExplicitName");
 
-		sdkTracer.startActiveSpan("test-span", { attributes: { "rpc.service": "order.v1.OrderService" } }, (span) => {
+		sdkTracer.startActiveSpan("test-span", { attributes: { "rpc.method": "order.v1.OrderService/GetOrder" } }, (span) => {
 			logger.info("inside span");
 			span.end();
 		});

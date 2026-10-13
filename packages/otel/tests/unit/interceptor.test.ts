@@ -477,8 +477,7 @@ describe("createOtelInterceptor", () => {
 
 			// Should have received attribute keys from base attributes
 			assert.ok(filteredKeys.length > 0);
-			assert.ok(filteredKeys.includes("rpc.system"));
-			assert.ok(filteredKeys.includes("rpc.service"));
+			assert.ok(filteredKeys.includes("rpc.system.name"));
 			assert.ok(filteredKeys.includes("rpc.method"));
 			assert.ok(filteredKeys.includes("server.address"));
 		});

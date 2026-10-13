@@ -6,36 +6,28 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import {
 	ATTR_ERROR_TYPE,
-	ATTR_RPC_CONNECT_RPC_STATUS_CODE,
 	ATTR_RPC_METHOD,
-	ATTR_RPC_SERVICE,
-	ATTR_RPC_SYSTEM,
+	ATTR_RPC_RESPONSE_STATUS_CODE,
+	ATTR_RPC_SYSTEM_NAME,
 	ATTR_SERVER_ADDRESS,
 	ATTR_SERVER_PORT,
 	ConnectErrorCode,
 	ConnectErrorCodeName,
-	RPC_SYSTEM_CONNECT_RPC,
+	RPC_SYSTEM_NAME_CONNECTRPC,
 } from "../../src/attributes.ts";
 
 describe("attributes", () => {
 	describe("RPC attribute keys", () => {
-		it("ATTR_RPC_SYSTEM should equal 'rpc.system'", () => {
-			assert.strictEqual(ATTR_RPC_SYSTEM, "rpc.system");
-		});
-
-		it("ATTR_RPC_SERVICE should equal 'rpc.service'", () => {
-			assert.strictEqual(ATTR_RPC_SERVICE, "rpc.service");
+		it("ATTR_RPC_SYSTEM_NAME should equal 'rpc.system.name'", () => {
+			assert.strictEqual(ATTR_RPC_SYSTEM_NAME, "rpc.system.name");
 		});
 
 		it("ATTR_RPC_METHOD should equal 'rpc.method'", () => {
 			assert.strictEqual(ATTR_RPC_METHOD, "rpc.method");
 		});
 
-		it("ATTR_RPC_CONNECT_RPC_STATUS_CODE should equal 'rpc.connect_rpc.status_code'", () => {
-			assert.strictEqual(
-				ATTR_RPC_CONNECT_RPC_STATUS_CODE,
-				"rpc.connect_rpc.status_code",
-			);
+		it("ATTR_RPC_RESPONSE_STATUS_CODE should equal 'rpc.response.status_code'", () => {
+			assert.strictEqual(ATTR_RPC_RESPONSE_STATUS_CODE, "rpc.response.status_code");
 		});
 
 		it("ATTR_ERROR_TYPE should equal 'error.type'", () => {
@@ -51,9 +43,9 @@ describe("attributes", () => {
 		});
 	});
 
-	describe("RPC_SYSTEM_CONNECT_RPC", () => {
-		it("should equal 'connect_rpc'", () => {
-			assert.strictEqual(RPC_SYSTEM_CONNECT_RPC, "connect_rpc");
+	describe("RPC_SYSTEM_NAME_CONNECTRPC", () => {
+		it("should equal 'connectrpc'", () => {
+			assert.strictEqual(RPC_SYSTEM_NAME_CONNECTRPC, "connectrpc");
 		});
 	});
 

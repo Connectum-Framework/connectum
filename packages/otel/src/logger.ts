@@ -1,7 +1,7 @@
 import { trace } from "@opentelemetry/api";
 import type { AnyValueMap, LogRecord } from "@opentelemetry/api-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
-import { ATTR_RPC_SERVICE } from "./attributes.ts";
+import { ATTR_RPC_METHOD } from "./attributes.ts";
 import { getProvider } from "./provider.ts";
 
 export interface LoggerOptions {
@@ -19,8 +19,12 @@ export interface Logger {
 function resolveServiceName(): string | undefined {
     const span = trace.getActiveSpan();
     if (span && "attributes" in span) {
-        const service = (span as { attributes: Record<string, unknown> }).attributes[ATTR_RPC_SERVICE];
-        if (typeof service === "string") return service;
+        const method = (span as { attributes: Record<string, unknown> }).attributes[ATTR_RPC_METHOD];
+        // `rpc.method` is `<package>.<Service>/<Method>`; the logger is named after the service part.
+        if (typeof method === "string") {
+            const slash = method.lastIndexOf("/");
+            return slash > 0 ? method.slice(0, slash) : method;
+        }
     }
     return undefined;
 }

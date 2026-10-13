@@ -15,20 +15,19 @@ import {
     ATTR_ERROR_TYPE,
     ATTR_NETWORK_PROTOCOL_NAME,
     ATTR_NETWORK_TRANSPORT,
-    ATTR_RPC_CONNECT_RPC_STATUS_CODE,
     ATTR_RPC_MESSAGE_ID,
     ATTR_RPC_MESSAGE_TYPE,
     ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE,
     ATTR_RPC_METHOD,
-    ATTR_RPC_SERVICE,
-    ATTR_RPC_SYSTEM,
+    ATTR_RPC_RESPONSE_STATUS_CODE,
+    ATTR_RPC_SYSTEM_NAME,
     ATTR_SERVER_ADDRESS,
     ATTR_SERVER_PORT,
     CONNECTUM_INTERNAL_TRANSPORT_HEADER,
     CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS,
     ConnectErrorCodeName,
     RPC_MESSAGE_EVENT,
-    RPC_SYSTEM_CONNECT_RPC,
+    RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
 import type { OtelAttributeFilter } from "./types.ts";
 
@@ -169,24 +168,34 @@ export function scopeAsyncIterable<T>(iterable: AsyncIterable<T>, scope: Context
 /**
  * Builds error-specific attributes for spans and metrics.
  *
- * For ConnectError instances, records the Connect error code name and numeric code.
- * For generic Error instances, records the error constructor name.
+ * For ConnectError instances, `error.type` and `rpc.response.status_code` both carry the
+ * Connect error-code name (the convention asks `error.type` to be the status code).
+ * For generic Error instances, records the error constructor name as `error.type` only.
  * For unknown error types, records "UNKNOWN".
  *
  * @param error - The caught error
  * @returns Record of error attributes to attach to spans/metrics
  */
-export function buildErrorAttributes(error: unknown): Record<string, string | number> {
-    const attrs: Record<string, string | number> = {};
+export function buildErrorAttributes(error: unknown): Record<string, string> {
+    const attrs: Record<string, string> = {};
     if (error instanceof ConnectError) {
-        attrs[ATTR_ERROR_TYPE] = ConnectErrorCodeName[error.code] ?? "UNKNOWN";
-        attrs[ATTR_RPC_CONNECT_RPC_STATUS_CODE] = error.code;
+        const name = ConnectErrorCodeName[error.code] ?? "UNKNOWN";
+        attrs[ATTR_ERROR_TYPE] = name;
+        attrs[ATTR_RPC_RESPONSE_STATUS_CODE] = name;
     } else if (error instanceof Error) {
         attrs[ATTR_ERROR_TYPE] = error.constructor.name;
     } else {
         attrs[ATTR_ERROR_TYPE] = "UNKNOWN";
     }
     return attrs;
+}
+
+/**
+ * Attributes of a successfully completed unary call: `rpc.response.status_code="OK"`.
+ * `error.type` is deliberately absent, the convention forbids it on success.
+ */
+export function buildSuccessAttributes(): Record<string, string> {
+    return { [ATTR_RPC_RESPONSE_STATUS_CODE]: "OK" };
 }
 
 /**
@@ -207,9 +216,8 @@ export interface BaseAttributeParams {
  */
 export function buildBaseAttributes(params: BaseAttributeParams): Record<string, string | number> {
     const attrs: Record<string, string | number> = {
-        [ATTR_RPC_SYSTEM]: RPC_SYSTEM_CONNECT_RPC,
-        [ATTR_RPC_SERVICE]: params.service,
-        [ATTR_RPC_METHOD]: params.method,
+        [ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
+        [ATTR_RPC_METHOD]: `${params.service}/${params.method}`,
         [ATTR_SERVER_ADDRESS]: params.serverAddress,
         [ATTR_NETWORK_PROTOCOL_NAME]: "connect_rpc",
         // NOTE: HTTP/3 (QUIC) uses "udp" transport; update when QUIC support is added
