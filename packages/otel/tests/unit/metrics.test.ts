@@ -5,7 +5,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { Meter } from "@opentelemetry/api";
-import { createRpcServerMetrics } from "../../src/metrics.ts";
+import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { createRpcClientMetrics, createRpcServerMetrics, RPC_DURATION_BUCKETS } from "../../src/metrics.ts";
 
 interface HistogramCall {
 	name: string;
@@ -116,5 +117,57 @@ describe("metrics", () => {
 				"unit should be 'By'",
 			);
 		});
+	});
+});
+
+describe("call-duration histogram boundaries on a real SDK", () => {
+	// The OpenTelemetry RPC metrics specification lists exactly these boundaries (seconds) for
+	// rpc.server.call.duration and rpc.client.call.duration. The list is spelled out here on purpose:
+	// importing the production constant would make the test agree with itself.
+	const SPEC_BOUNDARIES = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10];
+
+	async function exportHistogram(
+		create: (meter: Meter) => { callDuration: { record(value: number): void } },
+		name: string,
+		value: number,
+	) {
+		const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+		const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
+		const provider = new MeterProvider({ readers: [reader] });
+		try {
+			create(provider.getMeter("boundaries-test")).callDuration.record(value);
+			await provider.forceFlush();
+			const metric = exporter
+				.getMetrics()
+				.flatMap((r) => r.scopeMetrics)
+				.flatMap((s) => s.metrics)
+				.find((m) => m.descriptor.name === name);
+			assert.ok(metric, `${name} should be exported`);
+			return metric.dataPoints[0]?.value as { buckets: { boundaries: number[]; counts: number[] } };
+		} finally {
+			await provider.shutdown();
+		}
+	}
+
+	it("exports rpc.server.call.duration with the specification boundaries and places 0.03 s in (0.025, 0.05]", async () => {
+		const histogram = await exportHistogram(createRpcServerMetrics, "rpc.server.call.duration", 0.03);
+
+		assert.deepStrictEqual(histogram.buckets.boundaries, SPEC_BOUNDARIES);
+		const index = histogram.buckets.counts.findIndex((c) => c === 1);
+		assert.strictEqual(SPEC_BOUNDARIES[index - 1], 0.025);
+		assert.strictEqual(SPEC_BOUNDARIES[index], 0.05);
+	});
+
+	it("exports rpc.client.call.duration with the specification boundaries and places 0.4 s in (0.25, 0.5]", async () => {
+		const histogram = await exportHistogram(createRpcClientMetrics, "rpc.client.call.duration", 0.4);
+
+		assert.deepStrictEqual(histogram.buckets.boundaries, SPEC_BOUNDARIES);
+		const index = histogram.buckets.counts.findIndex((c) => c === 1);
+		assert.strictEqual(SPEC_BOUNDARIES[index - 1], 0.25);
+		assert.strictEqual(SPEC_BOUNDARIES[index], 0.5);
+	});
+
+	it("exposes RPC_DURATION_BUCKETS equal to the specification list", () => {
+		assert.deepStrictEqual([...RPC_DURATION_BUCKETS], SPEC_BOUNDARIES);
 	});
 });
