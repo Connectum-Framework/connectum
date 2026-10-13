@@ -24,4 +24,4 @@
  */
 
 export { NatsAdapter } from "./NatsAdapter.ts";
-export type { NatsAdapterOptions, NatsConsumerOptions } from "./types.ts";
+export type { NatsAdapterOptions, NatsConsumerOptions, NatsLifecycleCallbacks, NatsLifecycleEvent } from "./types.ts";
