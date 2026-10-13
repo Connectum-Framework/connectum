@@ -126,6 +126,35 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         }, `group ${groupId} stable with ${members} member(s)`);
     }
 
+    /**
+     * Publish probe messages to `topic` until `delivered()` reports that one reached the consumer, and return how many
+     * were sent.
+     *
+     * A group without a committed offset and `fromBeginning: false` starts at the END of the topic, and the client
+     * resolves that position in memory after the broker already reports the group stable. A message published in that
+     * window is skipped for good, so a single message sent right after "stable" is lost now and then, and the test
+     * waits for it until its deadline. Delivery of a probe proves the consumer is fetching from a resolved position,
+     * which is the only moment a test may publish the messages it asserts on. Probes are sent a few times a second,
+     * not in a tight loop; later probes still in flight arrive after the first one, so assertions filter on the
+     * `probe-` prefix.
+     */
+    async function publishProbesUntilDelivered(publish: (topic: string, payload: Uint8Array) => Promise<void>, topic: string, delivered: () => boolean): Promise<number> {
+        let sent = 0;
+        let lastSentAt = 0;
+        await waitFor(async () => {
+            if (delivered()) {
+                return true;
+            }
+            if (Date.now() - lastSentAt >= 500) {
+                sent += 1;
+                lastSentAt = Date.now();
+                await publish(topic, bytes(`probe-${sent}`));
+            }
+            return false;
+        }, `a probe published to ${topic} delivered`);
+        return sent;
+    }
+
     after(async () => {
         if (!adminConnected) {
             return;
@@ -312,6 +341,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         const group = uniqueName("group");
         const before = ["before-1", "before-2", "before-3"];
         const duringIdle = ["idle-1", "idle-2"];
+        let published = 0;
 
         const first: string[] = [];
         const adapter1 = newAdapter({ fromBeginning: false });
@@ -327,10 +357,13 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             );
             try {
                 await waitForStableGroup(group, 1);
+                const probes = await publishProbesUntilDelivered((t, p) => adapter1.publish(t, p), topic, () => first.length >= 1);
                 for (const value of before) {
                     await adapter1.publish(topic, bytes(value));
                 }
-                await waitFor(async () => (await committedOffset(group, topic)) === before.length, "offset after the first run committed", async () => ({ committed: await committedOffset(group, topic), first }));
+                // The committed offset is the position in the partition, so it counts every message published to the topic.
+                published = probes + before.length;
+                await waitFor(async () => (await committedOffset(group, topic)) === published, "offset after the first run committed", async () => ({ committed: await committedOffset(group, topic), first, published }));
             } finally {
                 await subscription.unsubscribe();
             }
@@ -342,7 +375,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         } finally {
             await adapter1.disconnect();
         }
-        assert.deepEqual(first, before);
+        assert.deepEqual(first.filter((value) => !value.startsWith("probe-")), before);
 
         const second: string[] = [];
         const adapter2 = newAdapter({ fromBeginning: false });
@@ -360,7 +393,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
                 await waitFor(() => second.length >= duringIdle.length, "messages published during the gap delivered", () => ({ second }));
                 await sleep(1_000);
                 assert.deepEqual(second, duringIdle, "exactly the messages of the gap: none lost, none repeated");
-                await waitFor(async () => (await committedOffset(group, topic)) === before.length + duringIdle.length, "offset covers the gap messages");
+                await waitFor(async () => (await committedOffset(group, topic)) === published + duringIdle.length, "offset covers the gap messages");
             } finally {
                 await subscription.unsubscribe();
             }
@@ -769,10 +802,14 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             );
             try {
                 await waitForStableGroup(group, 1);
-                await adapter.publish(topic, bytes("new"));
-                await waitFor(() => received.length >= 1, "message published after the join delivered");
+                await publishProbesUntilDelivered((t, p) => adapter.publish(t, p), topic, () => received.length >= 1);
                 await sleep(500);
-                assert.deepEqual(received, ["new"]);
+                assert.ok(received.length >= 1, "a message published after the join is delivered");
+                assert.ok(!received.includes("old"), "the message published before the join is not delivered");
+                assert.ok(
+                    received.every((value) => value.startsWith("probe-")),
+                    `only messages published after the join are delivered: ${JSON.stringify(received)}`,
+                );
             } finally {
                 await subscription.unsubscribe();
             }
@@ -1097,10 +1134,11 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             const subscription = await secondRun.subscribe([`${root}.*`], handler, { group });
             try {
                 await waitForStableGroup(group, 1);
-                // The sentinel is delivered only once the restarted consumer is fetching, which is when it has resolved
+                // A probe is delivered only once the restarted consumer is fetching, which is when it has resolved
                 // its start position on every assigned partition; the sixth message is published after that.
-                await secondRun.publish(early, bytes("sentinel"));
-                await waitFor(() => earlyHandled.includes("sentinel"), "the sentinel handled by the restarted service", () => earlyHandled);
+                // One probe is not enough: the position is resolved after the group is already stable, and a
+                // probe published before that is skipped.
+                await publishProbesUntilDelivered((t, p) => secondRun.publish(t, p), early, () => earlyHandled.some((value) => value.startsWith("probe-")));
                 await secondRun.publish(`${root}.late`, bytes("l6"));
                 await waitFor(() => lateHandled.includes("l6"), "the sixth message handled by the restarted service", () => lateHandled);
                 await sleep(3_000);
