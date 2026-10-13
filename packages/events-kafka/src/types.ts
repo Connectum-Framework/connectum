@@ -114,6 +114,9 @@ export interface KafkaAdapterOptions {
      */
     readonly clientOptions?: Readonly<Record<string, unknown>>;
 
+    /** Lifecycle callback. Without it the adapter attaches no listener to the client and behaves as before. */
+    readonly lifecycle?: KafkaLifecycleCallbacks;
+
     /** Producer-specific options */
     readonly producerOptions?: {
         /** Compression of produced messages (default: none). */
@@ -199,4 +202,61 @@ export interface KafkaAdapterOptions {
          */
         readonly topicDiscoveryInterval?: number | false;
     };
+}
+
+/**
+ * Lifecycle events of the Kafka adapter, delivered to {@link KafkaLifecycleCallbacks.onLifecycle}.
+ *
+ * A discriminated union on `type`. The strings and the shared fields match the AMQP adapter's events;
+ * the type is local to this package.
+ *
+ * The client library reports no loss of the producer's connection, and a consumer rides out a short
+ * broker outage without any event, so the adapter does not report `disconnected`, `reconnecting` or
+ * `reconnect-failed`. What the client does report, and what this union carries, is a consumer that
+ * crashed (it has given up retrying), and its return to the group.
+ */
+export type KafkaLifecycleEvent =
+    | {
+          /** The producer connected, once, when `connect()` succeeded. */
+          readonly type: "connected";
+          readonly reconnected: false;
+      }
+    | {
+          /** A subscription's consumer crashed: the client stopped it after its own retries ran out. Delivered once per loss. */
+          readonly type: "consumer-lost";
+          readonly groupId: string;
+          readonly error: Error;
+          /** `true` when the client will restart the consumer on its own. */
+          readonly willRestore: boolean;
+      }
+    | {
+          /** A lost consumer joined its group again; `attempt` is the 1-based number of the restart that succeeded. */
+          readonly type: "consumer-restored";
+          readonly groupId: string;
+          readonly attempt: number;
+      }
+    | {
+          /** The consumer crashed again before it came back; `attempt` counts the failed restarts of this loss. */
+          readonly type: "consumer-restore-failed";
+          readonly groupId: string;
+          readonly attempt: number;
+          readonly error: Error;
+          readonly willRetry: boolean;
+      }
+    | {
+          /** A lifecycle callback threw or returned a rejected promise. */
+          readonly type: "lifecycle-error";
+          readonly callback: string;
+          readonly event: string;
+          readonly error: Error;
+      };
+
+/** Callbacks for the lifecycle of the Kafka adapter. */
+export interface KafkaLifecycleCallbacks {
+    /**
+     * Called for every {@link KafkaLifecycleEvent}. It should not throw: a thrown exception or a rejected
+     * returned promise is isolated and reported as a `lifecycle-error` event, and a failure while handling
+     * that one is dropped. A returned promise is not awaited.
+     */
+    readonly onLifecycle?: (event: KafkaLifecycleEvent) => void | Promise<void>;
 }

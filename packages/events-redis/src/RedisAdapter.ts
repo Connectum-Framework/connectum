@@ -10,9 +10,10 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { Redis } from "ioredis";
+import { watchConnection } from "./lifecycle.ts";
 import type { RedisReplyMapping } from "./RedisProtocol.ts";
 import { normalizeXAutoClaimReply, normalizeXPendingReply, normalizeXReadGroupReply, RedisReplyShapeError, redisReplyContext, resolveRedisOptions } from "./RedisProtocol.ts";
-import type { RedisAdapterOptions } from "./types.ts";
+import type { RedisAdapterOptions, RedisLifecycleConnection } from "./types.ts";
 
 /**
  * Stream key prefix for event topics.
@@ -74,6 +75,9 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
     let redis: RedisClient | null = null;
 
+    /** Clients the adapter closes itself (disconnect, unsubscribe, a failed connect): their end is not a loss to report. */
+    const ownClose = new WeakSet<RedisClient>();
+
     /** Blocking reader connections created by subscribe(), tracked for cleanup. */
     const readers: RedisClient[] = [];
 
@@ -88,6 +92,14 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
      */
     function streamKey(eventType: string): string {
         return `${STREAM_PREFIX}${eventType}`;
+    }
+
+    /** Report this client's connection events when the caller asked for them; without `onLifecycle` no listener is attached. */
+    function reportLifecycle(instance: RedisClient, connection: RedisLifecycleConnection): void {
+        const lifecycle = options.lifecycle;
+        if (lifecycle?.onLifecycle !== undefined) {
+            watchConnection(instance, connection, lifecycle, () => ownClose.has(instance));
+        }
     }
 
     /**
@@ -181,11 +193,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                 throw new Error("RedisAdapter: already connected");
             }
             const instance = createRedisInstance(context?.serviceName);
+            reportLifecycle(instance, "publisher");
             try {
                 await waitForReady(instance);
             } catch (err) {
                 // Connection failed — clean up the half-open client so the adapter
                 // can be retried without being stuck in a broken state.
+                ownClose.add(instance);
                 instance.disconnect();
                 throw err;
             }
@@ -202,6 +216,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             // disconnect() is synchronous and immediately tears down the socket,
             // causing pending XREADGROUP calls to reject and unblock the loop.
             for (const reader of readers) {
+                ownClose.add(reader);
                 reader.disconnect();
             }
 
@@ -217,6 +232,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             readers.length = 0;
 
             if (redis) {
+                ownClose.add(redis);
                 await redis.quit();
                 redis = null;
             }
@@ -295,9 +311,11 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
             // Separate blocking connection for XREADGROUP
             const blockingRedis = redis.duplicate();
+            reportLifecycle(blockingRedis, { group, patterns: [...patterns] });
             try {
                 await waitForReady(blockingRedis);
             } catch (err) {
+                ownClose.add(blockingRedis);
                 blockingRedis.disconnect();
                 throw err;
             }
@@ -460,6 +478,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         }
                         if (err instanceof RedisReplyShapeError) {
                             subscriptionRunning = false;
+                            ownClose.add(blockingRedis);
                             blockingRedis.disconnect();
                             console.error("[RedisAdapter] consume loop stopped after an unsupported Redis reply:", err);
                             break;
@@ -487,6 +506,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                 async unsubscribe(): Promise<void> {
                     subscriptionRunning = false;
                     // Interrupt blocking XREADGROUP so the loop exits promptly.
+                    ownClose.add(blockingRedis);
                     blockingRedis.disconnect();
                     await loopPromise.catch(() => {});
 
