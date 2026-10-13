@@ -11,6 +11,16 @@
 import type { Histogram, Meter } from "@opentelemetry/api";
 
 /**
+ * Explicit bucket boundaries (seconds) for the RPC call-duration histograms
+ *
+ * The SDK default boundaries are a millisecond scale (`0, 5, 10, 25, ... 10000`), so every
+ * RPC duration recorded in seconds would land in the first bucket and percentiles
+ * would be unusable. These are the values the OpenTelemetry RPC metrics specification
+ * recommends for `rpc.{server,client}.call.duration`. An application `View` still overrides them.
+ */
+export const RPC_DURATION_BUCKETS: readonly number[] = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10];
+
+/**
  * Pre-configured RPC server metric instruments
  *
  * Contains histograms for call duration, request size, and response size
@@ -66,6 +76,7 @@ export function createRpcServerMetrics(meter: Meter): RpcServerMetrics {
     const callDuration = meter.createHistogram("rpc.server.call.duration", {
         description: "Duration of RPC server calls",
         unit: "s",
+        advice: { explicitBucketBoundaries: [...RPC_DURATION_BUCKETS] },
     });
 
     const requestSize = meter.createHistogram("rpc.server.request.size", {
@@ -107,6 +118,7 @@ export function createRpcClientMetrics(meter: Meter): RpcClientMetrics {
     const callDuration = meter.createHistogram("rpc.client.call.duration", {
         description: "Duration of RPC client calls",
         unit: "s",
+        advice: { explicitBucketBoundaries: [...RPC_DURATION_BUCKETS] },
     });
 
     const requestSize = meter.createHistogram("rpc.client.request.size", {
