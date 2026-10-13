@@ -666,6 +666,27 @@ export type AmqpLifecycleEvent =
           readonly willRetry: boolean;
       }
     | {
+          /**
+           * The broker closed only the publish channel with a reply code (for
+           * example `404` for a publish to a missing exchange under
+           * `topologyMode: "skip"`, or `406`) while the connection stayed up.
+           * The publish that caused it, and the publishes in flight on that
+           * channel, reject with `AmqpConnectionError` whose `cause` carries the
+           * broker reply; the next publish opens a new channel
+           * (`publish-channel-restored`).
+           *
+           * Delivered once per close. Not delivered for a connection loss (the
+           * connection's own `disconnected` covers it) nor for `disconnect()`.
+           */
+          readonly type: "publish-channel-lost";
+          /** The broker reply, carrying the numeric reply `code`. */
+          readonly error: Error;
+      }
+    | {
+          /** A new publish channel replaced the one reported by `publish-channel-lost`; delivered once, when the next publish had it opened. */
+          readonly type: "publish-channel-restored";
+      }
+    | {
           readonly type: "lifecycle-error";
           /** Name of the callback that failed: `onLifecycle` or a flat callback such as `onReconnecting`. */
           readonly callback: string;
