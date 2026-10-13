@@ -63,7 +63,7 @@ function bytes(value: string): Uint8Array {
 
 describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefined ? "KAFKA_TEST_URL not set" : false, concurrency: 1 }, () => {
     const brokers = (KAFKA_TEST_URL as string).split(",").map((b) => b.trim());
-    const kafkaConfig = { logLevel: logLevel.ERROR } as const;
+    const adapterLogLevel = "error" as const;
     const kafka = new Kafka({ clientId: "integration-control", brokers, logLevel: logLevel.ERROR });
     const admin: Admin = kafka.admin();
     const createdTopics: string[] = [];
@@ -94,7 +94,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
         return KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
-            kafkaConfig,
+            logLevel: adapterLogLevel,
             consumerOptions: {
                 fromBeginning: extra?.fromBeginning ?? true,
                 ...(extra?.sessionTimeout !== undefined && { sessionTimeout: extra.sessionTimeout }),
@@ -1305,9 +1305,10 @@ describe("Kafka adapter commit strategy on a real broker", { skip: KAFKA_TEST_UR
         const adapter = KafkaAdapter({
             brokers,
             clientId: uniqueName("integration"),
-            kafkaConfig: {
-                logLevel: logLevel.DEBUG,
-                logCreator: () => (entry) => {
+            logLevel: "debug",
+            // The log factory is client-specific and has no portable form, so it goes through the escape hatch.
+            clientOptions: {
+                logCreator: () => (entry: { log: { message: string } }) => {
                     if (entry.log.message.startsWith("Request OffsetCommit(")) count++;
                 },
             },

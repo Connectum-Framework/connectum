@@ -29,8 +29,8 @@ describe("topic discovery with skewed intervals", { skip: KAFKA_TEST_URL === und
         const root = `skew.${randomUUID().slice(0, 8)}`;
         await admin.createTopics({ waitForLeaders: true, topics: [{ topic: `${root}.early`, numPartitions: 2, replicationFactor: 1 }] });
         const group = `skew-${randomUUID().slice(0, 8)}`;
-        const fast = KafkaAdapter({ brokers, clientId: "skew-fast", kafkaConfig: { logLevel: logLevel.NOTHING }, consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 1_000 } });
-        const slow = KafkaAdapter({ brokers, clientId: "skew-slow", kafkaConfig: { logLevel: logLevel.NOTHING }, consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 20_000 } });
+        const fast = KafkaAdapter({ brokers, clientId: "skew-fast", logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 1_000 } });
+        const slow = KafkaAdapter({ brokers, clientId: "skew-slow", logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 20_000 } });
         await fast.connect();
         await slow.connect();
         const arrivals = new Map<string, number>();

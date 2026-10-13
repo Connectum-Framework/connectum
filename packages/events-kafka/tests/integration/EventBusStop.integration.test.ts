@@ -50,7 +50,7 @@ describe("EventBus.stop() on Kafka", { skip: KAFKA_TEST_URL === undefined ? "KAF
                 KafkaAdapter({
                     brokers,
                     clientId: `integration-stop-${randomUUID()}`,
-                    kafkaConfig: { logLevel: logLevel.ERROR },
+                    logLevel: "error",
                     consumerOptions: { fromBeginning: true, redeliveryDelay: 0 },
                 });
             const publisher = newAdapter();

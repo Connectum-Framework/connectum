@@ -76,7 +76,7 @@ describe("topic discovery seed", { skip: KAFKA_TEST_URL === undefined ? "KAFKA_T
     it("subscribe fails when the initial topic listing fails", { timeout: 60_000 }, async () => {
         const adapter = KafkaAdapter({
             brokers,
-            kafkaConfig: { logLevel: logLevel.NOTHING },
+            logLevel: "nothing",
             consumerOptions: { topicDiscoveryInterval: 60_000 },
         });
         await adapter.connect();
