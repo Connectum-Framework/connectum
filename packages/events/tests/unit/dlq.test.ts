@@ -47,6 +47,9 @@ describe("dlqMiddleware", () => {
         // Non-empty payload: with an empty one, publishing an empty payload instead of
         // the original would go unnoticed.
         const originalPayload = new Uint8Array([0x0a, 0x03, 0x66, 0x6f, 0x6f]);
+        // A copy taken before the middleware runs: comparing against the array handed to the
+        // middleware would pass even if the middleware altered those very bytes.
+        const expectedPayload = originalPayload.slice();
         const event = makeRawEvent({ eventId: "evt-42", eventType: "orders.created", attempt: 2, payload: originalPayload });
         const { ctx, isAcked } = makeCtx(event);
 
@@ -60,7 +63,7 @@ describe("dlqMiddleware", () => {
         assert.equal(published.length, 1);
         assert.equal(published[0]!.eventType, "my-service.dlq");
         // The DLQ copy carries the original payload byte for byte
-        assert.deepEqual(published[0]!.payload, originalPayload);
+        assert.deepEqual(published[0]!.payload, expectedPayload);
         assert.equal(published[0]!.metadata?.["dlq.original-topic"], "orders.created");
         assert.equal(published[0]!.metadata?.["dlq.original-id"], "evt-42");
         assert.equal(published[0]!.metadata?.["dlq.error"], "Error");
@@ -93,8 +96,9 @@ describe("dlqMiddleware", () => {
     it("rethrows when event is already from DLQ topic (self-loop prevention)", async () => {
         // The events middleware guide states that an event already on the configured DLQ
         // topic is rethrown instead of being published back to itself. That the original
-        // is also left unacknowledged is Connectum's reading of "rethrown": the error
-        // reaches the caller and the broker, not the middleware, settles the delivery.
+        // is also left unacknowledged is Connectum's reading of "rethrown": this middleware
+        // rethrows the error without calling ctx.ack() or ctx.nack(). What an adapter does with
+        // a rejected delivery is adapter-specific and outside this direct middleware test.
         let publishCalled = false;
         const mockAdapter: Pick<EventAdapter, "publish"> = {
             async publish() {
