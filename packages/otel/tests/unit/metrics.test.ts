@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { Meter } from "@opentelemetry/api";
-import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { AggregationTemporality, AggregationType, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { createRpcClientMetrics, createRpcServerMetrics, RPC_DURATION_BUCKETS } from "../../src/metrics.ts";
 
 interface HistogramCall {
@@ -169,5 +169,33 @@ describe("call-duration histogram boundaries on a real SDK", () => {
 
 	it("exposes RPC_DURATION_BUCKETS equal to the specification list", () => {
 		assert.deepStrictEqual([...RPC_DURATION_BUCKETS], SPEC_BOUNDARIES);
+	});
+});
+
+describe("a View on an application-registered MeterProvider", () => {
+	it("takes precedence over the instrument's default bucket advice", async () => {
+		const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+		const provider = new MeterProvider({
+			readers: [new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 })],
+			views: [
+				{
+					instrumentName: "rpc.server.call.duration",
+					aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.5, 1] } },
+				},
+			],
+		});
+		try {
+			createRpcServerMetrics(provider.getMeter("view-test")).callDuration.record(0.7);
+			await provider.forceFlush();
+			const metric = exporter
+				.getMetrics()
+				.flatMap((r) => r.scopeMetrics)
+				.flatMap((s) => s.metrics)
+				.find((m) => m.descriptor.name === "rpc.server.call.duration");
+			const histogram = metric?.dataPoints[0]?.value as { buckets: { boundaries: number[] } };
+			assert.deepStrictEqual(histogram.buckets.boundaries, [0.5, 1]);
+		} finally {
+			await provider.shutdown();
+		}
 	});
 });

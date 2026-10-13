@@ -16,7 +16,7 @@ import type { Histogram, Meter } from "@opentelemetry/api";
  * The SDK default boundaries are a millisecond scale (`0, 5, 10, 25, ... 10000`), so every
  * RPC duration recorded in seconds would land in the first bucket and percentiles
  * would be unusable. These are the values the OpenTelemetry RPC metrics specification
- * recommends for `rpc.{server,client}.call.duration`. An application `View` still overrides them.
+ * recommends for `rpc.{server,client}.call.duration`. A `View` on a MeterProvider the application registers takes precedence over this advice.
  */
 export const RPC_DURATION_BUCKETS: readonly number[] = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10];
 
