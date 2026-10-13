@@ -660,3 +660,41 @@ test("contract: a failed unary call reports the same status string as rpc.respon
         }
     }
 });
+
+test("contract: rpc.message events are not recorded unless recordMessages is set to true", async () => {
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => ({
+            server: createOtelInterceptor({ serverAddress: "test-server" }),
+            client: createOtelClientInterceptor({ serverAddress: "test-server" }),
+        }),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" }));
+        },
+    });
+
+    for (const run of [http, local]) {
+        assert.ok(run.spans.length >= 2, "server and client spans expected");
+        for (const span of run.spans) {
+            assert.deepStrictEqual(
+                span.events.filter((e) => e.name === "rpc.message"),
+                [],
+                "default configuration must not record rpc.message events",
+            );
+        }
+    }
+
+    const enabled = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" }));
+        },
+    });
+    const serverSpan = enabled.local.spans.find((s) => s.kind === SpanKind.SERVER);
+    assert.deepStrictEqual(
+        serverSpan?.events.map((e) => e.attributes["rpc.message.type"]),
+        ["RECEIVED", "SENT"],
+        "explicit recordMessages: true records one RECEIVED and one SENT event",
+    );
+});
