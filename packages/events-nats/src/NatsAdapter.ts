@@ -15,6 +15,7 @@ import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/
 import type { NatsConnection } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
 import { ensureConsumer } from "./consumerSetup.ts";
+import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { OwnedPattern } from "./patternOwner.ts";
 import { comparePatterns, ownedPattern, runsHandler } from "./patternOwner.ts";
 import type { NatsAdapterOptions } from "./types.ts";
@@ -90,6 +91,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
     let js: JetStreamClient | null = null;
     let jsm: JetStreamManager | null = null;
 
+    /** Set by disconnect(): the close that follows is our own and is not reported as a loss. */
+    let closing = false;
+
     /** Active subscription handles for cleanup on disconnect. */
     const activeSubs: EventSubscription[] = [];
 
@@ -139,13 +143,22 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 nc = connection;
                 js = jetStream;
                 jsm = manager;
+                closing = false;
             } catch (err) {
                 await connection.close().catch(() => undefined);
                 throw err;
             }
+
+            // Started only now: a connect() that failed above closed the connection itself, which is not a loss to report.
+            const lifecycle = options.lifecycle;
+            if (lifecycle?.onLifecycle !== undefined) {
+                dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
+                void watchConnection(connection, lifecycle, () => closing).catch(() => undefined);
+            }
         },
 
         async disconnect(): Promise<void> {
+            closing = true;
             // Unsubscribe all active subscriptions first (with error isolation).
             const unsubResults = await Promise.allSettled([...activeSubs].map((sub) => sub.unsubscribe()));
             for (const r of unsubResults) {
