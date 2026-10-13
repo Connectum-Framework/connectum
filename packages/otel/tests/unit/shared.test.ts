@@ -55,7 +55,10 @@ describe("estimateMessageSize", () => {
 		assert.strictEqual(estimateMessageSize(message), 42);
 	});
 
-	it("should return 0 when message has no toBinary()", () => {
+	// The size of a message that cannot be serialized is unknown. Reporting 0 for it
+	// is a Connectum decision (documented on estimateMessageSize); semconv does not
+	// prescribe a value for an unknown size.
+	it("should report 0 as the Connectum size for a message without toBinary()", () => {
 		const message = { someField: "value" };
 
 		assert.strictEqual(estimateMessageSize(message), 0);
