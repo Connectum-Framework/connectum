@@ -173,7 +173,11 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should log service names and file names to console", async () => {
+		// The guide describes --dry-run as "Connect, list the services and files, generate nothing".
+		// So the observable contract is that every service name and every file name the server
+		// reported reaches the user; the wording and layout of the surrounding lines is not
+		// documented and is deliberately not pinned here.
+		it("lists every reported service and file name to the user", async () => {
 			const logs = await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
@@ -182,17 +186,14 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const output = logs.join("\n");
-
-			assert.ok(output.includes("Connecting to http://localhost:5000"), "Should show connecting message");
-			assert.ok(output.includes("Connected to http://localhost:5000"), "Should show connected message");
-			assert.ok(output.includes("Services:"), "Should show services header");
-			assert.ok(output.includes("test.Service"), "Should list test.Service");
-			assert.ok(output.includes("grpc.health.v1.Health"), "Should list health service");
-			assert.ok(output.includes("Files:"), "Should show files header");
-			assert.ok(output.includes("test.proto"), "Should list test.proto");
-			assert.ok(output.includes("health.proto"), "Should list health.proto");
-			assert.ok(output.includes("Would generate to: ./gen"), "Should show output directory");
+			const reported = await mockFetchReflectionData.mock.calls[0]!.result!;
+			assert.ok(reported.services.length > 0 && reported.fileNames.length > 0, "fixture must report something to list");
+			for (const name of [...reported.services, ...reported.fileNames]) {
+				assert.ok(
+					logs.some((line) => line.includes(name)),
+					`"${name}" must be shown to the user, got: ${logs.join(" | ")}`,
+				);
+			}
 		});
 
 		it("should NOT call fetchFileDescriptorSetBinary in dry-run mode", async () => {
@@ -304,7 +305,12 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should use stdio: inherit for buf generate", async () => {
+		// No documented source for the exact spawn options. The guide only says that generation needs
+		// `buf` and its plugins installed, which makes buf's own diagnostics (a missing plugin, a bad
+		// template) the only explanation of a failed run. The behavior worth pinning is therefore
+		// that buf's stdout and stderr are not swallowed; `inherit`, a three-element array of
+		// `inherit` or the parent's own descriptors all satisfy it.
+		it("does not swallow buf output: stdout and stderr stay connected to the user's terminal", async () => {
 			await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
@@ -312,8 +318,11 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const options = mockExecFileSync.mock.calls[0]!.arguments[2] as Record<string, unknown>;
-			assert.strictEqual(options?.stdio, "inherit", "Should pass stdio: inherit");
+			const options = mockExecFileSync.mock.calls[0]!.arguments[2] as { stdio?: unknown } | undefined;
+			const stdio = options?.stdio;
+			const forwarded = (stream: unknown, fd: number) => stream === "inherit" || stream === fd;
+			const reachesUser = stdio === "inherit" || (Array.isArray(stdio) && forwarded(stdio[1], 1) && forwarded(stdio[2], 2));
+			assert.ok(reachesUser, `buf stdout and stderr must be forwarded, got stdio: ${JSON.stringify(stdio)}`);
 		});
 
 		it("should clean up temp directory after successful sync", async () => {
@@ -356,7 +365,15 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should log fetched bytes count", async () => {
+		// The progress lines of a full sync are not described by the guide or the specs, so their
+		// wording is a Connectum decision and is not pinned. What is pinned is the information each
+		// line carries, checked against values that the test itself controls.
+
+		it("Connectum decision (wording undocumented): progress output reports the size of the fetched descriptor set", async () => {
+			// A size that cannot occur by accident in a URL, a path or a flag in the output.
+			const descriptorSize = 4219;
+			mockFetchFileDescriptorSetBinary.mock.mockImplementationOnce(async () => new Uint8Array(descriptorSize));
+
 			const logs = await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
@@ -364,41 +381,62 @@ describe("proto-sync unit tests", () => {
 				});
 			});
 
-			const output = logs.join("\n");
 			assert.ok(
-				output.includes("Fetched 3 bytes of descriptors"),
-				`Should log byte count, got: ${output}`,
+				logs.some((line) => line.includes(String(descriptorSize))),
+				`the byte count must be shown, got: ${logs.join(" | ")}`,
 			);
 		});
 
-		it("should log the buf generate command", async () => {
+		it("Connectum decision (wording undocumented): progress output shows the exact buf arguments that are executed", async () => {
 			const logs = await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
 					out: "./gen",
+					template: "./custom-buf.gen.yaml",
 				});
 			});
 
-			const output = logs.join("\n");
+			const [file, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.ok(Array.isArray(args) && args.length > 0, "fixture must pass arguments to buf");
+			// One single line must contain the executable and every argument actually passed, so
+			// what the user reads is what ran.
 			assert.ok(
-				output.includes("Running: buf generate"),
-				`Should log the running command, got: ${output}`,
+				logs.some((line) => line.includes(String(file)) && args.every((arg) => line.includes(arg))),
+				`a line must show "${file} ${args.join(" ")}", got: ${logs.join(" | ")}`,
 			);
 		});
 
-		it("should log success message after sync", async () => {
+		it("Connectum decision (wording undocumented): the last line names the output directory and appears only after buf succeeded", async () => {
 			const logs = await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
 					out: "./gen",
 				});
 			});
+			assert.ok(logs[logs.length - 1]!.includes("./gen"), `the final line must name the output directory, got: ${logs.join(" | ")}`);
 
-			const output = logs.join("\n");
-			assert.ok(
-				output.includes("Proto types synced to ./gen"),
-				`Should log success, got: ${output}`,
+			// When buf fails the user must not be told that anything was synced: the last line
+			// printed is then the one that announced the command, which carries the same
+			// arguments and names the output directory too.
+			mockExecFileSync.mock.mockImplementationOnce(() => {
+				throw new Error("buf generate failed");
+			});
+			const failedLogs: string[] = [];
+			const originalLog = console.log;
+			console.log = (...args: unknown[]) => {
+				failedLogs.push(args.map(String).join(" "));
+			};
+			try {
+				await assert.rejects(executeProtoSync({ from: "http://localhost:5000", out: "./gen" }), { message: "buf generate failed" });
+			} finally {
+				console.log = originalLog;
+			}
+			assert.strictEqual(
+				failedLogs.length,
+				logs.length - 1,
+				`a failed run must print exactly one line less than a successful one, got: ${failedLogs.join(" | ")}`,
 			);
+			assert.deepStrictEqual(failedLogs, logs.slice(0, -1));
 		});
 	});
 
@@ -680,11 +718,21 @@ describe("parseTimeoutOption", () => {
 		assert.equal(parseTimeoutOption(undefined), undefined);
 	});
 
-	for (const bad of ["0", "-5", "1.5", "abc", "10s", "", "007"]) {
+	// The specification names exactly these as rejected: zero, a negative number, a fractional
+	// number and a non-number (plus an empty value, which is no number either).
+	for (const bad of ["0", "-5", "1.5", "abc", "10s", ""]) {
 		it(`rejects ${JSON.stringify(bad)}`, () => {
 			assert.throws(() => parseTimeoutOption(bad), /--timeout must be a positive integer/);
 		});
 	}
+
+	// Connectum decision, the specification is silent: it requires "an integer from 1 to
+	// 2147483647" and does not say whether the spelling "007" of the integer 7 counts. The
+	// implementation accepts only the canonical decimal spelling, so a padded value is refused
+	// instead of being read as 7 (or, by a parser that treats a leading zero as octal, as another number).
+	it("Connectum decision (undocumented): rejects a leading-zero spelling \"007\" instead of reading it as 7", () => {
+		assert.throws(() => parseTimeoutOption("007"), /--timeout must be a positive integer/);
+	});
 
 	it("leaves the upper bound to executeProtoSync, which refuses it before connecting", async () => {
 		assert.equal(parseTimeoutOption("2147483648"), 2147483648);
