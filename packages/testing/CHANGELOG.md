@@ -64,7 +64,7 @@
   **`@connectum/otel`** — observability parity for the in-process path:
 
   - `connectum.transport` span attribute (`in-process` | `http`) on both CLIENT and SERVER spans.
-  - `transport` metric label on `rpc.client.duration`, `rpc.server.duration`, payload size, and error counter instruments.
+  - `transport` metric label on `rpc.client.call.duration`, `rpc.server.call.duration` and the request and response size histograms (an earlier version of this entry named instruments `rpc.client.duration` and `rpc.server.duration` and an error counter; none of them was ever emitted).
   - W3C Trace Context (`traceparent` / `tracestate`) propagation through in-memory `Headers` so server spans are children of client spans on both transports.
 
 - [#117](https://github.com/Connectum-Framework/connectum/pull/117) [`0f98dfa`](https://github.com/Connectum-Framework/connectum/commit/0f98dfa5f77c37fa995c4b63b7bd5c3f613f2d3e) Thanks [@intech](https://github.com/intech)! - Extract mock factories, assertion helpers, and protobuf descriptor fixtures

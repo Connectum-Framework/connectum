@@ -73,7 +73,7 @@
   **`@connectum/otel`** — observability parity for the in-process path:
 
   - `connectum.transport` span attribute (`in-process` | `http`) on both CLIENT and SERVER spans.
-  - `transport` metric label on `rpc.client.duration`, `rpc.server.duration`, payload size, and error counter instruments.
+  - `transport` metric label on `rpc.client.call.duration`, `rpc.server.call.duration` and the request and response size histograms (an earlier version of this entry named instruments `rpc.client.duration` and `rpc.server.duration` and an error counter; none of them was ever emitted).
   - W3C Trace Context (`traceparent` / `tracestate`) propagation through in-memory `Headers` so server spans are children of client spans on both transports.
 
 - [#117](https://github.com/Connectum-Framework/connectum/pull/117) [`0f98dfa`](https://github.com/Connectum-Framework/connectum/commit/0f98dfa5f77c37fa995c4b63b7bd5c3f613f2d3e) Thanks [@intech](https://github.com/intech)! - feat(otel): export RPC message-event semantic conventions from the package root
@@ -133,7 +133,7 @@
   - `cardinalitySelector` support in `PeriodicExportingMetricReader` (PR [#6460](https://github.com/Connectum-Framework/connectum/issues/6460), v2.7.0) — protection against cardinality explosion on high-variance attributes
   - SDK self-observability: span + log creation metrics (PRs [#6213](https://github.com/Connectum-Framework/connectum/issues/6213), [#6433](https://github.com/Connectum-Framework/connectum/issues/6433))
   - Internal `mergeTwoObjects` safety checks (PR [#6587](https://github.com/Connectum-Framework/connectum/issues/6587), v2.7.0) — additional guards against unsafe key merges
-  - Updated semantic conventions (semconv v1.40.0) — stable RPC attributes including `rpc.response.status_code` and `error.type` (stabilized in semconv v1.39.0)
+  - Updated semantic conventions (semconv v1.40.0) — RPC attribute constants including `rpc.system`, `rpc.service`, `rpc.method`, `error.type` and `rpc.connect_rpc.status_code` (an earlier version of this entry listed `rpc.response.status_code` as stabilized in semconv v1.39.0; it is a Release Candidate attribute and was not emitted until 1.3.0)
 
   Breaking changes upstream that do NOT affect `@connectum/otel` (verified):
 
@@ -203,7 +203,7 @@
   - `cardinalitySelector` support in `PeriodicExportingMetricReader` (PR [#6460](https://github.com/Connectum-Framework/connectum/issues/6460), v2.7.0) — protection against cardinality explosion on high-variance attributes
   - SDK self-observability: span + log creation metrics (PRs [#6213](https://github.com/Connectum-Framework/connectum/issues/6213), [#6433](https://github.com/Connectum-Framework/connectum/issues/6433))
   - Internal `mergeTwoObjects` safety checks (PR [#6587](https://github.com/Connectum-Framework/connectum/issues/6587), v2.7.0) — additional guards against unsafe key merges
-  - Updated semantic conventions (semconv v1.40.0) — stable RPC attributes including `rpc.response.status_code` and `error.type` (stabilized in semconv v1.39.0)
+  - Updated semantic conventions (semconv v1.40.0) — RPC attribute constants including `rpc.system`, `rpc.service`, `rpc.method`, `error.type` and `rpc.connect_rpc.status_code` (an earlier version of this entry listed `rpc.response.status_code` as stabilized in semconv v1.39.0; it is a Release Candidate attribute and was not emitted until 1.3.0)
 
   Breaking changes upstream that do NOT affect `@connectum/otel` (verified):
 
