@@ -398,10 +398,11 @@ describe("proto-sync unit tests", () => {
 
 			const [file, args] = mockExecFileSync.mock.calls[0]!.arguments;
 			assert.ok(Array.isArray(args) && args.length > 0, "fixture must pass arguments to buf");
-			// One single line must contain the executable and every argument actually passed, so
+			// One single line must contain the executable followed by every argument actually passed,
+			// in the order they were passed (swapped values would show a different command), so
 			// what the user reads is what ran.
 			assert.ok(
-				logs.some((line) => line.includes(String(file)) && args.every((arg) => line.includes(arg))),
+				logs.some((line) => line.includes(`${String(file)} ${args.join(" ")}`)),
 				`a line must show "${file} ${args.join(" ")}", got: ${logs.join(" | ")}`,
 			);
 		});
