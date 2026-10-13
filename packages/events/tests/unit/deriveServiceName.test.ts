@@ -39,8 +39,10 @@ describe("deriveServiceName", () => {
         assert.equal(result, `order.v1/payment.v1@${hostname()}`);
     });
 
-    it("handles single-segment type name (no dots)", () => {
-        // When typeName has no dots, extractPackageName returns the whole string
+    it("uses the whole type name as the package when it has no dot (Connectum decision, no documented source)", () => {
+        // The documented format is "{packageNames}@{hostname}", but nothing says what
+        // the package of a service declared without a proto package is. Connectum
+        // chose the whole type name (rather than an empty package or no name at all).
         const result = deriveServiceName(["SimpleService"]);
         assert.equal(result, `SimpleService@${hostname()}`);
     });
@@ -51,13 +53,22 @@ describe("deriveServiceName", () => {
         assert.ok(result.endsWith(`@${hostname()}`), `Expected result to end with @${hostname()}, got: ${result}`);
     });
 
-    it("preserves insertion order of unique packages", () => {
+    it("lists packages in order of first appearance, not sorted (Connectum decision, no documented source)", () => {
+        // The documented example ("order.v1/payment.v1@pod") shows packages joined with
+        // "/" but does not say how they are ordered. Connectum chose the order in which
+        // the services were registered. The same services registered in another order
+        // therefore give a different broker client name. The input below is deliberately
+        // not alphabetical so a sorting implementation cannot pass.
         const result = deriveServiceName([
             "beta.v1.BetaService",
             "alpha.v1.AlphaService",
         ]);
-        // Order should be beta.v1 first, then alpha.v1 (insertion order preserved by Set)
         assert.equal(result, `beta.v1/alpha.v1@${hostname()}`);
+        const reversed = deriveServiceName([
+            "alpha.v1.AlphaService",
+            "beta.v1.BetaService",
+        ]);
+        assert.equal(reversed, `alpha.v1/beta.v1@${hostname()}`);
     });
 
     it("handles deeply nested package names", () => {
