@@ -4,7 +4,7 @@
 
 feat: RPC spans and metrics use the attribute names of the current OpenTelemetry RPC conventions for Connect.
 
-**BREAKING** for anything that reads these attributes (dashboards, alerts, queries, span processors, `attributeFilter`) and for code that imports the renamed constants. Shipped as minor on purpose: the `@connectum/*` packages are one fixed version group, so a major here would release every package as 2.0.0.
+**BREAKING** for anything that reads these attributes (dashboards, alerts, queries, span processors, `attributeFilter`) and for code that imports the renamed constants. Released in a minor version, as the other behaviour corrections of 1.3.
 
 | Before | After |
 | --- | --- |
