@@ -11,4 +11,4 @@
  */
 
 export { RedisAdapter } from "./RedisAdapter.ts";
-export type { RedisAdapterOptions, RedisBrokerOptions } from "./types.ts";
+export type { RedisAdapterOptions, RedisBrokerOptions, RedisLifecycleCallbacks, RedisLifecycleConnection, RedisLifecycleEvent } from "./types.ts";
