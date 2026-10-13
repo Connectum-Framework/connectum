@@ -769,7 +769,13 @@ describe("Wildcard subscription matching", () => {
         assert.deepEqual(received, ["orders.created", "orders.created.v2"]);
     });
 
-    it("exact topic match takes priority over wildcard", async () => {
+    it("exact topic route wins over a wildcard route on the same bus (Connectum decision, no documented source)", async () => {
+        // The guides describe wildcard matching and, for NATS, which of several
+        // overlapping patterns runs the handler, but not what the bus does when one
+        // service registers both an exact route and a wildcard route that match the same
+        // event. Connectum chose: the exact route handles it, the wildcard route only
+        // receives events no exact route claims. Which of two matching wildcard routes
+        // wins is not covered here.
         const tracker = createTrackingAdapter();
         const exactReceived: string[] = [];
         const wildcardReceived: string[] = [];
@@ -778,7 +784,9 @@ describe("Wildcard subscription matching", () => {
         // realInput must be a real DescMessage schema for fromBinary to work
         const exactMethod = fakeDescMethod("handleExact", "orders.created", EventOptionsSchema);
         const wildcardMethod = fakeDescMethod("handleWild", "orders.*", EventOptionsSchema);
-        const service = fakeDescService("pipeline.v1.PriorityService", [exactMethod, wildcardMethod]);
+        // The wildcard route is registered first, so a "first registered match wins"
+        // implementation would hand "orders.created" to the wildcard handler.
+        const service = fakeDescService("pipeline.v1.PriorityService", [wildcardMethod, exactMethod]);
 
         bus = createEventBus({
             adapter: tracker.adapter,
@@ -808,7 +816,7 @@ describe("Wildcard subscription matching", () => {
         const { promise: p2 } = tracker.deliver(event2);
         await p2;
 
-        // The exact handler gets "orders.created" because topicHandlerMap.get() matches first
+        // "orders.created" matches both routes but only the exact one handles it
         assert.deepEqual(exactReceived, ["orders.created"]);
         assert.deepEqual(wildcardReceived, ["orders.shipped"]);
     });
