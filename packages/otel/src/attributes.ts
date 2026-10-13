@@ -9,14 +9,20 @@
  * @module attributes
  */
 
-// RPC system identifier
-export const RPC_SYSTEM_CONNECT_RPC = "connect_rpc";
+/** Value of `rpc.system.name` for Connect RPC, as the OpenTelemetry RPC conventions name it. */
+export const RPC_SYSTEM_NAME_CONNECTRPC = "connectrpc";
 
-// Attribute keys (per OTel semantic conventions)
-export const ATTR_RPC_SYSTEM = "rpc.system";
-export const ATTR_RPC_SERVICE = "rpc.service";
+// Attribute keys (per OTel semantic conventions for RPC)
+/** The RPC system; always {@link RPC_SYSTEM_NAME_CONNECTRPC}. */
+export const ATTR_RPC_SYSTEM_NAME = "rpc.system.name";
+/** Fully qualified method, `<package>.<Service>/<Method>`; equal to the span name. */
 export const ATTR_RPC_METHOD = "rpc.method";
-export const ATTR_RPC_CONNECT_RPC_STATUS_CODE = "rpc.connect_rpc.status_code";
+/**
+ * Status of the call as a string: the Connect error-code name (`NOT_FOUND`) on failure and
+ * `OK` on a successful unary call. Not set on a streaming call that has started successfully,
+ * because the final status is not known when the response head is returned.
+ */
+export const ATTR_RPC_RESPONSE_STATUS_CODE = "rpc.response.status_code";
 export const ATTR_ERROR_TYPE = "error.type";
 export const ATTR_SERVER_ADDRESS = "server.address";
 export const ATTR_SERVER_PORT = "server.port";

@@ -9,7 +9,7 @@
  *
  *   7a.5  unary → CLIENT + SERVER spans, parent-child, identical attrs
  *   7a.6  streaming → N `rpc.message` SENT / N RECEIVED events
- *   7a.7  error case → span status=ERROR, rpc.connect_rpc.status_code matches
+ *   7a.7  error case → span status=ERROR, rpc.response.status_code matches
  *   7a.8  metrics — identical instrument names, label keys, observable shape
  *   7a.9  context propagation — server span is child of client span
  *   7a.10 instrument-name subset (no transport-specific metrics)
@@ -343,12 +343,14 @@ test("parity 7a.7: error case → span status=ERROR identical on both transports
         },
     });
 
-    // Both runs must record ERROR status with matching connect_rpc status code.
+    // Both runs must record ERROR status with matching rpc.response.status_code.
     for (const run of [http, local]) {
         const serverSpan = run.spans.find((s) => s.kind === SpanKind.SERVER);
         assert.ok(serverSpan, "server span missing");
         assert.strictEqual(serverSpan.status.code, 2 /* SpanStatusCode.ERROR */, "server span must be ERROR");
-        assert.strictEqual(serverSpan.attributes["rpc.connect_rpc.status_code"], Code.FailedPrecondition, "connect_rpc.status_code mismatch");
+        assert.strictEqual(serverSpan.attributes["rpc.response.status_code"], "FAILED_PRECONDITION", "rpc.response.status_code mismatch");
+        assert.strictEqual(serverSpan.attributes["error.type"], "FAILED_PRECONDITION", "error.type mismatch");
+        assert.ok(!("rpc.connect_rpc.status_code" in serverSpan.attributes), "the replaced attribute must not be emitted");
     }
 
     // Strip `exception.stacktrace` event attributes before structural diff —
@@ -592,4 +594,107 @@ test("parity 7a.11: spans started in streaming handlers are children of the serv
         }
     }
     assert.deepStrictEqual(maskSpans(local.spans), maskSpans(http.spans), "span shape mismatch between transports");
+});
+
+// ---------------------------------------------------------------------------
+// Attribute contract (names and value forms from the OpenTelemetry RPC
+// conventions for Connect: rpc.system.name, fully qualified rpc.method,
+// rpc.response.status_code). Key spellings are literals on purpose.
+// ---------------------------------------------------------------------------
+
+function durationPoints(metrics: NormalizedMetric[], name: string): Array<Record<string, unknown>> {
+    return metrics.filter((m) => m.name === name).flatMap((m) => m.points.map((p) => p.attributes));
+}
+
+test("contract: a successful unary call reports rpc.system.name, qualified rpc.method and rpc.response.status_code=OK on spans and duration metrics", async () => {
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" }));
+        },
+    });
+
+    for (const run of [http, local]) {
+        for (const kind of [SpanKind.SERVER, SpanKind.CLIENT]) {
+            const span = run.spans.find((s) => s.kind === kind);
+            assert.ok(span, `span of kind ${kind} missing`);
+            assert.strictEqual(span.attributes["rpc.system.name"], "connectrpc");
+            assert.strictEqual(span.attributes["rpc.method"], `${EchoService.typeName}/Echo`);
+            assert.strictEqual(span.name, `${EchoService.typeName}/Echo`, "span name equals rpc.method");
+            assert.strictEqual(span.attributes["rpc.response.status_code"], "OK");
+            assert.ok(!("error.type" in span.attributes), "error.type must not be set on success");
+            for (const removed of ["rpc.system", "rpc.service", "rpc.connect_rpc.status_code"]) {
+                assert.ok(!(removed in span.attributes), `${removed} must not be emitted`);
+            }
+        }
+        for (const name of ["rpc.server.call.duration", "rpc.client.call.duration"]) {
+            const points = durationPoints(run.metrics, name);
+            assert.strictEqual(points.length, 1, `${name} should have exactly one series`);
+            const attrs = points[0] as Record<string, unknown>;
+            assert.strictEqual(attrs["rpc.system.name"], "connectrpc");
+            assert.strictEqual(attrs["rpc.method"], `${EchoService.typeName}/Echo`);
+            assert.strictEqual(attrs["rpc.response.status_code"], "OK");
+            assert.ok(!("error.type" in attrs));
+        }
+    }
+});
+
+test("contract: a failed unary call reports the same status string as rpc.response.status_code and error.type on duration metrics", async () => {
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes({ throwError: true })],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await assert.rejects(() => createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" })));
+        },
+    });
+
+    for (const run of [http, local]) {
+        for (const name of ["rpc.server.call.duration", "rpc.client.call.duration"]) {
+            const points = durationPoints(run.metrics, name);
+            assert.strictEqual(points.length, 1, `${name} should have exactly one series`);
+            const attrs = points[0] as Record<string, unknown>;
+            assert.strictEqual(attrs["rpc.response.status_code"], "FAILED_PRECONDITION");
+            assert.strictEqual(attrs["error.type"], "FAILED_PRECONDITION");
+            assert.ok(!("rpc.connect_rpc.status_code" in attrs));
+        }
+    }
+});
+
+test("contract: rpc.message events are not recorded unless recordMessages is set to true", async () => {
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => ({
+            server: createOtelInterceptor({ serverAddress: "test-server" }),
+            client: createOtelClientInterceptor({ serverAddress: "test-server" }),
+        }),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" }));
+        },
+    });
+
+    for (const run of [http, local]) {
+        assert.ok(run.spans.length >= 2, "server and client spans expected");
+        for (const span of run.spans) {
+            assert.deepStrictEqual(
+                span.events.filter((e) => e.name === "rpc.message"),
+                [],
+                "default configuration must not record rpc.message events",
+            );
+        }
+    }
+
+    const enabled = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(create(EchoRequestSchema, { message: "x" }));
+        },
+    });
+    const serverSpan = enabled.local.spans.find((s) => s.kind === SpanKind.SERVER);
+    assert.deepStrictEqual(
+        serverSpan?.events.map((e) => e.attributes["rpc.message.type"]),
+        ["RECEIVED", "SENT"],
+        "explicit recordMessages: true records one RECEIVED and one SENT event",
+    );
 });

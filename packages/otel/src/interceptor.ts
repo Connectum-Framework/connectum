@@ -18,7 +18,16 @@ import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./att
 import { getMeter } from "./meter.ts";
 import type { RpcServerMetrics } from "./metrics.ts";
 import { createRpcServerMetrics } from "./metrics.ts";
-import { applyAttributeFilter, buildBaseAttributes, buildErrorAttributes, detectConnectumTransport, estimateMessageSize, scopeAsyncIterable, wrapAsyncIterable } from "./shared.ts";
+import {
+    applyAttributeFilter,
+    buildBaseAttributes,
+    buildErrorAttributes,
+    buildSuccessAttributes,
+    detectConnectumTransport,
+    estimateMessageSize,
+    scopeAsyncIterable,
+    wrapAsyncIterable,
+} from "./shared.ts";
 import { getTracer } from "./tracer.ts";
 import type { OtelInterceptorOptions } from "./types.ts";
 
@@ -142,7 +151,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                 const response = await next(req);
                 const duration = (performance.now() - startTime) / 1000;
                 const responseSize = !response.stream ? estimateMessageSize(response.message) : 0;
-                recordMetrics(duration, responseSize);
+                recordMetrics(duration, responseSize, response.stream ? undefined : buildSuccessAttributes());
                 return response;
             } catch (error) {
                 const duration = (performance.now() - startTime) / 1000;
@@ -229,8 +238,9 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                 }
 
                 span.setStatus({ code: SpanStatusCode.OK });
+                span.setAttributes(buildSuccessAttributes());
                 span.end();
-                recordMetrics(duration, responseSize);
+                recordMetrics(duration, responseSize, buildSuccessAttributes());
 
                 return response;
             } catch (error) {
