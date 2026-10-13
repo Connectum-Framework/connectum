@@ -31,6 +31,11 @@ export interface NatsAdapterOptions {
      */
     readonly connectionOptions?: Partial<NodeConnectionOptions>;
 
+    /**
+     * Connection lifecycle callback. Without it the adapter attaches no listener to the client and behaves as before.
+     */
+    readonly lifecycle?: NatsLifecycleCallbacks;
+
     /** JetStream consumer tuning options. */
     readonly consumerOptions?: NatsConsumerOptions;
 }
@@ -66,4 +71,56 @@ export interface NatsConsumerOptions {
      * @default 5
      */
     readonly maxDeliver?: number;
+}
+
+/**
+ * Connection lifecycle events of the NATS adapter, delivered to {@link NatsLifecycleCallbacks.onLifecycle}.
+ *
+ * A discriminated union on `type`. The strings and the shared fields match the AMQP adapter's events; the
+ * type is local to this package. Without the callback the adapter attaches no listener to the client.
+ */
+export type NatsLifecycleEvent =
+    | {
+          /** Delivered once after the first connect (`reconnected: false`) and once per recovery (`reconnected: true`). */
+          readonly type: "connected";
+          readonly reconnected: boolean;
+          /** The server reached again; set only for a recovery. */
+          readonly server?: string;
+      }
+    | {
+          /** The connection to the server was lost; the client tries to reconnect on its own. Not delivered for `disconnect()`. */
+          readonly type: "disconnected";
+          readonly server: string;
+      }
+    | {
+          /**
+           * The client dials a server again. `attempt` counts dials since the loss (the client reports one per
+           * address it tries, not one per round); the client reports no delay or error, so none is given.
+           */
+          readonly type: "reconnecting";
+          readonly attempt: number;
+      }
+    | {
+          /** Terminal: the client closed itself without a `disconnect()` call, typically after its reconnect budget ran out. The adapter drops the dead connection, so `connect()` can start a new one. */
+          readonly type: "reconnect-failed";
+          readonly error: Error;
+      }
+    | {
+          /** A lifecycle callback threw or returned a rejected promise. */
+          readonly type: "lifecycle-error";
+          readonly callback: string;
+          readonly event: string;
+          readonly error: Error;
+      };
+
+/** Callbacks for the connection lifecycle of the NATS adapter. */
+export interface NatsLifecycleCallbacks {
+    /**
+     * Called for every {@link NatsLifecycleEvent}. It should not throw: a thrown exception or a rejected
+     * returned promise is isolated and reported as a `lifecycle-error` event, and a failure while handling
+     * that one is dropped. A returned promise is not awaited.
+     *
+     * Events of the initial dial that happen before `connect()` returns are not available from the client.
+     */
+    readonly onLifecycle?: (event: NatsLifecycleEvent) => void | Promise<void>;
 }
