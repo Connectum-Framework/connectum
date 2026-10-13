@@ -57,6 +57,11 @@ describe("errorHandler interceptor", () => {
         );
     });
 
+    // Oracle: the custom-interceptors guide (docs en/guide/interceptors/custom.md, warning
+    // under "Rate limiting") states that errorHandler gives a non-Connect error with a
+    // numeric `code` that code, and every error without a numeric `code` Code.Internal.
+    // PermissionDenied (7) is deliberately not the Internal default (13), so a handler
+    // that ignored `code` would fail here.
     it("should preserve numeric error code from plain objects with .code", async () => {
         const interceptor = createErrorHandlerInterceptor({ logErrors: false });
 
@@ -72,6 +77,28 @@ describe("errorHandler interceptor", () => {
             () => handler(mockReq),
             (err: unknown) => {
                 assertConnectError(err, Code.PermissionDenied);
+                return true;
+            },
+        );
+    });
+
+    // Same documented rule from the other side: only a numeric `code` is adopted; any
+    // other kind of `code` value counts as "no code" and yields Code.Internal.
+    it("should ignore a non-numeric .code and fall back to Code.Internal", async () => {
+        const interceptor = createErrorHandlerInterceptor({ logErrors: false });
+
+        const next = mock.fn(async () => {
+            const error = new Error("driver failure") as Error & { code: string };
+            error.code = "ECONNRESET";
+            throw error;
+        });
+
+        const handler = interceptor(next as any);
+
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Internal);
                 return true;
             },
         );
@@ -206,7 +233,12 @@ describe("errorHandler interceptor", () => {
     });
 
     describe("additional error scenarios", () => {
-        it("should wrap non-Error thrown value (string) via ConnectError.from", async () => {
+        // Oracle for the code: the custom-interceptors guide (docs en/guide/interceptors/custom.md)
+        // says errors without a numeric `code` get Code.Internal. What text of such an
+        // internal failure reaches the client is not documented for errorHandler, so the
+        // message is intentionally not asserted: that policy is a Connectum decision.
+        // The original thrown value is kept as `cause` so server-side logging can still see it.
+        it("should wrap non-Error thrown value (string) into ConnectError with Code.Internal", async () => {
             const interceptor = createErrorHandlerInterceptor({ logErrors: false });
 
             const next = mock.fn(async () => {
@@ -220,7 +252,7 @@ describe("errorHandler interceptor", () => {
                 (err: unknown) => {
                     assertConnectError(err, Code.Internal);
                     assert.ok(err instanceof ConnectError, "should be a ConnectError instance");
-                    assert.ok(err.message.includes("plain string thrown"), "should preserve original message");
+                    assert.strictEqual(err.cause, "plain string thrown", "original thrown value should stay available as cause");
                     return true;
                 },
             );
