@@ -12,4 +12,13 @@
  */
 
 export { KafkaAdapter } from "./KafkaAdapter.ts";
-export type { KafkaAdapterOptions, KafkaCompression, KafkaLogLevel, KafkaRetryOptions, KafkaSaslOptions, KafkaTlsOptions } from "./types.ts";
+export type {
+    KafkaAdapterOptions,
+    KafkaCompression,
+    KafkaLifecycleCallbacks,
+    KafkaLifecycleEvent,
+    KafkaLogLevel,
+    KafkaRetryOptions,
+    KafkaSaslOptions,
+    KafkaTlsOptions,
+} from "./types.ts";

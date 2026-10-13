@@ -13,6 +13,7 @@ import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
+import { dispatchLifecycle, trackConsumer } from "./lifecycle.ts";
 import { startTopicDiscovery } from "./topicDiscovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
@@ -176,6 +177,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             }
             producer = p;
             connected = true;
+            dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
         },
 
         async disconnect(): Promise<void> {
@@ -257,6 +259,13 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 heartbeatInterval: defaultHeartbeatIntervalMs,
                 ...(sessionTimeout !== undefined && { sessionTimeout }),
             });
+
+            // Attached before the consumer runs, so a crash of the first run is not missed. Without the option no listener exists.
+            if (options.lifecycle?.onLifecycle !== undefined) {
+                const tracker = trackConsumer(options.lifecycle);
+                consumer.on(consumer.events.CRASH, (event) => tracker.onCrash(event.payload));
+                consumer.on(consumer.events.GROUP_JOIN, (event) => tracker.onGroupJoin(event.payload));
+            }
 
             await consumer.connect();
 
