@@ -153,7 +153,20 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             const lifecycle = options.lifecycle;
             if (lifecycle?.onLifecycle !== undefined) {
                 dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
-                void watchConnection(connection, lifecycle, () => closing).catch(() => undefined);
+                void watchConnection(
+                    connection,
+                    lifecycle,
+                    () => closing,
+                    () => {
+                        // The client gave up and closed itself: drop the dead handles so publish() says "not connected"
+                        // and connect() can start a fresh connection instead of refusing with "already connected".
+                        if (nc === connection) {
+                            nc = null;
+                            js = null;
+                            jsm = null;
+                        }
+                    },
+                ).catch(() => undefined);
             }
         },
 

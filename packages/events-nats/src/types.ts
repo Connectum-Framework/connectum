@@ -101,7 +101,7 @@ export type NatsLifecycleEvent =
           readonly attempt: number;
       }
     | {
-          /** Terminal: the client closed itself without a `disconnect()` call, typically after its reconnect budget ran out. The adapter stays unusable. */
+          /** Terminal: the client closed itself without a `disconnect()` call, typically after its reconnect budget ran out. The adapter drops the dead connection, so `connect()` can start a new one. */
           readonly type: "reconnect-failed";
           readonly error: Error;
       }

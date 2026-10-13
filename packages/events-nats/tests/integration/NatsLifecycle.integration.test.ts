@@ -156,7 +156,7 @@ describe("NATS adapter lifecycle events", { skip: NATS_TEST_URL === undefined ? 
         }
     });
 
-    it("a reconnect budget that runs out ends in exactly one reconnect-failed", { timeout: 60_000 }, async () => {
+    it("a reconnect budget that runs out ends in exactly one reconnect-failed, and the adapter can connect again", { timeout: 60_000 }, async () => {
         const proxy = await startProxy(target);
         const seen = collect();
         const adapter = NatsAdapter({
@@ -176,6 +176,12 @@ describe("NATS adapter lifecycle events", { skip: NATS_TEST_URL === undefined ? 
             assert.ok(types.indexOf("disconnected") < types.indexOf("reconnect-failed"));
             const failed = seen.events.find((e) => e.type === "reconnect-failed");
             assert.ok(failed && failed.type === "reconnect-failed" && failed.error instanceof Error);
+
+            // The dead connection is not kept: publishing says so, and connect() starts a fresh connection once the server is back.
+            await assert.rejects(() => adapter.publish("lifecycle.after-failure", new Uint8Array([1])), /not connected/);
+            await proxy.heal();
+            await adapter.connect();
+            await adapter.publish("lifecycle.after-failure", new Uint8Array([1]));
         } finally {
             await adapter.disconnect().catch(() => undefined);
             await proxy.close();

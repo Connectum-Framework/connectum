@@ -51,11 +51,12 @@ export function dispatchLifecycle(lifecycle: NatsLifecycleCallbacks | undefined,
  * `connected { reconnected: true }`. Everything else (`staleConnection` and `forceReconnect`
  * precede a `disconnect` and would count one loss twice; `error`, `ldm`, `update`, `ping`,
  * `slowConsumer` are not losses of the connection) produces nothing. When the client closes
- * without `isClosing()` being true, one terminal `reconnect-failed` carries the error the client closed with.
+ * without `isClosing()` being true, `onUnexpectedClose` runs first and then one terminal `reconnect-failed` carries
+ * the error the client closed with.
  *
  * Returns once the status iterator ends, which the client does when the connection closes.
  */
-export async function watchConnection(connection: NatsConnection, lifecycle: NatsLifecycleCallbacks, isClosing: () => boolean): Promise<void> {
+export async function watchConnection(connection: NatsConnection, lifecycle: NatsLifecycleCallbacks, isClosing: () => boolean, onUnexpectedClose: () => void): Promise<void> {
     let attempt = 0;
     try {
         for await (const status of connection.status()) {
@@ -81,6 +82,8 @@ export async function watchConnection(connection: NatsConnection, lifecycle: Nat
     }
     const closedWith = await connection.closed().catch((error: unknown) => error);
     if (!isClosing()) {
+        // The adapter must stop presenting this dead connection as its own before anyone is told it is gone.
+        onUnexpectedClose();
         const error = closedWith instanceof Error ? closedWith : new Error("NATS connection closed without a disconnect() call");
         dispatchLifecycle(lifecycle, { type: "reconnect-failed", error });
     }
