@@ -1,10 +1,70 @@
 /**
  * Configuration types for the Kafka event adapter.
  *
+ * None of these types names the Kafka client library, so replacing the library does not by
+ * itself change the package's API.
+ *
  * @module types
  */
 
-import type { CompressionTypes, KafkaConfig } from "kafkajs";
+/** TLS settings of the broker connection. Further `tls.connect` options go through {@link KafkaAdapterOptions.clientOptions}. */
+export interface KafkaTlsOptions {
+    /** Trusted certificate authorities (PEM). */
+    readonly ca?: string | Uint8Array | ReadonlyArray<string | Uint8Array>;
+    /** Client certificate chain (PEM) for mutual TLS. */
+    readonly cert?: string | Uint8Array | ReadonlyArray<string | Uint8Array>;
+    /** Client private key (PEM) for mutual TLS. */
+    readonly key?: string | Uint8Array | ReadonlyArray<string | Uint8Array>;
+    /** Passphrase of the private key. */
+    readonly passphrase?: string;
+    /** Whether the server certificate must verify (default: true). Turning it off removes the protection TLS gives. */
+    readonly rejectUnauthorized?: boolean;
+    /** Server name for SNI and certificate verification when it differs from the broker address. */
+    readonly servername?: string;
+}
+
+/** SASL authentication of the broker connection. */
+export type KafkaSaslOptions =
+    | {
+          readonly mechanism: "plain" | "scram-sha-256" | "scram-sha-512";
+          readonly username: string;
+          readonly password: string;
+      }
+    | {
+          readonly mechanism: "oauthbearer";
+          /** Called for a fresh token whenever the connection authenticates; resolves to the bearer token. */
+          readonly oauthBearerProvider: () => Promise<{ readonly value: string }>;
+      }
+    | {
+          readonly mechanism: "aws";
+          readonly authorizationIdentity: string;
+          readonly accessKeyId: string;
+          readonly secretAccessKey: string;
+          readonly sessionToken?: string;
+      };
+
+/** Retry of the client's own requests and connection attempts. All times are in milliseconds. */
+export interface KafkaRetryOptions {
+    /** Longest total time spent retrying one operation. */
+    readonly maxRetryTime?: number;
+    /** Delay before the first retry. */
+    readonly initialRetryTime?: number;
+    /** Randomization factor applied to each delay. */
+    readonly factor?: number;
+    /** Growth factor of the delay between retries. */
+    readonly multiplier?: number;
+    /** Maximum number of retries. */
+    readonly retries?: number;
+}
+
+/** Verbosity of the client library's own log. */
+export type KafkaLogLevel = "nothing" | "error" | "warn" | "info" | "debug";
+
+/**
+ * Compression of produced messages. Gzip works as shipped; Snappy, LZ4 and ZSTD need a codec that the
+ * application registers with the client library before the first publish, otherwise publishing fails.
+ */
+export type KafkaCompression = "none" | "gzip" | "snappy" | "lz4" | "zstd";
 
 /**
  * Options for creating a KafkaAdapter instance.
@@ -16,16 +76,48 @@ export interface KafkaAdapterOptions {
     /** Client ID for this producer/consumer (default: "connectum") */
     readonly clientId?: string;
 
+    /** TLS for the broker connection: `true` for the system trust store, or the settings of {@link KafkaTlsOptions}. */
+    readonly ssl?: boolean | KafkaTlsOptions;
+
+    /** SASL authentication of the broker connection. */
+    readonly sasl?: KafkaSaslOptions;
+
+    /** Time allowed to establish a connection, in milliseconds. */
+    readonly connectionTimeout?: number;
+
+    /** Time allowed for the SASL handshake, in milliseconds. */
+    readonly authenticationTimeout?: number;
+
+    /** Share of a SASL session's lifetime after which the connection re-authenticates (a number between 0 and 1). */
+    readonly reauthenticationThreshold?: number;
+
+    /** Time after which a request without an answer fails, in milliseconds. */
+    readonly requestTimeout?: number;
+
+    /** Whether `requestTimeout` is enforced by the client itself rather than only by the socket. */
+    readonly enforceRequestTimeout?: boolean;
+
+    /** Retry of the client's requests and connection attempts. */
+    readonly retry?: KafkaRetryOptions;
+
+    /** Verbosity of the client library's log (default: the library's own default, `"info"`). */
+    readonly logLevel?: KafkaLogLevel;
+
     /**
-     * Additional KafkaJS configuration overrides.
-     * Merged with brokers and clientId.
+     * Settings of the underlying Kafka client that have no portable form, such as a custom logger
+     * factory, a socket factory or a custom SASL mechanism.
+     *
+     * **Not portable and not type-checked:** the keys are those of the client library the adapter
+     * uses today (KafkaJS) and may change if that library is replaced. The value is merged
+     * shallowly over the typed options above (a `retry` here replaces `retry` there), and it can
+     * never override `brokers` or `clientId`.
      */
-    readonly kafkaConfig?: Omit<Partial<KafkaConfig>, "brokers" | "clientId">;
+    readonly clientOptions?: Readonly<Record<string, unknown>>;
 
     /** Producer-specific options */
     readonly producerOptions?: {
-        /** Compression type for produced messages */
-        readonly compression?: CompressionTypes;
+        /** Compression of produced messages (default: none). */
+        readonly compression?: KafkaCompression;
     };
 
     /** Consumer-specific options */

@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
+import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import { startTopicDiscovery } from "./topicDiscovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
@@ -97,6 +98,8 @@ function encodeMetadata(metadata: Record<string, string>): IHeaders {
  * ```
  */
 export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
+    assertKafkaOptions(options);
+
     // Node.js replaces a timer delay above this value with 1 ms, which would turn a long pause into a hot redelivery loop.
     const maxTimerDelayMs = 2_147_483_647;
     const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? defaultRedeliveryDelayMs;
@@ -163,11 +166,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             if (connected) {
                 return;
             }
-            kafka = new Kafka({
-                clientId: options.clientId ?? context?.serviceName ?? "connectum",
-                brokers: options.brokers,
-                ...options.kafkaConfig,
-            });
+            kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
             const p = kafka.producer();
             try {
                 await p.connect();
@@ -230,7 +229,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             headers["x-event-id"] = Buffer.from(randomUUID(), "utf-8");
             headers["x-published-at"] = Buffer.from(new Date().toISOString(), "utf-8");
 
-            const compression = options.producerOptions?.compression;
+            const compression = compressionOf(options);
 
             await producer.send({
                 topic: eventType,

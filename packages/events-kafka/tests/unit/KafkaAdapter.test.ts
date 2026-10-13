@@ -55,11 +55,11 @@ describe("KafkaAdapter", () => {
     });
 
     it("accepts producer options", () => {
-        // CompressionTypes.GZIP = 1
+        // gzip is the codec the client ships with
         const adapter = KafkaAdapter({
             brokers: ["localhost:9092"],
             producerOptions: {
-                compression: 1,
+                compression: "gzip",
             },
         });
 
@@ -442,7 +442,7 @@ describe("KafkaAdapter AdapterContext", () => {
         // The actual clientId = options.clientId ?? context?.serviceName ?? "connectum"
         const adapter = KafkaAdapter({
             brokers: ["localhost:9092"],
-            kafkaConfig: { retry: { retries: 0 } },
+            retry: { retries: 0 },
         });
 
         // connect() will throw because no broker is available, but the error
@@ -471,7 +471,7 @@ describe("KafkaAdapter AdapterContext", () => {
     it("connect() works with undefined context (backward compat)", async () => {
         const adapter = KafkaAdapter({
             brokers: ["localhost:9092"],
-            kafkaConfig: { retry: { retries: 0 } },
+            retry: { retries: 0 },
         });
 
         // Calling connect() without context should still work (minus broker availability)

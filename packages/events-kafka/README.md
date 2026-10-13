@@ -35,6 +35,34 @@ redelivered, and a repeatedly failing message can block later messages in its
 partition. Make handlers idempotent and see the [acknowledgement and redelivery
 guidance](https://connectum.dev/en/guide/events/adapters#kafka-ack-redelivery).
 
+## Connection options
+
+TLS, SASL, timeouts, retry and the client's log level are plain options of
+`KafkaAdapter()`, typed by this package and independent of the Kafka client library:
+
+```typescript
+KafkaAdapter({
+  brokers: ['kafka-1:9093'],
+  ssl: { ca: process.env.KAFKA_CA },
+  sasl: { mechanism: 'scram-sha-512', username: 'svc', password: process.env.KAFKA_PASSWORD ?? '' },
+  requestTimeout: 30_000,
+  retry: { retries: 8 },
+  logLevel: 'warn',
+  producerOptions: { compression: 'gzip' },
+});
+```
+
+Settings that have no portable form (a log factory, a socket factory, a custom SASL
+mechanism) go in `clientOptions`. Its keys are those of the client library the adapter
+uses today, they are not type-checked and may change if that library is replaced; it is
+merged over the typed options and can never override `brokers` or `clientId`. The old
+`kafkaConfig` option is removed and throws; see the
+[migration page](https://connectum.dev/en/migration/kafka-adapter-options).
+
+Compression: `gzip` works as shipped. `snappy`, `lz4` and `zstd` need a codec that the
+application registers with the client library before the first publish; without one,
+publishing fails.
+
 ## Broker versions
 
 The integration suite passes on Apache Kafka 4.2.0; other broker versions and
