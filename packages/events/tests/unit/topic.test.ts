@@ -74,7 +74,26 @@ describe("resolveTopicName()", () => {
         assert.equal(topic, "custom.topic.name");
     });
 
-    it("should return fallback input.typeName when topic option is empty string", () => {
+    it("should return input.typeName when the event option is present but its topic field is not set", () => {
+        // options.proto: "When not set, the topic defaults to the input message's typeName."
+        const methodOptions = create(MethodOptionsSchema);
+        setExtension(methodOptions, event, create(EventOptionsSchema));
+        const method = {
+            kind: "rpc",
+            name: "HandleEvent",
+            localName: "handleEvent",
+            input: { typeName: "payment.v1.PaymentProcessed" },
+            output: { typeName: "google.protobuf.Empty" },
+            proto: { options: methodOptions },
+        } as unknown as DescMethod;
+
+        assert.equal(resolveTopicName(method), "payment.v1.PaymentProcessed");
+    });
+
+    it("should treat an explicitly set empty topic as unset (Connectum decision, no documented source)", () => {
+        // options.proto only says what happens "when not set". In proto2 an empty string
+        // is a set value, so whether it means "no override" is not documented. Connectum
+        // chose to treat "" as no override and fall back to input.typeName.
         const method = fakeMethodWithTopic("payment.v1.PaymentProcessed", "");
         const topic = resolveTopicName(method);
 
