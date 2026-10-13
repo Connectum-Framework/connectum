@@ -22,6 +22,10 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
+import { context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-node";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 
@@ -358,26 +362,45 @@ describe("createOtelClientInterceptor", () => {
 	// -----------------------------------------------------------------------
 
 	describe("context injection", () => {
-		it("should inject trace context into request headers", async () => {
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "api.example.com",
-			});
-			const req = createMockRequest({ message: OTEL_REQUEST_MESSAGE });
+		// Oracle: W3C Trace Context, section "traceparent Header Field Values":
+		// version-trace-id-parent-id-trace-flags as 2, 32, 16 and 2 lowercase hex
+		// digits. The header the next hop receives must carry the trace id and the
+		// span id of the client span this interceptor created, with the sampled flag.
+		it("should send a W3C traceparent header that identifies the exported client span", async () => {
+			const contextManager = new AsyncLocalStorageContextManager();
+			contextManager.enable();
+			const exporter = new InMemorySpanExporter();
+			const tracerProvider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+			await shutdownProvider();
+			trace.disable();
+			context.disable();
+			propagation.disable();
+			trace.setGlobalTracerProvider(tracerProvider);
+			context.setGlobalContextManager(contextManager);
+			propagation.setGlobalPropagator(new W3CTraceContextPropagator());
 
-			let capturedReq: unknown;
-			const next: any = async (r: unknown) => {
-				capturedReq = r;
-				return { stream: false, message: OTEL_RESPONSE_MESSAGE };
-			};
+			try {
+				const interceptor = createOtelClientInterceptor({ serverAddress: "api.example.com" });
+				let sentTraceparent: string | null = null;
+				const next: any = async (r: { header: Headers }) => {
+					sentTraceparent = r.header.get("traceparent");
+					return { stream: false, message: OTEL_RESPONSE_MESSAGE };
+				};
 
-			const handler = interceptor(next);
-			await handler(req);
+				await interceptor(next)(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
 
-			// Propagation.inject should have added headers to the request
-			// In a real OTel setup this would add traceparent/tracestate
-			// With noop propagator the headers may or may not be added,
-			// but the interceptor should have called next with the same request object
-			assert.strictEqual(capturedReq, req);
+				const spans = exporter.getFinishedSpans();
+				assert.strictEqual(spans.length, 1);
+				const spanContext = spans[0]!.spanContext();
+				assert.match(sentTraceparent ?? "", /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
+				assert.strictEqual(sentTraceparent, `00-${spanContext.traceId}-${spanContext.spanId}-01`);
+			} finally {
+				await shutdownProvider();
+				trace.disable();
+				context.disable();
+				propagation.disable();
+				await tracerProvider.shutdown();
+			}
 		});
 	});
 
