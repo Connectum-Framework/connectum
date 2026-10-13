@@ -185,7 +185,10 @@ describe("wrapAsyncIterable", () => {
 		assert.strictEqual(events[1]!.attributes?.["rpc.message.uncompressed_size"], 50);
 	});
 
-	it("should return 0 size for messages without toBinary", async () => {
+	// semconv defines rpc.message.uncompressed_size as a byte count and does not say
+	// what to record when the size is unknown. Connectum records 0 in that case
+	// (documented on estimateMessageSize); this pins that decision, not a standard.
+	it("should record Connectum's 0 for the size of messages without toBinary", async () => {
 		const { span, events } = createMockSpan();
 		const items = [{ someField: "value" }, { anotherField: 42 }];
 

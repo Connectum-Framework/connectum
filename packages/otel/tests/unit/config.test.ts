@@ -14,11 +14,22 @@ import {
 
 describe("config", () => {
 	describe("ExporterType", () => {
-		it("should have correct values", () => {
+		// The OpenTelemetry SDK environment-variable specification defines
+		// "console" and "none" as values of OTEL_<SIGNAL>_EXPORTER, so these two
+		// spellings are fixed by the standard.
+		it("should spell the exporter values the OpenTelemetry specification defines", () => {
 			assert.strictEqual(ExporterType.CONSOLE, "console");
-			assert.strictEqual(ExporterType.OTLP_HTTP, "otlp/http");
-			assert.strictEqual(ExporterType.OTLP_GRPC, "otlp/grpc");
 			assert.strictEqual(ExporterType.NONE, "none");
+		});
+
+		// "otlp/http", "otlp/http-protobuf" and "otlp/grpc" are Connectum's own
+		// explicit spellings (the standard has only the bare "otlp" plus protocol
+		// variables). They are documented in the observability backends guide as
+		// the values users put into OTEL_<SIGNAL>_EXPORTER.
+		it("should spell the Connectum-specific explicit OTLP exporter values as documented", () => {
+			assert.strictEqual(ExporterType.OTLP_HTTP, "otlp/http");
+			assert.strictEqual(ExporterType.OTLP_HTTP_PROTOBUF, "otlp/http-protobuf");
+			assert.strictEqual(ExporterType.OTLP_GRPC, "otlp/grpc");
 		});
 	});
 
@@ -58,10 +69,12 @@ describe("config", () => {
 	});
 
 	describe("getCollectorOptions", () => {
-		it("should return collector options", () => {
+		// The OpenTelemetry specification prescribes no exporter concurrency limit;
+		// ten concurrent in-flight exports is a fixed Connectum choice in
+		// getCollectorOptions(), not a standard value.
+		it("should cap concurrent exports at the fixed Connectum limit of 10", () => {
 			const options = getCollectorOptions();
 
-			assert.ok(options);
 			assert.strictEqual(options.concurrencyLimit, 10);
 		});
 
@@ -83,7 +96,17 @@ describe("config", () => {
 	});
 
 	describe("getBatchSpanProcessorOptions", () => {
-		it("should return default options", () => {
+		// Connectum deliberately uses its own batch defaults (batch 100, queue 1000,
+		// delay 1000 ms, timeout 10000 ms), documented in the observability backends
+		// guide and the JSDoc of getBatchSpanProcessorOptions(). They differ from the
+		// OpenTelemetry specification defaults (512 / 2048 / 5000 ms / 30000 ms), so
+		// the specification is not the oracle here: this pins the documented decision.
+		it("should use the documented Connectum defaults, not the OpenTelemetry specification defaults", () => {
+			delete process.env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE;
+			delete process.env.OTEL_BSP_MAX_QUEUE_SIZE;
+			delete process.env.OTEL_BSP_SCHEDULE_DELAY;
+			delete process.env.OTEL_BSP_EXPORT_TIMEOUT;
+
 			const options = getBatchSpanProcessorOptions();
 
 			assert.strictEqual(options.maxExportBatchSize, 100);
@@ -132,7 +155,12 @@ describe("config", () => {
 			delete process.env.OTEL_SERVICE_NAME;
 		});
 
-		it("should return defaults when npm env not available", () => {
+		// The OpenTelemetry resource specification says an unset service.name is
+		// "unknown_service" (underscore). Connectum falls back to "unknown-service"
+		// (hyphen) and "0.0.0" for the version (the specification defines no default
+		// version); both are documented in the observability backends guide. This pins
+		// the documented Connectum fallbacks, not a standard value.
+		it("should fall back to the documented Connectum defaults unknown-service and 0.0.0", () => {
 			delete process.env.OTEL_SERVICE_NAME;
 			delete process.env.npm_package_name;
 			delete process.env.npm_package_version;
@@ -143,7 +171,9 @@ describe("config", () => {
 			assert.strictEqual(metadata.version, "0.0.0");
 		});
 
-		it("should handle missing name only", () => {
+		// Name and version fall back independently: a missing name must not
+		// discard a version that is present.
+		it("should fall back to unknown-service while keeping a present version", () => {
 			delete process.env.OTEL_SERVICE_NAME;
 			delete process.env.npm_package_name;
 			process.env.npm_package_version = "2.0.0";
@@ -154,7 +184,9 @@ describe("config", () => {
 			assert.strictEqual(metadata.version, "2.0.0");
 		});
 
-		it("should handle missing version only", () => {
+		// Mirror case: a missing version falls back to the documented 0.0.0 while a
+		// present name is kept.
+		it("should fall back to 0.0.0 while keeping a present name", () => {
 			delete process.env.OTEL_SERVICE_NAME;
 			process.env.npm_package_name = "my-service";
 			delete process.env.npm_package_version;
