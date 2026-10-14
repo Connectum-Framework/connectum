@@ -187,30 +187,46 @@ describe("getLogger", () => {
 			defaultAttributes: { env: "test" },
 		});
 
-		logger.emit({
+		const raw: LogRecord = {
+			severityNumber: SeverityNumber.WARN,
+			severityText: "WARN",
+			body: "raw",
+			attributes: { only: "this" },
+		};
+		logger.emit(raw);
+
+		// The documented "Raw OpenTelemetry LogRecord" is handed to the SDK as given:
+		// neither the logger name nor the default attributes are added to it.
+		assert.strictEqual(capture.calls.length, 1);
+		assert.deepStrictEqual(firstCall(capture), {
 			severityNumber: SeverityNumber.WARN,
 			severityText: "WARN",
 			body: "raw",
 			attributes: { only: "this" },
 		});
-
-		const record = firstCall(capture);
-		const attrs = record.attributes as Record<string, unknown>;
-		assert.strictEqual(attrs.only, "this");
-		assert.strictEqual(attrs["logger.name"], undefined);
-		assert.strictEqual(attrs.env, undefined);
 		capture.restore();
 	});
 
-	it("should not throw when called without active span", () => {
+	it("emits one record per level without an active span, with the log data model severities", () => {
+		const capture = captureEmit();
 		const logger = getLogger("TestService");
 
-		assert.doesNotThrow(() => {
-			logger.info("no span context");
-			logger.warn("no span context");
-			logger.error("no span context");
-			logger.debug("no span context");
-		});
+		logger.info("no span context");
+		logger.warn("no span context");
+		logger.error("no span context");
+		logger.debug("no span context");
+
+		// Severity numbers are fixed by the OpenTelemetry log data model: DEBUG 5, INFO 9, WARN 13, ERROR 17.
+		assert.deepStrictEqual(
+			capture.calls.map((record) => [record.severityNumber, record.severityText, record.body]),
+			[
+				[9, "INFO", "no span context"],
+				[13, "WARN", "no span context"],
+				[17, "ERROR", "no span context"],
+				[5, "DEBUG", "no span context"],
+			],
+		);
+		capture.restore();
 	});
 
 	it("should use 'unknown' when called without name and no active span", () => {

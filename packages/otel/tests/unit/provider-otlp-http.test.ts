@@ -5,10 +5,10 @@
  */
 
 import assert from "node:assert";
-import type { IncomingMessage } from "node:http";
-import { createServer, type Server } from "node:http";
+import http, { createServer, type IncomingMessage, type Server } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { context, metrics, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { getProvider, initProvider, shutdownProvider } from "../../src/provider.ts";
@@ -78,6 +78,8 @@ describe("provider: OTLP/HTTP exporters", () => {
 
 	afterEach(async () => {
 		await shutdownProvider();
+		mock.restoreAll();
+		syncBuiltinESMExports();
 		// The global registrations survive shutdownProvider() and refuse a second
 		// registration, so a later test would otherwise record into a dead provider.
 		context.disable();
@@ -99,16 +101,54 @@ describe("provider: OTLP/HTTP exporters", () => {
 		}
 	});
 
+	// The OTLP exporter specification: with no endpoint configured the exporter sends
+	// to http://localhost:4318, appending /v1/traces, /v1/metrics or /v1/logs. The
+	// outgoing request is redirected to the local collector, with the URL the
+	// exporter actually targeted recorded first.
+	function recordTargets(redirectOrigin: string): string[] {
+		const targets: string[] = [];
+		const original = http.request;
+		mock.method(http, "request", (...args: Parameters<typeof http.request>) => {
+			const [url, ...rest] = args;
+			assert.ok(url instanceof URL, "the exporter passes a parsed URL");
+			targets.push(url.href);
+			return (original as (...a: unknown[]) => ReturnType<typeof http.request>)(`${redirectOrigin}${url.pathname}`, ...rest);
+		});
+		syncBuiltinESMExports();
+		return targets;
+	}
+
+	const defaultTargets = {
+		traces: "http://localhost:4318/v1/traces",
+		metrics: "http://localhost:4318/v1/metrics",
+		logs: "http://localhost:4318/v1/logs",
+	} as const;
+
 	for (const signal of ["traces", "metrics", "logs"] as const) {
-		it(`builds the ${signal} exporter without OTEL_EXPORTER_OTLP_ENDPOINT, using the exporter default endpoint`, () => {
+		it(`sends ${signal} to ${defaultTargets[signal]} when no endpoint is configured`, async () => {
+			collector = await startCollector();
+			const targets = recordTargets(collector.origin);
 			setOnly(signal);
 
-			assert.doesNotThrow(() => getProvider());
+			emitProbe[signal](getProvider());
+			await shutdownProvider();
+
+			assert.deepStrictEqual(targets, [defaultTargets[signal]]);
 		});
 	}
 
-	it("accepts explicit settings overrides without any endpoint configured", () => {
-		assert.doesNotThrow(() => initProvider({ settings: { traces: "otlp/http", metrics: "otlp/http", logs: "otlp/http" } }));
+	it("applies explicit settings overrides, sending every signal to the default endpoint when none is configured", async () => {
+		collector = await startCollector();
+		const targets = recordTargets(collector.origin);
+
+		initProvider({ settings: { traces: "otlp/http", metrics: "otlp/http", logs: "otlp/http" } });
+		const provider = getProvider();
+		emitProbe.traces(provider);
+		emitProbe.metrics(provider);
+		emitProbe.logs(provider);
+		await shutdownProvider();
+
+		assert.deepStrictEqual([...targets].sort(), [defaultTargets.logs, defaultTargets.metrics, defaultTargets.traces]);
 	});
 
 	it("sends spans to <endpoint>/v1/traces", async () => {
@@ -236,6 +276,14 @@ describe("provider: OTLP/HTTP exporters", () => {
 		setOnly("traces");
 		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "not a url";
 
-		assert.throws(() => getProvider(), /Could not parse user-provided export URL/);
+		// The failure itself is the requirement; the wording belongs to the exporter
+		// library, so only the offending value that must be reported is matched.
+		assert.throws(
+			() => getProvider(),
+			(error: unknown) => error instanceof Error && error.message.includes("not a url"),
+		);
+
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318";
+		assert.doesNotThrow(() => getProvider(), "a failed construction leaves no half-built provider behind");
 	});
 });

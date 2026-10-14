@@ -4,6 +4,8 @@
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { trace } from "@opentelemetry/api";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { buildResourceAttributes, getProvider, initProvider, parseOtelResourceAttributesEnv, resolveServiceName, shutdownProvider } from "../../src/provider.ts";
 
 const ATTR_SERVICE_NAME = "service.name";
@@ -39,26 +41,40 @@ describe("provider", () => {
 	});
 
 	describe("initProvider", () => {
-		it("should be idempotent when called twice", () => {
+		it("keeps the first provider when called again, even with different options", () => {
 			initProvider();
-			assert.doesNotThrow(() => initProvider());
+			const first = getProvider();
+
+			initProvider({ serviceName: "other-service", instanceId: "other-pod" });
+
+			assert.strictEqual(getProvider(), first);
+			assert.strictEqual(getProvider().tracer, first.tracer);
+			assert.strictEqual(getProvider().meter, first.meter);
 		});
 	});
 
 	describe("shutdownProvider", () => {
-		it("should allow re-initialization after shutdown", async () => {
-			getProvider();
+		it("creates a new provider after shutdown instead of returning the stopped one", async () => {
+			const stopped = getProvider();
 			await shutdownProvider();
 
-			// Should not throw
 			initProvider();
-			const provider = getProvider();
-			assert.ok(provider);
+			const fresh = getProvider();
+
+			assert.notStrictEqual(fresh, stopped);
+			assert.strictEqual(getProvider(), fresh);
 		});
 
-		it("should be no-op when provider not initialized", async () => {
-			// Should not throw
-			await shutdownProvider();
+		it("does nothing when no provider was created: another party's global registration stays", async () => {
+			const foreignTracer = new NodeTracerProvider();
+			trace.setGlobalTracerProvider(foreignTracer);
+			try {
+				await assert.doesNotReject(shutdownProvider());
+
+				assert.strictEqual(trace.getTracer("probe").startSpan("s").isRecording(), true, "the registered tracer provider is still in place");
+			} finally {
+				trace.disable();
+			}
 		});
 	});
 
