@@ -83,6 +83,11 @@ function collect<T>(root: ts.Node, pick: (node: ts.Node) => T | undefined): T[] 
     return found;
 }
 
+/** Every node of the tree (the root included) that satisfies a type guard. */
+export function collectNodes<T extends ts.Node>(root: ts.Node, guard: (node: ts.Node) => node is T): T[] {
+    return collect(root, (node) => (guard(node) ? node : undefined));
+}
+
 /** Every call expression whose callee is written exactly as `callee` (for example `client.sayHello`). */
 export function callsTo(root: ts.Node, callee: string): ts.CallExpression[] {
     return collect(root, (node) => (ts.isCallExpression(node) && node.expression.getText() === callee ? node : undefined));
@@ -136,6 +141,34 @@ export function propertyValue(objectLiteral: ts.ObjectLiteralExpression, name: s
 export function elementsOf(expression: ts.Expression | undefined): string[] {
     assertKind(expression !== undefined && ts.isArrayLiteralExpression(expression), `expected an array literal, got: ${expression?.getText()}`);
     return (expression as ts.ArrayLiteralExpression).elements.map((element) => element.getText());
+}
+
+/** The names of the `export const` / `export function` bindings of a module. */
+export function exportedBindings(sf: ts.SourceFile): string[] {
+    const names: string[] = [];
+    for (const statement of sf.statements) {
+        const exported = ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
+        if (!exported) {
+            continue;
+        }
+        if (ts.isVariableStatement(statement)) {
+            for (const declaration of statement.declarationList.declarations) {
+                names.push(declaration.name.getText());
+            }
+        } else if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+            names.push(statement.name.text);
+        }
+    }
+    return names;
+}
+
+/** The rpc method names declared by `service <service> { ... }` in a proto file, in order. */
+export function protoRpcMethods(proto: string, service: string): string[] {
+    const body = proto.match(new RegExp(`^service ${service} \\{\\n([\\s\\S]*?)\\n\\}$`, "m"))?.[1];
+    if (body === undefined) {
+        throw new Error(`service ${service} is not declared in:\n${proto}`);
+    }
+    return [...body.matchAll(/\brpc (\w+)\(/g)].map((m) => m[1] as string);
 }
 
 // ---- Names exported by the workspace packages -------------------------------------------------

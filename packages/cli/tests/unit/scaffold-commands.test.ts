@@ -16,6 +16,7 @@ import { executeInit, initCommand } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
 import { cloneOf, cloneStub } from "../helpers/baseFixture.ts";
+import { protoRpcMethods as rpcMethods } from "../helpers/generatedCode.ts";
 
 describe("init command", () => {
     it("exports a citty command with a run handler", () => {
@@ -145,13 +146,6 @@ function codeOf(source: string): string {
         .replace(/^\s*\/\/.*$/gm, "")
         .replace(/\s+/g, " ")
         .trim();
-}
-
-/** The rpc method names declared by `service <service> { ... }` in a proto file, in order. */
-function rpcMethods(proto: string, service: string): string[] {
-    const body = proto.match(new RegExp(`^service ${service} \\{\\n([\\s\\S]*?)\\n\\}$`, "m"))?.[1];
-    assert.ok(body !== undefined, `service ${service} is not declared in:\n${proto}`);
-    return [...body.matchAll(/\brpc (\w+)\(/g)].map((m) => m[1] as string);
 }
 
 describe("executeGenerateService", () => {
