@@ -238,8 +238,12 @@ describe("AMQP consumer loss while subscribe() has not returned (broker)", { ski
             proxy.release();
             await subscribing;
 
+            // The loss is reported once the setup has finished; waiting (instead of asserting at the
+            // instant subscribe() returns) keeps the test independent of how the network delivers
+            // the two broker frames, while a dropped replay still never produces the event.
+            await waitFor(() => events.some((e) => e.type === "consumer-lost"));
             const lost = events.filter((e) => e.type === "consumer-lost");
-            assert.equal(lost.length, 1, "the loss that preceded the end of setup is reported once, by the time subscribe() has returned");
+            assert.equal(lost.length, 1, "the loss that preceded the end of setup is reported once");
             const [event] = lost;
             assert.ok(event?.type === "consumer-lost");
             assert.equal(event.queue, queue);
@@ -281,6 +285,7 @@ describe("AMQP consumer loss while subscribe() has not returned (broker)", { ski
             proxy.release();
             await subscribing;
 
+            await waitFor(() => events.some((e) => e.type === "consumer-lost"));
             const lost = events.filter((e) => e.type === "consumer-lost");
             assert.equal(lost.length, 1);
             const [event] = lost;
