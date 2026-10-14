@@ -727,11 +727,10 @@ describe("parseTimeoutOption", () => {
 		});
 	}
 
-	// Connectum decision, the specification is silent: it requires "an integer from 1 to
-	// 2147483647" and does not say whether the spelling "007" of the integer 7 counts. The
-	// implementation accepts only the canonical decimal spelling, so a padded value is refused
-	// instead of being read as 7 (or, by a parser that treats a leading zero as octal, as another number).
-	it("Connectum decision (undocumented): rejects a leading-zero spelling \"007\" instead of reading it as 7", () => {
+	// The specification and the scaffolding guide require plain decimal digits: a value with a
+	// leading zero is refused like any other invalid value instead of being read as 7 (or, by a
+	// parser that treats a leading zero as octal, as another number).
+	it("rejects a leading-zero spelling \"007\" instead of reading it as 7", () => {
 		assert.throws(() => parseTimeoutOption("007"), /--timeout must be a positive integer/);
 	});
 
