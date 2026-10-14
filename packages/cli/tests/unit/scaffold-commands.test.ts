@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { executeGenerateService, generateServiceCommand } from "../../src/commands/generate-service.ts";
 import { executeInit, initCommand } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
@@ -185,5 +185,96 @@ describe("executeGenerateService", () => {
         await executeGenerateService({ name: "billing", cwd: dir });
         // Second run without force skips existing files (no throw).
         await executeGenerateService({ name: "billing", cwd: dir });
+    });
+});
+
+describe("executeGenerateService: registration hint and existing files", () => {
+    let dir: string;
+    let printed: string[];
+
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "connectum-gensvc-hint-"));
+        printed = [];
+        mock.method(console, "log", (...args: unknown[]) => {
+            printed.push(args.join(" "));
+        });
+    });
+    afterEach(() => {
+        mock.restoreAll();
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("leaves src/server.ts byte-for-byte untouched and prints the registration to add by hand", async () => {
+        const server = Buffer.from('// owned by the user\r\nimport { createServer } from "@connectum/core";\n\u0000tail without newline');
+        mkdirSync(join(dir, "src"), { recursive: true });
+        writeFileSync(join(dir, "src/server.ts"), server);
+
+        await executeGenerateService({ name: "billing", cwd: dir });
+
+        assert.deepEqual(readFileSync(join(dir, "src/server.ts")), server);
+        // The hint is the documented block, verbatim.
+        assert.ok(
+            printed.join("\n").includes(
+                [
+                    "Register the new service in src/server.ts:",
+                    '  import { billingService } from "#services/billingService.ts";',
+                    "  // add billingService to the services: [...] array passed to createServer",
+                ].join("\n"),
+            ),
+            printed.join("\n"),
+        );
+    });
+
+    it("does not create src/server.ts when the project has none", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        assert.equal(existsSync(join(dir, "src/server.ts")), false);
+    });
+
+    it("names the imported binding after the file the command actually wrote", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        assert.match(readFileSync(join(dir, "src/services/billingService.ts"), "utf8"), /export const billingService\b/);
+    });
+
+    it("with --with-events also prints the event-route registration, and that route is exported by the generated file", async () => {
+        await executeGenerateService({ name: "billing", withEvents: true, cwd: dir });
+
+        const out = printed.join("\n");
+        assert.ok(out.includes('  import { billingService } from "#services/billingService.ts";'), out);
+        assert.ok(out.includes('  import { billingEventRoutes } from "#services/billingService.ts";'), out);
+        assert.match(readFileSync(join(dir, "src/services/billingService.ts"), "utf8"), /export const billingEventRoutes\b/);
+    });
+
+    it("prints no event-route registration without --with-events", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        assert.ok(!printed.join("\n").includes("billingEventRoutes"));
+    });
+
+    it("keeps an existing file's content on a repeat run without --force and reports it as skipped", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        const impl = join(dir, "src/services/billingService.ts");
+        writeFileSync(impl, "// hand-written implementation\n");
+        printed.length = 0;
+
+        await executeGenerateService({ name: "billing", cwd: dir });
+
+        assert.equal(readFileSync(impl, "utf8"), "// hand-written implementation\n");
+        const out = printed.join("\n");
+        assert.match(out, /Skipped 2 existing file\(s\): .*src\/services\/billingService\.ts/);
+        assert.match(out, /Generated 0 file\(s\)/);
+    });
+
+    it("overwrites existing files with --force and reports nothing as skipped", async () => {
+        await executeGenerateService({ name: "billing", cwd: dir });
+        const impl = join(dir, "src/services/billingService.ts");
+        const generated = readFileSync(impl, "utf8");
+        writeFileSync(impl, "// hand-written implementation\n");
+        printed.length = 0;
+
+        await executeGenerateService({ name: "billing", cwd: dir, force: true });
+
+        assert.equal(readFileSync(impl, "utf8"), generated);
+        const out = printed.join("\n");
+        assert.match(out, /Generated 2 file\(s\)/);
+        assert.ok(!out.includes("Skipped"), out);
     });
 });
