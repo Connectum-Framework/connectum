@@ -254,9 +254,9 @@ export function effectiveRecoveryMaxDelay(recovery: Pick<AmqpRecoveryOptions, "i
  * never exceeds `maxDelay` (up to rounding when `maxDelay` is not an integer)
  * with no pile-up of draws on the cap.
  *
- * Kept formula-identical because the adapter's own delay site, `publishRetry`,
- * must back off exactly like amqplib's connection recovery, which the adapter
- * does not compute itself. amqplib does not export its function, so unit
+ * Kept formula-identical because the adapter's own delay sites, `publishRetry`
+ * and the consumer-restore retries, must back off exactly like amqplib's
+ * connection recovery, which the adapter does not compute itself. amqplib does not export its function, so unit
  * tests pin this copy at the boundaries. `random` is injectable for
  * cross-runtime-deterministic tests. Exported (not via the package barrel)
  * for direct unit testing.
