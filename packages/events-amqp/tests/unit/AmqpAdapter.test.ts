@@ -286,6 +286,80 @@ describe("initialConnectMaxRetries normalization", () => {
     });
 });
 
+describe("retry budgets under a valid recovery.backoff hook", () => {
+    // Documented: the hook only sets intervals; `maxRetries` and
+    // `initialConnectMaxRetries` still bound the number of attempts, and the
+    // returned delay is rounded to whole milliseconds. Port 1 on loopback has
+    // no listener, so every attempt is refused at once — no broker needed.
+    function recordingHook(returns: number): { readonly hook: (attempt: number) => number; readonly attempts: number[] } {
+        const attempts: number[] = [];
+        return {
+            attempts,
+            hook: (attempt) => {
+                attempts.push(attempt);
+                // A budget that is not enforced would retry for ever; failing the hook
+                // turns that hang into a prompt, typed test failure.
+                if (attempts.length > 20) {
+                    throw new Error("retry budget not enforced: more than 20 attempts");
+                }
+                return returns;
+            },
+        };
+    }
+
+    it("initialConnectMaxRetries bounds the startup attempts, and each fractional return is applied as a whole-millisecond delay", async () => {
+        const { hook, attempts } = recordingHook(1.6);
+        const reported: Array<{ attempt: number; delay: number }> = [];
+        const adapter = AmqpAdapter({
+            url: "amqp://127.0.0.1:1",
+            // maxRetries is deliberately smaller: the startup budget must win in the initial window.
+            recovery: { backoff: hook, maxRetries: 1, initialConnectMaxRetries: 2 },
+            lifecycle: {
+                onLifecycle: (event) => {
+                    if (event.type === "reconnecting") {
+                        reported.push({ attempt: event.attempt, delay: event.delay });
+                    }
+                },
+            },
+        });
+        try {
+            await assert.rejects(
+                () => adapter.connect(),
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError);
+                    assert.equal(err.message, "Initial connect failed after 3 attempt(s) (initialConnectMaxRetries: 2)");
+                    return true;
+                },
+            );
+        } finally {
+            await adapter.disconnect();
+        }
+        assert.deepEqual(attempts, [1, 2], "the hook is consulted once per scheduled retry, and not after the budget is spent");
+        assert.deepEqual(reported, [
+            { attempt: 1, delay: 2 },
+            { attempt: 2, delay: 2 },
+        ]);
+    });
+
+    it("maxRetries alone still ends the initial connect instead of retrying forever", async () => {
+        const { hook, attempts } = recordingHook(1);
+        const adapter = AmqpAdapter({ url: "amqp://127.0.0.1:1", recovery: { backoff: hook, maxRetries: 2 } });
+        try {
+            await assert.rejects(
+                () => adapter.connect(),
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError);
+                    assert.equal(err.message, "Initial connect failed: recovery gave up (maxRetries: 2)");
+                    return true;
+                },
+            );
+        } finally {
+            await adapter.disconnect();
+        }
+        assert.deepEqual(attempts, [1, 2]);
+    });
+});
+
 describe("recovery.backoff option combinations", () => {
     const backoff = (attempt: number): number => 100 * attempt;
 

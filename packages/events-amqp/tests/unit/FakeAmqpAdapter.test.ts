@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createEventBus } from "@connectum/events";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
-import { AmqpConnectionError, AmqpPublishNackError, AmqpTopologyError } from "../../src/errors.ts";
+import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpTopologyError } from "../../src/errors.ts";
 import { FakeAmqpAdapter } from "../../src/testing.ts";
 import type { AmqpLifecycleEvent } from "../../src/types.ts";
 
@@ -357,6 +357,22 @@ describe("FakeAmqpAdapter publish outcomes", () => {
         assert.equal(fake.control.published.length, 1, "only acked publishes are recorded");
         assert.equal(fake.control.published[0]?.eventType, "t");
         assert.deepEqual(fake.control.published[0]?.options, { metadata: { source: "test" } });
+    });
+
+    it("a queued AmqpPublishTimeoutError (the state-UNKNOWN outcome) rejects that publish with the same instance, and the next publish acks", async () => {
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+        const unknownOutcome = new AmqpPublishTimeoutError("no broker outcome (UNKNOWN)");
+
+        fake.control.nextPublish(unknownOutcome);
+
+        await assert.rejects(
+            () => fake.publish("t", new Uint8Array([1])),
+            (err: unknown) => err === unknownOutcome && err instanceof AmqpPublishTimeoutError,
+        );
+        await fake.publish("t", new Uint8Array([2]));
+        assert.equal(fake.control.published.length, 1, "the timed-out publish is not recorded as delivered");
+        assert.deepEqual([...(fake.control.published[0]?.payload ?? [])], [2]);
     });
 
     it("publish during the recovery window fails fast with the real adapter's message", async () => {
