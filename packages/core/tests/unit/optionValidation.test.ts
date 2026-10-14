@@ -83,3 +83,23 @@ describe("service-level readMaxBytes", () => {
         assert.doesNotThrow(() => defineService(EchoService, {} as never));
     });
 });
+
+describe("caller prefix in the validation message", () => {
+    // A rejected option is reported in one form for every entry point: the name of
+    // the function the user called, a colon, then the option. Without the prefix a
+    // user who configures several services cannot tell which call to fix.
+    const rejections: Record<string, { call: () => unknown; option: string }> = {
+        createServer: { call: () => createServer({ services: [], readMaxBytes: 0 }), option: "readMaxBytes" },
+        "createServer (shutdown.timeout)": { call: serverWith({ timeout: -1 }), option: "shutdown.timeout" },
+        "createServer (shutdown.forceCloseOnTimeout)": { call: serverWith({ forceCloseOnTimeout: "no" }), option: "shutdown.forceCloseOnTimeout" },
+        defineService: { call: () => defineService(EchoService, {} as never, { readMaxBytes: 0 }), option: "readMaxBytes" },
+        defineLazyService: { call: () => defineLazyService(EchoService, () => ({}) as never, { readMaxBytes: 0 }), option: "readMaxBytes" },
+    };
+
+    for (const [name, { call, option }] of Object.entries(rejections)) {
+        const caller = name.split(" ")[0] as string;
+        it(`${name} starts the message with its own function name`, () => {
+            assert.throws(call, (err: unknown) => err instanceof Error && err.message.startsWith(`${caller}: ${option}`), "the message must read '<caller>: <option> ...'");
+        });
+    }
+});
