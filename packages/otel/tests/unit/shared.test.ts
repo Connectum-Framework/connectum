@@ -17,11 +17,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
-	ATTR_ERROR_TYPE,
-	ATTR_NETWORK_PROTOCOL_NAME,
-	ATTR_NETWORK_TRANSPORT,
 	ATTR_RPC_METHOD,
-	ATTR_RPC_RESPONSE_STATUS_CODE,
 	ATTR_RPC_SYSTEM_NAME,
 	ATTR_SERVER_ADDRESS,
 	ATTR_SERVER_PORT,
@@ -91,63 +87,61 @@ describe("buildErrorAttributes", () => {
 		const error = new ConnectError("not found", Code.NotFound);
 		const attrs = buildErrorAttributes(error);
 
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "NOT_FOUND");
-		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
+		assert.deepStrictEqual(attrs, { "error.type": "NOT_FOUND", "rpc.response.status_code": "NOT_FOUND" });
 	});
 
-	it("should return error.type=constructor name for generic Error", () => {
-		const error = new TypeError("bad type");
-		const attrs = buildErrorAttributes(error);
+	// The Connect wire codes are the gRPC status numbers; the names are the canonical
+	// upper-case spellings that the metrics guide documents for `rpc.response.status_code`,
+	// with `error.type` equal to it. The numbers are written out here, not read from `Code`.
+	// Code 1 is left out on purpose: the sources spell it differently (the Connect protocol
+	// "canceled", gRPC and the semantic-convention registry "CANCELLED") and the guide does
+	// not fix it, so no spelling is pinned by an outside source.
+	const connectCodeNames: Array<[number, string]> = [
+		[2, "UNKNOWN"],
+		[3, "INVALID_ARGUMENT"],
+		[4, "DEADLINE_EXCEEDED"],
+		[5, "NOT_FOUND"],
+		[6, "ALREADY_EXISTS"],
+		[7, "PERMISSION_DENIED"],
+		[8, "RESOURCE_EXHAUSTED"],
+		[9, "FAILED_PRECONDITION"],
+		[10, "ABORTED"],
+		[11, "OUT_OF_RANGE"],
+		[12, "UNIMPLEMENTED"],
+		[13, "INTERNAL"],
+		[14, "UNAVAILABLE"],
+		[15, "DATA_LOSS"],
+		[16, "UNAUTHENTICATED"],
+	];
 
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "TypeError");
-		assert.strictEqual(
-			attrs[ATTR_RPC_RESPONSE_STATUS_CODE],
-			undefined,
-			"should not include rpc.response.status_code for generic Error",
-		);
+	for (const [code, name] of connectCodeNames) {
+		it(`names Connect error code ${code} ${name} in both error.type and rpc.response.status_code`, () => {
+			const attrs = buildErrorAttributes(new ConnectError("failure", code));
+
+			assert.deepStrictEqual(attrs, { "error.type": name, "rpc.response.status_code": name });
+		});
+	}
+
+	it("should return error.type=constructor name for generic Error and no status code", () => {
+		const attrs = buildErrorAttributes(new TypeError("bad type"));
+
+		assert.deepStrictEqual(attrs, { "error.type": "TypeError" });
 	});
 
-	it("should return error.type='UNKNOWN' for non-Error values (string)", () => {
-		const attrs = buildErrorAttributes("something went wrong");
+	// The metrics guide: error.type is the error class name for another Error, "otherwise UNKNOWN".
+	const notErrors: Array<[string, unknown]> = [
+		["a string", "something went wrong"],
+		["a number", 42],
+		["null", null],
+		["undefined", undefined],
+		["a plain object", { message: "looks like an error" }],
+	];
 
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "UNKNOWN");
-	});
-
-	it("should return error.type='UNKNOWN' for non-Error values (number)", () => {
-		const attrs = buildErrorAttributes(42);
-
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "UNKNOWN");
-	});
-
-	it("should return error.type='UNKNOWN' for non-Error values (null)", () => {
-		const attrs = buildErrorAttributes(null);
-
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "UNKNOWN");
-	});
-
-	it("should handle ConnectError with Code.NotFound (5)", () => {
-		const error = new ConnectError("not found", Code.NotFound);
-		const attrs = buildErrorAttributes(error);
-
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "NOT_FOUND");
-		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
-	});
-
-	it("should handle ConnectError with Code.Internal (13)", () => {
-		const error = new ConnectError("internal error", Code.Internal);
-		const attrs = buildErrorAttributes(error);
-
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "INTERNAL");
-		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "INTERNAL");
-	});
-
-	it("should handle ConnectError with Code.InvalidArgument (3)", () => {
-		const error = new ConnectError("bad argument", Code.InvalidArgument);
-		const attrs = buildErrorAttributes(error);
-
-		assert.strictEqual(attrs[ATTR_ERROR_TYPE], "INVALID_ARGUMENT");
-		assert.strictEqual(attrs[ATTR_RPC_RESPONSE_STATUS_CODE], "INVALID_ARGUMENT");
-	});
+	for (const [label, value] of notErrors) {
+		it(`reports only error.type UNKNOWN for ${label} thrown as a value`, () => {
+			assert.deepStrictEqual(buildErrorAttributes(value), { "error.type": "UNKNOWN" });
+		});
+	}
 });
 
 // ---------------------------------------------------------------------------
@@ -162,14 +156,17 @@ describe("buildBaseAttributes", () => {
 			serverAddress: "localhost",
 		});
 
-		// Key spellings come from the OpenTelemetry RPC conventions for Connect, not from the constants.
-		assert.strictEqual(attrs["rpc.system.name"], "connectrpc");
-		assert.strictEqual(attrs["rpc.method"], "test.TestService/TestMethod");
-		assert.ok(!("rpc.service" in attrs), "rpc.service is folded into rpc.method");
-		assert.ok(!("rpc.system" in attrs), "rpc.system was replaced by rpc.system.name");
-		assert.strictEqual(attrs[ATTR_SERVER_ADDRESS], "localhost");
-		assert.strictEqual(attrs[ATTR_NETWORK_PROTOCOL_NAME], "connect_rpc");
-		assert.strictEqual(attrs[ATTR_NETWORK_TRANSPORT], "tcp");
+		// Key spellings and values are those of the metrics guide's attribute table
+		// (the OpenTelemetry RPC conventions for Connect), not the constants. The whole
+		// set is compared, so a renamed, dropped or extra attribute (such as the
+		// replaced rpc.service or rpc.system) fails.
+		assert.deepStrictEqual(attrs, {
+			"rpc.system.name": "connectrpc",
+			"rpc.method": "test.TestService/TestMethod",
+			"server.address": "localhost",
+			"network.protocol.name": "connect_rpc",
+			"network.transport": "tcp",
+		});
 	});
 
 	it("should include server.port when provided", () => {
@@ -197,24 +194,22 @@ describe("buildBaseAttributes", () => {
 		);
 	});
 
-	it("should always include rpc.system.name, rpc.method, server.address, network.protocol.name, network.transport", () => {
+	it("takes the method from the service and method it is given, and the address and port verbatim", () => {
 		const attrs = buildBaseAttributes({
 			service: "my.Service",
 			method: "MyMethod",
 			serverAddress: "192.168.1.1",
+			serverPort: 8443,
 		});
 
-		const expectedKeys = [
-			ATTR_RPC_SYSTEM_NAME,
-			ATTR_RPC_METHOD,
-			ATTR_SERVER_ADDRESS,
-			ATTR_NETWORK_PROTOCOL_NAME,
-			ATTR_NETWORK_TRANSPORT,
-		];
-
-		for (const key of expectedKeys) {
-			assert.ok(key in attrs, `attribute '${key}' should be present`);
-		}
+		assert.deepStrictEqual(attrs, {
+			"rpc.system.name": "connectrpc",
+			"rpc.method": "my.Service/MyMethod",
+			"server.address": "192.168.1.1",
+			"server.port": 8443,
+			"network.protocol.name": "connect_rpc",
+			"network.transport": "tcp",
+		});
 	});
 });
 
