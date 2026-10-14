@@ -115,7 +115,11 @@ function createInlineAuthInterceptor(): Interceptor {
         // Public method — bypass auth entirely (matches `skipMethods` /
         // "no proto-option" semantics in @connectum/auth).
         if (!requiredScope) {
-            return next(req);
+            // The stamp lets a test see that the interceptor actually ran for the
+            // public method and let it through, rather than the chain being skipped.
+            const res = await next(req);
+            res.header.set("x-authz-decision", "public");
+            return res;
         }
 
         const authHeader = req.header.get("authorization");
@@ -128,7 +132,9 @@ function createInlineAuthInterceptor(): Interceptor {
             throw buildError(`Access denied: scope '${requiredScope}' required`, Code.PermissionDenied, "x-authz-required-scope", requiredScope);
         }
 
-        return next(req);
+        const res = await next(req);
+        res.header.set("x-authz-decision", `allowed:${ctx.subject}`);
+        return res;
     };
 }
 
@@ -163,10 +169,23 @@ transportParityTest("parity 3b.2: protected method with valid token + scope succ
     interceptors: [createInlineAuthInterceptor()],
     scenario: async ({ transport }) => {
         const client = createClient(EchoService, transport);
+        let decision: string | null = null;
         const res = await client.secureEcho(create(EchoRequestSchema, { message: "hello" }), {
             headers: { authorization: "Bearer alice|echo:read,echo:write" },
+            onHeader: (headers) => {
+                decision = headers.get("x-authz-decision");
+            },
         });
-        return { response: { message: res.message } };
+        return { response: { message: res.message, decision } };
+    },
+    // Success alone does not show authorization ran: with the chain skipped on both
+    // transports the call would succeed as well. The decision stamp is set only by the
+    // interceptor after it accepted the token.
+    compare: (http, local) => {
+        const expected = { message: "secure:hello", decision: "allowed:alice" };
+        assert.deepStrictEqual(http.response, expected, "HTTP transport must run authorization and deliver the handler's response");
+        assert.deepStrictEqual(local.response, expected, "Local transport must run authorization and deliver the handler's response");
+        defaultCompare(http, local);
     },
 });
 
@@ -187,7 +206,18 @@ transportParityTest("parity 3b.3: protected method without authorization → Una
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.Unauthenticated),
+    // The rejection reaches the client whole on both transports: code, message and
+    // the reason header (agreement between two emptied-out errors would not show it).
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.Unauthenticated)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "Missing or malformed credentials", `${name} transport must deliver the rejection message`);
+            assert.strictEqual(result.error?.metadata?.["x-authn-reason"], "missing-credentials", `${name} transport must deliver the rejection metadata`);
+        }
+    },
 });
 
 // -- 3b.4 ---------------------------------------------------------------
@@ -205,7 +235,16 @@ transportParityTest("parity 3b.4: protected method with token but no required sc
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.PermissionDenied),
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.PermissionDenied)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "Access denied: scope 'echo:read' required", `${name} transport must deliver the rejection message`);
+            assert.strictEqual(result.error?.metadata?.["x-authz-required-scope"], "echo:read", `${name} transport must deliver the rejection metadata`);
+        }
+    },
 });
 
 // -- 3b.5 ---------------------------------------------------------------
@@ -214,8 +253,20 @@ transportParityTest("parity 3b.5: public method without auth header succeeds on 
     interceptors: [createInlineAuthInterceptor()],
     scenario: async ({ transport }) => {
         const client = createClient(EchoService, transport);
-        const res = await client.echo(create(EchoRequestSchema, { message: "hi" }));
-        return { response: { message: res.message } };
+        let decision: string | null = null;
+        const res = await client.echo(create(EchoRequestSchema, { message: "hi" }), {
+            onHeader: (headers) => {
+                decision = headers.get("x-authz-decision");
+            },
+        });
+        return { response: { message: res.message, decision } };
+    },
+    // The interceptor saw the call and let it through as public, on both transports.
+    compare: (http, local) => {
+        const expected = { message: "public:hi", decision: "public" };
+        assert.deepStrictEqual(http.response, expected, "HTTP transport must pass the public method through the interceptor");
+        assert.deepStrictEqual(local.response, expected, "Local transport must pass the public method through the interceptor");
+        defaultCompare(http, local);
     },
 });
 
@@ -233,22 +284,29 @@ nodeTest("parity 3b.6: local transport has no authz-bypass API", async () => {
     const client = createClient(EchoService, transport);
 
     // Missing credentials → Unauthenticated.
-    try {
-        await client.secureEcho(create(EchoRequestSchema, { message: "x" }));
-        assert.fail("expected authz to reject missing credentials through local transport");
-    } catch (err) {
+    await assert.rejects(client.secureEcho(create(EchoRequestSchema, { message: "x" })), (err: unknown) => {
         assert.ok(err instanceof ConnectError, "expected a ConnectError");
-        assert.strictEqual((err as ConnectError).code, Code.Unauthenticated, "local transport must surface Unauthenticated identically to HTTP");
-    }
+        assert.strictEqual(err.code, Code.Unauthenticated, "local transport must surface Unauthenticated identically to HTTP");
+        return true;
+    });
 
     // Wrong scope → PermissionDenied.
-    try {
-        await client.secureEcho(create(EchoRequestSchema, { message: "x" }), {
+    await assert.rejects(
+        client.secureEcho(create(EchoRequestSchema, { message: "x" }), {
             headers: { authorization: "Bearer bob|other:scope" },
-        });
-        assert.fail("expected authz to reject insufficient scope through local transport");
-    } catch (err) {
-        assert.ok(err instanceof ConnectError, "expected a ConnectError");
-        assert.strictEqual((err as ConnectError).code, Code.PermissionDenied, "local transport must surface PermissionDenied identically to HTTP");
-    }
+        }),
+        (err: unknown) => {
+            assert.ok(err instanceof ConnectError, "expected a ConnectError");
+            assert.strictEqual(err.code, Code.PermissionDenied, "local transport must surface PermissionDenied identically to HTTP");
+            return true;
+        },
+    );
+
+    // Control: the same path serves a caller that holds the scope, so the rejections
+    // above come from the authorization rule and not from the local transport
+    // refusing every call to the protected method.
+    const allowed = await client.secureEcho(create(EchoRequestSchema, { message: "x" }), {
+        headers: { authorization: "Bearer alice|echo:read" },
+    });
+    assert.strictEqual(allowed.message, "secure:x");
 });
