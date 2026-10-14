@@ -171,19 +171,28 @@ describe("createServer", () => {
             assert.strictEqual(stopHandler.mock.calls.length, 1);
         });
 
-        it("should throw if called when not in RUNNING state", async () => {
+        // Oracle: the server-graceful-shutdown contract ("Repeated stop is deterministic
+        // and does not fail", scenario "Stop before start") and the graceful-shutdown guide
+        // ("Repeated stop() calls"): stop() on a server that was never started REJECTS,
+        // because it is a lifecycle mistake and not a repeat. Neither source prescribes
+        // the message text, so only the rejection and its type are asserted. That the
+        // rejected call leaves the server in CREATED and still startable is a Connectum
+        // decision (no documented source): a lifecycle mistake is not a transition.
+        it("should reject stop() on a server that was never started", async () => {
             const service = createMockService();
 
             const server = createServer({
                 services: [service],
+                port: 0,
             });
 
             servers.push(server);
 
-            await assert.rejects(
-                () => server.stop(),
-                /Cannot stop server: current state is "created"/,
-            );
+            await assert.rejects(() => server.stop(), Error);
+            assert.strictEqual(server.state, ServerState.CREATED);
+
+            await server.start();
+            assert.strictEqual(server.state, ServerState.RUNNING);
         });
 
         it("should handle concurrent stop() calls by returning same promise", async () => {
@@ -764,7 +773,14 @@ describe("createServer", () => {
                 assert.strictEqual(hookCalled, true);
             });
 
-            it("should throw if server is already stopped", async () => {
+            // Connectum decision, no documented source: the guides and contracts say nothing
+            // about registering a hook on a stopped server. What is documented is that a
+            // repeated stop() "does not run the shutdown hooks again" (graceful-shutdown
+            // guide, "Repeated stop() calls"), so a hook added after the stop could never
+            // run. The chosen policy is to fail loudly at registration instead of letting
+            // the hook be accepted and silently never executed. The test therefore pins two
+            // consequences: registration throws, and the later stop() really does not run it.
+            it("should refuse a hook registered after stop, which would otherwise never run", async () => {
                 const service = createMockService();
 
                 const server = createServer({
@@ -775,10 +791,11 @@ describe("createServer", () => {
                 await server.start();
                 await server.stop();
 
-                assert.throws(
-                    () => server.onShutdown(() => {}),
-                    /Cannot add shutdown hook: server is already stopped/,
-                );
+                const lateHook = mock.fn();
+                assert.throws(() => server.onShutdown(lateHook), Error);
+
+                await server.stop();
+                assert.strictEqual(lateHook.mock.calls.length, 0);
             });
         });
 
@@ -865,6 +882,13 @@ describe("createServer", () => {
         });
     });
 
+    // Oracle: the registration-API ADR states that addService(), addInterceptor() and
+    // addProtocol() "can only be called in the CREATED state (before start())" and
+    // "throw Error" otherwise, and appends the element only on success. A STOPPED server
+    // is not in CREATED, so each call must throw and must not change the registered
+    // lists. The ADR names only a running server in its second bullet; the stopped case
+    // follows from the first bullet. The message text exists only in the implementation,
+    // so the assertions check the error type and the unchanged lists, not the wording.
     describe("addService/addInterceptor/addProtocol from STOPPED state", () => {
         it("should throw when calling addService() after stop()", async () => {
             const service = createMockService();
@@ -878,11 +902,10 @@ describe("createServer", () => {
             await server.stop();
 
             assert.strictEqual(server.state, ServerState.STOPPED);
+            const routesBefore = server.routes.length;
 
-            assert.throws(
-                () => server.addService(createMockService()),
-                /Cannot add service: server is already stopped/,
-            );
+            assert.throws(() => server.addService(createMockService()), Error);
+            assert.strictEqual(server.routes.length, routesBefore);
         });
 
         it("should throw when calling addInterceptor() after stop()", async () => {
@@ -897,11 +920,10 @@ describe("createServer", () => {
             await server.stop();
 
             assert.strictEqual(server.state, ServerState.STOPPED);
+            const interceptorsBefore = server.interceptors.length;
 
-            assert.throws(
-                () => server.addInterceptor(mock.fn((next) => next)),
-                /Cannot add interceptor: server is already stopped/,
-            );
+            assert.throws(() => server.addInterceptor(mock.fn((next) => next)), Error);
+            assert.strictEqual(server.interceptors.length, interceptorsBefore);
         });
 
         it("should throw when calling addProtocol() after stop()", async () => {
@@ -916,6 +938,7 @@ describe("createServer", () => {
             await server.stop();
 
             assert.strictEqual(server.state, ServerState.STOPPED);
+            const protocolsBefore = server.protocols.length;
 
             assert.throws(
                 () =>
@@ -925,8 +948,9 @@ describe("createServer", () => {
                             // no-op
                         },
                     }),
-                /Cannot add protocol: server is already stopped/,
+                Error,
             );
+            assert.strictEqual(server.protocols.length, protocolsBefore);
         });
     });
 
