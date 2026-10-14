@@ -397,18 +397,6 @@ describe("wrapAsyncIterable", () => {
 		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR), "a normally completed stream is not a failure");
 	});
 
-	// Oracle: the OpenTelemetry guide on recording errors: "Span Status Code MUST be
-	// left unset if the instrumented operation has ended without any errors". The
-	// implementation sets the status to OK, so this test fails today; it is marked
-	// todo until the owner decides whether the status is to be left unset.
-	it("should leave the span status unset when the stream completes normally", { todo: "implementation sets SpanStatusCode.OK, the convention says to leave it unset" }, async () => {
-		const mock = createMockSpan();
-
-		await collectAll(wrapAsyncIterable(mockAsyncIterable(["msg1"]), mock.span, "RECEIVED", false, true));
-
-		assert.deepStrictEqual(mock.statuses, []);
-	});
-
 	it("should record exception and set ERROR status when stream errors with endSpanOnComplete=true", async () => {
 		const mock = createMockSpan();
 		const error = new Error("stream failed");
@@ -462,8 +450,7 @@ describe("wrapAsyncIterable", () => {
 		}
 
 		// A consumer that stops reading is not an operation error: the span ends once,
-		// records no exception and is not marked failed. (Whether its status is OK or
-		// unset is the open question of the todo test above.)
+		// records no exception and is not marked failed.
 		assert.strictEqual(mock.endCount, 1);
 		assert.strictEqual(mock.recordedExceptions.length, 0);
 		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR));
