@@ -98,10 +98,15 @@ describe("gateway trust: a malformed block widens nothing", () => {
         ["an empty network octet", "10..0.0/8"],
         ["three network octets", "10.0.0/8"],
     ];
+    // Two probes per block. 10.0.0.1 sits inside the block a lenient parser would read out of
+    // the text (/8abc as /8, /-1 as everything); 10.0.0.0 is the network address itself, the one
+    // input that would still match when an out-of-range prefix such as /33 is not rejected.
     for (const [label, block] of malformed) {
-        it(`${block} (${label}) admits 10.0.0.1`, async () => {
-            assert.strictEqual(await admits([block], "10.0.0.1"), false);
-        });
+        for (const address of ["10.0.0.1", "10.0.0.0"]) {
+            it(`${block} (${label}) admits ${address}`, async () => {
+                assert.strictEqual(await admits([block], address), false);
+            });
+        }
     }
 
     it("still admits the exact text of a shared secret that contains a slash", async () => {

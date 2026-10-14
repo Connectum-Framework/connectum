@@ -116,7 +116,9 @@ describe("Gateway Auth Advanced — Integration", () => {
             });
 
             const headers = new Headers();
-            headers.set("x-forwarded-for", "10.0.0.1");
+            // The network address itself: the one peer that would still match if a prefix above 32
+            // were not rejected (any other address differs from the network and fails either way).
+            headers.set("x-forwarded-for", "10.0.0.0");
             headers.set("x-user-id", "user");
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
@@ -132,12 +134,14 @@ describe("Gateway Auth Advanced — Integration", () => {
             );
         });
 
+        // "/8abc" is not a prefix length. A lenient parser (parseInt) would read it as /8 and admit
+        // 10.0.0.1; a strict one treats the whole entry as an opaque value that matches only its own text.
         it("should not match CIDR with non-numeric prefix", async () => {
             const interceptor = createGatewayAuthInterceptor({
                 headerMapping: { subject: "x-user-id" },
                 trustSource: {
                     header: "x-forwarded-for",
-                    expectedValues: ["10.0.0.0/abc"],
+                    expectedValues: ["10.0.0.0/8abc"],
                 },
             });
 
