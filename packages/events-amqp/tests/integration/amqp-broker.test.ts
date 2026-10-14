@@ -171,8 +171,9 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             publisherOptions: { mandatory: true },
         });
         await adapter.connect();
-        const conn = await connect(url);
+        let conn: amqp.ChannelModel | undefined;
         try {
+            conn = await connect(url);
             const ch = await conn.createChannel();
             const q = await ch.assertQueue("", { exclusive: true });
             await ch.bindQueue(q.queue, "it.stampedwire", "it.stampedwire.evt");
@@ -191,8 +192,12 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             const headers = (received[0]?.properties.headers ?? {}) as Record<string, unknown>;
             assert.equal(typeof headers["x-connectum-publish-id"], "string", "the correlation header must be on the wire by default");
         } finally {
-            await conn.close();
-            await adapter.disconnect();
+            // The adapter is released even if opening the probe connection or closing it fails.
+            try {
+                await conn?.close();
+            } finally {
+                await adapter.disconnect();
+            }
         }
     });
 
