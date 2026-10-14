@@ -5,13 +5,13 @@
  * {@link ScaffoldConfig} and produces the final project file map. Pure (no I/O) so
  * it is fully unit-testable against a local fixture without any network.
  *
- * Base-level responsibilities (OpenSpec change cli-scaffolding, tasks 1.1/1.2/1.5/1.6):
+ * Base-level responsibilities:
  * - de-monorepo (drop `pnpm-workspace.yaml` / `.pnpmfile.cjs`);
  * - rewrite `package.json` (name, engines, scripts + lifecycle-fix, devDeps) for the
  *   chosen runtime / package-manager / node-exec model;
- * - regenerate the e2e test to use the public in-process `createLocalClient` (D-7).
+ * - regenerate the e2e test to use the public in-process `createLocalClient`.
  *
- * Module composition (events/otel/auth/...) layers on top of this in Phase 2.
+ * Module composition (events/otel/auth/...) layers on top of this base transform.
  *
  * @module scaffold/transform
  */

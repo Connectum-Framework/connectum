@@ -102,7 +102,8 @@ jobs:
 
   # ── AMQP broker integration (happy path) ───────────────────────────────
   # Runs the events-amqp happy-path integration tests against a real RabbitMQ
-  # service container. Recovery scenarios live in the non-blocking job below.
+  # service container. Not a required check of the protected branch; the
+  # recovery scenarios live in the required "AMQP recovery (testcontainers)" job.
   test-amqp-broker:
     name: AMQP broker integration
     runs-on: ubuntu-latest
