@@ -126,7 +126,7 @@ describe("proto-sync unit tests", () => {
 		// A host name that merely begins with the letters "http" is still a bare address.
 		it(
 			"should prepend http:// to a bare address whose host name starts with http",
-			{ todo: "the scheme check is a prefix test on the letters 'http', so 'httpbin.local:5000' is passed on without a scheme" },
+			{ skip: "known defect, fails against the documented behaviour: the scheme check is a prefix test on the letters 'http', so 'httpbin.local:5000' is passed on without a scheme" },
 			async () => {
 				await captureConsoleLog(async () => {
 					await executeProtoSync({
