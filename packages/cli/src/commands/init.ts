@@ -1,15 +1,16 @@
 /**
  * `connectum init` — scaffold a new standalone Connectum project.
  *
- * Pipeline (OpenSpec change cli-scaffolding, Phase 1):
+ * Pipeline:
  * 1. Resolve flags into a validated {@link ScaffoldConfig}.
- * 2. Fetch the source-of-truth base (`getting-started`) into a temp dir (D-13).
+ * 2. Fetch the source-of-truth base (`getting-started`) into a temp dir.
  * 3. Transform it (de-monorepo, runtime/PM adjustments, lifecycle-fix, in-process
  *    e2e test) into the final project file map (pure).
  * 4. Emit into the target directory (refuse-to-clobber).
  *
- * Interactive module selection (TUI + fragments) lands in Phase 2. Dependency
- * install / `git init` are left to the developer (printed as next steps) for now.
+ * Module selection (interactive prompts or flags) composes fragments on top of the
+ * base transform. Dependency install / `git init` are left to the developer
+ * (printed as next steps).
  *
  * @module commands/init
  */
