@@ -1,5 +1,25 @@
 # @connectum/events-redis
 
+## 1.3.0
+
+### Minor Changes
+
+- [#254](https://github.com/Connectum-Framework/connectum/pull/254) [`d9f9fb4`](https://github.com/Connectum-Framework/connectum/commit/d9f9fb4f3360a906a0404a0feeda45d026a5cadd) Thanks [@intech](https://github.com/intech)! - Add configurable RESP2 and RESP3 Redis Streams support while preserving RESP2 as the backward-compatible default, and refresh the Redis, AMQP testcontainer, and authentication dependencies.
+
+- [#363](https://github.com/Connectum-Framework/connectum/pull/363) [`f635c79`](https://github.com/Connectum-Framework/connectum/commit/f635c79aedd1e89aeab1452bb4493bd3931d02f2) Thanks [@intech](https://github.com/intech)! - feat: `RedisAdapter` reports its connection lifecycle through `lifecycle.onLifecycle`, the same pattern as `@connectum/events-amqp`. Until now nothing told an operator that the Redis connection had dropped or that the client had given up.
+  
+  The events (a union on `type`, local to this package), each carrying `connection`: `"publisher"` for the publishing connection or `{ group, patterns }` for the dedicated blocking connection of one subscription. `connected { reconnected }` on a connection's first ready (`false`) and after every recovery (`true`); `disconnected { error }` once per loss of a connection that had been ready, however many reconnect attempts then fail; `reconnecting { attempt, delay, error }` for every scheduled attempt (the attempt counter restarts on ready); and the terminal `reconnect-failed { error }` when the client ends without the adapter closing it, which needs a `retryStrategy` that stops returning a delay. One loss of the server is reported once per connection, so an adapter with N subscriptions reports N+1 `disconnected` events. Nothing is reported before a connection's first ready (`connect()` rejects with the error itself) nor for the adapter's own `disconnect()` and `unsubscribe()`. A callback that throws or returns a rejected promise is isolated and reported once as `lifecycle-error`; a returned promise is not awaited.
+  
+  Without the option no listener is attached and nothing changes. With it, an `error` listener is attached to every connection, so the client's own `[ioredis] Unhandled error event` line on stderr is replaced by the cause carried in the events.
+
+### Patch Changes
+
+- [#317](https://github.com/Connectum-Framework/connectum/pull/317) [`d63985f`](https://github.com/Connectum-Framework/connectum/commit/d63985ffbd4014b5804e3dd73d3c58de39b16922) Thanks [@intech](https://github.com/intech)! - `RedisAdapter` no longer lets one failing entry block the redelivery of pending entries. When the handler threw on an entry claimed by `XAUTOCLAIM`, the rest of that batch was skipped (already claimed, so not eligible again for 30 s) and the failure was logged as `XAUTOCLAIM error (non-fatal)` without the entry id. Each reclaimed entry is now handled on its own: the failure is logged as `handler error for entry <entryId>`, the entry stays pending, and the remaining entries are delivered. The reclaim pass also continues from the `next-start-id` that `XAUTOCLAIM` returns instead of always starting at `0-0`, so stale entries behind more than `count * 10` recently delivered pending entries are reached. No option, event or default changes.
+
+- [#325](https://github.com/Connectum-Framework/connectum/pull/325) [`3591014`](https://github.com/Connectum-Framework/connectum/commit/35910149aa614a388cfadbb11968b3deb57aad13) Thanks [@intech](https://github.com/intech)! - docs: the package READMEs are short entry points (install, a runnable start, constraints, links) and the long reference tables now live on the documentation site and in the API reference. The facts that exist only in a README stay there: the cancellation migration notes of `@connectum/interceptors`, the request initializer migration of `@connectum/protoc-gen-catalog`, the dependency injection and testing section of `@connectum/events`, the verified RabbitMQ and Kafka broker lines and the integration-suite instructions of the AMQP and Kafka adapters. Examples in the READMEs of eight packages and the Quickstart are executed against the packed packages by `pnpm docs:check`. JSDoc of a few exports was corrected to match the code; no runtime behavior changes.
+
+- [#332](https://github.com/Connectum-Framework/connectum/pull/332) [`75588bd`](https://github.com/Connectum-Framework/connectum/commit/75588bdb286dff48ceb2d992aa0d27c28b2671e3) Thanks [@intech](https://github.com/intech)! - docs: the event adapters guide states that `*` and `>` patterns are rejected when the subscription is made (`RedisAdapter: wildcard pattern "..." is not supported. Redis Streams requires explicit topic names.`), and an integration test now pins that behaviour against a real broker.
+
 ## 1.2.0
 
 ## 1.1.0

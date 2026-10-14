@@ -1,5 +1,29 @@
 # @connectum/events-nats
 
+## 1.3.0
+
+### Minor Changes
+
+- [#362](https://github.com/Connectum-Framework/connectum/pull/362) [`b18aec6`](https://github.com/Connectum-Framework/connectum/commit/b18aec616e31bfbe9f7588eee029f7f447dbaedc) Thanks [@intech](https://github.com/intech)! - feat: `NatsAdapter` reports its connection lifecycle through `lifecycle.onLifecycle`, the same pattern as `@connectum/events-amqp`. Until now an operator could not observe or alert on the broker connection of the NATS adapter, and a client that gave up reconnecting left the adapter unusable without any signal.
+  
+  The events (a union on `type`, local to this package): `connected { reconnected }` once after the first connect and once per recovery (`server` set), `disconnected { server }` once per loss, `reconnecting { attempt }` for every dial after a loss (the client reports one per address it tries; it reports no delay or error, so none is given), and the terminal `reconnect-failed { error }` when the client closes itself without a `disconnect()` call, typically after its reconnect budget ran out. `staleConnection`, `forceReconnect`, `error`, `ldm`, `update`, `ping` and `slowConsumer` produce nothing. `disconnect()` produces no loss event. A callback that throws or returns a rejected promise is isolated and reported once as `lifecycle-error`; a returned promise is not awaited, so a slow callback never delays `disconnect()`.
+  
+  Without the option no listener is attached to the client and nothing changes. Events of the initial dial that happen before `connect()` returns are not available from the client. After `reconnect-failed` the adapter drops the dead connection: `publish()` rejects with "not connected" and `connect()` can start a fresh connection (before, it kept refusing with "already connected" until `disconnect()` was called).
+
+### Patch Changes
+
+- [#332](https://github.com/Connectum-Framework/connectum/pull/332) [`75588bd`](https://github.com/Connectum-Framework/connectum/commit/75588bdb286dff48ceb2d992aa0d27c28b2671e3) Thanks [@intech](https://github.com/intech)! - fix: an event matched by several patterns of one subscription is handled once
+  
+  A JetStream consumer delivers a stream message once, and the adapter keeps one durable consumer per pattern, so a route set such as `user.created`, `user.*`, `user.>` ran the handler three times for a single `user.created`. The adapter now runs the handler for one of those deliveries, the one of the most specific pattern whose consumer delivers the event (fewer `>`, then fewer `*`, then more tokens, then the pattern text; the same on every replica), and acknowledges the others without running it. Partly overlapping patterns (`a.*.c`, `a.b.*`) need no special case.
+  
+  The consumer layout on the broker does not change: same durable names, same filters, one consumer per pattern. Upgrading or rolling back needs no action, and the backlog of consumers that already exist (events published while the service was down) is delivered once. The network still carries one copy per matching pattern.
+  
+  The adapter reads the consumers it finds and never changes their configuration, so an earlier version of the adapter can start again after a rollback (a consumer created again with the same configuration is accepted by every supported server), and consumers provisioned by an operator need only read and pull permissions. Replicas compute where each consumer starts from what the server reports; a delivery below that bound still runs the handler, so replicas that disagree can run a handler twice for an event, never zero times. When an existing consumer was made with another `ackWait`, `maxDeliver` or `deliverPolicy` than the subscription asks for, the adapter keeps it and logs one warning per consumer.
+  
+  While a service is rolled out with a route added to a broader pattern, an event can be handled by both the old and the new replicas, so a handler may see it twice but never zero times; that is the at-least-once contract. `subscribe()` that fails half-way now removes only the consumers of an auto-generated group; the consumers of a named group stay for the next start (before, a failing call also deleted a consumer of the group that existed already, which stops the replica reading it without an error).
+
+- [#325](https://github.com/Connectum-Framework/connectum/pull/325) [`3591014`](https://github.com/Connectum-Framework/connectum/commit/35910149aa614a388cfadbb11968b3deb57aad13) Thanks [@intech](https://github.com/intech)! - docs: the package READMEs are short entry points (install, a runnable start, constraints, links) and the long reference tables now live on the documentation site and in the API reference. The facts that exist only in a README stay there: the cancellation migration notes of `@connectum/interceptors`, the request initializer migration of `@connectum/protoc-gen-catalog`, the dependency injection and testing section of `@connectum/events`, the verified RabbitMQ and Kafka broker lines and the integration-suite instructions of the AMQP and Kafka adapters. Examples in the READMEs of eight packages and the Quickstart are executed against the packed packages by `pnpm docs:check`. JSDoc of a few exports was corrected to match the code; no runtime behavior changes.
+
 ## 1.2.0
 
 ## 1.1.0

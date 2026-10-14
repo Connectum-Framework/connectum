@@ -1,7 +1,0 @@
----
-"@connectum/interceptors": minor
----
-
-fix: `createErrorHandlerInterceptor` (the first interceptor of `createDefaultInterceptors()`) no longer sends the text of a failure that is not a `ConnectError` or a `SanitizableError` to the client over gRPC, Connect and `server.localClient()`. Such text often carries a connection string, a query or a request value (CWE-209). A thrown `Error` or string now reaches the client as code `Internal` with the text `internal error`; an error with a numeric `code` keeps that code and reaches the client with an empty text. The original failure stays on the server: as `cause` of the thrown `ConnectError` (it is never serialized), as `info.error` of `onError` with its original text, and in the console log.
-
-**BREAKING** behaviour correction for clients that read the text of such an error. Shipped as minor on purpose: the `@connectum/*` packages are one fixed version group, so a major here would release every package as 2.0.0. A `ConnectError` (text, details, metadata) and a `SanitizableError` (`clientMessage`) are unchanged. To send the original text again, set the new `exposeErrorMessages: true` on the error handler (`createDefaultInterceptors({ errorHandler: { exposeErrorMessages: true } })` or `createErrorHandlerInterceptor({ exposeErrorMessages: true })`); use it only for trusted internal callers or while debugging. The option is server-side, defaults to `false` and does not depend on `NODE_ENV`. To send a message deliberately, throw a `ConnectError` or a `SanitizableError`.
