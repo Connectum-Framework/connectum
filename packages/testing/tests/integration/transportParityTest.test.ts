@@ -101,7 +101,7 @@ describe("defaultCompare", () => {
 
     describe("error shape: each field alone is enough to fail", () => {
         const base = { code: 5, message: "not_found", details: [{ reason: "x" }], metadata: { "x-tag": "a" } };
-        const divergences: { field: string; other: ParityScenarioResult["error"] }[] = [
+        const divergences: { field: string; other: NonNullable<ParityScenarioResult["error"]> }[] = [
             { field: "code", other: { ...base, code: 13 } },
             { field: "message", other: { ...base, message: "internal" } },
             { field: "details", other: { ...base, details: [{ reason: "y" }] } },
