@@ -294,7 +294,7 @@ describe("bulkhead interceptor", () => {
         // The message shows how loaded the bulkhead is when it refuses a call, so with every slot
         // taken ("active" 2 of 2, queue 1 of 1) it must say so. The implementation prints the
         // number of FREE slots of the policy (0/2, 0/1), which reads as an idle bulkhead.
-        it.skip("should report the occupied slots in the ResourceExhausted message", async () => {
+        it("should report the occupied slots in the ResourceExhausted message", { skip: "the message prints the free slots of the policy (0/2, 0/1) instead of the occupied ones" }, async () => {
             const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 1 });
             const next = createMockNextSlow(200);
             const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
