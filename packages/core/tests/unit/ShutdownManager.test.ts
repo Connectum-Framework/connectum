@@ -7,7 +7,36 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { setTimeout as delay, setImmediate as nextTurn } from "node:timers/promises";
 import { ShutdownManager } from "../../src/ShutdownManager.ts";
+
+/** A hook that yields to the event loop before recording itself, so a hook that does not wait for its dependency would finish first. */
+function slowHook(order: string[], label: string): () => Promise<void> {
+    return async () => {
+        await nextTurn();
+        order.push(label);
+    };
+}
+
+/**
+ * Reject if `work` does not settle within `ms`: two hooks that wait for each
+ * other to start can only both finish when they really run in parallel, and a
+ * sequential implementation would otherwise hang the test instead of failing it.
+ */
+async function within(work: Promise<unknown>, ms: number, message: string): Promise<void> {
+    const ac = new AbortController();
+    const timeout = delay(ms, undefined, { signal: ac.signal }).then(
+        () => {
+            throw new Error(message);
+        },
+        () => undefined,
+    );
+    try {
+        await Promise.race([work, timeout]);
+    } finally {
+        ac.abort();
+    }
+}
 
 describe("ShutdownManager", () => {
     // ---------------------------------------------------------------
@@ -45,17 +74,18 @@ describe("ShutdownManager", () => {
             const manager = new ShutdownManager();
             const order: string[] = [];
 
-            manager.addHook("database", () => {
+            // The dependent is registered first and its dependency is slow, so
+            // the dependency is honoured only if the dependent waits for it.
+            manager.addHook("server", ["database"], slowHook(order, "server"));
+            manager.addHook("database", async () => {
+                await nextTurn();
+                await nextTurn();
                 order.push("database");
-            });
-            manager.addHook("server", ["database"], () => {
-                order.push("server");
             });
 
             await manager.executeAll();
 
-            assert.ok(order.includes("database"));
-            assert.ok(order.includes("server"));
+            assert.deepStrictEqual(order, ["database", "server"]);
         });
     });
 
@@ -68,12 +98,12 @@ describe("ShutdownManager", () => {
             const manager = new ShutdownManager();
             const order: string[] = [];
 
-            manager.addHook("cache", async () => {
-                order.push("cache");
-            });
+            // The dependent is registered before its dependency, so registration
+            // order alone would run it first.
             manager.addHook("database", ["cache"], async () => {
                 order.push("database");
             });
+            manager.addHook("cache", slowHook(order, "cache"));
 
             await manager.executeAll();
 
@@ -84,45 +114,44 @@ describe("ShutdownManager", () => {
             const manager = new ShutdownManager();
             const order: string[] = [];
 
-            manager.addHook("cache", async () => {
-                order.push("cache");
-            });
-            manager.addHook("queue", async () => {
-                order.push("queue");
-            });
+            // The dependent is registered first and both dependencies are slow:
+            // it is last only if it waits for every one of them.
             manager.addHook("server", ["cache", "queue"], async () => {
                 order.push("server");
+            });
+            manager.addHook("cache", slowHook(order, "cache"));
+            manager.addHook("queue", async () => {
+                await nextTurn();
+                await nextTurn();
+                order.push("queue");
             });
 
             await manager.executeAll();
 
-            // Both dependencies must execute before server
-            const serverIndex = order.indexOf("server");
-            const cacheIndex = order.indexOf("cache");
-            const queueIndex = order.indexOf("queue");
-
-            assert.ok(cacheIndex < serverIndex, "cache should execute before server");
-            assert.ok(queueIndex < serverIndex, "queue should execute before server");
-            assert.strictEqual(order.length, 3);
+            assert.deepStrictEqual(order, ["cache", "queue", "server"]);
         });
 
         it("should execute independent hooks in parallel", async () => {
             const manager = new ShutdownManager();
-            const order: string[] = [];
-
-            manager.addHook("alpha", async () => {
-                order.push("alpha");
+            const started = new Set<string>();
+            let bothStarted!: () => void;
+            const rendezvous = new Promise<void>((resolve) => {
+                bothStarted = resolve;
             });
-            manager.addHook("beta", async () => {
-                order.push("beta");
-            });
+            const hook = (label: string) => async () => {
+                started.add(label);
+                if (started.size === 2) bothStarted();
+                // Each hook finishes only after the other one has started:
+                // run one after the other, the first would wait forever.
+                await rendezvous;
+            };
 
-            await manager.executeAll();
+            manager.addHook("alpha", hook("alpha"));
+            manager.addHook("beta", hook("beta"));
 
-            // Both hooks should execute (order may vary since they are parallel)
-            assert.strictEqual(order.length, 2);
-            assert.ok(order.includes("alpha"));
-            assert.ok(order.includes("beta"));
+            await within(manager.executeAll(), 1000, "independent hooks did not run in parallel");
+
+            assert.deepStrictEqual([...started].sort(), ["alpha", "beta"]);
         });
     });
 
@@ -189,20 +218,25 @@ describe("ShutdownManager", () => {
 
         it("should execute multiple handlers registered for the same module", async () => {
             const manager = new ShutdownManager();
-            const order: string[] = [];
-
-            manager.addHook("database", async () => {
-                order.push("database-close-pool");
+            const started = new Set<string>();
+            let bothStarted!: () => void;
+            const rendezvous = new Promise<void>((resolve) => {
+                bothStarted = resolve;
             });
-            manager.addHook("database", async () => {
-                order.push("database-flush-logs");
-            });
+            const handler = (label: string) => async () => {
+                started.add(label);
+                if (started.size === 2) bothStarted();
+                // Handlers of one module run in parallel: each finishes only
+                // after the other has started.
+                await rendezvous;
+            };
 
-            await manager.executeAll();
+            manager.addHook("database", handler("database-close-pool"));
+            manager.addHook("database", handler("database-flush-logs"));
 
-            assert.strictEqual(order.length, 2);
-            assert.ok(order.includes("database-close-pool"));
-            assert.ok(order.includes("database-flush-logs"));
+            await within(manager.executeAll(), 1000, "handlers of the same module did not run in parallel");
+
+            assert.deepStrictEqual([...started].sort(), ["database-close-pool", "database-flush-logs"]);
         });
     });
 
@@ -215,15 +249,13 @@ describe("ShutdownManager", () => {
             const manager = new ShutdownManager();
             const order: string[] = [];
 
-            manager.addHook("c", async () => {
-                order.push("c");
-            });
-            manager.addHook("b", ["c"], async () => {
-                order.push("b");
-            });
+            // Registered in the opposite order to the expected execution, with
+            // slow dependencies, so only the dependency chain can produce c, b, a.
             manager.addHook("a", ["b"], async () => {
                 order.push("a");
             });
+            manager.addHook("b", ["c"], slowHook(order, "b"));
+            manager.addHook("c", slowHook(order, "c"));
 
             await manager.executeAll();
 
@@ -240,35 +272,23 @@ describe("ShutdownManager", () => {
             const manager = new ShutdownManager();
             const order: string[] = [];
 
-            manager.addHook("d", async () => {
-                order.push("d");
-            });
-            manager.addHook("b", ["d"], async () => {
-                order.push("b");
-            });
-            manager.addHook("c", ["d"], async () => {
-                order.push("c");
-            });
+            // Registered dependents-first with slow dependencies, so the order
+            // below can only come from waiting on dependencies.
             manager.addHook("a", ["b", "c"], async () => {
                 order.push("a");
             });
+            manager.addHook("b", ["d"], slowHook(order, "b"));
+            manager.addHook("c", ["d"], slowHook(order, "c"));
+            manager.addHook("d", slowHook(order, "d"));
 
             await manager.executeAll();
 
-            // D should appear exactly once
-            const dCount = order.filter((x) => x === "d").length;
-            assert.strictEqual(dCount, 1, "D should execute exactly once");
-
-            // D must be before B and C, both must be before A
-            const dIndex = order.indexOf("d");
-            const bIndex = order.indexOf("b");
-            const cIndex = order.indexOf("c");
-            const aIndex = order.indexOf("a");
-
-            assert.ok(dIndex < bIndex, "D should execute before B");
-            assert.ok(dIndex < cIndex, "D should execute before C");
-            assert.ok(bIndex < aIndex, "B should execute before A");
-            assert.ok(cIndex < aIndex, "C should execute before A");
+            // d once and first, then its two dependents (parallel, either order), a last.
+            assert.strictEqual(order.filter((x) => x === "d").length, 1, "D should execute exactly once");
+            assert.strictEqual(order[0], "d");
+            assert.deepStrictEqual(order.slice(1, 3).sort(), ["b", "c"]);
+            assert.strictEqual(order[3], "a");
+            assert.strictEqual(order.length, 4);
         });
     });
 
@@ -310,18 +330,23 @@ describe("ShutdownManager", () => {
             manager.addHook("surviving", async () => {
                 order.push("surviving");
             });
+            // An independent hook that is still working when the other one
+            // fails: a failure must not stop it from running to completion.
+            manager.addHook("slow-surviving", async () => {
+                await delay(20);
+                order.push("slow-surviving");
+            });
 
-            // executeAll uses Promise.all at the top level for independent hooks,
-            // so the surviving hook should still execute even if failing throws.
-            // However, Promise.all rejects with the first rejection.
             await assert.rejects(
                 () => manager.executeAll(),
                 { message: "hook failure" },
             );
 
-            // Both hooks should have been called (they are independent, run in parallel)
             assert.ok(order.includes("failing"), "failing hook should have executed");
             assert.ok(order.includes("surviving"), "surviving hook should have executed");
+
+            await delay(100);
+            assert.ok(order.includes("slow-surviving"), "an independent hook must still run to completion after another one fails");
         });
 
         it("should propagate rejection from async hook", async () => {

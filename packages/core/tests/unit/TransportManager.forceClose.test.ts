@@ -19,7 +19,7 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect as connectHttp2 } from "node:http2";
 import type { Server as NetServer, Socket } from "node:net";
-import { connect } from "node:net";
+import { connect, Server as NetServerBase } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
@@ -207,6 +207,31 @@ describe("TransportManager shutdown with clients that never close", () => {
         // without the explicit session.close() this would hang until the
         // force-close path on Node 22.
         assert.strictEqual(await settlesWithin(transport.close(), 2000), true, "idle HTTP/2 session must receive GOAWAY and drain");
+        session.destroy();
+    });
+
+    // On a runtime whose server.close() does not send GOAWAY to open sessions
+    // (Node 22) the transport itself must ask every tracked session to close,
+    // otherwise an idle keep-alive client holds the shutdown until the
+    // timeout. The runtimes the suite runs on already send it, so the case is
+    // forced: the server's close() is narrowed to the plain net.Server one,
+    // which stops listening and waits for connections but tells nobody to go
+    // away.
+    it("close() makes an idle HTTP/2 client drain even when server.close() sends no GOAWAY", { skip: "Bun" in globalThis ? "Bun's HTTP/2 server does not run the net.Server close path this case substitutes" : false }, async () => {
+        await listenTracked({ handler: respondOk as never, config: { allowHTTP1: false, port: 0, host: "127.0.0.1" } });
+        const server = transport.server as unknown as NetServer;
+        server.close = function close(this: NetServer, callback?: (err?: Error) => void) {
+            return NetServerBase.prototype.close.call(this, callback);
+        } as NetServer["close"];
+        const session = connectHttp2(`http://127.0.0.1:${transport.address?.port}`);
+        session.on("error", () => {});
+        session.on("goaway", () => session.close());
+        const req = session.request({ ":path": "/" });
+        req.resume();
+        req.end();
+        await once(req, "end");
+
+        assert.strictEqual(await settlesWithin(transport.close(), 2000), true, "the transport must send GOAWAY itself");
         session.destroy();
     });
 

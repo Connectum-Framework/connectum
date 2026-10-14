@@ -128,6 +128,26 @@ describe("createCatalogClient — unary call (no Server)", () => {
         assert.strictEqual(resolverCalls, 1, "transport must be cached after the first call");
     });
 
+    it("keys the transport cache by endpoint as well: another endpoint resolves again, the same endpoint does not", async () => {
+        const resolved: string[] = [];
+        const remotes: Record<string, Transport> = { a: makeStreamingRemote("A"), b: makeStreamingRemote("B") };
+        const client = createCatalogClient({
+            catalog,
+            resolver: ({ typeName, endpoint }) => {
+                resolved.push(`${typeName}@${endpoint}`);
+                return remotes[endpoint ?? ""] ?? null;
+            },
+        });
+        const item = (value: string) => create(ItemSchema, { value, sequence: 0 });
+
+        const a1 = await client.call("streaming.v1.StreamingService/Echo", item("1"), { endpoint: "a" });
+        const b1 = await client.call("streaming.v1.StreamingService/Echo", item("2"), { endpoint: "b" });
+        const a2 = await client.call("streaming.v1.StreamingService/Echo", item("3"), { endpoint: "a" });
+
+        assert.deepStrictEqual([a1.value, b1.value, a2.value], ["A:1", "B:2", "A:3"], "each endpoint reaches its own transport");
+        assert.deepStrictEqual(resolved, ["streaming.v1.StreamingService@a", "streaming.v1.StreamingService@b"], "one resolution per (typeName, endpoint)");
+    });
+
     it("forwards CallOptions.headers verbatim (no inbound request to propagate from)", async () => {
         const HEADER = "x-trace-test";
         const headerRemote = createRouterTransport((router) => {
@@ -277,11 +297,22 @@ describe("createCatalogClient — operational error model (mirrors ctx.call)", (
     });
 
     it("calling a streaming method via .call → Code.Unimplemented (use .stream)", async () => {
-        const client = createCatalogClient({ catalog, resolver: singleTransportResolver(makeStreamingRemote("U")) });
+        // A kind mismatch is a dispatch miss: the service-catalog contract reports
+        // it as Unimplemented, and it is decided before any transport is chosen.
+        let resolverCalls = 0;
+        const remote = makeStreamingRemote("U");
+        const client = createCatalogClient({
+            catalog,
+            resolver: () => {
+                resolverCalls++;
+                return remote;
+            },
+        });
         await assert.rejects(
             // @ts-expect-error — "Server" is a streaming key, not a ConnectumCallMap key
             () => client.call("streaming.v1.StreamingService/Server", create(ItemSchema, { value: "x", sequence: 0 })),
-            (err: unknown) => err instanceof ConnectError && err.code === Code.Unimplemented,
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unimplemented && err.message.includes("streaming.v1.StreamingService/Server"),
         );
+        assert.strictEqual(resolverCalls, 0, "no transport may be resolved for a kind mismatch");
     });
 });

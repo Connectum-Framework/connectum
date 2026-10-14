@@ -6,13 +6,20 @@
  */
 
 import assert from "node:assert";
+import type { AddressInfo } from "node:net";
+import { connect as connectNet, createServer as createNetServer } from "node:net";
 import { afterEach, describe, it, mock } from "node:test";
+import { setImmediate } from "node:timers/promises";
+import { create } from "@bufbuild/protobuf";
 import type { ConnectRouter } from "@connectrpc/connect";
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-node";
 import type { ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import type { EventBusLike, ProtocolContext, ProtocolRegistration, Server } from "../../src/types.ts";
 import { ServerState } from "../../src/types.ts";
-import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 // =============================================================================
 // HELPERS
@@ -133,6 +140,11 @@ describe("Server lifecycle integration", () => {
                 false,
                 "signal should not be aborted while server is running",
             );
+            // It is the server's own shutdown signal, not some unrelated one:
+            // only then does stop() cancel the bus's work.
+            assert.strictEqual(callArgs.signal, server.shutdownSignal);
+            await server.stop();
+            assert.strictEqual(callArgs.signal?.aborted, true, "stop() must abort the signal the event bus was started with");
         });
 
         it("should stop eventBus during server shutdown via shutdown hook", async () => {
@@ -257,7 +269,16 @@ describe("Server lifecycle integration", () => {
 
         it("should pass ConnectRouter to each protocol register()", async () => {
             const service = createMockService();
-            const protocol = createMockProtocol("test-protocol");
+            // The protocol mounts a service on the router it receives; the
+            // router is the real one only if a client can then call it.
+            const protocol: ProtocolRegistration = {
+                name: "test-protocol",
+                register(router: ConnectRouter) {
+                    router.service(EchoService, {
+                        echo: (req) => create(EchoResponseSchema, { message: `protocol:${req.message}`, timestamp: 0n }),
+                    });
+                },
+            };
 
             const server = createServer({
                 services: [service],
@@ -268,10 +289,9 @@ describe("Server lifecycle integration", () => {
 
             await server.start();
 
-            assert.strictEqual(protocol.registerCalls.length, 1);
-            const { router } = protocol.registerCalls[0]!;
-            assert.ok(router, "protocol should receive a router");
-            assert.strictEqual(typeof router.service, "function", "router should have a service method");
+            const client = createClient(EchoService, createConnectTransport({ baseUrl: `http://127.0.0.1:${server.address?.port}`, httpVersion: "1.1" }));
+            const response = await client.echo({ message: "ping" });
+            assert.strictEqual(response.message, "protocol:ping");
         });
 
         it("should pass ProtocolContext with registry to each protocol", async () => {
@@ -299,6 +319,43 @@ describe("Server lifecycle integration", () => {
             assert.deepStrictEqual(context.services, [], "context should list only services actually mounted");
         });
 
+        it("should give each protocol a frozen snapshot of what was mounted before it: the application services, then the preceding protocols", async () => {
+            // The first protocol mounts a service of its own, so the second
+            // protocol's view must contain it and the first one's must not.
+            const first: ProtocolRegistration & { context?: ProtocolContext } = {
+                name: "first",
+                setup(context: ProtocolContext) {
+                    first.context = context;
+                },
+                register(router: ConnectRouter) {
+                    router.service(StreamingService, {});
+                },
+            };
+            const second = createMockProtocol("second");
+            const app: ServiceDefinition = {
+                descriptor: EchoService,
+                register(router: ConnectRouter) {
+                    router.service(EchoService, {});
+                },
+            };
+
+            const server = createServer({ services: [app], port: 0, protocols: [first, second] });
+            servers.push(server);
+            await server.start();
+
+            const firstContext = first.context as ProtocolContext;
+            const secondContext = second.setupCalls[0] as ProtocolContext;
+            assert.deepStrictEqual(firstContext.registry, [EchoService.file]);
+            assert.deepStrictEqual(firstContext.services, [EchoService]);
+            assert.deepStrictEqual(secondContext.registry, [EchoService.file, StreamingService.file]);
+            assert.deepStrictEqual(secondContext.services, [EchoService, StreamingService]);
+            // Frozen snapshots: the second registration did not leak back into the first view.
+            assert.ok(Object.isFrozen(firstContext.registry));
+            assert.ok(Object.isFrozen(firstContext.services));
+            assert.ok(Object.isFrozen(secondContext.registry));
+            assert.ok(Object.isFrozen(secondContext.services));
+        });
+
         it("should store all protocols on server.protocols", () => {
             const service = createMockService();
             const protocol1 = createMockProtocol("p1");
@@ -318,13 +375,19 @@ describe("Server lifecycle integration", () => {
         it("should work with protocols that have httpHandler", async () => {
             const service = createMockService();
 
+            // The handler claims one path and passes everything else along.
             const protocolWithHttp: ProtocolRegistration = {
                 name: "http-protocol",
                 register(_router: ConnectRouter) {
                     // no-op
                 },
-                httpHandler(_req, _res) {
-                    return false;
+                httpHandler(req, res) {
+                    if (req.url !== "/probe") {
+                        return false;
+                    }
+                    res.statusCode = 200;
+                    res.end("probe-ok");
+                    return true;
                 },
             };
 
@@ -337,6 +400,15 @@ describe("Server lifecycle integration", () => {
 
             await server.start();
             assert.ok(server.isRunning);
+
+            const base = `http://127.0.0.1:${server.address?.port}`;
+            const claimed = await fetch(`${base}/probe`);
+            assert.strictEqual(claimed.status, 200);
+            assert.strictEqual(await claimed.text(), "probe-ok");
+            // A request the handler declines falls through to the server's 404.
+            const declined = await fetch(`${base}/other`);
+            assert.strictEqual(declined.status, 404);
+            await declined.arrayBuffer();
 
             await server.stop();
             assert.strictEqual(server.state, ServerState.STOPPED);
@@ -482,6 +554,34 @@ describe("Server lifecycle integration", () => {
             // so it remains non-null. The server state (STOPPED) is the authoritative
             // indicator that the server did not start successfully.
         });
+
+        it("should not leave signal handlers behind when start fails, even with autoShutdown enabled", async () => {
+            const service = createMockService();
+            const holder = createServer({ services: [service], port: 0 });
+            servers.push(holder);
+            await holder.start();
+            const occupiedPort = holder.address?.port as number;
+
+            const signals = ["SIGTERM", "SIGINT"] as const;
+            const before = signals.map((signal) => process.listenerCount(signal));
+
+            const failing = createServer({
+                services: [service],
+                port: occupiedPort,
+                shutdown: { autoShutdown: true },
+            });
+            servers.push(failing);
+            failing.on("error", () => {});
+            await assert.rejects(() => failing.start());
+
+            // A server that never started must not intercept the process's signals.
+            assert.deepStrictEqual(
+                signals.map((signal) => process.listenerCount(signal)),
+                before,
+            );
+            // The failure is local: the server that already holds the port keeps running.
+            assert.strictEqual(holder.isRunning, true);
+        });
     });
 
     // =========================================================================
@@ -572,12 +672,14 @@ describe("Server lifecycle integration", () => {
                 order.push("stopping");
             });
 
-            // "database" depends on "cache" — cache runs first
-            server.onShutdown("cache", async () => {
-                order.push("cache");
-            });
+            // "database" depends on "cache" — cache runs first, although
+            // "database" is registered first and "cache" is slow
             server.onShutdown("database", ["cache"], async () => {
                 order.push("database");
+            });
+            server.onShutdown("cache", async () => {
+                await setImmediate();
+                order.push("cache");
             });
 
             server.on("stop", () => {
@@ -604,6 +706,17 @@ describe("Server lifecycle integration", () => {
             });
             servers.push(server);
 
+            // The shutdown sequence notifies listeners ("stopping") first, then
+            // aborts the signal, and only then runs transport close and hooks.
+            let abortedAtStopping: boolean | undefined;
+            let abortedInHook: boolean | undefined;
+            server.on("stopping", () => {
+                abortedAtStopping = server.shutdownSignal.aborted;
+            });
+            server.onShutdown("probe", () => {
+                abortedInHook = server.shutdownSignal.aborted;
+            });
+
             await server.start();
 
             const signal = server.shutdownSignal;
@@ -611,6 +724,8 @@ describe("Server lifecycle integration", () => {
 
             await server.stop();
 
+            assert.strictEqual(abortedAtStopping, false, "the signal is aborted after the stopping notification, not before");
+            assert.strictEqual(abortedInHook, true, "the signal must already be aborted when shutdown hooks run");
             assert.strictEqual(signal.aborted, true, "signal should be aborted after stop completes");
         });
     });
@@ -753,10 +868,8 @@ describe("Server lifecycle integration", () => {
             assert.strictEqual(server.state, ServerState.STOPPED);
 
             // Verify event ordering
-            assert.strictEqual(order[0], "start-event");
-            assert.strictEqual(order[1], "ready-event");
-            assert.strictEqual(order[2], "stopping-event");
-            assert.strictEqual(order[order.length - 1], "stop-event");
+            // The user hook runs during shutdown, between "stopping" and "stop".
+            assert.deepStrictEqual(order, ["start-event", "ready-event", "stopping-event", "custom-hook", "stop-event"]);
         });
 
         it("should not start server if eventBus.start() fails", async () => {
@@ -769,9 +882,17 @@ describe("Server lifecycle integration", () => {
                 throw startError;
             });
 
+            // A free port that is known in advance, so that "nothing listens
+            // there" can be checked after the failed start.
+            const probe = createNetServer();
+            await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+            const freePort = (probe.address() as AddressInfo).port;
+            await new Promise<void>((resolve) => probe.close(() => resolve()));
+
             const server = createServer({
                 services: [service],
-                port: 0,
+                port: freePort,
+                host: "127.0.0.1",
                 eventBus,
             });
             servers.push(server);
@@ -793,6 +914,19 @@ describe("Server lifecycle integration", () => {
                 errorHandler.mock.calls.length,
                 1,
                 "error event should be emitted on eventBus failure",
+            );
+            assert.strictEqual(server.address, null);
+
+            // The listener was never opened: nobody accepts connections on the port.
+            await assert.rejects(
+                new Promise<void>((resolve, reject) => {
+                    const socket = connectNet({ port: freePort, host: "127.0.0.1" }, () => {
+                        socket.destroy();
+                        resolve();
+                    });
+                    socket.on("error", reject);
+                }),
+                { code: "ECONNREFUSED" },
             );
         });
     });

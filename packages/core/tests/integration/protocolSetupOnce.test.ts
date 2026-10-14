@@ -22,15 +22,17 @@ import type { ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { CountSchema, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
-function countingProtocol(): ProtocolRegistration & { setupCalls: number; registerCalls: number; setupRegistry: ProtocolContext["registry"] | undefined } {
+function countingProtocol(): ProtocolRegistration & { setupCalls: number; registerCalls: number; setupRegistry: ProtocolContext["registry"] | undefined; setupServices: ProtocolContext["services"] | undefined } {
     const state = {
         name: "counting",
         setupCalls: 0,
         registerCalls: 0,
         setupRegistry: undefined as ProtocolContext["registry"] | undefined,
+        setupServices: undefined as ProtocolContext["services"] | undefined,
         setup(context: ProtocolContext) {
             state.setupCalls++;
             state.setupRegistry = context.registry;
+            state.setupServices = context.services;
         },
         register(_router: ConnectRouter) {
             state.registerCalls++;
@@ -130,6 +132,7 @@ describe("protocol setup runs once per server", () => {
         await server.start();
         try {
             assert.deepStrictEqual(protocol.setupRegistry, [EchoService.file]);
+            assert.deepStrictEqual(protocol.setupServices, [EchoService]);
         } finally {
             await server.stop();
         }

@@ -245,18 +245,51 @@ describe("parseEnvConfig() optional fields", () => {
 // ---------------------------------------------------------------------------
 
 describe("safeParseEnvConfig()", () => {
-    it("should return { success: true, data } for valid env", () => {
-        const result = safeParseEnvConfig(EMPTY_ENV);
+    it("should return { success: true, data } holding the parsed input and the defaults for valid env", () => {
+        // Non-default values for the fields that are converted, so that
+        // "parsed the input" differs from "returned the defaults".
+        const result = safeParseEnvConfig({
+            PORT: "8080",
+            LOG_LEVEL: "debug",
+            NODE_ENV: "production",
+            HTTP_HEALTH_ENABLED: "true",
+            GRACEFUL_SHUTDOWN_ENABLED: "false",
+            GRACEFUL_SHUTDOWN_TIMEOUT_MS: "1500",
+        });
         assert.equal(result.success, true);
         assert.ok("data" in result);
-        assert.equal(result.data.PORT, 5000);
+        assert.equal(result.data.PORT, 8080);
+        assert.equal(result.data.LOG_LEVEL, "debug");
+        assert.equal(result.data.NODE_ENV, "production");
+        assert.equal(result.data.HTTP_HEALTH_ENABLED, true);
+        assert.equal(result.data.GRACEFUL_SHUTDOWN_ENABLED, false);
+        assert.equal(result.data.GRACEFUL_SHUTDOWN_TIMEOUT_MS, 1500);
+        // Fields that were not given keep their documented defaults.
+        assert.equal(result.data.LISTEN, "0.0.0.0");
+        assert.equal(result.data.LOG_FORMAT, "json");
+        assert.equal(result.data.LOG_BACKEND, "otel");
+        assert.equal(result.data.HTTP_HEALTH_PATH, "/healthz");
     });
 
-    it("should return { success: false, error } without throwing for invalid env", () => {
-        const result = safeParseEnvConfig({ PORT: "not-a-number" });
+    it("should return { success: false, error } without throwing, naming exactly the invalid field", () => {
+        const result = safeParseEnvConfig({ PORT: "not-a-number", LOG_LEVEL: "debug" });
         assert.equal(result.success, false);
         assert.ok("error" in result);
         assert.ok(result.error instanceof ZodError);
+        assert.deepEqual(
+            result.error.issues.map((issue) => issue.path.join(".")),
+            ["PORT"],
+        );
+    });
+
+    it("should report every invalid field, not only the first", () => {
+        const result = safeParseEnvConfig({ PORT: "0", LOG_LEVEL: "trace", NODE_ENV: "staging" });
+        assert.equal(result.success, false);
+        assert.ok("error" in result);
+        assert.deepEqual(
+            result.error.issues.map((issue) => issue.path.join(".")).sort(),
+            ["LOG_LEVEL", "NODE_ENV", "PORT"],
+        );
     });
 });
 
@@ -268,7 +301,8 @@ describe("parseEnvConfig() process.env fallback", () => {
     it("should use process.env when no argument is passed", () => {
         // Save and clear schema-relevant env vars to avoid host interference
         const saved: Record<string, string | undefined> = {};
-        const keysToClean = ["PORT", "LOG_LEVEL", "LOG_FORMAT", "LOG_BACKEND", "NODE_ENV",
+        const keysToClean = ["PORT", "LISTEN", "LOG_LEVEL", "LOG_FORMAT", "LOG_BACKEND", "NODE_ENV",
+            "HTTP_HEALTH_ENABLED", "HTTP_HEALTH_PATH",
             "GRACEFUL_SHUTDOWN_ENABLED", "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
             "OTEL_SERVICE_NAME", "OTEL_EXPORTER_OTLP_ENDPOINT"];
         for (const key of keysToClean) {
@@ -276,9 +310,16 @@ describe("parseEnvConfig() process.env fallback", () => {
             delete process.env[key];
         }
         try {
+            // Values that differ from every default: they can only come from process.env.
+            process.env.PORT = "1234";
+            process.env.LOG_LEVEL = "warn";
+            process.env.HTTP_HEALTH_ENABLED = "true";
             const config = parseEnvConfig();
-            assert.ok(typeof config.PORT === "number");
-            assert.ok(typeof config.LOG_LEVEL === "string");
+            assert.equal(config.PORT, 1234);
+            assert.equal(config.LOG_LEVEL, "warn");
+            assert.equal(config.HTTP_HEALTH_ENABLED, true);
+            // Untouched variables keep their defaults.
+            assert.equal(config.LISTEN, "0.0.0.0");
         } finally {
             // Restore original env vars
             for (const key of keysToClean) {
@@ -301,12 +342,15 @@ describe("parseEnvConfig() PORT validation errors", () => {
         );
     });
 
-    it("should reject PORT=70000 (above max=65535)", () => {
-        assert.throws(
-            () => parseEnvConfig({ PORT: "70000" }),
-            (err) => err instanceof ZodError,
-        );
-    });
+    // 65536 is the first value above the documented 1--65535 range; 70000 is well above it.
+    for (const port of ["65536", "70000"]) {
+        it(`should reject PORT=${port} (above max=65535), naming PORT`, () => {
+            assert.throws(
+                () => parseEnvConfig({ PORT: port }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "PORT",
+            );
+        });
+    }
 
     it("should reject PORT='not-a-number'", () => {
         assert.throws(
@@ -367,12 +411,15 @@ describe("parseEnvConfig() GRACEFUL_SHUTDOWN_TIMEOUT_MS validation errors", () =
         );
     });
 
-    it("should reject 999999 (above max=300000)", () => {
-        assert.throws(
-            () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: "999999" }),
-            (err) => err instanceof ZodError,
-        );
-    });
+    // 300001 is the first value above the documented 0--300000 range.
+    for (const timeout of ["300001", "999999"]) {
+        it(`should reject ${timeout} (above max=300000), naming GRACEFUL_SHUTDOWN_TIMEOUT_MS`, () => {
+            assert.throws(
+                () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
+            );
+        });
+    }
 });
 
 // ---------------------------------------------------------------------------
