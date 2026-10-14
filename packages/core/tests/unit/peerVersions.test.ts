@@ -112,15 +112,60 @@ describe("satisfiesCaret", () => {
         ["2.16.0-rc.1", "^2.16.0", false],
         ["2.17.0-rc.1", "^2.16.0", false],
         ["2.16.0+build.1", "^2.16.0", true],
-        // Ranges and versions the check does not understand are "unknown", never a failure.
-        ["2.2.0", "2.2.0", undefined],
-        ["0.2.1", "^0.2.0", undefined],
-        ["2.16.0", ">=2.16.0", undefined],
+        // A version that is not plain semver is "unknown", never a failure.
         ["latest", "^2.16.0", undefined],
     ];
     for (const [version, range, expected] of cases) {
         it(`${version} vs ${range} -> ${expected}`, () => {
             assert.strictEqual(satisfiesCaret(version, range), expected);
+        });
+    }
+});
+
+/**
+ * Pairs whose answer is fixed by the semver range grammar (node-semver and semver.org),
+ * for range forms core's own caret check does not evaluate: an exact version, a caret
+ * with a zero major, and a `>=` comparator. Derived by hand from the grammar, not from
+ * the implementation:
+ *   - `X.Y.Z` is equality;
+ *   - `^0.Y.Z` (Y > 0) means `>=0.Y.Z <0.(Y+1).0`;
+ *   - `>=X.Y.Z` means every version at or above it.
+ */
+const semverTruth: [version: string, range: string, satisfies: boolean][] = [
+    ["2.2.0", "2.2.0", true],
+    ["2.2.1", "2.2.0", false],
+    ["0.2.1", "^0.2.0", true],
+    ["0.3.0", "^0.2.0", false],
+    ["0.1.9", "^0.2.0", false],
+    ["2.16.0", ">=2.16.0", true],
+    ["3.0.0", ">=2.16.0", true],
+    ["2.15.9", ">=2.16.0", false],
+];
+
+describe("satisfiesCaret — ranges outside the caret form it evaluates", () => {
+    // Independent oracle: whatever the function answers for a range it does not
+    // evaluate must never contradict semver. "Unknown" (undefined) is allowed; `true`
+    // where semver says `false`, or the reverse, would let a bad copy through or
+    // reject a good one and is a defect.
+    for (const [version, range, satisfies] of semverTruth) {
+        it(`${version} vs ${range}: unknown or exactly what semver says (${satisfies})`, () => {
+            const answer = satisfiesCaret(version, range);
+            assert.ok(answer === undefined || answer === satisfies, `got ${answer}, semver says ${satisfies}`);
+        });
+    }
+
+    // Connectum decision, no documented source beyond the function's own JSDoc: the
+    // check evaluates only the caret form core publishes (`^X.Y.Z`, X >= 1); any other
+    // range is "unknown" and the caller skips that library instead of guessing. The
+    // semver answer for these pairs is `true`, so this pins a deliberately conservative
+    // choice: no failure is ever raised on a range the check does not understand.
+    for (const [version, range] of [
+        ["2.2.0", "2.2.0"],
+        ["0.2.1", "^0.2.0"],
+        ["2.16.0", ">=2.16.0"],
+    ] as const) {
+        it(`${version} vs ${range} is deliberately unknown, so it can never fail the application`, () => {
+            assert.strictEqual(satisfiesCaret(version, range), undefined);
         });
     }
 });
@@ -235,7 +280,6 @@ describe("satisfiesPeerRange", () => {
         ["2.1.2", "2.2.0", false],
         ["2.2.0-rc.1", "2.2.0", false],
         ["2.2.0", "^2.2.0", true],
-        ["2.2.0", ">=2.2.0", undefined],
         ["latest", "2.2.0", undefined],
     ];
     for (const [version, range, expected] of cases) {
@@ -243,6 +287,42 @@ describe("satisfiesPeerRange", () => {
             assert.strictEqual(satisfiesPeerRange(version, range), expected);
         });
     }
+
+    // Independent oracle: for a `>=` range (not evaluated) the answer is unknown or
+    // exactly semver's, never the opposite. `>=X.Y.Z` accepts every version at or above.
+    for (const [version, range, satisfies] of [
+        ["2.2.0", ">=2.2.0", true],
+        ["2.3.1", ">=2.2.0", true],
+        ["2.1.2", ">=2.2.0", false],
+    ] as const) {
+        it(`${version} vs ${range}: unknown or exactly what semver says (${satisfies})`, () => {
+            const answer = satisfiesPeerRange(version, range);
+            assert.ok(answer === undefined || answer === satisfies, `got ${answer}, semver says ${satisfies}`);
+        });
+    }
+
+    // Connectum decision, no documented source beyond the function's own JSDoc: only an
+    // exact version or a caret range is evaluated; `>=2.2.0` is "unknown" and skipped
+    // rather than guessed, although semver would answer `true`.
+    it("2.2.0 vs >=2.2.0 is deliberately unknown, so it can never fail the application", () => {
+        assert.strictEqual(satisfiesPeerRange("2.2.0", ">=2.2.0"), undefined);
+    });
+});
+
+describe("checkPeerVersions — a connect-node peer range of a form the check does not evaluate", () => {
+    // The same decision seen from the application: connect-node publishes its connect
+    // peer as `>=2.2.0` (not an exact version). The lockstep range check cannot judge it
+    // and must stay silent, so createServer() is not stopped by a range it cannot read.
+    // The copy-identity part of the lockstep check is independent of the range form and
+    // still runs: the same single connect copy passes.
+    it("reports no problem for an open-ended connect-node peer when both load the same connect copy", () => {
+        const report = checkPeerVersions({
+            selfUrl: CORE_SELF,
+            resolve: resolverFor({ ...IN_RANGE, "@connectrpc/connect-node": "connect-node-open-peer" }),
+            resolveFrom: connectNodeLoads("connect-2.2.0"),
+        });
+        assert.deepStrictEqual(report, { status: "checked", problems: [] });
+    });
 });
 
 describe("createServer — real environment", () => {

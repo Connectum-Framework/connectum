@@ -18,6 +18,7 @@ import { defineService } from "../../src/defineService.ts";
 import { createLocalTransport } from "../../src/localTransport.ts";
 import { createServer } from "../../src/Server.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 function makeEchoRoutes() {
     return defineService(EchoService, {
@@ -62,41 +63,81 @@ describe("createLocalTransport / server.localClient (Phase 1)", () => {
         assert.strictEqual(server.address, null);
     });
 
-    it("memoizes the local transport across multiple localClient() calls", () => {
-        const server = createServer({ services: [makeEchoRoutes()] });
-        // Access the private `_localTransport` slot to prove that the same
-        // Transport instance is reused across `localClient()` calls — a
-        // truthy check on the returned clients alone cannot distinguish
-        // "memoized" from "re-created every call".
-        const internal = server as unknown as { _localTransport: unknown };
-        assert.strictEqual(internal._localTransport, null, "transport must be lazily created");
+    // Oracle: the route-materialization contract says a protocol's `register(router)`
+    // runs "once per router built" (HTTP adapter, local client transport, catalog
+    // transport) and `setup` once per server. Every extra in-process transport would be
+    // one more router, so a protocol that counts its `register` calls observes the
+    // transport without touching any private field: the local client transport is one
+    // router, and further `localClient()` calls must not build another.
+    it("builds one local-transport router however many localClient() calls are made", async () => {
+        let setupCalls = 0;
+        let registerCalls = 0;
+        const server = createServer({
+            services: [makeEchoRoutes()],
+            protocols: [
+                {
+                    name: "counting",
+                    setup() {
+                        setupCalls++;
+                    },
+                    register() {
+                        registerCalls++;
+                    },
+                },
+            ],
+        });
+        assert.strictEqual(registerCalls, 0, "nothing is built before the first in-process client");
 
-        const a = server.localClient(EchoService);
-        const firstTransport = internal._localTransport;
-        assert.ok(firstTransport, "transport must be materialized after first localClient() call");
+        const first = server.localClient(EchoService);
+        // The first call builds the server's routes and the local client transport, so
+        // it registers the protocol on more than one router; the exact figure is not
+        // the contract, only that a later call adds nothing.
+        const afterFirst = registerCalls;
+        assert.ok(afterFirst >= 1, "the first in-process client must register the protocol");
 
-        const b = server.localClient(EchoService);
-        const secondTransport = internal._localTransport;
-        assert.strictEqual(secondTransport, firstTransport, "underlying transport must be memoized across calls");
+        const second = server.localClient(EchoService);
+        assert.strictEqual(registerCalls, afterFirst, "a second localClient() must reuse the transport, not build another router");
+        assert.strictEqual(setupCalls, 1, "setup runs once per server");
 
-        // Sanity: the client wrappers themselves are independent values
-        // (createClient returns a fresh wrapper each time) but they share
-        // the same underlying transport, proven above.
-        assert.ok(a);
-        assert.ok(b);
+        // Both clients are usable and reach the same registered service.
+        assert.strictEqual((await first.echo(create(EchoRequestSchema, { message: "a" }))).message, "echo:a");
+        assert.strictEqual((await second.echo(create(EchoRequestSchema, { message: "b" }))).message, "echo:b");
+        assert.strictEqual(registerCalls, afterFirst, "calling through the clients builds no further router");
     });
 
-    it("locks addService / addInterceptor / addProtocol after routes are materialized", () => {
+    // Oracle for addProtocol: the custom-protocol guide ("Add protocols before
+    // server.start() and before creating an in-process client: either action
+    // materializes routes and prevents later addProtocol() calls"). The message text
+    // exists only in the implementation, so the type and the unchanged list are checked.
+    it("rejects addProtocol() once an in-process client has materialized the routes", () => {
         const server = createServer({ services: [makeEchoRoutes()] });
-        // Trigger lazy build.
         server.localClient(EchoService);
+        const protocolsBefore = server.protocols.length;
 
-        assert.throws(() => server.addService({ descriptor: EchoService, register: () => {} }), /materialized/);
-        assert.throws(() => server.addInterceptor((next) => next), /materialized/);
-        assert.throws(
-            () => server.addProtocol({ name: "x", register: () => {} }),
-            /materialized/,
-        );
+        assert.throws(() => server.addProtocol({ name: "x", register: () => {} }), Error);
+        assert.strictEqual(server.protocols.length, protocolsBefore);
+    });
+
+    // Connectum decision, no documented source: the guides and contracts forbid late
+    // addProtocol() only. addService() and addInterceptor() follow the same rule, because
+    // the routes and their interceptor chain are built once and cached, so a service or
+    // interceptor added afterwards would be accepted and silently never served. The
+    // contract only covers additions made BEFORE any client exists ("Registry reflects
+    // services added before materialization"); the rejection after materialization is the
+    // chosen counterpart. The test pins both halves: the call throws, and the service
+    // that was not mounted stays unreachable instead of being half-registered.
+    it("rejects addService() and addInterceptor() after materialization instead of ignoring them silently", () => {
+        const server = createServer({ services: [makeEchoRoutes()] });
+        server.localClient(EchoService);
+        const routesBefore = server.routes.length;
+        const interceptorsBefore = server.interceptors.length;
+
+        assert.throws(() => server.addService({ descriptor: StreamingService, register: () => {} }), Error);
+        assert.throws(() => server.addInterceptor((next) => next), Error);
+
+        assert.strictEqual(server.routes.length, routesBefore);
+        assert.strictEqual(server.interceptors.length, interceptorsBefore);
+        assert.strictEqual(server.hasService(StreamingService), false);
     });
 });
 
