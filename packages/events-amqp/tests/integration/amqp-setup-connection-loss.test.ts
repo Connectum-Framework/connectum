@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
 import { after, before, describe, it } from "node:test";
+import type amqp from "amqplib";
 import { connect } from "amqplib";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 import { AmqpTopologyError } from "../../src/errors.ts";
@@ -165,19 +166,33 @@ describe("AMQP connection lost during the setup pass (broker)", { skip: AMQP_URL
     before(async () => {
         const parsed = new URL(brokerUrl);
         proxy = await startCuttingProxy({ host: parsed.hostname, port: Number(parsed.port || 5672) });
-        proxyUrl = `amqp://${parsed.username}:${parsed.password}@127.0.0.1:${proxy.port}`;
+        // The path carries the virtual host and the query carries connection parameters:
+        // both are kept as the broker URL spells them, only the address is replaced.
+        proxyUrl = `amqp://${parsed.username}:${parsed.password}@127.0.0.1:${proxy.port}${parsed.pathname}${parsed.search}`;
     });
 
     after(async () => {
         await proxy?.close();
         const conn = await connect(brokerUrl);
         try {
-            const ch = await conn.createChannel();
+            // A refused deletion (for example of a queue that was never created) closes its
+            // channel, so every deletion runs on a channel of its own: a later one is never
+            // skipped because an earlier one failed.
+            const remove = async (op: (ch: amqp.Channel) => Promise<unknown>): Promise<void> => {
+                const ch = await conn.createChannel();
+                try {
+                    await op(ch);
+                } catch {
+                    // already absent
+                } finally {
+                    await ch.close().catch(() => undefined);
+                }
+            };
             for (const entry of created) {
                 for (const queue of entry.queues) {
-                    await ch.deleteQueue(queue).catch(() => undefined);
+                    await remove((ch) => ch.deleteQueue(queue));
                 }
-                await ch.deleteExchange(entry.exchange).catch(() => undefined);
+                await remove((ch) => ch.deleteExchange(entry.exchange));
             }
         } finally {
             await conn.close();
