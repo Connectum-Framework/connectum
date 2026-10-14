@@ -17,7 +17,6 @@ interface FakeTimer extends ConsumerTimer {
     readonly callback: () => void;
     cleared: boolean;
     fired: boolean;
-    unrefCalled: boolean;
 }
 
 /** Timers fired by hand: the test decides when a backoff or stability window elapses. */
@@ -31,9 +30,8 @@ function manualTimers(): ConsumerTimers & { readonly all: FakeTimer[]; live(): F
                 callback,
                 cleared: false,
                 fired: false,
-                unrefCalled: false,
                 unref() {
-                    this.unrefCalled = true;
+                    // The process-liveness contract is checked on real timers; a hand-fired double has nothing to hold open.
                 },
             };
             all.push(timer);
@@ -236,23 +234,38 @@ describe("createConsumerRestorer loss reporting", () => {
         assert.equal(closing.timers.all.length, 0);
     });
 
-    it("a loss during setup is remembered and reported only once the consumer has started", () => {
-        const { restorer, events } = setup();
+    it("a consumer the broker ended while its setup was still running is reported exactly once, with the broker's cause and error, and is restored", () => {
+        // Oracle: the consumer-loss requirement of the product contract: when the broker ends a
+        // consumer, one consumer-lost event carrying the queue, the cause, the channel error and
+        // willRestore is delivered, and one loss produces one event even when the broker signals
+        // it twice. A consumer ended before its setup returned is such a consumer, so the loss
+        // must not be dropped.
+        // Connectum decision with no documented source: the event is held back until the setup has
+        // returned (a failure during setup belongs to the call that is setting up).
+        const { restorer, events, timers } = setup();
         const channel = makeChannel();
         const record = makeRecord(channel);
         const incarnation = makeIncarnation(false);
         const exception = Object.assign(new Error("closed"), { code: 404 });
+        const report = (cause: AmqpConsumerLossCause, error?: Error): void => lose(restorer, record, incarnation, channel, { cause, ...(error === undefined ? {} : { error }) });
+        // The same wiring the adapter installs on a consumer channel, fed by channel events.
+        const brokerChannel = new EventEmitter();
+        watchConsumerChannel(brokerChannel, incarnation, report);
 
-        lose(restorer, record, incarnation, channel, { cause: "channel-closed", error: exception });
-        assert.equal(events.length, 0, "a channel failure during setup is a setup failure, not a loss");
-        assert.deepEqual(incarnation.earlyLoss, { cause: "channel-closed", error: exception });
-        assert.equal(channel.closeCalls, 0);
+        brokerChannel.emit("error", exception);
+        brokerChannel.emit("close");
+        brokerChannel.emit("cancel");
 
+        assert.equal(events.length, 0, "nothing is reported while the setup is still running");
+        assert.equal(timers.live().length, 0, "nothing is restored while the setup is still running");
+
+        // The setup returns: the adapter replays the loss it was told about meanwhile.
         incarnation.started = true;
-        lose(restorer, record, incarnation, channel, { ...incarnation.earlyLoss });
+        assert.ok(incarnation.earlyLoss, "the loss that happened during the setup must not be forgotten");
+        lose(restorer, record, incarnation, channel, { cause: incarnation.earlyLoss.cause, ...(incarnation.earlyLoss.error === undefined ? {} : { error: incarnation.earlyLoss.error }) });
 
-        assert.equal(events.length, 1);
-        assert.equal(events[0]?.type, "consumer-lost");
+        assert.deepEqual(events, [{ type: "consumer-lost", queue: "orders.workers", cause: "channel-closed", error: exception, willRestore: true }]);
+        assert.equal(timers.live().length, 1, "the restoration must be scheduled");
     });
 });
 
@@ -307,7 +320,6 @@ describe("createConsumerRestorer backoff and outcome", () => {
         const stability = timers.live().at(-1);
         assert.ok(stability);
         assert.equal(stability.delayMs, 1000);
-        assert.equal(stability.unrefCalled, true, "the window must not keep the process alive");
 
         timers.fireNext();
         assert.equal(record.restore.attempt, 0);
@@ -335,14 +347,52 @@ describe("createConsumerRestorer backoff and outcome", () => {
         assert.equal(record.restore.attempt, 2);
     });
 
-    it("every timer it arms is unref'd", () => {
-        const { restorer, timers } = setup();
+    it("neither the backoff timer nor the stability window keeps the process alive", async () => {
+        // Oracle: the Node.js timers documentation. A timeout on which unref() was called does not
+        // require the event loop to stay active, and Timeout.hasRef() reports exactly that state.
+        // The default (real) timers are used, so the property of the object the process would
+        // actually wait for is checked, not a flag set by a test double.
+        let onRestored: () => void = () => undefined;
+        const restoredSeen = new Promise<void>((resolve) => {
+            onRestored = resolve;
+        });
+        const model = {};
+        const restorer = createConsumerRestorer<RestorableSubscription, object>({
+            lifecycle: {
+                onLifecycle: (event) => {
+                    if (event.type === "consumer-restored") {
+                        onRestored();
+                    }
+                },
+            },
+            enabled: true,
+            backoff: { initialDelay: 5, maxDelay: 1000, factor: 2, jitter: 0 },
+            isClosing: () => false,
+            liveModel: () => model,
+            start: () => Promise.resolve(makeIncarnation()),
+        });
         const channel = makeChannel();
+        const record = makeRecord(channel);
 
-        lose(restorer, makeRecord(channel), makeIncarnation(), channel);
+        // The restorer's own timers are unref'd by design, so something else must keep this test's
+        // event loop alive while it waits for the backoff to elapse.
+        const keepLoopAlive = setInterval(() => undefined, 20);
+        try {
+            lose(restorer, record, makeIncarnation(), channel);
 
-        assert.ok(timers.all.length > 0);
-        assert.ok(timers.all.every((timer) => timer.unrefCalled));
+            const backoff = record.restore.timer as NodeJS.Timeout | null;
+            assert.ok(backoff, "a backoff timer must be armed after the loss");
+            assert.equal(backoff.hasRef(), false, "the backoff pause must not hold the process open");
+
+            await restoredSeen;
+
+            const stability = record.restore.stabilityTimer as NodeJS.Timeout | null;
+            assert.ok(stability, "a stability window must be armed after the restoration");
+            assert.equal(stability.hasRef(), false, "the stability window must not hold the process open");
+        } finally {
+            clearInterval(keepLoopAlive);
+            restorer.stop(record);
+        }
     });
 
     it("a failed attempt that can heal is reported with willRetry true and retried after a longer delay", async () => {

@@ -157,6 +157,50 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
         }
     });
 
+    it("header correlation (default) puts x-connectum-publish-id on the wire: the probe in the clean-wire test can see it", async () => {
+        // Positive control for the clean-wire test above. The documented behaviour of
+        // `correlationHeader: true` is a private header "visible on the wire to external
+        // consumers"; this test reads it with the same plain amqplib consumer. Without it a
+        // probe that never sees the header (wrong queue, stripped properties) would make the
+        // clean-wire assertion pass for the wrong reason.
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "it.stampedwire",
+            exchangeType: "topic",
+            recovery: false,
+            publisherOptions: { mandatory: true },
+        });
+        await adapter.connect();
+        let conn: amqp.ChannelModel | undefined;
+        try {
+            conn = await connect(url);
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.stampedwire", "it.stampedwire.evt");
+            const received: amqp.ConsumeMessage[] = [];
+            await ch.consume(
+                q.queue,
+                (m) => {
+                    if (m) received.push(m);
+                },
+                { noAck: true },
+            );
+
+            await adapter.publish("it.stampedwire.evt", new Uint8Array([7]));
+            await waitFor(() => received.length === 1);
+
+            const headers = (received[0]?.properties.headers ?? {}) as Record<string, unknown>;
+            assert.equal(typeof headers["x-connectum-publish-id"], "string", "the correlation header must be on the wire by default");
+        } finally {
+            // The adapter is released even if opening the probe connection or closing it fails.
+            try {
+                await conn?.close();
+            } finally {
+                await adapter.disconnect();
+            }
+        }
+    });
+
     it("external topology: DLQ-argument queue + queueOverrides consume + JSON contentType", async () => {
         const adapter = AmqpAdapter({
             url,
