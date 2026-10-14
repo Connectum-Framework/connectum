@@ -46,7 +46,16 @@ export function recordServerSockets(): { next(): Promise<AcceptedSocket>; restor
             // fires the HTTP/1.1 parser has already consumed the bytes.
             // Bun's node:http never surfaces reads on the socket, but it does not
             // close idle connections early either, so there is nothing to wait for.
-            const dataRead = "bun" in process.versions ? Promise.resolve() : once(socket, "data").then(() => undefined);
+            // A socket that closes (or fails) before it ever delivers data rejects the promise,
+            // so a test waiting on it fails instead of hanging.
+            const dataRead =
+                "bun" in process.versions
+                    ? Promise.resolve()
+                    : new Promise<void>((resolve, reject) => {
+                          socket.once("data", () => resolve());
+                          socket.once("error", reject);
+                          socket.once("close", () => reject(new Error("the server-side socket closed before it read any data")));
+                      });
             const accepted: AcceptedSocket = { socket, dataRead };
             accepted.dataRead.catch(() => {});
             const waiter = waiting.shift();
