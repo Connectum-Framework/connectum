@@ -51,12 +51,19 @@ import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming
  * for rationale). Prevents the false-positive where BOTH transports
  * unexpectedly succeed and the placeholder payload is silently compared equal.
  */
-function expectErrorOnBothTransports(expectedCode: Code) {
+function expectErrorOnBothTransports(expectedCode: Code, expectedViolations?: string) {
     return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
         assert.ok(http.error, "HTTP transport must surface an error");
         assert.ok(local.error, "Local transport must surface an error");
         assert.strictEqual(http.error.code, expectedCode, `HTTP transport error code must be ${expectedCode}`);
         assert.strictEqual(local.error.code, expectedCode, `Local transport error code must be ${expectedCode}`);
+        if (expectedViolations !== undefined) {
+            // The interceptor reports its violations in a metadata header. Comparing the
+            // two transports with each other is not enough: if both dropped the header,
+            // the two empty maps would be equal.
+            assert.strictEqual(http.error.metadata?.["x-validation-violations"], expectedViolations, "HTTP transport must deliver the violation list");
+            assert.strictEqual(local.error.metadata?.["x-validation-violations"], expectedViolations, "Local transport must deliver the violation list");
+        }
         defaultCompare(http, local);
     };
 }
@@ -205,6 +212,12 @@ transportParityTest("parity 3a.2: valid request passes validation on both transp
         const res = await client.echo(create(EchoRequestSchema, { message: "hello" }));
         return { response: { message: res.message } };
     },
+    // The handler's answer for a valid request, not merely agreement between the transports.
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { message: "ok:hello" }, "HTTP transport must deliver the handler's response");
+        assert.deepStrictEqual(local.response, { message: "ok:hello" }, "Local transport must deliver the handler's response");
+        defaultCompare(http, local);
+    },
 });
 
 // -- 3a.3 ---------------------------------------------------------------
@@ -220,7 +233,7 @@ transportParityTest("parity 3a.3: single-rule violation produces identical Inval
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.InvalidArgument),
+    compare: expectErrorOnBothTransports(Code.InvalidArgument, "message:string.min_len"),
 });
 
 // -- 3a.4 ---------------------------------------------------------------
@@ -251,7 +264,8 @@ transportParityTest("parity 3a.4: multi-rule violation aggregates identically ac
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.InvalidArgument),
+    // Both violations, in rule-declaration order, reach the client on both transports.
+    compare: expectErrorOnBothTransports(Code.InvalidArgument, "message:string.max_len,message:string.not_contains"),
 });
 
 // -- 3a.5 ---------------------------------------------------------------
@@ -282,7 +296,7 @@ transportParityTest("parity 3a.5: client-streaming mid-stream violation surfaces
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.InvalidArgument),
+    compare: expectErrorOnBothTransports(Code.InvalidArgument, "value:string.min_len"),
 });
 
 // -- 3a.6 ---------------------------------------------------------------
@@ -302,11 +316,15 @@ nodeTest("parity 3a.6: local transport has no validation-bypass API", async () =
     });
     const transport = createLocalTransport(server);
     const client = createClient(EchoService, transport);
-    try {
-        await client.echo(create(EchoRequestSchema, { message: "" }));
-        assert.fail("expected validation to reject the invalid request through local transport");
-    } catch (err) {
+    await assert.rejects(client.echo(create(EchoRequestSchema, { message: "" })), (err: unknown) => {
         assert.ok(err instanceof ConnectError, "expected a ConnectError");
-        assert.strictEqual((err as ConnectError).code, Code.InvalidArgument, "local transport must surface InvalidArgument identically to HTTP");
-    }
+        assert.strictEqual(err.code, Code.InvalidArgument, "local transport must surface InvalidArgument identically to HTTP");
+        assert.strictEqual(err.metadata.get("x-validation-violations"), "message:string.min_len", "the violation list must reach the client");
+        return true;
+    });
+
+    // The same path still serves a valid request: the rejection above comes from the
+    // rule, not from the local transport refusing every call.
+    const ok = await client.echo(create(EchoRequestSchema, { message: "hello" }));
+    assert.strictEqual(ok.message, "ok:hello");
 });
