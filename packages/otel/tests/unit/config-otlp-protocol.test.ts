@@ -123,7 +123,19 @@ describe("config: otlp exporter value and protocol", () => {
 		it("omits the url without any endpoint so the exporter default applies", () => {
 			const options = getHttpExporterOptions(getCollectorOptions(), "TRACES");
 
-			assert.deepStrictEqual(options, { concurrencyLimit: 10 });
+			// A `url` key, even one holding undefined, would hand the exporter an explicit
+			// empty URL instead of letting it apply http://localhost:4318/v1/traces.
+			assert.deepStrictEqual(Object.keys(options), ["concurrencyLimit"]);
+		});
+
+		it("passes the collector's concurrency limit through instead of fixing its own", () => {
+			// The OpenTelemetry specification prescribes no limit, so a collector with an
+			// arbitrary limit shows the value is carried over, not substituted.
+			const withoutUrl = getHttpExporterOptions({ concurrencyLimit: 3, url: undefined }, "TRACES");
+			const withUrl = getHttpExporterOptions({ concurrencyLimit: 3, url: "http://collector:4318" }, "TRACES");
+
+			assert.deepStrictEqual(withoutUrl, { concurrencyLimit: 3 });
+			assert.deepStrictEqual(withUrl, { concurrencyLimit: 3, url: "http://collector:4318/v1/traces" });
 		});
 
 		it("appends the signal path to the base endpoint", () => {
@@ -138,7 +150,7 @@ describe("config: otlp exporter value and protocol", () => {
 			process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
 			process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = "http://metrics:9000/custom";
 
-			assert.deepStrictEqual(getHttpExporterOptions(getCollectorOptions(), "METRICS"), { concurrencyLimit: 10 });
+			assert.deepStrictEqual(Object.keys(getHttpExporterOptions(getCollectorOptions(), "METRICS")), ["concurrencyLimit"]);
 			assert.strictEqual(getHttpExporterOptions(getCollectorOptions(), "TRACES").url, "http://collector:4318/v1/traces");
 		});
 	});
