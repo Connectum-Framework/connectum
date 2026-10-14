@@ -12,7 +12,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { afterEach, describe, it } from "node:test";
 import { TransportManager } from "../../src/TransportManager.ts";
-import { settlesWithin } from "../helpers/rawClients.ts";
+import { HTTP2_FRAME_SETTINGS, HTTP2_PREFACE, settlesWithin, watchHttp2Frames } from "../helpers/rawClients.ts";
 
 /**
  * Minimal no-op handler for listen() calls
@@ -296,13 +296,19 @@ describe("TransportManager", () => {
 
         it("should terminate a live connection, and a repeated call is harmless", async () => {
             transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
+            // An established HTTP/2 session, kept open by a client that never leaves. The
+            // client socket is not half-open, so it closes as soon as the server ends the connection.
             const client = net.connect({ port: transport.address?.port ?? 0, host: "127.0.0.1" });
-            await new Promise<void>((resolve) => client.once("connect", () => resolve()));
-            // Let the server register the accepted connection.
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            const closedByServer = new Promise<void>((resolve) => client.once("close", () => resolve()));
             client.on("error", () => {});
+            const serverSettings = new Promise<void>((resolve) => {
+                watchHttp2Frames(client, (type) => {
+                    if (type === HTTP2_FRAME_SETTINGS) resolve();
+                });
+            });
+            client.write(HTTP2_PREFACE);
+            await serverSettings;
+            const closedByServer = new Promise<void>((resolve) => client.once("close", () => resolve()));
 
             transport.destroyAllSessions();
 
