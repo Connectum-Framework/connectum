@@ -64,7 +64,8 @@ describe("Kafka per-batch commit strategy: death of the consumer in the middle o
                 await producer.publish(topic, new Uint8Array(Buffer.from(payload)), { key: "same-partition" });
             }
 
-            victim = spawn(process.execPath, [VICTIM], {
+            // Node 22.13 runs a TypeScript entry point only with the flag; later versions accept it too.
+            victim = spawn(process.execPath, ["--experimental-strip-types", VICTIM], {
                 env: { ...process.env, KAFKA_TEST_URL: brokers.join(","), TOPIC: topic, GROUP: group, ACKS: String(ACKED_BEFORE_DEATH) },
                 stdio: ["ignore", "pipe", "inherit"],
             });
