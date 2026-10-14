@@ -302,37 +302,74 @@ describe("Authz Edge Cases — Integration", () => {
             assert.strictEqual(next.mock.calls.length, 1);
         });
 
-        it("should deny via callback when callback returns false", async () => {
-            const token = await createTestJwt({
-                sub: "denied-callback-user",
-                roles: [],
+        // Оракул: guide/auth/authorization.md (раздел Programmatic Callback) -- результат
+        // колбэка окончателен: false даёт PermissionDenied, в том числе при defaultPolicy
+        // allow, true пропускает запрос, в том числе при defaultPolicy deny; политика по
+        // умолчанию применяется только когда ни одно правило не сработало и колбэка нет.
+        // Поэтому проверяются обе политики: исход обязан определяться колбэком, а не политикой.
+        for (const defaultPolicy of ["allow", "deny"] as const) {
+            it(`should deny via callback when callback returns false (defaultPolicy ${defaultPolicy})`, async () => {
+                const token = await createTestJwt({
+                    sub: "denied-callback-user",
+                    roles: [],
+                });
+
+                const authInterceptor = createJwtAuthInterceptor({
+                    secret: TEST_JWT_SECRET,
+                    claimsMapping: { roles: "roles" },
+                });
+
+                const authzInterceptor = createAuthzInterceptor({
+                    defaultPolicy,
+                    authorize: () => false,
+                });
+
+                const headers = new Headers();
+                headers.set("authorization", `Bearer ${token}`);
+                const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
+
+                const next = mock.fn(async () => ({ message: {} }));
+                const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
+
+                await assert.rejects(
+                    () => handler(req),
+                    (err: unknown) => {
+                        // Сообщение колбэка, а не "Access denied by default policy":
+                        // отказ принят колбэком, не политикой.
+                        assertConnectError(err, Code.PermissionDenied, /Access denied$/);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
             });
 
-            const authInterceptor = createJwtAuthInterceptor({
-                secret: TEST_JWT_SECRET,
-                claimsMapping: { roles: "roles" },
+            it(`should allow via callback when callback returns true (defaultPolicy ${defaultPolicy})`, async () => {
+                const token = await createTestJwt({
+                    sub: "allowed-callback-user",
+                    roles: [],
+                });
+
+                const authInterceptor = createJwtAuthInterceptor({
+                    secret: TEST_JWT_SECRET,
+                    claimsMapping: { roles: "roles" },
+                });
+
+                const authzInterceptor = createAuthzInterceptor({
+                    defaultPolicy,
+                    authorize: () => true,
+                });
+
+                const headers = new Headers();
+                headers.set("authorization", `Bearer ${token}`);
+                const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
+
+                const next = mock.fn(async () => ({ message: {} }));
+                const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
+
+                await handler(req);
+                assert.strictEqual(next.mock.calls.length, 1);
             });
-
-            const authzInterceptor = createAuthzInterceptor({
-                defaultPolicy: "allow",
-                authorize: () => false,
-            });
-
-            const headers = new Headers();
-            headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
-
-            const next = mock.fn(async () => ({ message: {} }));
-            const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
-
-            await assert.rejects(
-                () => handler(req),
-                (err: unknown) => {
-                    assertConnectError(err, Code.PermissionDenied, /Access denied/);
-                    return true;
-                },
-            );
-        });
+        }
     });
 
     describe("global wildcard '*' in skipMethods", () => {

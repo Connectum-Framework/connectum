@@ -88,7 +88,11 @@ describe("emitFiles", () => {
         assert.strictEqual(readFileSync(join(dir, "a.txt"), "utf8"), "NEW");
     });
 
-    it("emits in deterministic sorted order", () => {
+    // Connectum decision, no documented source: neither the guide nor the specs say in what order
+    // the written paths are reported. The implementation sorts them so that the report (and the
+    // order of writes) does not depend on the order the caller built its Map in; this test pins
+    // exactly that independence from insertion order.
+    it("Connectum decision (undocumented): reports written paths in sorted order, not insertion order", () => {
         const result = emitFiles(
             dir,
             new Map([
