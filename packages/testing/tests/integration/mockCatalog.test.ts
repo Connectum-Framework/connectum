@@ -264,7 +264,7 @@ describe("createMockContext", () => {
                 catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
                 mocks: [
                     mockService(EchoService, {
-                        echo: (req, mockCtx) =>
+                        echo: (_req, mockCtx) =>
                             new Promise((_resolve, reject) => {
                                 mockCtx.signal.addEventListener("abort", () => reject(mockCtx.signal.reason), { once: true });
                             }),
