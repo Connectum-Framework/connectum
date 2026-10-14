@@ -1,5 +1,69 @@
 # @connectum/events-kafka
 
+## 1.3.0
+
+### Minor Changes
+
+- [#361](https://github.com/Connectum-Framework/connectum/pull/361) [`1197222`](https://github.com/Connectum-Framework/connectum/commit/11972227b2340e9b4f5a385375f7bf39b2bf8d9a) Thanks [@intech](https://github.com/intech)! - feat!: the public options of `KafkaAdapter` no longer name the Kafka client library. The published type declarations of `@connectum/events-kafka` used to import `KafkaConfig` and `CompressionTypes` from `kafkajs`, so replacing the client would have been a breaking change of this package even where the adapter's behaviour stays the same. They are now Connectum-owned types.
+  
+  **BREAKING.**
+  
+  | Before | From 1.3.0 |
+  | --- | --- |
+  | `kafkaConfig: { ssl, sasl, connectionTimeout, authenticationTimeout, reauthenticationThreshold, requestTimeout, enforceRequestTimeout, retry, logLevel }` | the same names as top-level options: `ssl`, `sasl`, `connectionTimeout`, `authenticationTimeout`, `reauthenticationThreshold`, `requestTimeout`, `enforceRequestTimeout`, `retry`, `logLevel` |
+  | `kafkaConfig: { logLevel: logLevel.ERROR }` (enum) | `logLevel: "error"`; also `"nothing"`, `"warn"`, `"info"`, `"debug"` |
+  | `kafkaConfig: { sasl: { mechanism: "plain", username, password } }` | `sasl: { mechanism: "plain", username, password }`; `scram-sha-256`, `scram-sha-512`, `oauthbearer` and `aws` keep their fields |
+  | `kafkaConfig: { logCreator, socketFactory, a custom SASL mechanism, retry.restartOnFailure, TLS options beyond ca/cert/key/passphrase/rejectUnauthorized/servername }` | `clientOptions: { ... }`: the keys of the client library in use, **not portable and not type-checked**, merged shallowly over the typed options; it can never override `brokers` or `clientId` |
+  | `producerOptions: { compression: CompressionTypes.GZIP }` or `compression: 1` | `producerOptions: { compression: "gzip" }`; also `"none"`, `"snappy"`, `"lz4"`, `"zstd"` |
+  
+  Passing the old `kafkaConfig` key now throws a `TypeError` that points to the migration page, instead of being ignored: a JavaScript caller would otherwise connect without its TLS and SASL settings. A `compression` that is not one of the five names (including a number) throws a `RangeError`. Snappy, LZ4 and ZSTD still need a codec that the application registers with the client library before the first publish; only gzip works as shipped.
+  
+  Behaviour of the adapter, its consumer options (`sessionTimeout`, `fromBeginning`, `allowAutoTopicCreation`, `redeliveryDelay`, `commitStrategy`, `topicDiscoveryInterval`) and the broker protocol are unchanged. Released in a minor version, as the other behaviour corrections of 1.3.
+
+- [#322](https://github.com/Connectum-Framework/connectum/pull/322) [`291e6f8`](https://github.com/Connectum-Framework/connectum/commit/291e6f82212c27846089b16d0d836fded933b17b) Thanks [@intech](https://github.com/intech)! - Add `consumerOptions.commitStrategy` to choose when the consumer group's offset is committed.
+  `"per-message"` (the default, unchanged behavior) sends one `OffsetCommit` request for every
+  acknowledged message. `"per-batch"` makes `ack()` remember the message and sends a single
+  `OffsetCommit` for the last acknowledged one when the adapter stops working on the batch: at its
+  end, at a requeued or unsettled message, when the handler throws, when the consumer stops and
+  when the group membership is lost. Acknowledged messages are not left uncommitted on any of
+  these exits, and an unsettled message is never committed. The trade-off is a larger window of
+  duplicates: if the process dies between an `ack()` and the end of the batch, every message
+  acknowledged in that batch is delivered again, so handlers must be idempotent. Any other value
+  makes `KafkaAdapter()` throw a `RangeError`.
+
+- [#366](https://github.com/Connectum-Framework/connectum/pull/366) [`b4c25f2`](https://github.com/Connectum-Framework/connectum/commit/b4c25f20a835925ec6937dd650ee646ecb0c820a) Thanks [@intech](https://github.com/intech)! - feat: `KafkaAdapter` reports its lifecycle through `lifecycle.onLifecycle`, the same pattern as `@connectum/events-amqp`. Until now a crashed consumer was invisible: the client library stopped retrying and, unless it restarted the consumer, the subscription went quiet without a trace.
+  
+  The events (a union on `type`, local to this package): `connected { reconnected: false }` once, when the producer has connected; `consumer-lost { groupId, error, willRestore }` when a subscription's consumer crashed (the client gave up its own retries; `willRestore` says whether it will restart on its own); `consumer-restore-failed { groupId, attempt, error, willRetry }` for a crash before the consumer came back; `consumer-restored { groupId, attempt }` for the first group join after a crash. A group join without a preceding crash, rebalances, and the restart that topic discovery causes produce nothing, and neither do the adapter's own `unsubscribe()` and `disconnect()`. A callback that throws or returns a rejected promise is isolated and reported once as `lifecycle-error`; this matters because the client library runs its listeners inside the code that schedules the restart of a crashed consumer, where an exception would silently kill the subscription. A returned promise is not awaited.
+  
+  `disconnected`, `reconnecting` and `reconnect-failed` are not emitted for Kafka: the client library reports no loss of the producer's connection, and a consumer rides out a short broker outage without any event, so inventing them from failed sends would be guessing. Without the option no listener is attached to the client and nothing changes.
+
+- [#332](https://github.com/Connectum-Framework/connectum/pull/332) [`75588bd`](https://github.com/Connectum-Framework/connectum/commit/75588bdb286dff48ceb2d992aa0d27c28b2671e3) Thanks [@intech](https://github.com/intech)! - fix: a wildcard no longer subscribes Kafka's internal topics; feat: `consumerOptions.topicDiscoveryInterval` picks up topics created after the subscription
+  
+  - A pattern that opens with a wildcard (`>`, `*`, `*.created`) no longer matches topics whose name starts with `__`, the prefix Kafka and Redpanda use for their internal topics (`__consumer_offsets`, `__transaction_state`). A catch-all `>` used to subscribe `__consumer_offsets` and hand its binary records to the event handler. Literal topic names, a pattern that spells the prefix out (`__audit.>`) and names with a single leading underscore are unaffected, so `>` still receives a topic such as Redpanda's `_schemas`.
+  - New `consumerOptions.topicDiscoveryInterval` (`number | false`, milliseconds), **on by default at 300000** (five minutes). KafkaJS expands a wildcard once, when `subscribe()` runs, so a matching topic created later was never consumed until a restart, and the restart read it from the end: what was published to it in between was never handled (measured: 5 of 6 messages). Now the adapter lists the broker's topics every interval and, when a matching topic has appeared, restarts the subscription's consumer to include it, reading the topic from its first message; the discovery is logged with the topic names. The restart rebalances the consumer group (a pause of a few seconds; messages being handled are delivered again) and happens only when there is a new topic. In a group of several members every member must discover the topic before it is read completely, because KafkaJS assigns partitions only from the topic list of the group leader: the delay is up to the longest `topicDiscoveryInterval` among the members, and nothing is lost meanwhile. **Changes the default behaviour of wildcard subscriptions**: one metadata request per wildcard subscription per interval on an extra admin connection, and a group rebalance when a matching topic appears. Set `false` to keep the fixed topic list of earlier versions. A restart inside one interval still misses what was published to a new topic before it.
+
+### Patch Changes
+
+- [#299](https://github.com/Connectum-Framework/connectum/pull/299) [`57a1ab4`](https://github.com/Connectum-Framework/connectum/commit/57a1ab480ab7399a095037d4fa637137b65ca97d) Thanks [@intech](https://github.com/intech)! - fix: acknowledgement now commits the consumer-group offset, and unsettled messages are redelivered in order
+  
+  - `ack()` and `nack(false)` commit the message offset; previously nothing was committed, so a restarted group received acknowledged messages again, and messages published while a group was stopped could be lost.
+  - A handler that throws while its message is still uncommitted, calls `nack(true)`, or (when the adapter is used without the EventBus, which acknowledges a normal return itself) returns without settling ends the batch: that message and the rest of the partition's batch are delivered again, in order. An `ack()` or `nack(false)` that already committed the offset prevents redelivery even if the handler throws afterwards. Previously the message and the rest of its batch were skipped and never redelivered. A failed commit stops the batch and is surfaced to KafkaJS.
+  - A handler error is now logged with topic, partition and offset instead of being swallowed.
+  - New `consumerOptions.redeliveryDelay` (milliseconds, default `1000`) pauses the partition between redeliveries of an unsettled message; `0` redelivers immediately. On an otherwise idle consumer the observed gap is a whole fetch cycle (5 s in KafkaJS) even for smaller values. A message that fails on every delivery blocks its partition until the handler succeeds, `nack(false)` is called, or the DLQ middleware moves it.
+  - `fromBeginning` still defaults to `false`; the event adapters guide now states what that means for a group without a committed offset.
+
+- [#318](https://github.com/Connectum-Framework/connectum/pull/318) [`850e531`](https://github.com/Connectum-Framework/connectum/commit/850e531c5436d8615ad47888a93b41af5566036a) Thanks [@intech](https://github.com/intech)! - Fix a handler that runs longer than the consumer's `sessionTimeout` being dropped from its
+  group and the message redelivered forever. KafkaJS sends a heartbeat only when asked, and the
+  adapter asked only between messages, so during a long handler the broker saw no heartbeat,
+  removed the member, and every `ack()` then failed with "The coordinator is not aware of this
+  member". The adapter now heartbeats in the background for as long as a handler runs and stops as
+  soon as the handler returns or throws. If a heartbeat fails and the message was not
+  committed, the failure is handed to KafkaJS so the consumer rejoins the group. No option changes.
+
+- [#336](https://github.com/Connectum-Framework/connectum/pull/336) [`1ef84d7`](https://github.com/Connectum-Framework/connectum/commit/1ef84d7f5321a75742409c6b63db606df6fdcc41) Thanks [@intech](https://github.com/intech)! - docs: document the `TimeoutNegativeWarning` that `kafkajs` 2.2.4 prints on Node.js 26 and its cause inside `kafkajs` (an empty request queue re-arms a 1 ms timer on every broker connection, a cost that Node.js versions before 26 pay without the warning; message delivery is unaffected, the idle CPU cost was not measured), and state the Kafka version the integration suite was run on instead of the untested ">=2.0".
+
+- [#325](https://github.com/Connectum-Framework/connectum/pull/325) [`3591014`](https://github.com/Connectum-Framework/connectum/commit/35910149aa614a388cfadbb11968b3deb57aad13) Thanks [@intech](https://github.com/intech)! - docs: the package READMEs are short entry points (install, a runnable start, constraints, links) and the long reference tables now live on the documentation site and in the API reference. The facts that exist only in a README stay there: the cancellation migration notes of `@connectum/interceptors`, the request initializer migration of `@connectum/protoc-gen-catalog`, the dependency injection and testing section of `@connectum/events`, the verified RabbitMQ and Kafka broker lines and the integration-suite instructions of the AMQP and Kafka adapters. Examples in the READMEs of eight packages and the Quickstart are executed against the packed packages by `pnpm docs:check`. JSDoc of a few exports was corrected to match the code; no runtime behavior changes.
+
 ## 1.2.0
 
 ## 1.1.0
