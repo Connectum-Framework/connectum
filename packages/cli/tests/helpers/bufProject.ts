@@ -41,7 +41,12 @@ export function runBuf(args: string[], files: ReadonlyMap<string, string>, optio
             writeFileSync(join(dir, relPath), content);
         }
         const run = spawnSync(BUF, args, { cwd: dir, encoding: "utf8", timeout: 60_000 });
-        return { status: run.status, output: `${run.stdout}${run.stderr}` };
+        // A missing binary or a timeout leaves status null; without this the rejection checks
+        // (`status !== 0`) would pass although buf never ran.
+        if (run.error !== undefined) {
+            throw new Error(`buf could not run (${BUF}): ${run.error.message}`);
+        }
+        return { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
