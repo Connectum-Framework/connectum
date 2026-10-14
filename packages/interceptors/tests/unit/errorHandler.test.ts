@@ -109,24 +109,25 @@ describe("errorHandler interceptor", () => {
 
         const interceptor = createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: false });
 
+        const original = new Error("test error");
         const next = mock.fn(async () => {
-            throw new Error("test error");
+            throw original;
         });
 
         const handler = interceptor(next as any);
 
         await assert.rejects(() => handler(mockReq));
 
-        assert.ok(
-            originalError.mock.calls.length >= 2,
-            `Expected at least 2 console.error calls, got ${originalError.mock.calls.length}`,
-        );
-
-        // First call: "Interceptor caught error:"
-        assert.strictEqual(originalError.mock.calls[0]!.arguments[0], "Interceptor caught error:");
-
-        // Second call: "Transformed ConnectError:"
-        assert.strictEqual(originalError.mock.calls[1]!.arguments[0], "Transformed ConnectError:");
+        // The documented guarantee: the original failure stays in the console log, and the
+        // log also shows the ConnectError the client receives. Both are checked by what they
+        // carry, not by the label text in front of them.
+        const logged = originalError.mock.calls.flatMap((call) => call.arguments);
+        assert.ok(logged.includes(original), "the original failure itself must be logged");
+        const clientFacing = logged.find((arg): arg is ConnectError => arg instanceof ConnectError);
+        assert.ok(clientFacing, "the ConnectError sent to the client must be logged");
+        assert.strictEqual(clientFacing.code, Code.Internal);
+        // With includeStackTrace off, nothing but those two entries is written.
+        assert.strictEqual(originalError.mock.calls.length, 2);
 
         originalError.mock.restore();
     });
@@ -154,21 +155,22 @@ describe("errorHandler interceptor", () => {
 
         const interceptor = createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: true });
 
+        const original = new Error("test error with stack");
         const next = mock.fn(async () => {
-            throw new Error("test error with stack");
+            throw original;
         });
 
         const handler = interceptor(next as any);
 
         await assert.rejects(() => handler(mockReq));
 
-        // Should have 3 calls: "Interceptor caught error:", "Transformed ConnectError:", "Stack trace:"
+        // includeStackTrace puts a real stack into the log: a string with the failure text
+        // followed by "at ..." frames, not just a label saying "stack".
+        const logged = originalError.mock.calls.flatMap((call) => call.arguments);
         assert.ok(
-            originalError.mock.calls.length >= 3,
-            `Expected at least 3 console.error calls, got ${originalError.mock.calls.length}`,
+            logged.some((arg) => typeof arg === "string" && arg.includes("test error with stack") && /\n\s+at /.test(arg)),
+            "a stack string of the failure must be logged",
         );
-
-        assert.strictEqual(originalError.mock.calls[2]!.arguments[0], "Stack trace:");
 
         originalError.mock.restore();
     });
@@ -178,21 +180,20 @@ describe("errorHandler interceptor", () => {
 
         const interceptor = createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: false });
 
+        const original = new Error("test error");
         const next = mock.fn(async () => {
-            throw new Error("test error");
+            throw original;
         });
 
         const handler = interceptor(next as any);
 
         await assert.rejects(() => handler(mockReq));
 
-        // Should have exactly 2 calls: "Interceptor caught error:", "Transformed ConnectError:"
-        assert.strictEqual(originalError.mock.calls.length, 2);
-
-        // Verify no "Stack trace:" call
-        for (const call of originalError.mock.calls) {
-            assert.notStrictEqual(call.arguments[0], "Stack trace:");
-        }
+        // Failures are logged (so the check below is not vacuous), but no stack text is.
+        assert.ok(originalError.mock.calls.length > 0, "the failure must still be logged");
+        const logged = originalError.mock.calls.flatMap((call) => call.arguments);
+        assert.ok(logged.includes(original), "the failure itself is logged");
+        assert.ok(!logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)), "no stack string may be logged");
 
         originalError.mock.restore();
     });
@@ -287,6 +288,7 @@ describe("errorHandler interceptor", () => {
 
             const interceptor = createErrorHandlerInterceptor({
                 logErrors: false,
+                includeStackTrace: true,
                 onError: (info) => {
                     capturedInfo = info;
                 },
@@ -307,7 +309,9 @@ describe("errorHandler interceptor", () => {
             await assert.rejects(
                 () => handler(mockReq),
                 (err: unknown) => {
-                    assertConnectError(err, Code.Internal, "Something went wrong");
+                    assertConnectError(err, Code.Internal);
+                    // The client text is exactly the clientMessage: nothing of the internal text is appended.
+                    assert.strictEqual(err.rawMessage, "Something went wrong");
                     return true;
                 },
             );
@@ -316,6 +320,9 @@ describe("errorHandler interceptor", () => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const info = capturedInfo as any;
             assert.ok(info, "onError callback should have been called");
+            // onError gets the original failure with its own text, and its stack (includeStackTrace is on).
+            assert.strictEqual(info.error, sanitizableError);
+            assert.strictEqual(info.stack, sanitizableError.stack);
             assert.ok(info.serverDetails, "serverDetails should be present");
             assert.strictEqual(info.serverDetails.query, "SELECT *");
             assert.strictEqual(info.serverDetails.table, "users");
