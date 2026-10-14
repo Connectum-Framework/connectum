@@ -340,8 +340,9 @@ describe("Semantic Conventions: attribute names", () => {
 		// Every key the package exports inside a standard namespace has to exist in the
 		// registry of that namespace. A prefix check on the same constants cannot fail
 		// for a key that merely stays under the prefix; membership in the registry can.
-		const registryKeys = new Set(Object.values(semconv).filter((value): value is string => typeof value === "string"));
-		const exportedKeys = Object.values(attributes).filter((value): value is string => typeof value === "string");
+		const stringsOf = (module: object): string[] => Object.values(module).filter((value): value is string => typeof value === "string");
+		const registryKeys = new Set<string>(stringsOf(semconv));
+		const exportedKeys = stringsOf(attributes);
 
 		const namespaces = [
 			{ prefix: "rpc.", known: [ATTR_RPC_SYSTEM_NAME, ATTR_RPC_METHOD, ATTR_RPC_RESPONSE_STATUS_CODE, RPC_MESSAGE_EVENT, ATTR_RPC_MESSAGE_TYPE] },
