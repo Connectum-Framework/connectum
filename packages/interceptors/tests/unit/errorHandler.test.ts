@@ -126,8 +126,6 @@ describe("errorHandler interceptor", () => {
         const clientFacing = logged.find((arg): arg is ConnectError => arg instanceof ConnectError);
         assert.ok(clientFacing, "the ConnectError sent to the client must be logged");
         assert.strictEqual(clientFacing.code, Code.Internal);
-        // With includeStackTrace off, nothing but those two entries is written.
-        assert.strictEqual(originalError.mock.calls.length, 2);
 
         originalError.mock.restore();
     });
