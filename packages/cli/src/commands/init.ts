@@ -9,8 +9,8 @@
  * 4. Emit into the target directory (refuse-to-clobber).
  *
  * Module selection (interactive prompts or flags) composes fragments on top of the
- * base transform. Dependency install / `git init` are left to the developer
- * (printed as next steps).
+ * base transform. Dependency install and `git init` are left to the developer;
+ * the install and start commands are printed as next steps.
  *
  * @module commands/init
  */
