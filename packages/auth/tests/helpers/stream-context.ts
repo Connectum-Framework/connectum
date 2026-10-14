@@ -15,7 +15,6 @@ import { create } from "@bufbuild/protobuf";
 import type { Interceptor } from "@connectrpc/connect";
 import { createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-// biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { createServer, defineService } from "@connectum/core";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
