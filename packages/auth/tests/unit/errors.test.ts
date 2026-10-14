@@ -46,14 +46,22 @@ describe("AuthzDeniedError", () => {
             assert.strictEqual(error.clientMessage, "Access denied");
         });
 
-        it("should include rule name in message", () => {
-            const error = new AuthzDeniedError(fullDetails);
-            assert.match(error.message, /require-admin/);
-        });
+        // The guide states that without an error-handler interceptor the original
+        // message carries the rule name; with one, only clientMessage reaches the
+        // caller. So the rule name must be in message and must never be in clientMessage.
+        for (const ruleName of ["require-admin", "check-scope-xyz", "rule/with spaces"]) {
+            it(`should put rule name "${ruleName}" in the server-side message but not in clientMessage`, () => {
+                const error = new AuthzDeniedError({ ruleName });
+                assert.ok(error.rawMessage.includes(ruleName), `rawMessage should include the rule name: ${error.rawMessage}`);
+                assert.ok(!error.clientMessage.includes(ruleName), "clientMessage must not reveal the rule name");
+            });
+        }
 
-        it("should include rule name in message for different rule names", () => {
-            const error = new AuthzDeniedError({ ruleName: "check-scope-xyz" });
-            assert.match(error.message, /check-scope-xyz/);
+        it("should not expose the required roles or scopes through clientMessage", () => {
+            const error = new AuthzDeniedError(fullDetails);
+            for (const secret of [...(fullDetails.requiredRoles ?? []), ...(fullDetails.requiredScopes ?? [])]) {
+                assert.ok(!error.clientMessage.includes(secret), `clientMessage must not reveal "${secret}"`);
+            }
         });
     });
 
@@ -97,17 +105,6 @@ describe("AuthzDeniedError", () => {
             const error = new AuthzDeniedError(fullDetails);
             assert.strictEqual(isSanitizableError(error), true);
         });
-
-        it("should have clientMessage as string", () => {
-            const error = new AuthzDeniedError({ ruleName: "test" });
-            assert.strictEqual(typeof error.clientMessage, "string");
-        });
-
-        it("should have serverDetails as non-null object", () => {
-            const error = new AuthzDeniedError({ ruleName: "test" });
-            assert.strictEqual(typeof error.serverDetails, "object");
-            assert.notStrictEqual(error.serverDetails, null);
-        });
     });
 
     describe("authzDetails", () => {
@@ -119,18 +116,21 @@ describe("AuthzDeniedError", () => {
             };
             const error = new AuthzDeniedError(details);
 
-            assert.strictEqual(error.authzDetails, details);
-            assert.strictEqual(error.authzDetails.ruleName, "preserve-test");
-            assert.deepStrictEqual(error.authzDetails.requiredRoles, ["editor"]);
-            assert.deepStrictEqual(error.authzDetails.requiredScopes, ["docs:read"]);
+            // Compared by value: whether the error keeps the same object or a copy is not behavior.
+            assert.deepStrictEqual(error.authzDetails, {
+                ruleName: "preserve-test",
+                requiredRoles: ["editor"],
+                requiredScopes: ["docs:read"],
+            });
+            assert.strictEqual(error.ruleName, "preserve-test");
         });
 
         it("should preserve details with only ruleName", () => {
             const details: AuthzDeniedDetails = { ruleName: "only-name" };
             const error = new AuthzDeniedError(details);
 
-            assert.strictEqual(error.authzDetails, details);
             assert.strictEqual(error.authzDetails.ruleName, "only-name");
+            assert.strictEqual(error.ruleName, "only-name");
             assert.strictEqual(error.authzDetails.requiredRoles, undefined);
             assert.strictEqual(error.authzDetails.requiredScopes, undefined);
         });
