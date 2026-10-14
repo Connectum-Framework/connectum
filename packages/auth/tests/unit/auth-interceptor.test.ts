@@ -12,7 +12,6 @@ import { assertConnectError, createMockNext, createMockRequest } from "@connectu
 import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { getAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
