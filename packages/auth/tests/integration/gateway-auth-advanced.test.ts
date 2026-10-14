@@ -283,27 +283,37 @@ describe("Gateway Auth Advanced — Integration", () => {
             assert.deepStrictEqual(captured.claims, claims);
         });
 
-        it("should return empty claims for oversized claims header (>8192)", async () => {
-            const interceptor = createGateway();
+        // Guide (context.md): a claims value has a limit of 8192 characters; over it, the value is
+        // ignored and claims are empty, while the request itself is still authenticated.
+        // {"d":"<n>"} is n + 8 characters, so 8184 filler characters give exactly 8192.
+        for (const [label, filler, expectedAdmitted] of [
+            ["exactly 8192 characters", 8184, true],
+            ["8193 characters", 8185, false],
+        ] as const) {
+            it(`should ${expectedAdmitted ? "keep" : "drop"} claims of ${label}`, async () => {
+                const interceptor = createGateway();
+                const claimsJson = JSON.stringify({ d: "x".repeat(filler) });
+                assert.strictEqual(claimsJson.length, filler + 8);
 
-            const headers = new Headers();
-            headers.set("x-gateway-secret", "valid-secret");
-            headers.set("x-user-id", "user-1");
-            headers.set("x-user-claims", JSON.stringify({ data: "x".repeat(9000) }));
+                const headers = new Headers();
+                headers.set("x-gateway-secret", "valid-secret");
+                headers.set("x-user-id", "user-1");
+                headers.set("x-user-claims", claimsJson);
 
-            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
-            let captured: AuthContext | undefined;
-            const next = mock.fn(async () => {
-                captured = getAuthContext();
-                return { message: {} };
+                const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
+                let captured: AuthContext | undefined;
+                const next = mock.fn(async () => {
+                    captured = getAuthContext();
+                    return { message: {} };
+                });
+
+                await interceptor(next as any)(req);
+
+                assert.ok(captured, "an oversized claims header must not reject the request");
+                assert.strictEqual(captured.subject, "user-1");
+                assert.deepStrictEqual(captured.claims, expectedAdmitted ? { d: "x".repeat(filler) } : {});
             });
-
-            const handler = interceptor(next as any);
-            await handler(req);
-
-            assert.ok(captured);
-            assert.deepStrictEqual(captured.claims, {});
-        });
+        }
 
         it("should return empty claims for invalid JSON claims", async () => {
             const interceptor = createGateway();
@@ -486,15 +496,23 @@ describe("Gateway Auth Advanced — Integration", () => {
             headers.set("x-user-roles", '["admin"]');
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "Health", headers });
 
-            const next = mock.fn(async () => ({ message: {} }));
+            // Guide: the mapped headers and the trust header are deleted on skipped methods too.
+            // What counts is what the next handler can read, so the headers are inspected from
+            // inside next(), at the moment it runs.
+            let seenByNext: Record<string, string | null> = {};
+            const next = mock.fn(async (r: { header: Headers }) => {
+                seenByNext = {
+                    "x-user-id": r.header.get("x-user-id"),
+                    "x-user-roles": r.header.get("x-user-roles"),
+                    "x-gateway-secret": r.header.get("x-gateway-secret"),
+                };
+                return { message: {} };
+            });
             const handler = interceptor(next as any);
             await handler(req);
 
             assert.strictEqual(next.mock.calls.length, 1);
-            // Gateway headers should be stripped to prevent spoofing
-            assert.strictEqual(req.header.get("x-user-id"), null);
-            assert.strictEqual(req.header.get("x-user-roles"), null);
-            assert.strictEqual(req.header.get("x-gateway-secret"), null);
+            assert.deepStrictEqual(seenByNext, { "x-user-id": null, "x-user-roles": null, "x-gateway-secret": null });
         });
 
         it("should strip custom headers from stripHeaders option", async () => {
@@ -515,13 +533,23 @@ describe("Gateway Auth Advanced — Integration", () => {
 
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
-            const next = mock.fn(async () => ({ message: {} }));
+            // Guide: additional stripHeaders are deleted from an admitted request. They must be
+            // gone when the next handler runs, and unrelated headers must be left alone.
+            headers.set("x-unrelated", "keep-me");
+            let seenByNext: Record<string, string | null> = {};
+            const next = mock.fn(async (r: { header: Headers }) => {
+                seenByNext = {
+                    "x-internal-trace": r.header.get("x-internal-trace"),
+                    "x-custom-header": r.header.get("x-custom-header"),
+                    "x-unrelated": r.header.get("x-unrelated"),
+                };
+                return { message: {} };
+            });
             const handler = interceptor(next as any);
             await handler(req);
 
             assert.strictEqual(next.mock.calls.length, 1);
-            assert.strictEqual(req.header.get("x-internal-trace"), null);
-            assert.strictEqual(req.header.get("x-custom-header"), null);
+            assert.deepStrictEqual(seenByNext, { "x-internal-trace": null, "x-custom-header": null, "x-unrelated": "keep-me" });
         });
     });
 
