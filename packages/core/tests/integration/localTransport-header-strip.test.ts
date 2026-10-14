@@ -103,9 +103,17 @@ describe("F1 — Local transport header is stripped from inbound HTTP requests",
 
     it("F1.2 — Legitimate `createLocalTransport` call still carries the marker to the server interceptor chain", async () => {
         const observed: { value: string | null } = { value: "<not-called>" };
+        // The marker's name and value are a contract with the telemetry package,
+        // which recognises in-process calls by these literals; they are spelled
+        // out here, not taken from the constants, so a rename on one side only
+        // is caught.
+        const literalProbe: Interceptor = (next) => (req) => {
+            observed.value = req.header.get("connectum-internal-transport");
+            return next(req);
+        };
         const server = createServer({
             services: [makeEchoRoutes()],
-            interceptors: [makeTransportHeaderProbe(observed)],
+            interceptors: [literalProbe],
         });
         // Intentionally no server.start() — local path must work pre-start.
 
@@ -115,9 +123,11 @@ describe("F1 — Local transport header is stripped from inbound HTTP requests",
 
         assert.strictEqual(
             observed.value,
-            LOCAL_TRANSPORT_VALUE,
+            "in-process",
             "legitimate in-process call must surface the marker to server interceptors",
         );
+        assert.strictEqual(LOCAL_TRANSPORT_HEADER, "connectum-internal-transport");
+        assert.strictEqual(LOCAL_TRANSPORT_VALUE, "in-process");
     });
 
     it("F1.3 — Forged header with mixed-case name is also stripped (Headers is case-insensitive)", async () => {
