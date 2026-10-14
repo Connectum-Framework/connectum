@@ -12,7 +12,7 @@ import type { Interceptor } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { defineCatalog } from "@connectum/core";
 import { createMockContext } from "../../src/mockContext.ts";
-import { MOCK_RESPONSE_HEADER, mockService } from "../../src/mockResolver.ts";
+import { mockService } from "../../src/mockResolver.ts";
 import { type Count, CountSchema, type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 declare module "@connectum/core" {
@@ -61,7 +61,7 @@ describe("createMockContext — outgoingInterceptors on mock routes", () => {
             calls += 1;
             req.header.set(SEEN, "yes");
             const res = await next(req);
-            marker = res.header.get(MOCK_RESPONSE_HEADER);
+            marker = res.header.get("x-connectum-mock");
             return res;
         };
         const ctx = makeContext(spy);
