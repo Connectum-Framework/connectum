@@ -57,11 +57,12 @@ describe("matchesMethodPattern", () => {
         ["service wildcard", "test.v1.UserService/*"],
         ["global wildcard", "*"],
     ] as const) {
-        const misses = ["no.Match/Method", "another.Service/*"];
+        const missA = "no.Match/Method";
+        const missB = "another.Service/*";
         for (const [position, patterns] of [
-            ["first", [matching, ...misses]],
-            ["middle", [misses[0], matching, misses[1]]],
-            ["last", [...misses, matching]],
+            ["first", [matching, missA, missB]],
+            ["middle", [missA, matching, missB]],
+            ["last", [missA, missB, matching]],
         ] as const) {
             it(`should match a ${kind} pattern at the ${position} position of the list`, () => {
                 assert.strictEqual(matchesMethodPattern("test.v1.UserService", "GetUser", patterns), true);
