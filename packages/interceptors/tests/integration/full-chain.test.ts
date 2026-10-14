@@ -187,6 +187,10 @@ describe('Full Interceptor Chain Integration', () => {
             },
         );
 
+        // DeadlineExceeded is not among the default retryable codes (Unavailable, ResourceExhausted),
+        // so the timed-out attempt is not repeated by the outer retry.
+        assert.strictEqual(next.mock.calls.length, 1);
+
         // Wait for mock timers to drain
         await new Promise((resolve) => setTimeout(resolve, 150));
     });
