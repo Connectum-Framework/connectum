@@ -5,13 +5,16 @@
  */
 
 import assert from "node:assert";
+import net from "node:net";
 import { afterEach, describe, it, mock } from "node:test";
+import { create } from "@bufbuild/protobuf";
 import type { ConnectRouter } from "@connectrpc/connect";
 import type { ServiceDefinition } from "../../src/defineService.ts";
+import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import type { Server } from "../../src/types.ts";
 import { ServerState } from "../../src/types.ts";
-import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 // Mock service for testing.
 //
@@ -27,6 +30,18 @@ const createMockService = (): ServiceDefinition => {
         },
     };
 };
+
+/** Whether a TCP connection to the loopback port is accepted (false when it is refused). */
+function acceptsConnections(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = net.connect({ port, host: "127.0.0.1" });
+        socket.once("connect", () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("error", () => resolve(false));
+    });
+}
 
 describe("createServer", () => {
     let servers: Server[] = [];
@@ -73,6 +88,24 @@ describe("createServer", () => {
             servers.push(server);
 
             assert.strictEqual(server.routes.length, 2);
+            // The registered routes are the very services that were passed in, in order.
+            assert.strictEqual(server.routes[0], service1);
+            assert.strictEqual(server.routes[1], service2);
+        });
+
+        it("should keep registration order when services are added later", () => {
+            const first = createMockService();
+            const second = createMockService();
+            const third = createMockService();
+
+            const server = createServer({ services: [first, second] });
+            servers.push(server);
+            server.addService(third);
+
+            assert.strictEqual(server.routes.length, 3);
+            assert.strictEqual(server.routes[0], first);
+            assert.strictEqual(server.routes[1], second);
+            assert.strictEqual(server.routes[2], third);
         });
     });
 
@@ -96,10 +129,25 @@ describe("createServer", () => {
             assert.ok(server.transport);
         });
 
-        it("should emit start and ready events", async () => {
+        // Port 0 asks the operating system for a free port (Node.js net.Server.listen),
+        // so two servers started on it can never share one. A silent fallback to a fixed
+        // default port would make the second start fail or both land on the same port.
+        it("should give servers started on port 0 different operating-system ports", async () => {
+            const first = createServer({ services: [createMockService()], port: 0 });
+            const second = createServer({ services: [createMockService()], port: 0 });
+            servers.push(first, second);
+
+            await first.start();
+            await second.start();
+
+            assert.ok(first.address?.port);
+            assert.ok(second.address?.port);
+            assert.notStrictEqual(first.address.port, second.address.port);
+        });
+
+        it("should emit start and ready events in order, each in the state the lifecycle guide gives it", async () => {
             const service = createMockService();
-            const startHandler = mock.fn();
-            const readyHandler = mock.fn();
+            const seen: Array<{ event: string; state: ServerState; listening: boolean | undefined; port: number | undefined }> = [];
 
             const server = createServer({
                 services: [service],
@@ -108,13 +156,25 @@ describe("createServer", () => {
 
             servers.push(server);
 
-            server.on("start", startHandler);
-            server.on("ready", readyHandler);
+            for (const event of ["start", "ready"]) {
+                server.on(event as "start" | "ready", () => {
+                    seen.push({ event, state: server.state, listening: server.transport?.listening, port: server.address?.port });
+                });
+            }
 
             await server.start();
 
-            assert.strictEqual(startHandler.mock.calls.length, 1);
-            assert.strictEqual(readyHandler.mock.calls.length, 1);
+            assert.deepStrictEqual(
+                seen.map((entry) => entry.event),
+                ["start", "ready"],
+            );
+            // "start" fires while the server is starting and nothing listens yet.
+            assert.strictEqual(seen[0]?.state, ServerState.STARTING);
+            assert.notStrictEqual(seen[0]?.listening, true);
+            // "ready" is the transition into running, with the port already bound.
+            assert.strictEqual(seen[1]?.state, ServerState.RUNNING);
+            assert.strictEqual(seen[1]?.listening, true);
+            assert.strictEqual(seen[1]?.port, server.address?.port);
         });
 
         it("should throw if called when not in CREATED state", async () => {
@@ -146,12 +206,18 @@ describe("createServer", () => {
             });
 
             await server.start();
+            const port = server.address?.port;
+            assert.ok(port);
+            assert.strictEqual(await acceptsConnections(port), true, "the port must accept connections while running");
+
             await server.stop();
 
             assert.strictEqual(server.state, ServerState.STOPPED);
             assert.strictEqual(server.isRunning, false);
             assert.strictEqual(server.address, null);
             assert.strictEqual(server.transport, null);
+            // "stopped" means the listener is closed and the port is released.
+            assert.strictEqual(await acceptsConnections(port), false, "the port must be released after stop()");
         });
 
         it("should emit stop event", async () => {
@@ -205,6 +271,12 @@ describe("createServer", () => {
 
             servers.push(server);
 
+            const events: string[] = [];
+            server.on("stopping", () => events.push("stopping"));
+            server.on("stop", () => events.push("stop"));
+            const hook = mock.fn(async () => {});
+            server.onShutdown("once", hook);
+
             await server.start();
 
             // Call stop() twice simultaneously
@@ -216,6 +288,10 @@ describe("createServer", () => {
 
             assert.strictEqual(server.state, ServerState.STOPPED);
             assert.strictEqual(server.isRunning, false);
+            // "Concurrent calls return the same Promise": one shutdown serves both
+            // callers, so the sequence ran once, not twice.
+            assert.deepStrictEqual(events, ["stopping", "stop"]);
+            assert.strictEqual(hook.mock.calls.length, 1);
         });
 
         // Contract (graceful-shutdown guide, "Idempotent stop()"): stop() is safe to
@@ -272,6 +348,23 @@ describe("createServer", () => {
             server.addService(service2);
 
             assert.strictEqual(server.routes.length, 2);
+            assert.strictEqual(server.routes[1], service2);
+        });
+
+        it("should serve a service added before start", async () => {
+            const server = createServer({ services: [] });
+            servers.push(server);
+            server.addService(
+                defineService(EchoService, {
+                    echo: (request) => create(EchoResponseSchema, { message: `added:${request.message}`, timestamp: 0n }),
+                    secureEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                    rateLimitedEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                }),
+            );
+
+            const response = await server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "x" }));
+
+            assert.strictEqual(response.message, "added:x");
         });
 
         it("should throw if server is already running", async () => {
@@ -346,6 +439,27 @@ describe("createServer", () => {
 
             assert.ok(server.address);
             assert.ok(server.address.port > 0);
+        });
+
+        // Port 0 only asks the operating system for any free port, so it cannot show that
+        // an explicit port is honoured: a concrete, previously free port must come back.
+        it("should listen on the explicit port that was configured", async () => {
+            const probe = net.createServer();
+            await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+            const freePort = (probe.address() as net.AddressInfo).port;
+            await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+            const server = createServer({
+                services: [createMockService()],
+                port: freePort,
+                host: "127.0.0.1",
+            });
+            servers.push(server);
+
+            await server.start();
+
+            assert.strictEqual(server.address?.port, freePort);
+            assert.strictEqual(await acceptsConnections(freePort), true);
         });
 
         it("should use custom host", async () => {
@@ -445,12 +559,29 @@ describe("createServer", () => {
 
             servers.push(server2);
 
-            const errorHandler = mock.fn();
-            server2.on("error", errorHandler);
+            const reported: unknown[] = [];
+            const events: string[] = [];
+            server2.on("start", () => events.push("start"));
+            server2.on("ready", () => events.push("ready"));
+            server2.on("error", (err) => {
+                events.push("error");
+                reported.push(err);
+            });
 
-            await assert.rejects(() => server2.start());
+            const rejection = await server2.start().then(
+                () => undefined,
+                (err: unknown) => err,
+            );
 
-            assert.strictEqual(errorHandler.mock.calls.length, 1);
+            // The failure is the bind error of the occupied port, and the error event
+            // carries that same object that start() rejected with.
+            assert.ok(rejection instanceof Error);
+            assert.strictEqual((rejection as NodeJS.ErrnoException).code, "EADDRINUSE");
+            assert.deepStrictEqual(reported, [rejection]);
+            // Lifecycle guide: a failure before the server is listening is `start → error`,
+            // and the server ends up stopped.
+            assert.deepStrictEqual(events, ["start", "error"]);
+            assert.strictEqual(server2.state, ServerState.STOPPED);
         });
     });
 
@@ -486,6 +617,31 @@ describe("createServer", () => {
             server.addInterceptor(customInterceptor);
 
             assert.strictEqual(server.interceptors.length, initialLength + 1);
+            assert.strictEqual(server.interceptors.at(-1), customInterceptor);
+        });
+
+        it("should run an interceptor added before start on every call", async () => {
+            const seenMethods: string[] = [];
+            const server = createServer({
+                services: [
+                    defineService(EchoService, {
+                        echo: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                        secureEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                        rateLimitedEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                    }),
+                ],
+            });
+            servers.push(server);
+            server.addInterceptor((next) => async (request) => {
+                seenMethods.push(request.method.name);
+                return next(request);
+            });
+
+            const client = server.localClient(EchoService);
+            await client.echo(create(EchoRequestSchema, { message: "a" }));
+            await client.echo(create(EchoRequestSchema, { message: "b" }));
+
+            assert.deepStrictEqual(seenMethods, ["Echo", "Echo"]);
         });
 
         it("should throw if server is already running", async () => {
@@ -530,6 +686,24 @@ describe("createServer", () => {
             server.addProtocol(mockProtocol);
 
             assert.strictEqual(server.protocols.length, initialLength + 1);
+            assert.strictEqual(server.protocols.at(-1), mockProtocol);
+        });
+
+        it("should register a protocol added before start when the server starts", async () => {
+            let registerCalls = 0;
+            const server = createServer({ services: [createMockService()], port: 0 });
+            servers.push(server);
+            server.addProtocol({
+                name: "counting",
+                register() {
+                    registerCalls++;
+                },
+            });
+            assert.strictEqual(registerCalls, 0, "a protocol is not registered before the routes are built");
+
+            await server.start();
+
+            assert.ok(registerCalls >= 1, "the added protocol must be registered on the HTTP router");
         });
 
         it("should throw if server is already running", async () => {
@@ -598,6 +772,22 @@ describe("createServer", () => {
             servers.push(server);
 
             assert.strictEqual(server.interceptors.length, 1);
+            assert.strictEqual(server.interceptors[0], customInterceptor);
+        });
+
+        it("should keep the given interceptors in the given order", () => {
+            const first = mock.fn((next) => next);
+            const second = mock.fn((next) => next);
+
+            const server = createServer({
+                services: [createMockService()],
+                interceptors: [first, second],
+            });
+            servers.push(server);
+
+            assert.strictEqual(server.interceptors.length, 2);
+            assert.strictEqual(server.interceptors[0], first);
+            assert.strictEqual(server.interceptors[1], second);
         });
     });
 
@@ -633,6 +823,7 @@ describe("createServer", () => {
             servers.push(server);
 
             assert.strictEqual(server.protocols.length, 1);
+            assert.strictEqual(server.protocols[0], mockProtocol);
         });
     });
 
@@ -701,6 +892,45 @@ describe("createServer", () => {
 
                 assert.strictEqual(signal.aborted, true);
             });
+
+            // Graceful-shutdown guide, "Shutdown Sequence": the abort signal (step 2)
+            // precedes the transport close (step 3), so long-running handlers are asked to
+            // stop while the listener is still up. The abort event is observed from the
+            // outside: at that instant the transport must still be listening.
+            it("should abort before the transport is closed", async () => {
+                const server = createServer({
+                    services: [createMockService()],
+                    port: 0,
+                });
+                servers.push(server);
+                await server.start();
+
+                let listeningAtAbort: boolean | undefined;
+                server.shutdownSignal.addEventListener("abort", () => {
+                    listeningAtAbort = server.transport?.listening;
+                });
+
+                await server.stop();
+
+                assert.strictEqual(listeningAtAbort, true, "the shutdown signal must be aborted while the transport still listens");
+            });
+
+            it("should stay the same signal object for the whole life of the server", async () => {
+                const server = createServer({
+                    services: [createMockService()],
+                    port: 0,
+                });
+                servers.push(server);
+
+                const before = server.shutdownSignal;
+                await server.start();
+                const running = server.shutdownSignal;
+                await server.stop();
+
+                assert.strictEqual(running, before);
+                assert.strictEqual(server.shutdownSignal, before);
+                assert.strictEqual(before.aborted, true);
+            });
         });
 
         describe("stopping event", () => {
@@ -725,6 +955,35 @@ describe("createServer", () => {
                 assert.strictEqual(stoppingHandler.mock.calls.length, 1);
                 assert.strictEqual(stopHandler.mock.calls.length, 1);
             });
+
+            // Graceful-shutdown guide: "stopping" is step 1, before the transport closes,
+            // so a listener can still flip the health status while connections are served;
+            // "stop" is the last step, after the server is fully stopped.
+            it("should emit stopping while the transport still listens and stop after it is released", async () => {
+                const server = createServer({
+                    services: [createMockService()],
+                    port: 0,
+                });
+                servers.push(server);
+                let atStopping: { state: ServerState; listening: boolean | undefined; port: number | undefined } | undefined;
+                let atStop: { state: ServerState; address: unknown; transport: unknown } | undefined;
+                server.on("stopping", () => {
+                    atStopping = { state: server.state, listening: server.transport?.listening, port: server.address?.port };
+                });
+                server.on("stop", () => {
+                    atStop = { state: server.state, address: server.address, transport: server.transport };
+                });
+
+                await server.start();
+                await server.stop();
+
+                assert.strictEqual(atStopping?.state, ServerState.STOPPING);
+                assert.strictEqual(atStopping?.listening, true);
+                assert.ok(atStopping?.port);
+                assert.strictEqual(atStop?.state, ServerState.STOPPED);
+                assert.strictEqual(atStop?.address, null);
+                assert.strictEqual(atStop?.transport, null);
+            });
         });
 
         describe("onShutdown()", () => {
@@ -739,17 +998,39 @@ describe("createServer", () => {
 
                 servers.push(server);
 
-                server.onShutdown("cache", async () => {
-                    order.push("cache");
-                });
+                // The dependent hook is registered FIRST, so the registration order is
+                // the opposite of the required order: only the dependency edge
+                // ("Dependencies execute first") can put `cache` ahead of `database`.
                 server.onShutdown("database", ["cache"], async () => {
                     order.push("database");
+                });
+                server.onShutdown("cache", async () => {
+                    order.push("cache");
                 });
 
                 await server.start();
                 await server.stop();
 
                 assert.deepStrictEqual(order, ["cache", "database"]);
+            });
+
+            // Graceful-shutdown guide, "Shutdown Sequence": hooks are step 6, after the
+            // abort signal (step 2) and the transport close (step 3).
+            it("should run hooks after the shutdown signal is aborted and the transport is closed", async () => {
+                const server = createServer({
+                    services: [createMockService()],
+                    port: 0,
+                });
+                servers.push(server);
+                let atHook: { aborted: boolean; listening: boolean | undefined } | undefined;
+                server.onShutdown("probe", () => {
+                    atHook = { aborted: server.shutdownSignal.aborted, listening: server.transport?.listening };
+                });
+
+                await server.start();
+                await server.stop();
+
+                assert.deepStrictEqual(atHook, { aborted: true, listening: false });
             });
 
             it("should execute anonymous hooks", async () => {
@@ -973,13 +1254,28 @@ describe("createServer", () => {
 
             servers.push(server);
 
-            const errorHandler = mock.fn();
-            server.on("error", errorHandler);
+            const events: string[] = [];
+            const reported: unknown[] = [];
+            server.on("start", () => events.push("start"));
+            server.on("ready", () => events.push("ready"));
+            server.on("error", (err) => {
+                events.push("error");
+                reported.push(err);
+            });
 
-            await assert.rejects(() => server.start());
+            await assert.rejects(
+                () => server.start(),
+                (err: unknown) => err === busError,
+            );
 
-            assert.strictEqual(errorHandler.mock.calls.length, 1);
+            // The lifecycle guide: a startup failure before the server listens is
+            // `start → error`, the error event carries the original failure, and the
+            // server ends up stopped without ever having bound a port.
+            assert.deepStrictEqual(events, ["start", "error"]);
+            assert.deepStrictEqual(reported, [busError]);
             assert.strictEqual(server.state, ServerState.STOPPED);
+            assert.strictEqual(server.address, null);
+            assert.strictEqual(server.transport, null);
         });
     });
 
