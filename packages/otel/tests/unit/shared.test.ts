@@ -93,10 +93,10 @@ describe("buildErrorAttributes", () => {
 	// The Connect wire codes are the gRPC status numbers; the names are the canonical
 	// upper-case spellings that the metrics guide documents for `rpc.response.status_code`,
 	// with `error.type` equal to it. The numbers are written out here, not read from `Code`.
-	// Code 1 is left out on purpose: the sources spell it differently (the Connect protocol
-	// "canceled", gRPC and the semantic-convention registry "CANCELLED") and the guide does
-	// not fix it, so no spelling is pinned by an outside source.
+	// Code 1 is the Connect spelling "CANCELED" (one L), as the Connect protocol, Connect-ES and
+	// otelconnect-go name it; "CANCELLED" is the gRPC spelling and is deliberately not used.
 	const connectCodeNames: Array<[number, string]> = [
+		[1, "CANCELED"],
 		[2, "UNKNOWN"],
 		[3, "INVALID_ARGUMENT"],
 		[4, "DEADLINE_EXCEEDED"],
