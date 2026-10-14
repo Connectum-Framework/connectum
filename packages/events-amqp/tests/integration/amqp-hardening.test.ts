@@ -251,6 +251,65 @@ for (const image of IMAGES) {
             });
         }
 
+        for (const mode of [
+            { label: "recovery: false", recovery: false as const, lifecycle: false },
+            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true },
+            { label: "recovery with a bounded initial connect", recovery: { initialConnectMaxRetries: 2 }, lifecycle: false },
+        ]) {
+            it(`publish() with publishRetry is refused as not-connected for the whole connect() and spends no retry (${mode.label})`, async () => {
+                // With publishRetry the entry guard is skipped and the connection check runs before every
+                // attempt instead. A publish that is issued while connect() has not settled must still be
+                // refused at once: the connection is not usable yet, and retrying cannot make it usable
+                // any sooner than connect() itself does, so no attempt may be charged to the retry budget.
+                const exchange = `hardening.retryguard.${Math.random().toString(36).slice(2, 8)}`;
+                const retries: number[] = [];
+                const adapter = AmqpAdapter({
+                    url,
+                    exchange,
+                    recovery: mode.recovery,
+                    ...(mode.lifecycle ? { lifecycle: { onLifecycle: () => undefined } } : {}),
+                    publishRetry: { maxRetries: 5, initialDelay: 10, maxDelay: 10, jitter: 0, onRetry: (info) => retries.push(info.attempt) },
+                    topology: { queues: [{ name: `${exchange}.q1` }, { name: `${exchange}.q2` }] },
+                });
+                let connectSettled = false;
+                const connecting = adapter.connect().finally(() => {
+                    connectSettled = true;
+                });
+                const outcomes: string[] = [];
+                const pending: Promise<void>[] = [];
+                while (!connectSettled) {
+                    pending.push(
+                        adapter.publish("hardening.retryguard.evt", new Uint8Array([1])).then(
+                            () => {
+                                outcomes.push("resolved");
+                            },
+                            (err: unknown) => {
+                                outcomes.push(err instanceof AmqpConnectionError && /not connected/.test(err.message) ? "not-connected" : describeError(err));
+                            },
+                        ),
+                    );
+                    await new Promise<void>((resolve) => setImmediate(resolve));
+                }
+                await connecting;
+                await Promise.all(pending);
+                try {
+                    assert.ok(outcomes.length > 0, "at least one publish must have been issued while connect() was running");
+                    const leaked = outcomes.filter((outcome) => outcome !== "not-connected");
+                    assert.deepEqual(
+                        leaked,
+                        [],
+                        `${leaked.length} of ${outcomes.length} publishes issued before connect() settled were not refused as not-connected: ${JSON.stringify([...new Set(leaked)])}`,
+                    );
+                    assert.deepEqual(retries, [], "a refusal because connect() has not settled must not spend the retry budget");
+                    await adapter.publish("hardening.retryguard.evt", new Uint8Array([1]));
+                } finally {
+                    await adapter.disconnect();
+                    await ctl("delete_queue", `${exchange}.q1`);
+                    await ctl("delete_queue", `${exchange}.q2`);
+                }
+            });
+        }
+
         for (const recovery of [false, true] as const) {
             it(`a connect() superseded by disconnect() leaves no connection behind (recovery: ${recovery})`, async () => {
                 const name = `hardening-overlap-${recovery}-${Math.random().toString(36).slice(2, 8)}`;
