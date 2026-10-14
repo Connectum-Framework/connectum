@@ -7,13 +7,84 @@
  */
 
 import assert from "node:assert";
+import http from "node:http";
+import http2 from "node:http2";
+import net from "node:net";
 import { afterEach, describe, it } from "node:test";
 import { TransportManager } from "../../src/TransportManager.ts";
+import { settlesWithin } from "../helpers/rawClients.ts";
 
 /**
  * Minimal no-op handler for listen() calls
  */
 const noopHandler = () => {};
+
+/** Handler that answers every request with 200 and the body "ok". */
+const okHandler: Parameters<TransportManager["listen"]>[0] = (_req, res) => {
+    res.statusCode = 200;
+    res.end("ok");
+};
+
+const REQUEST_TIMEOUT_MS = 3000;
+
+/** One plaintext HTTP/1.1 request on a fresh connection; rejects when no response arrives. */
+function http1Request(port: number): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host: "127.0.0.1", port, path: "/", agent: false, timeout: REQUEST_TIMEOUT_MS }, (res) => {
+            let body = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk: string) => {
+                body += chunk;
+            });
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("timeout", () => req.destroy(new Error("no HTTP/1.1 response")));
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+/** One plaintext HTTP/2 (prior knowledge) request on a fresh session; rejects when no response arrives. */
+function http2Request(port: number): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+        const session = http2.connect(`http://127.0.0.1:${port}`);
+        session.on("error", reject);
+        session.on("close", () => reject(new Error("the HTTP/2 session closed before a response")));
+        session.setTimeout(REQUEST_TIMEOUT_MS, () => session.destroy(new Error("no HTTP/2 response")));
+        const req = session.request({ ":path": "/" });
+        let status = 0;
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("response", (headers) => {
+            status = Number(headers[":status"]);
+        });
+        req.on("data", (chunk: string) => {
+            body += chunk;
+        });
+        req.on("end", () => {
+            session.close();
+            resolve({ status, body });
+        });
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+/** Whether a TCP connection to the loopback port is accepted (false when it is refused). */
+function acceptsConnections(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = net.connect({ port, host: "127.0.0.1" });
+        socket.once("connect", () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("error", () => resolve(false));
+    });
+}
+
+// Bun's node:http2 client and plain-HTTP server differ from Node.js in how they reject a
+// request of the wrong protocol, so the cross-protocol refusal checks run on Node.js only.
+const onBun = "bun" in process.versions ? "the cross-protocol refusal is Node.js behaviour" : false;
 
 describe("TransportManager", () => {
     let transport: TransportManager;
@@ -79,6 +150,27 @@ describe("TransportManager", () => {
             assert.ok(listeners.length > 0, "h2c server should track sessions");
         });
 
+        // The wire is the oracle (Node.js http2 documentation: `http2.createServer()` serves
+        // plaintext HTTP/2 only, while `http.createServer()` serves HTTP/1.x): the transport
+        // mode is told by which protocol is actually spoken, not by listeners on the server.
+        it("should speak plaintext HTTP/1.1 and not HTTP/2 when allowHTTP1=true", { skip: onBun }, async () => {
+            transport = new TransportManager();
+            await transport.listen(okHandler, { port: 0, host: "127.0.0.1" });
+            const port = transport.address?.port ?? 0;
+
+            assert.deepStrictEqual(await http1Request(port), { status: 200, body: "ok" });
+            await assert.rejects(() => http2Request(port), "an HTTP/2 client must not get a response from the HTTP/1.1 listener");
+        });
+
+        it("should speak plaintext HTTP/2 (h2c) and not HTTP/1.1 when allowHTTP1=false", { skip: onBun }, async () => {
+            transport = new TransportManager();
+            await transport.listen(okHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
+            const port = transport.address?.port ?? 0;
+
+            assert.deepStrictEqual(await http2Request(port), { status: 200, body: "ok" });
+            await assert.rejects(() => http1Request(port), "an HTTP/1.1 client must not get a response from the h2c listener");
+        });
+
         it("should resolve address with correct host", async () => {
             transport = new TransportManager();
 
@@ -126,6 +218,54 @@ describe("TransportManager", () => {
             assert.ok(transport.server);
         });
 
+        // Node.js `server.close()`: "stops the server from accepting new connections".
+        it("should release the port so that new connections are refused", async () => {
+            transport = new TransportManager();
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+            const port = transport.address?.port ?? 0;
+            assert.strictEqual(await acceptsConnections(port), true, "the listener must accept connections before close()");
+
+            await transport.close();
+
+            assert.strictEqual(transport.server?.listening, false);
+            assert.strictEqual(await acceptsConnections(port), false, "the port must be released after close()");
+        });
+
+        // Node.js `server.close()`: the callback fires only once every connection has ended,
+        // so a request that is still being handled is allowed to finish.
+        it("should let an in-flight request finish and resolve only after it did", async () => {
+            transport = new TransportManager();
+            let release: () => void = () => {};
+            let handling: () => void = () => {};
+            const handlerReached = new Promise<void>((resolve) => {
+                handling = resolve;
+            });
+            await transport.listen(
+                (_req, res) => {
+                    handling();
+                    release = () => {
+                        res.statusCode = 200;
+                        res.end("late");
+                    };
+                },
+                { port: 0, host: "127.0.0.1" },
+            );
+            const response = http1Request(transport.address?.port ?? 0);
+            await handlerReached;
+
+            let closed = false;
+            const closing = transport.close().then(() => {
+                closed = true;
+            });
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const closedWhileInFlight = closed;
+            release();
+
+            assert.deepStrictEqual(await response, { status: 200, body: "late" });
+            await closing;
+            assert.strictEqual(closedWhileInFlight, false, "close() resolved while a request was still being handled");
+        });
+
         it("should reject when no server is listening", async () => {
             transport = new TransportManager();
 
@@ -152,6 +292,22 @@ describe("TransportManager", () => {
             assert.doesNotThrow(() => {
                 transport.destroyAllSessions();
             });
+        });
+
+        it("should terminate a live connection, and a repeated call is harmless", async () => {
+            transport = new TransportManager();
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+            const client = net.connect({ port: transport.address?.port ?? 0, host: "127.0.0.1" });
+            await new Promise<void>((resolve) => client.once("connect", () => resolve()));
+            // Let the server register the accepted connection.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const closedByServer = new Promise<void>((resolve) => client.once("close", () => resolve()));
+            client.on("error", () => {});
+
+            transport.destroyAllSessions();
+
+            assert.strictEqual(await settlesWithin(closedByServer, 2000), true, "the live connection must be terminated");
+            assert.doesNotThrow(() => transport.destroyAllSessions());
         });
     });
 
