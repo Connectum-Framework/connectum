@@ -21,7 +21,17 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
+import {
+	assertConnectError,
+	createMockNext,
+	createMockRequest,
+	InMemoryMetricCollector,
+	InMemorySpanCollector,
+	type NormalizedMetric,
+	type NormalizedSpan,
+} from "@connectum/testing";
+import { metrics as metricsApi, SpanKind, trace } from "@opentelemetry/api";
+import * as semconv from "@opentelemetry/semantic-conventions/incubating";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 
@@ -31,6 +41,62 @@ import { shutdownProvider } from "../../src/provider.ts";
 
 const OTEL_REQUEST_MESSAGE = { toBinary: () => new Uint8Array(42) };
 const OTEL_RESPONSE_MESSAGE = { toBinary: () => new Uint8Array(24) };
+
+// ---------------------------------------------------------------------------
+// Telemetry observation
+// ---------------------------------------------------------------------------
+
+// The method the OpenTelemetry RPC conventions call `<package>.<Service>/<Method>`.
+const SERVICE = "acme.greeter.v1.GreeterService";
+const METHOD = "SayHello";
+const FULL_METHOD = "acme.greeter.v1.GreeterService/SayHello";
+
+interface Observed {
+	spans: NormalizedSpan[];
+	metrics: NormalizedMetric[];
+	/** Attributes of every recorded point of the server call-duration histogram. */
+	durationPoints: Array<Record<string, unknown>>;
+}
+
+/**
+ * Runs `body` against fresh in-memory tracer and meter providers installed as the
+ * OpenTelemetry globals and returns what the interceptor recorded. The globals and
+ * the package's cached provider are reset before and after, so a test sees only its
+ * own telemetry and leaves nothing behind.
+ */
+async function observe(body: () => Promise<void>): Promise<Observed> {
+	const spanCollector = new InMemorySpanCollector();
+	const metricCollector = new InMemoryMetricCollector();
+	await shutdownProvider();
+	trace.disable();
+	metricsApi.disable();
+	trace.setGlobalTracerProvider(spanCollector.provider);
+	metricsApi.setGlobalMeterProvider(metricCollector.provider);
+	try {
+		await body();
+		const spans = spanCollector.flush();
+		const metrics = await metricCollector.flush();
+		const duration = metrics.find((m) => m.name === semconv.METRIC_RPC_SERVER_CALL_DURATION);
+		return { spans, metrics, durationPoints: duration?.points.map((p) => p.attributes) ?? [] };
+	} finally {
+		await shutdownProvider();
+		trace.disable();
+		metricsApi.disable();
+		await spanCollector.dispose();
+		await metricCollector.dispose();
+	}
+}
+
+/** Request for the conventions' example method, as the interceptor sees it. */
+function greeterRequest(extra: { stream?: boolean } = {}) {
+	return createMockRequest({ service: SERVICE, method: METHOD, message: OTEL_REQUEST_MESSAGE, ...extra });
+}
+
+/** The one server span of a call; fails with a readable message otherwise. */
+function onlySpan(observed: Observed): NormalizedSpan {
+	assert.strictEqual(observed.spans.length, 1, `expected exactly one span, got ${observed.spans.map((s) => s.name).join(", ") || "none"}`);
+	return observed.spans[0] as NormalizedSpan;
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -59,15 +125,29 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(typeof handler, "function");
 		});
 
-		it("should pass through requests transparently", async () => {
-			const interceptor = createOtelInterceptor();
-			const next = createMockNext({ message: OTEL_RESPONSE_MESSAGE });
-			const req = createMockRequest({ message: OTEL_REQUEST_MESSAGE });
+		it("should hand the response through and record one server span and one duration point for a unary call", async () => {
+			const expectedResponse = { stream: false, message: OTEL_RESPONSE_MESSAGE };
+			const handler = createOtelInterceptor()((async () => expectedResponse) as never);
+			let response: unknown;
 
-			const handler = interceptor(next);
-			const response = await handler(req);
+			const observed = await observe(async () => {
+				response = await handler(greeterRequest());
+			});
 
-			assert.ok(response);
+			assert.strictEqual(response, expectedResponse);
+			// openspec otel-rpc-semconv: span named by the fully qualified method, carrying
+			// rpc.system.name=connectrpc and rpc.method, a successful unary call carries
+			// rpc.response.status_code=OK and no error.type.
+			const span = onlySpan(observed);
+			assert.strictEqual(span.name, FULL_METHOD);
+			assert.strictEqual(span.kind, SpanKind.SERVER);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_SYSTEM_NAME], semconv.RPC_SYSTEM_NAME_VALUE_CONNECTRPC);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_METHOD], FULL_METHOD);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
+			assert.ok(!(semconv.ATTR_ERROR_TYPE in span.attributes), "a successful call must not carry error.type");
+			assert.strictEqual(observed.durationPoints.length, 1);
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_METHOD], FULL_METHOD);
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
 		});
 
 		it("should return response from next()", async () => {
@@ -123,10 +203,16 @@ describe("createOtelInterceptor", () => {
 			});
 			const next = createMockNext({ message: OTEL_RESPONSE_MESSAGE });
 			const handler = interceptor(next);
+			let response: unknown;
 
-			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+			const observed = await observe(async () => {
+				response = await handler(greeterRequest());
+			});
 
-			assert.ok(response);
+			assert.ok(response, "the call itself still goes through");
+			assert.strictEqual(next.mock.calls.length, 1);
+			assert.deepStrictEqual(observed.spans, [], "a filtered-out call must not start a span");
+			assert.deepStrictEqual(observed.metrics, [], "a filtered-out call must not record a metric");
 		});
 
 		it("should instrument when filter returns true", async () => {
@@ -135,9 +221,12 @@ describe("createOtelInterceptor", () => {
 			});
 			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
+			});
 
-			assert.ok(response);
+			assert.strictEqual(onlySpan(observed).name, FULL_METHOD);
+			assert.strictEqual(observed.durationPoints.length, 1);
 		});
 
 		it("should pass service, method, stream to filter", async () => {
@@ -201,18 +290,25 @@ describe("createOtelInterceptor", () => {
 			const interceptor = createOtelInterceptor({ withoutTracing: true });
 			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
+			});
 
-			assert.ok(response);
+			assert.deepStrictEqual(observed.spans, [], "withoutTracing must not start a span");
+			assert.strictEqual(observed.durationPoints.length, 1, "the duration metric is still recorded");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_METHOD], FULL_METHOD);
 		});
 
 		it("should work with withoutMetrics=true (tracing only)", async () => {
 			const interceptor = createOtelInterceptor({ withoutMetrics: true });
 			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
+			});
 
-			assert.ok(response);
+			assert.strictEqual(onlySpan(observed).name, FULL_METHOD);
+			assert.deepStrictEqual(observed.metrics, [], "withoutMetrics must not record any metric");
 		});
 
 		it("should pass through when both tracing and metrics disabled", async () => {
@@ -224,9 +320,15 @@ describe("createOtelInterceptor", () => {
 			const next: any = async (_req: unknown) => expectedResponse;
 
 			const handler = interceptor(next);
-			const response = await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
+			let response: unknown;
+
+			const observed = await observe(async () => {
+				response = await handler(greeterRequest());
+			});
 
 			assert.strictEqual(response, expectedResponse);
+			assert.deepStrictEqual(observed.spans, []);
+			assert.deepStrictEqual(observed.metrics, []);
 		});
 
 		it("should propagate errors with withoutTracing=true", async () => {
@@ -281,51 +383,77 @@ describe("createOtelInterceptor", () => {
 
 			const handler = interceptor(next);
 
-			try {
-				await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-				assert.fail("Expected ConnectError");
-			} catch (err) {
-				assertConnectError(err, Code.NotFound, "not found");
-			}
+			const observed = await observe(async () => {
+				try {
+					await handler(greeterRequest());
+					assert.fail("Expected ConnectError");
+				} catch (err) {
+					assertConnectError(err, Code.NotFound, "not found");
+				}
+			});
+
+			// openspec otel-rpc-semconv: a failed call carries the Connect error-code name as
+			// rpc.response.status_code and error.type, on the span and on the duration metric.
+			const span = onlySpan(observed);
+			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
+			assert.strictEqual(observed.durationPoints.length, 1);
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 		});
 
-		it("should handle ConnectError with different codes", async () => {
-			const codes = [
-				Code.InvalidArgument,
-				Code.PermissionDenied,
-				Code.Internal,
-				Code.Unavailable,
-				Code.Unauthenticated,
-			];
+		// One test per code so a failure names the code. Names are the Connect protocol's
+		// error-code names in upper case, spelled out here rather than read from the package.
+		const CODE_NAMES: ReadonlyArray<readonly [number, string]> = [
+			[Code.InvalidArgument, "INVALID_ARGUMENT"],
+			[Code.PermissionDenied, "PERMISSION_DENIED"],
+			[Code.Internal, "INTERNAL"],
+			[Code.Unavailable, "UNAVAILABLE"],
+			[Code.Unauthenticated, "UNAUTHENTICATED"],
+		];
 
-			for (const code of codes) {
+		for (const [code, name] of CODE_NAMES) {
+			it(`should report a ConnectError with code ${name} as error.type and rpc.response.status_code`, async () => {
 				const error = new ConnectError("error", code);
 				const interceptor = createOtelInterceptor();
 				const next: any = async (_req: unknown) => { throw error; };
 
 				const handler = interceptor(next);
 
-				try {
-					await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-					assert.fail("Expected ConnectError");
-				} catch (err) {
-					assertConnectError(err, code);
-				}
+				const observed = await observe(async () => {
+					try {
+						await handler(greeterRequest());
+						assert.fail("Expected ConnectError");
+					} catch (err) {
+						assertConnectError(err, code);
+					}
+				});
 
-				await shutdownProvider();
-			}
-		});
+				const span = onlySpan(observed);
+				assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], name);
+				assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], name);
+				assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], name);
+				assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], name);
+			});
+		}
 
+		// For an error that is not a ConnectError the convention asks error.type to be
+		// the error's class name (metrics guide: "the error class name for another Error").
 		it("should handle generic Error", async () => {
 			const interceptor = createOtelInterceptor();
 			const next: any = async (_req: unknown) => { throw new TypeError("type error"); };
 
 			const handler = interceptor(next);
 
-			await assert.rejects(
-				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
-				{ message: "type error" },
-			);
+			const observed = await observe(async () => {
+				await assert.rejects(
+					() => handler(greeterRequest()),
+					{ message: "type error" },
+				);
+			});
+
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_ERROR_TYPE], "TypeError");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "TypeError");
 		});
 
 		it("should handle RangeError", async () => {
@@ -334,10 +462,15 @@ describe("createOtelInterceptor", () => {
 
 			const handler = interceptor(next);
 
-			await assert.rejects(
-				() => handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE })),
-				{ message: "out of range" },
-			);
+			const observed = await observe(async () => {
+				await assert.rejects(
+					() => handler(greeterRequest()),
+					{ message: "out of range" },
+				);
+			});
+
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_ERROR_TYPE], "RangeError");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "RangeError");
 		});
 
 		it("should handle ConnectError in metrics-only mode", async () => {
@@ -347,12 +480,19 @@ describe("createOtelInterceptor", () => {
 
 			const handler = interceptor(next);
 
-			try {
-				await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-				assert.fail("Expected ConnectError");
-			} catch (err) {
-				assertConnectError(err, Code.Unavailable, "unavailable");
-			}
+			const observed = await observe(async () => {
+				try {
+					await handler(greeterRequest());
+					assert.fail("Expected ConnectError");
+				} catch (err) {
+					assertConnectError(err, Code.Unavailable, "unavailable");
+				}
+			});
+
+			assert.deepStrictEqual(observed.spans, []);
+			assert.strictEqual(observed.durationPoints.length, 1);
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "UNAVAILABLE");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "UNAVAILABLE");
 		});
 	});
 
