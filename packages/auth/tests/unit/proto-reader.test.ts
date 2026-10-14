@@ -165,6 +165,23 @@ describe("proto-reader", () => {
 
             assert.ok(resolved.requires);
             assert.deepStrictEqual([...resolved.requires.roles], ["admin"]);
+            assert.deepStrictEqual([...resolved.requires.scopes], []);
+        });
+
+        // The resolution chain is `method.requires -> service.default_requires -> undefined`: the
+        // method's requirements replace the service default as one unit. A method that lists only
+        // scopes therefore does NOT keep the service default's roles; mixing the two would silently
+        // widen or narrow access depending on which side set which list.
+        it("should replace the service default_requires as a whole, not merge roles and scopes", () => {
+            const svcOpts = createServiceOptions({ defaultRequires: { roles: ["user"] } });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "ScopesOnly", createMethodOptions({ requires: { scopes: ["read"] } }), { register: true });
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.ok(resolved.requires);
+            assert.deepStrictEqual([...resolved.requires.roles], []);
+            assert.deepStrictEqual([...resolved.requires.scopes], ["read"]);
         });
 
         it("should respect method public: false override on service public: true", () => {
@@ -263,13 +280,20 @@ describe("proto-reader", () => {
             assert.deepStrictEqual(result, ["trips.v1.TripService/RecordTrip", "trips.v1.TripService/EndTrip"]);
         });
 
-        it("should not overlap with getPublicMethods for the same services", () => {
-            const service = createFakeService({ typeName: "mix.v1.MixService" });
-            createFakeMethod(service, "Internal1", createMethodOptions({ internal: true }), { register: true });
-            createFakeMethod(service, "Public1", createMethodOptions({ public: true }), { register: true });
+        it("should list each method under at most one of public and internal", () => {
+            // A service marked internal as a whole, one method that overrides it with an explicit
+            // `internal: false` and `public: true` (explicit false overrides a service-level true),
+            // plus an unannotated method on a plain service. The probe is exposed under public only;
+            // the rest of the internal service stays internal; the plain method is under neither.
+            const internalSvc = createFakeService({ typeName: "mix.v1.InternalService", serviceOptions: createServiceOptions({ internal: true }) });
+            createFakeMethod(internalSvc, "Work", undefined, { register: true });
+            createFakeMethod(internalSvc, "Probe", createMethodOptions({ internal: false, public: true }), { register: true });
+            const plainSvc = createFakeService({ typeName: "mix.v1.PlainService" });
+            createFakeMethod(plainSvc, "Plain", undefined, { register: true });
+            createFakeMethod(plainSvc, "Gated", createMethodOptions({ requires: { roles: ["admin"] } }), { register: true });
 
-            assert.deepStrictEqual(getInternalMethods([service]), ["mix.v1.MixService/Internal1"]);
-            assert.deepStrictEqual(getPublicMethods([service]), ["mix.v1.MixService/Public1"]);
+            assert.deepStrictEqual(getInternalMethods([internalSvc, plainSvc]), ["mix.v1.InternalService/Work"]);
+            assert.deepStrictEqual(getPublicMethods([internalSvc, plainSvc]), ["mix.v1.InternalService/Probe"]);
         });
 
         it("should handle service-level internal flag", () => {
