@@ -234,10 +234,11 @@ describe("errorHandler interceptor", () => {
 
     describe("additional error scenarios", () => {
         // Oracle for the code: the custom-interceptors guide (docs en/guide/interceptors/custom.md)
-        // says errors without a numeric `code` get Code.Internal. What text of such an
-        // internal failure reaches the client is not documented for errorHandler, so the
-        // message is intentionally not asserted: that policy is a Connectum decision.
-        // The original thrown value is kept as `cause` so server-side logging can still see it.
+        // says errors without a numeric `code` get Code.Internal. The text of such a failure
+        // stays on the server (CWE-209; Connect-ES itself answers "internal error" for a
+        // handler exception when no interceptor is installed), so the client text is
+        // asserted in the "text of non-Connect failures" block below. The original thrown
+        // value is kept as `cause` so server-side logging can still see it.
         it("should wrap non-Error thrown value (string) into ConnectError with Code.Internal", async () => {
             const interceptor = createErrorHandlerInterceptor({ logErrors: false });
 
@@ -338,6 +339,152 @@ describe("errorHandler interceptor", () => {
             assert.strictEqual(consoleErrorMock.mock.calls.length, 0, "console.error should not be called");
 
             consoleErrorMock.mock.restore();
+        });
+    });
+
+    // Oracle: CWE-209 (error messages must not expose internals) and the Connect protocol
+    // documentation, under which a handler exception that is not a ConnectError reaches the
+    // client as code `internal` with the generic text "internal error". Only a ConnectError
+    // (or a SanitizableError's clientMessage) is a deliberate client-facing message.
+    describe("text of non-Connect failures", () => {
+        const SECRET = "hunter2";
+        type OnErrorInfo = Parameters<NonNullable<NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]>["onError"]>>[0];
+
+        /** Everything a transport puts on the wire for a ConnectError: text, details, metadata. */
+        function wireOf(err: ConnectError): string {
+            return JSON.stringify({ message: err.rawMessage, details: err.details, metadata: [...err.metadata] });
+        }
+
+        async function thrownBy(value: unknown, options: Parameters<typeof createErrorHandlerInterceptor>[0] = {}): Promise<unknown> {
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false, ...options });
+            const next = mock.fn(async () => {
+                throw value;
+            });
+            try {
+                await interceptor(next as any)(mockReq);
+            } catch (err) {
+                return err;
+            }
+            assert.fail("interceptor should have rejected");
+        }
+
+        it("sends only the generic text for an Error and keeps the original as cause", async () => {
+            const original = new Error(`db connect failed: password=${SECRET}`);
+            const err = await thrownBy(original);
+
+            assertConnectError(err, Code.Internal);
+            assert.strictEqual(err.rawMessage, "internal error");
+            assert.strictEqual(err.cause, original);
+            assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+
+        it("sends only the generic text for a thrown string", async () => {
+            const original = `raw string with ${SECRET}`;
+            const err = await thrownBy(original);
+
+            assertConnectError(err, Code.Internal);
+            assert.strictEqual(err.rawMessage, "internal error");
+            assert.strictEqual(err.cause, original);
+            assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+
+        it("keeps a numeric error code but sends an empty text", async () => {
+            const original = Object.assign(new Error(`rule admin-only rejected ${SECRET}`), { code: Code.PermissionDenied });
+            const err = await thrownBy(original);
+
+            assertConnectError(err, Code.PermissionDenied);
+            assert.strictEqual(err.rawMessage, "");
+            assert.strictEqual(err.cause, original);
+            assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+
+        it("maps an AbortError to Canceled without its text", async () => {
+            const original = new DOMException(`aborted while holding ${SECRET}`, "AbortError");
+            const err = await thrownBy(original);
+
+            assertConnectError(err, Code.Canceled);
+            assert.strictEqual(err.rawMessage, "");
+            assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+
+        it("sends the original text when exposeErrorMessages is true", async () => {
+            const original = new Error(`db connect failed: password=${SECRET}`);
+            const err = await thrownBy(original, { exposeErrorMessages: true });
+
+            assertConnectError(err, Code.Internal);
+            assert.strictEqual(err.rawMessage, original.message);
+        });
+
+        it("sends the original text of a thrown string and a coded error when exposeErrorMessages is true", async () => {
+            const asString = await thrownBy(`raw ${SECRET}`, { exposeErrorMessages: true });
+            assertConnectError(asString, Code.Internal);
+            assert.strictEqual(asString.rawMessage, `raw ${SECRET}`);
+
+            const coded = await thrownBy(Object.assign(new Error("denied by rule"), { code: Code.PermissionDenied }), { exposeErrorMessages: true });
+            assertConnectError(coded, Code.PermissionDenied);
+            assert.strictEqual(coded.rawMessage, "denied by rule");
+        });
+
+        for (const exposeErrorMessages of [false, true]) {
+            it(`hands onError the full error with the original text and cause (exposeErrorMessages: ${exposeErrorMessages})`, async () => {
+                let captured: OnErrorInfo | undefined;
+                const original = new Error(`db connect failed: password=${SECRET}`);
+
+                await thrownBy(original, {
+                    exposeErrorMessages,
+                    includeStackTrace: true,
+                    onError: (info) => {
+                        captured = info;
+                    },
+                });
+
+                assert.ok(captured, "onError should have been called");
+                assert.strictEqual(captured.code, Code.Internal);
+                assert.ok(captured.error instanceof ConnectError);
+                assert.strictEqual(captured.error.rawMessage, original.message);
+                assert.strictEqual(captured.error.cause, original);
+                assert.ok(captured.stack, "stack should be passed when includeStackTrace is true");
+            });
+        }
+
+        it("logs the original failure and the client-facing ConnectError under the existing labels", async () => {
+            const consoleErrorMock = mock.method(console, "error", () => {});
+            try {
+                const original = new Error(`db connect failed: password=${SECRET}`);
+                await thrownBy(original, { logErrors: true, includeStackTrace: false });
+
+                const calls = consoleErrorMock.mock.calls;
+                assert.strictEqual(calls[0]!.arguments[0], "Interceptor caught error:");
+                assert.strictEqual(calls[0]!.arguments[1], original, "log must carry the original failure");
+                assert.strictEqual(calls[1]!.arguments[0], "Transformed ConnectError:");
+                const logged = calls[1]!.arguments[1] as ConnectError;
+                assert.strictEqual(logged.rawMessage, "internal error", "the transformed line shows what the client gets");
+            } finally {
+                consoleErrorMock.mock.restore();
+            }
+        });
+
+        it("passes a ConnectError through unchanged, text, details and metadata included", async () => {
+            const original = new ConnectError(`user 42 not found ${SECRET}`, Code.NotFound, { "x-trace": "abc" });
+            const err = await thrownBy(original);
+
+            assert.strictEqual(err, original);
+            assertConnectError(err, Code.NotFound);
+            assert.strictEqual(err.rawMessage, `user 42 not found ${SECRET}`);
+            assert.strictEqual(err.metadata.get("x-trace"), "abc");
+        });
+
+        it("sends a SanitizableError's clientMessage and code, never its own text or serverDetails", async () => {
+            const original = Object.assign(new Error(`internal db error ${SECRET}`), {
+                clientMessage: "Something went wrong",
+                serverDetails: { query: `SELECT ${SECRET}` },
+                code: Code.Internal,
+            });
+            const err = await thrownBy(original);
+
+            assertConnectError(err, Code.Internal);
+            assert.strictEqual(err.rawMessage, "Something went wrong");
+            assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
         });
     });
 });
