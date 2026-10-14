@@ -210,5 +210,65 @@ describe("Redis adapter reclaim integration", { skip: REDIS_TEST_URL === undefin
                 await control.quit().catch(() => undefined);
             }
         });
+
+        it(`${mode.name}: a failed entry is redelivered only after it has been idle for 30 s`, async () => {
+            // Two entries fail on their first delivery and sit in the pending list: one idle for
+            // 29 s (just under the window), one idle for 31 s (just over it). The reclaim pass that
+            // takes the 31 s entry also scans the 29 s one, so once the first is redelivered the
+            // second has demonstrably been passed over rather than not yet looked at.
+            const eventType = `integration.redis.reclaim.idle.${randomUUID()}`;
+            const streamKey = `events:${eventType}`;
+            const group = `group-${randomUUID()}`;
+            const deliveries = new Map<string, number>();
+
+            const adapter = RedisAdapter({
+                url,
+                redisOptions: { protocol: mode.protocol, replyMapping: mode.replyMapping },
+                brokerOptions: { blockMs: 20, count: 5 },
+            });
+            const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
+
+            try {
+                await adapter.connect({ serviceName: `integration-reclaim-idle-${mode.protocol}-${mode.replyMapping}` });
+                const subscription = await adapter.subscribe(
+                    [eventType],
+                    async (event, ack) => {
+                        const payload = Buffer.from(event.payload).toString();
+                        const seen = (deliveries.get(payload) ?? 0) + 1;
+                        deliveries.set(payload, seen);
+                        if (seen === 1) {
+                            throw new Error("every entry fails on its first delivery");
+                        }
+                        await ack();
+                    },
+                    { group },
+                );
+
+                try {
+                    for (const payload of ["idle-29s", "idle-31s"]) {
+                        await adapter.publish(eventType, new Uint8Array(Buffer.from(payload)));
+                    }
+                    await until(() => deliveries.get("idle-29s") === 1 && deliveries.get("idle-31s") === 1, "first delivery of both entries");
+                    await until(async () => (await pendingIds(control, streamKey, group)).length === 2, "both failed entries to be pending");
+
+                    const entries = (await control.call("XRANGE", streamKey, "-", "+")) as [string, string[]][];
+                    const idleOf: Record<string, string> = { "idle-29s": "29000", "idle-31s": "31000" };
+                    for (const [id, fields] of entries) {
+                        const payload = Buffer.from(fields[fields.indexOf("payload") + 1] ?? "", "base64").toString();
+                        await control.call("XCLAIM", streamKey, group, "holding-consumer", "0", id, "IDLE", idleOf[payload] as string);
+                    }
+
+                    await until(() => (deliveries.get("idle-31s") ?? 0) >= 2, "redelivery of the entry idle for 31 s");
+                    assert.equal(deliveries.get("idle-29s"), 1, "an entry idle for only 29 s must not be redelivered yet");
+                    assert.equal((await pendingIds(control, streamKey, group)).length, 1, "the 29 s entry is still pending, the redelivered one was acknowledged");
+                } finally {
+                    await subscription.unsubscribe();
+                }
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+                await control.del(streamKey).catch(() => undefined);
+                await control.quit().catch(() => undefined);
+            }
+        });
     }
 });
