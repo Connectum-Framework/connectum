@@ -1,5 +1,5 @@
 /**
- * Group 7a — OpenTelemetry tracing & metrics parity for in-process transport.
+ * OpenTelemetry tracing & metrics parity for in-process transport.
  *
  * Asserts that `@connectum/otel` produces structurally identical OTel spans
  * and metric instruments across HTTP and in-process transports. The only
@@ -7,12 +7,12 @@
  * the `transport` metric label (both stripped by the parity collectors
  * before structural diff).
  *
- *   7a.5  unary → CLIENT + SERVER spans, parent-child, identical attrs
- *   7a.6  streaming → N `rpc.message` SENT / N RECEIVED events
- *   7a.7  error case → span status=ERROR, rpc.response.status_code matches
- *   7a.8  metrics — identical instrument names, label keys, observable shape
- *   7a.9  context propagation — server span is child of client span
- *   7a.10 instrument-name subset (no transport-specific metrics)
+ *   unary → CLIENT + SERVER spans, parent-child, identical attrs
+ *   streaming → N `rpc.message` SENT / N RECEIVED events
+ *   error case → span status=ERROR, rpc.response.status_code matches
+ *   metrics — identical instrument names, label keys, observable shape
+ *   context propagation — server span is child of client span
+ *   instrument-name subset (no transport-specific metrics)
  *
  * The OTel global tracer/meter providers are swapped per-scenario so each
  * run writes to its own in-memory collector and the parity driver can diff
@@ -38,6 +38,7 @@ import { createLocalTransport, createServer, defineService } from "@connectum/co
 import { context, metrics as metricsApi, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { DataPointType } from "@opentelemetry/sdk-metrics";
 
 import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "../../src/attributes.ts";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
@@ -47,7 +48,7 @@ import { shutdownProvider } from "../../src/provider.ts";
 // Register an AsyncLocalStorage-backed context manager once at module load.
 // `BasicTracerProvider` (used by our in-memory collectors) does not register
 // one, so without this `context.with()` and `context.active()` are no-ops —
-// which breaks W3C trace-context propagation (7a.9).
+// which breaks W3C trace-context propagation.
 const contextManager = new AsyncLocalStorageContextManager();
 contextManager.enable();
 context.setGlobalContextManager(contextManager);
@@ -259,7 +260,7 @@ function maskSpans(spans: NormalizedSpan[]): unknown {
 
 /**
  * Reduce a metric list to just (name, unit, type, set of label keys). This
- * is what 7a.8/7a.10 need: values from histogram timings differ run-to-run
+ * is what the metric shape comparisons need: values from histogram timings differ run-to-run
  * (clock drift, payload size differences), so we cannot deep-compare data
  * points exactly.
  */
@@ -277,10 +278,14 @@ function metricShape(ms: NormalizedMetric[]): Array<{ name: string; unit: string
 }
 
 // ---------------------------------------------------------------------------
-// 7a.5 — Unary span parity
+// Unary span parity
 // ---------------------------------------------------------------------------
 
-test("parity 7a.5: unary RPC produces identical CLIENT+SERVER spans", async () => {
+// The span name and `rpc.method` of a call are `<package>.<Service>/<Method>`
+// (the metrics guide's attribute table), written out here rather than derived.
+const ECHO_METHOD = "echo.v1.EchoService/Echo";
+
+test("parity: unary RPC produces identical CLIENT+SERVER spans", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes()],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -296,16 +301,29 @@ test("parity 7a.5: unary RPC produces identical CLIENT+SERVER spans", async () =
     assert.deepStrictEqual(httpKinds, [SpanKind.SERVER, SpanKind.CLIENT].sort(), "HTTP run must produce CLIENT+SERVER span pair");
     assert.deepStrictEqual(localKinds, [SpanKind.SERVER, SpanKind.CLIENT].sort(), "Local run must produce CLIENT+SERVER span pair");
 
+    // Each span carries the documented identity attributes. Comparing the two
+    // transports alone would let a change made on both paths at once pass.
+    for (const run of [http, local]) {
+        for (const kind of [SpanKind.CLIENT, SpanKind.SERVER]) {
+            const span = run.spans.find((s) => s.kind === kind);
+            assert.ok(span, `span of kind ${kind} missing`);
+            assert.strictEqual(span.name, ECHO_METHOD);
+            assert.strictEqual(span.attributes["rpc.method"], ECHO_METHOD);
+            assert.strictEqual(span.attributes["rpc.system.name"], "connectrpc");
+            assert.strictEqual(span.attributes["server.address"], "test-server");
+        }
+    }
+
     // After stripping `connectum.transport` (done in normalizeSpan), the
     // structural shape must be identical.
     assert.deepStrictEqual(maskSpans(local.spans), maskSpans(http.spans), "span shape mismatch between transports (after stripping connectum.transport)");
 });
 
 // ---------------------------------------------------------------------------
-// 7a.6 — Streaming span events parity
+// Streaming span events parity
 // ---------------------------------------------------------------------------
 
-test("parity 7a.6: server-streaming emits identical rpc.message events", async () => {
+test("parity: server-streaming emits identical rpc.message events", async () => {
     const { http, local } = await runBothTransports({
         services: [streamingRoutes()],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -319,6 +337,30 @@ test("parity 7a.6: server-streaming emits identical rpc.message events", async (
         },
     });
 
+    // The OpenTelemetry RPC conventions: one `rpc.message` event per message, typed SENT or
+    // RECEIVED, with ids from two counters (sent, received) that each start at 1. The
+    // call sends one request and receives three items, so the server span holds the
+    // mirror image of the client span. Parity alone would pass if neither path recorded anything.
+    // The two directions interleave in a timing-dependent order, so each direction is
+    // compared on its own, in message order.
+    const expectedEvents = {
+        [SpanKind.CLIENT]: { SENT: [1], RECEIVED: [1, 2, 3] },
+        [SpanKind.SERVER]: { SENT: [1, 2, 3], RECEIVED: [1] },
+    };
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        for (const kind of [SpanKind.CLIENT, SpanKind.SERVER] as const) {
+            const span = run.spans.find((s) => s.kind === kind);
+            assert.ok(span, `[${label}] span of kind ${kind} missing`);
+            assert.ok(
+                span.events.every((e) => e.name === "rpc.message"),
+                `[${label}] every event of the span of kind ${kind} is rpc.message`,
+            );
+            const idsOf = (type: string) => span.events.filter((e) => e.attributes["rpc.message.type"] === type).map((e) => e.attributes["rpc.message.id"]);
+            assert.deepStrictEqual({ SENT: idsOf("SENT"), RECEIVED: idsOf("RECEIVED") }, expectedEvents[kind], `[${label}] rpc.message ids of the span of kind ${kind}`);
+            assert.strictEqual(span.events.length, 4, `[${label}] no event other than the four messages on the span of kind ${kind}`);
+        }
+    }
+
     // Both runs: count of SENT and RECEIVED rpc.message events must match
     // and event sequencing must be identical.
     const httpEvents = http.spans.flatMap((s) => s.events.map((e) => ({ name: e.name, type: e.attributes["rpc.message.type"], id: e.attributes["rpc.message.id"] })));
@@ -330,10 +372,10 @@ test("parity 7a.6: server-streaming emits identical rpc.message events", async (
 });
 
 // ---------------------------------------------------------------------------
-// 7a.7 — Error span parity
+// Error span parity
 // ---------------------------------------------------------------------------
 
-test("parity 7a.7: error case → span status=ERROR identical on both transports", async () => {
+test("parity: error case → span status=ERROR identical on both transports", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes({ throwError: true })],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -369,10 +411,10 @@ test("parity 7a.7: error case → span status=ERROR identical on both transports
 });
 
 // ---------------------------------------------------------------------------
-// 7a.8 — Metrics parity (instrument structure)
+// Metrics parity (instrument structure)
 // ---------------------------------------------------------------------------
 
-test("parity 7a.8: metrics — identical instrument names, units, label keys", async () => {
+test("parity: metrics — identical instrument names, units, label keys", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes()],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -386,26 +428,38 @@ test("parity 7a.8: metrics — identical instrument names, units, label keys", a
     const localShape = metricShape(local.metrics);
     assert.deepStrictEqual(localShape, httpShape, "metric instrument shape mismatch (names/units/labels) between transports");
 
-    // Sanity: each transport must emit at least the standard RPC histograms.
-    const httpNames = new Set(httpShape.map((m) => m.name));
-    for (const expected of [
+    // The instruments the metrics guide lists for a client and a server, each recorded
+    // by a unary call; the guide gives the duration histograms in seconds. Parity
+    // alone would pass if both paths renamed an instrument or recorded none.
+    const documentedNames = [
         "rpc.client.call.duration",
         "rpc.client.request.size",
         "rpc.client.response.size",
         "rpc.server.call.duration",
         "rpc.server.request.size",
         "rpc.server.response.size",
-    ]) {
-        assert.ok(httpNames.has(expected), `expected instrument ${expected} missing from HTTP run`);
+    ];
+    for (const [label, shape] of [["http", httpShape], ["local", localShape]] as const) {
+        assert.deepStrictEqual(
+            shape.map((m) => m.name),
+            documentedNames,
+            `[${label}] recorded instruments`,
+        );
+        for (const metric of shape) {
+            assert.strictEqual(Number(metric.type), DataPointType.HISTOGRAM, `[${label}] ${metric.name} is a histogram`);
+        }
+        for (const name of ["rpc.client.call.duration", "rpc.server.call.duration"]) {
+            assert.strictEqual(shape.find((m) => m.name === name)?.unit, "s", `[${label}] ${name} is measured in seconds`);
+        }
     }
 });
 
 // ---------------------------------------------------------------------------
-// 7a.9 — Context propagation (server span is child of client span)
+// Context propagation (server span is child of client span)
 // ---------------------------------------------------------------------------
 
-test("parity 7a.9: W3C trace-context — server span is child of client span on both transports", async () => {
-    // 7a.9 specifically depends on `trustRemote: true` (the suite default).
+test("parity: W3C trace-context — server span is child of client span on both transports", async () => {
+    // This scenario depends on `trustRemote: true` (the suite default).
     const { http, local } = await runBothTransports({
         services: [echoRoutes()],
         buildInterceptors: () => buildOtelInterceptors({ trustRemote: true }),
@@ -441,10 +495,10 @@ test("parity 7a.9: W3C trace-context — server span is child of client span on 
 });
 
 // ---------------------------------------------------------------------------
-// 7a.10 — Negative test: local instrument set is a subset of HTTP instrument set
+// Negative test: local instrument set is a subset of HTTP instrument set
 // ---------------------------------------------------------------------------
 
-test("parity 7a.10: local-path instrument names are a subset of HTTP-path instruments", async () => {
+test("parity: local-path instrument names are a subset of HTTP-path instruments", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes()],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -456,6 +510,10 @@ test("parity 7a.10: local-path instrument names are a subset of HTTP-path instru
 
     const httpNames = new Set(http.metrics.map((m) => m.name));
     const localNames = new Set(local.metrics.map((m) => m.name));
+    // The subset check below is vacuous for an empty set, so the local path must
+    // be shown to record the documented instruments first.
+    assert.ok(localNames.size > 0, "the local path records metrics");
+    assert.ok(localNames.has("rpc.client.call.duration") && localNames.has("rpc.server.call.duration"), "the local path records both duration histograms");
     for (const name of localNames) {
         assert.ok(httpNames.has(name), `local-only instrument detected: ${name} (must be a subset of HTTP)`);
     }
@@ -468,7 +526,7 @@ test("parity 7a.10: local-path instrument names are a subset of HTTP-path instru
 // vacuously true).
 // ---------------------------------------------------------------------------
 
-test("parity 7a.bonus: `connectum.transport` attribute differs between transports", async () => {
+test("parity: `connectum.transport` attribute differs between transports", async () => {
     // Fresh interceptor pair per run (see runBothTransports comment).
     const httpItcs = buildOtelInterceptors();
     const spansHttp = new InMemorySpanCollector();
@@ -518,10 +576,10 @@ test("parity 7a.bonus: `connectum.transport` attribute differs between transport
 });
 
 // ---------------------------------------------------------------------------
-// 7a.11 — Spans started inside streaming handlers hang off the server span
+// Spans started inside streaming handlers hang off the server span
 // ---------------------------------------------------------------------------
 
-test("parity 7a.11: spans started in streaming handlers are children of the server span on both transports", async () => {
+test("parity: spans started in streaming handlers are children of the server span on both transports", async () => {
     const handlerSpan = (phase: string) => {
         trace.getTracer("handler").startActiveSpan(`handler.${phase}`, (span) => {
             span.end();
