@@ -54,6 +54,36 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 
+## Error text stays on the server
+
+Since 1.3, `errorHandler` (the first interceptor of the default chain) does not
+send the text of a failure that is not a `ConnectError` or a `SanitizableError`
+to the client. Such text often carries a connection string, a query or a value
+from the request.
+
+| Thrown by the handler | Client receives |
+|---|---|
+| `ConnectError` | Unchanged: code, text, details, metadata |
+| `SanitizableError` | Its `clientMessage` and code; `serverDetails` stay on the server |
+| `Error` or a thrown string | `Internal` with the text `internal error` |
+| An error with a numeric `code` | That code with an empty text |
+
+The original failure stays on the server: as `cause` of the thrown `ConnectError`
+(no transport serializes `cause`), as `info.error` of `onError` with its original
+text, and in the console log. The behavior is the same over gRPC, Connect and
+`server.localClient()`.
+
+To send the original text, set `exposeErrorMessages: true`: only for trusted
+internal callers or while debugging. It is a server-side option, independent of
+`NODE_ENV`:
+
+```typescript
+createDefaultInterceptors({ errorHandler: { exposeErrorMessages: true } });
+```
+
+Clients that parsed these texts must read the code, or a `ConnectError` with
+details, instead.
+
 ## Cancellation behavior in 1.3
 
 Timeout now forwards its own deadline and caller cancellation to downstream

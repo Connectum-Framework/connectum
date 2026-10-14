@@ -161,8 +161,8 @@ export interface AmqpAdapterOptions {
     readonly recovery?: boolean | AmqpRecoveryOptions;
 
     /**
-     * Fail fast on a DETERMINISTIC setup/topology error on the FIRST connect,
-     * instead of entering amqplib's infinite recovery loop.
+     * Fail fast on a topology setup failure on the FIRST connect, instead of
+     * entering amqplib's infinite recovery loop.
      *
      * amqplib's opt-in recovery resolves `connect()` only after its setup hook
      * succeeds, and rejects only once `maxRetries` is exhausted (default
@@ -177,10 +177,12 @@ export interface AmqpAdapterOptions {
      * startup probe); with it, every initial attempt runs the full setup and
      * the first setup error stops the initial connect.
      *
-     * Only deterministic setup/topology errors fail fast. A transient
-     * broker-unreachable at startup is NOT a fail-fast condition — it falls
-     * through to normal recovery (block-until-broker, or the initial connect
-     * budget). SUBSEQUENT reconnects always keep infinite-recovery behavior.
+     * Only a failure of the topology setup pass reported as `AmqpTopologyError`
+     * fails fast — a broker reply to a declare/check/bind (404, 406, 403, …) or
+     * the adapter's own configuration check. A broker that cannot be reached,
+     * and a connection lost while the pass runs (reported as
+     * `AmqpConnectionError`), are not fail-fast: the adapter continues with
+     * recovery (block-until-broker, or the initial connect budget). SUBSEQUENT reconnects always keep infinite-recovery behavior.
      *
      * No-op with `recovery: false` (that path already fails fast on setup).
      * Without `initialConnectMaxRetries`, enabling this — or supplying
