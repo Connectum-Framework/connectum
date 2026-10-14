@@ -20,6 +20,8 @@ describe("matchesMethodPattern", () => {
         assert.strictEqual(result, false);
     });
 
+    // The authorization guide's method-pattern table defines `*` as "all services and methods".
+    // A skip list of `*` disables the check for everything, so the services used here differ.
     it("should match wildcard '*' pattern for any method", () => {
         assert.strictEqual(matchesMethodPattern("any.Service", "AnyMethod", ["*"]), true);
         assert.strictEqual(matchesMethodPattern("another.Service", "Other", ["*"]), true);
@@ -48,23 +50,32 @@ describe("matchesMethodPattern", () => {
         assert.strictEqual(result, false);
     });
 
-    it("should match on first matching pattern in array", () => {
-        const result = matchesMethodPattern("test.v1.UserService", "GetUser", [
-            "no.Match/Method",
-            "test.v1.UserService/GetUser",
-            "*",
-        ]);
-        assert.strictEqual(result, true);
-    });
+    // In every list exactly one entry can match, and it sits at a different position each time,
+    // so a matcher that only looks at the first, only the last, or skips the middle entry fails.
+    for (const [kind, matching] of [
+        ["exact method", "test.v1.UserService/GetUser"],
+        ["service wildcard", "test.v1.UserService/*"],
+        ["global wildcard", "*"],
+    ] as const) {
+        const missA = "no.Match/Method";
+        const missB = "another.Service/*";
+        for (const [position, patterns] of [
+            ["first", [matching, missA, missB]],
+            ["middle", [missA, matching, missB]],
+            ["last", [missA, missB, matching]],
+        ] as const) {
+            it(`should match a ${kind} pattern at the ${position} position of the list`, () => {
+                assert.strictEqual(matchesMethodPattern("test.v1.UserService", "GetUser", patterns), true);
+            });
+        }
+    }
 
-    it("should match when wildcard is among multiple patterns", () => {
-        const result = matchesMethodPattern("test.v1.UserService", "GetUser", [
-            "no.Match/Method",
-            "*",
-            "test.v1.UserService/GetUser",
-        ]);
-        assert.strictEqual(result, true);
-    });
+    // The guide lists only exact methods, `Service/*` and `*`; partial wildcards are unsupported.
+    for (const pattern of ["test.v1.User*/GetUser", "test.v1.*/*", "test.v1.UserService/Get*", "test.v1.UserService/*Get"]) {
+        it(`should not treat the partial wildcard ${pattern} as a match`, () => {
+            assert.strictEqual(matchesMethodPattern("test.v1.UserService", "GetUser", [pattern]), false);
+        });
+    }
 
     it("should not match partial service name with service wildcard", () => {
         const result = matchesMethodPattern("test.v1.UserServiceExtended", "GetUser", ["test.v1.UserService/*"]);

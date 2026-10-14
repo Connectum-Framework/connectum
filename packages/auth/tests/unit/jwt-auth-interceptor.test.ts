@@ -18,29 +18,77 @@ const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as c
 
 describe("jwt-auth-interceptor", () => {
     describe("createJwtAuthInterceptor()", () => {
-        it("should throw when no key option provided", () => {
-            assert.throws(
-                () => createJwtAuthInterceptor({}),
-                (err: unknown) => {
-                    assert.ok(err instanceof Error);
-                    assert.ok(err.message.includes("jwksUri, secret, or publicKey"));
-                    return true;
-                },
-            );
-        });
+        // The guide requires at least one key source (jwksUri, publicKey or secret); the
+        // error must name all three so the operator knows what to configure, and an empty
+        // string is not a key source.
+        for (const [label, options] of [
+            ["no options", {}],
+            ["an empty secret", { secret: "" }],
+            ["an empty jwksUri", { jwksUri: "" }],
+        ] as const) {
+            it(`should throw naming every key option when ${label} are given`, () => {
+                assert.throws(
+                    () => createJwtAuthInterceptor(options),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        for (const option of ["jwksUri", "publicKey", "secret"]) {
+                            assert.ok(err.message.includes(option), `message "${err.message}" must name ${option}`);
+                        }
+                        return true;
+                    },
+                );
+            });
+        }
 
-        it("should verify JWT with HMAC secret successfully", async () => {
+        it("should verify JWT with HMAC secret and expose the verified identity", async () => {
             const token = await createTestJwt({ sub: "user-1" });
 
             const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
-            const next = async (_req: any) => ({ message: {} });
+            let capturedContext: any;
+            const next = async (_req: any) => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            };
             const handler = interceptor(next as any);
 
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("authorization", `Bearer ${token}`);
 
             await handler(req);
-            // If no error is thrown, verification succeeded
+
+            assert.ok(capturedContext, "handler must run inside an auth context");
+            assert.strictEqual(capturedContext.subject, "user-1");
+        });
+
+        it("should reject a JWT signed with a different HMAC secret", async () => {
+            // Same claims and algorithm, valid shape and expiry: only the signature key differs,
+            // so the call fails exactly when the signature is actually verified.
+            const otherKey = new TextEncoder().encode("another-secret-that-is-long-enough-for-hs256");
+            const token = await new jose.SignJWT({ sub: "user-1" })
+                .setProtectedHeader({ alg: "HS256" })
+                .setIssuedAt()
+                .setExpirationTime("1h")
+                .sign(otherKey);
+
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            let nextCalls = 0;
+            const next = async (_req: any) => {
+                nextCalls++;
+                return { message: {} };
+            };
+            const handler = interceptor(next as any);
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("authorization", `Bearer ${token}`);
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(nextCalls, 0, "an unverified request must not reach the handler");
         });
 
         it("should reject expired JWT", async () => {
@@ -123,34 +171,38 @@ describe("jwt-auth-interceptor", () => {
             assert.strictEqual(capturedContext.name, "johndoe");
         });
 
-        it("should throw when HMAC secret is too short for HS256", () => {
-            assert.throws(
-                () => createJwtAuthInterceptor({ secret: "short" }),
-                (err: unknown) => {
-                    assert.ok(err instanceof Error);
-                    assert.ok(err.message.includes("at least 32 bytes"));
-                    assert.ok(err.message.includes("RFC 7518"));
-                    return true;
-                },
-            );
-        });
+        // Minimum HMAC key length per algorithm (RFC 7518 section 3.2, restated in the JWT guide):
+        // HS256 32 bytes, HS384 48 bytes, HS512 64 bytes. Each row probes both sides of the
+        // boundary so a shifted threshold (or the wrong threshold for an algorithm) is caught.
+        const hmacBoundaries = [
+            { algorithms: undefined, label: "default algorithms", minBytes: 32 },
+            { algorithms: ["HS256"], label: "HS256", minBytes: 32 },
+            { algorithms: ["HS384"], label: "HS384", minBytes: 48 },
+            { algorithms: ["HS512"], label: "HS512", minBytes: 64 },
+        ];
+        for (const { algorithms, label, minBytes } of hmacBoundaries) {
+            it(`should reject an HMAC secret one byte under the ${minBytes}-byte minimum for ${label}`, () => {
+                assert.throws(
+                    () => createJwtAuthInterceptor({ secret: "a".repeat(minBytes - 1), algorithms }),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        assert.ok(err.message.includes(`at least ${minBytes} bytes`), err.message);
+                        assert.ok(err.message.includes("RFC 7518"), err.message);
+                        return true;
+                    },
+                );
+            });
 
-        it("should accept HMAC secret of exactly 32 bytes", () => {
-            const secret32 = "a".repeat(32);
-            // Should not throw
-            createJwtAuthInterceptor({ secret: secret32 });
-        });
+            it(`should accept an HMAC secret of exactly ${minBytes} bytes for ${label}`, () => {
+                assert.doesNotThrow(() => createJwtAuthInterceptor({ secret: "a".repeat(minBytes), algorithms }));
+            });
+        }
 
-        it("should throw when HMAC secret is too short for HS512", () => {
-            const secret32 = "a".repeat(32);
-            assert.throws(
-                () => createJwtAuthInterceptor({ secret: secret32, algorithms: ["HS512"] }),
-                (err: unknown) => {
-                    assert.ok(err instanceof Error);
-                    assert.ok(err.message.includes("at least 64 bytes"));
-                    return true;
-                },
-            );
+        it("should measure the HMAC secret in UTF-8 bytes, not characters", () => {
+            // The guide states the minimum in UTF-8 bytes. 16 two-byte characters are
+            // 32 bytes (accepted); 15 of them plus one ASCII character are 31 bytes (rejected).
+            assert.doesNotThrow(() => createJwtAuthInterceptor({ secret: "é".repeat(16) }));
+            assert.throws(() => createJwtAuthInterceptor({ secret: `${"é".repeat(15)}a` }), /at least 32 bytes/);
         });
 
         it("should pass skipMethods to underlying auth interceptor", async () => {
@@ -168,8 +220,9 @@ describe("jwt-auth-interceptor", () => {
             await handler(req);
             // Should not throw — method is skipped
         });
-        it("should throw Unauthenticated when JWT has no subject claim (SEC-002)", async () => {
-            // Create a JWT without 'sub' claim
+        it("should reject with Unauthenticated a validly signed JWT that has no subject claim", async () => {
+            // A verified token without `sub` carries no identity: the call must fail closed
+            // and the handler must never run with an anonymous or empty subject.
             const key = new TextEncoder().encode(TEST_JWT_SECRET);
             const token = await new jose.SignJWT({ name: "No Subject User" })
                 .setProtectedHeader({ alg: "HS256" })
@@ -178,7 +231,11 @@ describe("jwt-auth-interceptor", () => {
                 .sign(key);
 
             const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
-            const next = async (_req: any) => ({ message: {} });
+            let nextCalls = 0;
+            const next = async (_req: any) => {
+                nextCalls++;
+                return { message: {} };
+            };
             const handler = interceptor(next as any);
 
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
@@ -191,24 +248,42 @@ describe("jwt-auth-interceptor", () => {
                     return true;
                 },
             );
+            assert.strictEqual(nextCalls, 0, "a token without a subject must not reach the handler");
         });
 
-        it("should support maxTokenAge option", async () => {
-            const token = await createTestJwt({ sub: "user-1" });
+        it("should accept a token younger than maxTokenAge and reject one older than it", async () => {
+            // Two tokens on either side of the one-hour limit, same key and claims: the only
+            // difference is `iat`, so the limit is what separates them.
+            const key = new TextEncoder().encode(TEST_JWT_SECRET);
+            const sign = (ageSeconds: number) =>
+                new jose.SignJWT({ sub: "user-1" })
+                    .setProtectedHeader({ alg: "HS256" })
+                    .setIssuedAt(Math.floor(Date.now() / 1000) - ageSeconds)
+                    .setExpirationTime("24h")
+                    .sign(key);
 
-            // maxTokenAge of "1h" — token was just created, should be valid
-            const interceptor = createJwtAuthInterceptor({
-                secret: TEST_JWT_SECRET,
-                maxTokenAge: "1h",
-            });
-            const next = async (_req: any) => ({ message: {} });
-            const handler = interceptor(next as any);
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET, maxTokenAge: "1h" });
 
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            req.header.set("authorization", `Bearer ${token}`);
+            const call = async (token: string) => {
+                let subject: string | undefined;
+                const handler = interceptor((async () => {
+                    subject = getAuthContext()?.subject;
+                    return { message: {} };
+                }) as any);
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("authorization", `Bearer ${token}`);
+                await handler(req);
+                return subject;
+            };
 
-            await handler(req);
-            // No error = maxTokenAge accepted the token
+            assert.strictEqual(await call(await sign(3000)), "user-1");
+            await assert.rejects(
+                async () => call(await sign(3900)),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
         });
 
         it("should reject token exceeding maxTokenAge", async () => {

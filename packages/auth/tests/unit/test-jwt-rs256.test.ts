@@ -41,11 +41,31 @@ describe("testing/test-jwt-rs256", () => {
             claimsMapping: { roles: "roles" },
         });
 
-    it("generateRsaTestKeypair publishes a JWK with kid/alg/use", () => {
-        assert.equal(keypair.kid, TEST_JWT_KID);
-        assert.equal(keypair.publicJwk.kid, TEST_JWT_KID);
-        assert.equal(keypair.publicJwk.alg, "RS256");
-        assert.equal(keypair.publicJwk.use, "sig");
+    it("generateRsaTestKeypair publishes a public RSA JWK with kid/alg/use and no private material", () => {
+        const jwk = keypair.publicJwk;
+        // The documented default key id.
+        assert.equal(TEST_JWT_KID, "connectum-test-key");
+        assert.equal(keypair.kid, "connectum-test-key");
+        assert.equal(jwk.kid, "connectum-test-key");
+        // RFC 7517 section 4: alg and use name the intended algorithm and use.
+        assert.equal(jwk.alg, "RS256");
+        assert.equal(jwk.use, "sig");
+        // RFC 7518 section 6.3.1: an RSA public key carries kty, modulus n and exponent e.
+        assert.equal(jwk.kty, "RSA");
+        assert.equal(jwk.e, "AQAB");
+        // RFC 7518 section 3.3: RS256 requires a key of 2048 bits or more.
+        assert.ok(jwk.n);
+        assert.ok(Buffer.from(jwk.n, "base64url").length >= 256, "modulus must be at least 2048 bits");
+        // RFC 7518 section 6.3.2: these members are private-key parameters and must never be published.
+        for (const privateMember of ["d", "p", "q", "dp", "dq", "qi"]) {
+            assert.equal(privateMember in jwk, false, `public JWK must not carry "${privateMember}"`);
+        }
+    });
+
+    it("generateRsaTestKeypair stamps a custom kid on the keypair and on the public JWK", async () => {
+        const custom = await generateRsaTestKeypair("custom-key-id");
+        assert.equal(custom.kid, "custom-key-id");
+        assert.equal(custom.publicJwk.kid, "custom-key-id");
     });
 
     it("startTestJwksServer serves the public key at /.well-known/jwks.json", async () => {

@@ -79,6 +79,10 @@ describe("globalThis singleton resilience", () => {
     const STORAGE_KEY = Symbol.for("@connectum/auth/context-storage");
     const META_KEY = Symbol.for("@connectum/auth/context-storage-meta");
 
+    // Guards the slot name itself. Another copy of the package, including an older release
+    // that created the storage before the meta slot existed, finds the shared storage only
+    // under this exact registry key; renaming it would split the identity between copies.
+    // The two-instance case below covers the behavior; this one covers the compatibility key.
     it("should store authContextStorage in globalThis via Symbol.for key", () => {
         const stored = (globalThis as Record<symbol, unknown>)[STORAGE_KEY];
         assert.strictEqual(authContextStorage, stored,
