@@ -174,9 +174,12 @@ describe('Resilience Pattern Integration', () => {
             duration: 30, // 30ms timeout
         });
 
+        // Retrying DeadlineExceeded is opt-in (it is not a default retryable code), so the
+        // timeout is attempted again on purpose here: 1 initial attempt + 2 retries.
         const retryInterceptor = createRetryInterceptor({
             maxRetries: 2,
             initialDelay: 10,
+            retryableCodes: [Code.DeadlineExceeded],
         });
 
         const mockReq = {
@@ -200,14 +203,15 @@ describe('Resilience Pattern Integration', () => {
         // Chain: retry -> timeout -> next
         const handler = retryInterceptor(timeoutInterceptor(next as any));
 
-        // Should eventually throw DeadlineExceeded
+        // After the last retry the timeout error of the last attempt reaches the caller
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assertConnectError(err, Code.DeadlineExceeded);
+                assertConnectError(err, Code.DeadlineExceeded, '30ms');
                 return true;
             },
         );
+        assert.strictEqual(next.mock.calls.length, 3);
 
         // Wait for mock timers to drain
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -229,8 +233,13 @@ describe('Resilience Pattern Integration', () => {
             halfOpenAfter: 300,
         });
 
+        // The fallback records which error each of the three calls ended with
+        const failureCodes: Code[] = [];
         const fallbackInterceptor = createFallbackInterceptor({
-            handler: () => ({ result: 'fallback response' }),
+            handler: (error) => {
+                failureCodes.push(ConnectError.from(error).code);
+                return { result: 'fallback response' };
+            },
         });
 
         const mockReq = {
@@ -260,17 +269,25 @@ describe('Resilience Pattern Integration', () => {
             ),
         );
 
-        // First request: will timeout, retry (timeout again), circuit breaker counts 2 failures
-        // Fallback returns cached data
+        // First call: the timeout fires (DeadlineExceeded). That code is not retryable by default, so the
+        // downstream is tried once; the breaker counts one failure of two and stays closed.
         const result1 = await handler(mockReq);
         assert.strictEqual((result1.message as any).result, 'fallback response');
+        assert.strictEqual(next.mock.calls.length, 1);
 
-        // Second request: circuit should be open, fallback returns cached data
+        // Second call: the breaker is still closed, the timeout fires again and this second
+        // consecutive failure opens it.
         const result2 = await handler(mockReq);
         assert.strictEqual((result2.message as any).result, 'fallback response');
-
-        // Verify: only first request made attempts (2 retries), second was blocked by circuit
         assert.strictEqual(next.mock.calls.length, 2);
+
+        // Third call: the open circuit refuses (Unavailable, which retry does repeat once, and the breaker
+        // refuses again) without reaching the downstream; the fallback still answers.
+        const result3 = await handler(mockReq);
+        assert.strictEqual((result3.message as any).result, 'fallback response');
+        assert.strictEqual(next.mock.calls.length, 2);
+
+        assert.deepStrictEqual(failureCodes, [Code.DeadlineExceeded, Code.DeadlineExceeded, Code.Unavailable]);
 
         // Wait for mock timers and halfOpenAfter timer to drain
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -278,9 +295,10 @@ describe('Resilience Pattern Integration', () => {
 
     it('should handle streaming requests correctly', async () => {
         // All resilience interceptors should skip streaming by default
-        const retryInterceptor = createRetryInterceptor({ skipStreaming: true });
+        const retryInterceptor = createRetryInterceptor({ skipStreaming: true, initialDelay: 1, maxDelay: 5 });
         const timeoutInterceptor = createTimeoutInterceptor({ skipStreaming: true });
-        const circuitBreakerInterceptor = createCircuitBreakerInterceptor({ skipStreaming: true });
+        // Threshold 1: a single failure seen by the breaker would open it
+        const circuitBreakerInterceptor = createCircuitBreakerInterceptor({ skipStreaming: true, threshold: 1 });
         const fallbackInterceptor = createFallbackInterceptor({
             handler: () => ({ result: 'fallback' }),
             skipStreaming: true,
@@ -298,10 +316,12 @@ describe('Resilience Pattern Integration', () => {
             },
         } as any;
 
-        const next = mock.fn(async () => ({
-            stream: true,
-            message: {},
-        }));
+        // A retryable failure: retry would repeat it, the breaker (threshold 1) would open on it,
+        // and the fallback would replace it with a substitute response.
+        const failure = new ConnectError('Service unavailable', Code.Unavailable);
+        const next = mock.fn(async () => {
+            throw failure;
+        });
 
         // Chain all resilience interceptors
         const handler = fallbackInterceptor(
@@ -312,10 +332,13 @@ describe('Resilience Pattern Integration', () => {
             ),
         );
 
-        // Should pass through without interference
-        await handler(streamingReq);
-
-        // Verify handler was called exactly once (no retries)
-        assert.strictEqual(next.mock.calls.length, 1);
+        // Every streaming call reaches the downstream exactly once and fails with its own error
+        for (let i = 1; i <= 2; i++) {
+            await assert.rejects(
+                () => handler(streamingReq),
+                (err: unknown) => err === failure,
+            );
+            assert.strictEqual(next.mock.calls.length, i);
+        }
     });
 });
