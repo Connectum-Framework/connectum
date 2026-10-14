@@ -727,7 +727,7 @@ describe("parseTimeoutOption", () => {
 		});
 	}
 
-	// The specification and the scaffolding guide require plain decimal digits: a value with a
+	// parseTimeoutOption accepts plain decimal digits only, the first one 1 to 9: a value with a
 	// leading zero is refused like any other invalid value instead of being read as 7 (or, by a
 	// parser that treats a leading zero as octal, as another number).
 	it("rejects a leading-zero spelling \"007\" instead of reading it as 7", () => {

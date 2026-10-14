@@ -15,4 +15,4 @@ fix: `connectum init` and `connectum proto sync` refuse bad input up front inste
 **`connectum proto sync`:**
 
 - Fails with a non-zero exit code and names the services when the server lists a service that reflection cannot describe (full sync and `--dry-run`); it no longer reports success on a partial descriptor set.
-- Every reflection request has a time limit, 10 000 ms by default; `--timeout <ms>` (1 to 2147483647, plain decimal digits) changes it. A server that accepts the connection and never answers ends with an error naming the address and the limit instead of hanging.
+- Every reflection request has a time limit, 10 000 ms by default; `--timeout <ms>` (an integer from 1 to 2147483647 written in plain decimal digits, the first one 1 to 9, so `007` is refused) changes it. A server that accepts the connection and never answers ends with an error naming the address and the limit instead of hanging.
