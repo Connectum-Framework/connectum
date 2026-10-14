@@ -12,6 +12,7 @@ import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
+import { createDefaultInterceptors, createErrorHandlerInterceptor } from "@connectum/interceptors";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
@@ -159,4 +160,54 @@ transportParityTest("parity 5.3: server interceptor error maps identically", {
         }
     },
     compare: expectErrorOnBothTransports(Code.PermissionDenied),
+});
+
+/** Runs the plain-error handler through the client of whichever transport the harness provides. */
+async function plainErrorScenario(transport: Parameters<typeof createClient>[1]): Promise<ParityScenarioResult> {
+    const client = createClient(EchoService, transport);
+    try {
+        await client.echo(create(EchoRequestSchema, { message: "x" }));
+        return { response: { unreachable: true } };
+    } catch (err) {
+        return { error: describeError(err) };
+    }
+}
+
+// With the default chain (errorHandler first) the failure text is replaced by the fixed
+// text "internal error" on both transports. The test above runs with no interceptors and so
+// only shows Connect-ES's own protection; this one proves the Connectum chain gives the same
+// guarantee and pins the literal. Oracle: CWE-209 and the Connect protocol documentation.
+transportParityTest("parity: default interceptors send internal / \"internal error\" for a failure that is not a ConnectError", {
+    services: [plainErrorRoutes()],
+    interceptors: createDefaultInterceptors({ errorHandler: { logErrors: false } }),
+    scenario: ({ transport }) => plainErrorScenario(transport),
+    compare: (http, local) => {
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.code, Code.Internal, `${name} error code must be Internal`);
+            assert.strictEqual(result.error?.message, "internal error", `${name} error text must be the generic text`);
+            assert.ok(!JSON.stringify(result.error).includes(PLAIN_ERROR_TEXT), `${name} error must not contain the original text`);
+        }
+        defaultCompare(http, local);
+    },
+});
+
+// The opt-in sends the original text, and sends the same text on both transports.
+transportParityTest("parity: exposeErrorMessages sends the original text identically on both transports", {
+    services: [plainErrorRoutes()],
+    interceptors: [createErrorHandlerInterceptor({ exposeErrorMessages: true, logErrors: false })],
+    scenario: ({ transport }) => plainErrorScenario(transport),
+    compare: (http, local) => {
+        assert.ok(http.error, "HTTP transport must surface an error");
+        assert.ok(local.error, "Local transport must surface an error");
+        assert.strictEqual(http.error.code, Code.Internal, "HTTP transport error code must be Internal");
+        assert.strictEqual(local.error.code, Code.Internal, "Local transport error code must be Internal");
+        assert.strictEqual(http.error.message, PLAIN_ERROR_TEXT, "HTTP transport must send the original text");
+        assert.strictEqual(local.error.message, PLAIN_ERROR_TEXT, "local transport must send the original text");
+        defaultCompare(http, local);
+    },
 });
