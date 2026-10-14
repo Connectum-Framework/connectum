@@ -64,7 +64,7 @@ describe("shutdown.timeout", () => {
             ["an undefined timeout", { timeout: undefined }],
         ] as const) {
             it(`waits for the documented 30000 ms graceful phase with ${name}`, async () => {
-                const server = createServer({ services: [], port: 0, host: "127.0.0.1", ...(shutdown === undefined ? {} : { shutdown }) });
+                const server = createServer({ services: [], port: 0, host: "127.0.0.1", ...(shutdown === undefined ? {} : { shutdown: shutdown as never }) });
                 await server.start();
 
                 const delays = await recordTimerDelays(() => server.stop());

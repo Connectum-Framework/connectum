@@ -156,11 +156,11 @@ describe("createServer", () => {
 
             servers.push(server);
 
-            for (const event of ["start", "ready"]) {
-                server.on(event as "start" | "ready", () => {
-                    seen.push({ event, state: server.state, listening: server.transport?.listening, port: server.address?.port });
-                });
-            }
+            const record = (event: string) => () => {
+                seen.push({ event, state: server.state, listening: server.transport?.listening, port: server.address?.port });
+            };
+            server.on("start", record("start"));
+            server.on("ready", record("ready"));
 
             await server.start();
 
