@@ -219,9 +219,13 @@ describe("Proto Authz Advanced — Integration", () => {
                 secret: TEST_JWT_SECRET,
                 claimsMapping: { roles: "roles" },
             });
+            // Guide, decision flow: the callback is terminal. `false` refuses the request with
+            // PermissionDenied and is not followed by defaultPolicy, even when that policy is "allow".
+            // The callback is also given the caller's context and the method being called.
+            const authorize = mock.fn((_ctx: { subject: string }, _req: { service: string; method: string }) => false);
             const authzInterceptor = createProtoAuthzInterceptor({
                 defaultPolicy: "allow",
-                authorize: () => false,
+                authorize: authorize as never,
             });
 
             const headers = new Headers();
@@ -238,6 +242,11 @@ describe("Proto Authz Advanced — Integration", () => {
                     return true;
                 },
             );
+            assert.strictEqual(next.mock.calls.length, 0);
+            assert.strictEqual(authorize.mock.calls.length, 1);
+            const [ctxArg, reqArg] = authorize.mock.calls[0]?.arguments ?? [];
+            assert.strictEqual(ctxArg?.subject, "user-1");
+            assert.deepStrictEqual(reqArg, { service: "test.v1.TestService", method: "DeniedCallback" });
         });
     });
 
@@ -316,6 +325,44 @@ describe("Proto Authz Advanced — Integration", () => {
             assert.deepStrictEqual([...resolved.requires.roles], ["admin"]);
             assert.strictEqual(resolved.policy, "allow");
         });
+
+        // Guide: explicit method-level fields override their service-level counterparts, and an
+        // omitted field inherits the service setting. `requires` and `policy` are separate fields.
+        it("should replace the service requires as a whole when the method sets its own requires", () => {
+            const svcOpts = createServiceOptions({ defaultRequires: { roles: ["user"] } });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "ScopesOnly", createMethodOptions({ requires: { scopes: ["items:write"] } }));
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.ok(resolved.requires);
+            assert.deepStrictEqual([...resolved.requires.scopes], ["items:write"]);
+            assert.deepStrictEqual([...resolved.requires.roles], [], "the service's roles must not be merged into the method's own requires");
+        });
+
+        it("should inherit the service requires when the method sets only a policy", () => {
+            const svcOpts = createServiceOptions({ defaultRequires: { roles: ["user"], scopes: ["read"] }, defaultPolicy: "deny" });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "PolicyOnly", createMethodOptions({ policy: "allow" }));
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.policy, "allow");
+            assert.ok(resolved.requires);
+            assert.deepStrictEqual([...resolved.requires.roles], ["user"]);
+            assert.deepStrictEqual([...resolved.requires.scopes], ["read"]);
+        });
+
+        it("should inherit the service policy when the method sets only requires", () => {
+            const svcOpts = createServiceOptions({ defaultRequires: { roles: ["user"] }, defaultPolicy: "deny" });
+            const service = createFakeService({ serviceOptions: svcOpts });
+            const method = createFakeMethod(service, "RequiresOnly", createMethodOptions({ requires: { roles: ["admin"] } }));
+
+            const resolved = resolveMethodAuth(method);
+
+            assert.strictEqual(resolved.policy, "deny");
+            assert.deepStrictEqual([...(resolved.requires?.roles ?? [])], ["admin"]);
+        });
     });
 
     describe("getPublicMethods", () => {
@@ -347,16 +394,23 @@ describe("Proto Authz Advanced — Integration", () => {
             const svc1Opts = createServiceOptions({});
             const svc1 = createFakeService({ typeName: "a.v1.A", serviceOptions: svc1Opts });
             const svc1Public = createFakeMethod(svc1, "Ping", createMethodOptions({ public: true }));
-            (svc1 as any).methods = [svc1Public];
+            const svc1Private = createFakeMethod(svc1, "Secret", createMethodOptions({ requires: { roles: ["admin"] } }));
+            (svc1 as any).methods = [svc1Public, svc1Private];
 
+            // A public service makes every method of it public.
             const svc2Opts = createServiceOptions({ public: true });
             const svc2 = createFakeService({ typeName: "b.v1.B", serviceOptions: svc2Opts });
-            const svc2Method = createFakeMethod(svc2, "Check");
-            (svc2 as any).methods = [svc2Method];
+            const svc2Check = createFakeMethod(svc2, "Check");
+            const svc2Other = createFakeMethod(svc2, "Other");
+            (svc2 as any).methods = [svc2Check, svc2Other];
 
-            const patterns = getPublicMethods([svc1, svc2]);
-            assert.ok(patterns.includes("a.v1.A/Ping"));
-            assert.ok(patterns.includes("b.v1.B/Check"));
+            // A service with no public marker at all contributes nothing.
+            const svc3 = createFakeService({ typeName: "c.v1.C" });
+            const svc3Method = createFakeMethod(svc3, "Closed");
+            (svc3 as any).methods = [svc3Method];
+
+            const patterns = getPublicMethods([svc1, svc2, svc3]);
+            assert.deepStrictEqual([...patterns].sort(), ["a.v1.A/Ping", "b.v1.B/Check", "b.v1.B/Other"]);
         });
     });
 });
