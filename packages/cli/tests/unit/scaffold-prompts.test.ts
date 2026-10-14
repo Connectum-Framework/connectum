@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import type { RawInput } from "../../src/scaffold/config.ts";
 import { collectConfig, isNonInteractive, type Prompter, promptForMissing } from "../../src/scaffold/prompts.ts";
 
@@ -81,5 +81,59 @@ describe("promptForMissing", () => {
         const out = await promptForMissing({}, prompter);
         assert.equal(out.events, "amqp");
         assert.ok(calls.includes("select:Event adapter"));
+    });
+});
+
+describe("isNonInteractive: environment signals", () => {
+    const originalCi = process.env.CI;
+    const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+
+    function setEnvironment(env: { ci: string | undefined; isTTY: boolean | undefined }): void {
+        if (env.ci === undefined) {
+            delete process.env.CI;
+        } else {
+            process.env.CI = env.ci;
+        }
+        Object.defineProperty(process.stdout, "isTTY", { value: env.isTTY, configurable: true, writable: true });
+    }
+
+    afterEach(() => {
+        if (originalCi === undefined) {
+            delete process.env.CI;
+        } else {
+            process.env.CI = originalCi;
+        }
+        if (originalIsTTY === undefined) {
+            delete (process.stdout as { isTTY?: boolean }).isTTY;
+        } else {
+            Object.defineProperty(process.stdout, "isTTY", originalIsTTY);
+        }
+    });
+
+    it("skips the wizard when CI is true, even on a terminal", () => {
+        setEnvironment({ ci: "true", isTTY: true });
+        assert.equal(isNonInteractive({}), true);
+    });
+
+    it("skips the wizard when stdout is not a terminal, with no CI and no --yes", () => {
+        setEnvironment({ ci: undefined, isTTY: false });
+        assert.equal(isNonInteractive({}), true);
+    });
+
+    it("skips the wizard under CI with a piped stdout and no --yes", () => {
+        setEnvironment({ ci: "true", isTTY: false });
+        assert.equal(isNonInteractive({}), true);
+        assert.equal(isNonInteractive({ yes: false }), true);
+    });
+
+    it("stays interactive on a terminal outside CI without --yes", () => {
+        setEnvironment({ ci: undefined, isTTY: true });
+        assert.equal(isNonInteractive({}), false);
+        assert.equal(isNonInteractive({ yes: false }), false);
+    });
+
+    it("lets --yes skip the wizard on a terminal outside CI", () => {
+        setEnvironment({ ci: undefined, isTTY: true });
+        assert.equal(isNonInteractive({ yes: true }), true);
     });
 });

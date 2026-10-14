@@ -118,3 +118,32 @@ describe("executeInit: a refused name leaves nothing on disk", () => {
         assert.equal(pkg.name, "ledger");
     });
 });
+
+describe("resolveConfig: --resilience accepts exactly the documented interceptors", () => {
+    // The documented value list of the flag, spelled out here rather than imported from
+    // the implementation so that dropping or renaming a value is caught.
+    const documented = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"];
+
+    it("accepts every documented interceptor, in the order given", () => {
+        assert.deepEqual(resolveConfig({ name: "x", resilience: documented.join(",") }, "/work").modules.resilience, documented);
+    });
+
+    it("tolerates spaces and empty items around the comma-separated values", () => {
+        assert.deepEqual(resolveConfig({ name: "x", resilience: " timeout , ,retry," }, "/work").modules.resilience, ["timeout", "retry"]);
+    });
+
+    it("rejects an unknown value, naming it and listing the allowed ones", () => {
+        assert.throws(
+            () => resolveConfig({ name: "x", resilience: "retry,foo" }, "/work"),
+            (err: Error) => err.message.includes('invalid --resilience "foo"') && documented.every((value) => err.message.includes(value)),
+        );
+    });
+
+    it("rejects a value that differs from a documented one only by case", () => {
+        assert.throws(() => resolveConfig({ name: "x", resilience: "circuitbreaker" }, "/work"), /invalid --resilience "circuitbreaker"/);
+    });
+
+    it("enables nothing when the flag is absent", () => {
+        assert.deepEqual(resolveConfig({ name: "x" }, "/work").modules.resilience, []);
+    });
+});
