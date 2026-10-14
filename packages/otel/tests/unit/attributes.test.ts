@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { Code } from "@connectrpc/connect";
 import {
 	ATTR_ERROR_TYPE,
 	ATTR_RPC_METHOD,
@@ -85,15 +86,41 @@ describe("attributes", () => {
 	});
 
 	describe("ConnectErrorCodeName", () => {
-		it("should be a correct reverse map of ConnectErrorCode", () => {
-			for (const [name, code] of Object.entries(ConnectErrorCode)) {
-				assert.strictEqual(
-					ConnectErrorCodeName[code],
-					name,
-					`ConnectErrorCodeName[${code}] should equal '${name}'`,
-				);
-			}
-		});
+		// The Connect protocol (connectrpc.com/docs/protocol, "Error codes") fixes the
+		// wire name of every code; the numeric values are the gRPC status codes.
+		// The span attribute carries the same name in upper case (the observability
+		// guide shows `NOT_FOUND`, `FAILED_PRECONDITION`). The table is spelled out
+		// here instead of being derived from ConnectErrorCode, so a misspelt name
+		// copied into both production maps cannot agree with itself.
+		const PROTOCOL_CODES: ReadonlyArray<readonly [number, string]> = [
+			[1, "canceled"],
+			[2, "unknown"],
+			[3, "invalid_argument"],
+			[4, "deadline_exceeded"],
+			[5, "not_found"],
+			[6, "already_exists"],
+			[7, "permission_denied"],
+			[8, "resource_exhausted"],
+			[9, "failed_precondition"],
+			[10, "aborted"],
+			[11, "out_of_range"],
+			[12, "unimplemented"],
+			[13, "internal"],
+			[14, "unavailable"],
+			[15, "data_loss"],
+			[16, "unauthenticated"],
+		];
+
+		for (const [code, wireName] of PROTOCOL_CODES) {
+			it(`should map code ${code} to ${wireName.toUpperCase()}`, () => {
+				assert.strictEqual(ConnectErrorCodeName[code], wireName.toUpperCase());
+			});
+
+			it(`should agree with the Connect library on code ${code}`, () => {
+				// `Code` of @connectrpc/connect is an independent source of the number-to-name pairing.
+				assert.strictEqual(Code[code]?.toLowerCase(), wireName.replaceAll("_", ""));
+			});
+		}
 
 		it("should have exactly 16 entries", () => {
 			assert.strictEqual(Object.keys(ConnectErrorCodeName).length, 16);
