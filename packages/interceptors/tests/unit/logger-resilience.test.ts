@@ -152,6 +152,36 @@ describe("logger interceptor isolation", () => {
         assert.strictEqual(lines.filter((line) => line === "STREAM /test.Service/Method response").length, 2, "every message is still logged");
     });
 
+    it("logs a placeholder string for a message that cannot be converted when bodies are on, and still delivers every message", async () => {
+        const entries: { message: string; args: unknown[] }[] = [];
+        const interceptor = createLoggerInterceptor({ includeBodies: true, logger: (message, ...args) => entries.push({ message, args }) });
+        const streamOf = (output: unknown, ...items: unknown[]) => interceptor((async () => ({ stream: true, message: two(items[0], items[1]), method: { output } })) as never);
+        const call = async (handler: ReturnType<typeof streamOf>) => {
+            const result = await handler(createMockRequest({ service: "test.Service", method: "Method", stream: true, message: two({}, {}) }));
+            const received: unknown[] = [];
+            for await (const item of result.message as AsyncIterable<unknown>) received.push(item);
+            return received;
+        };
+        const responseArgs = () => entries.filter((entry) => entry.message === "STREAM /test.Service/Method response").map((entry) => entry.args);
+
+        // Control: a convertible message reaches the sink as its JSON object.
+        await call(streamOf(ItemSchema, create(ItemSchema, { value: "1" }), create(ItemSchema, { value: "2" })));
+        assert.deepStrictEqual(responseArgs(), [[{ value: "1" }], [{ value: "2" }]]);
+        entries.length = 0;
+
+        // An empty object is not a message schema: converting with it throws.
+        const received = await call(streamOf({}, { value: "1" }, { value: "2" }));
+
+        assert.deepStrictEqual(received, [{ value: "1" }, { value: "2" }], "the reader still gets every message");
+        const logged = responseArgs();
+        assert.strictEqual(logged.length, 2, "every message is still logged");
+        for (const args of logged) {
+            assert.strictEqual(args.length, 1);
+            assert.strictEqual(typeof args[0], "string", "a placeholder string stands in for the body that cannot be shown");
+        }
+        assert.ok(entries.at(-1)?.message.startsWith("RPC /test.Service/Method completed in "), "the call is still closed out");
+    });
+
     it("logs a stream that fails midway with its Connect code and rethrows the error to the reader", async () => {
         const lines: string[] = [];
         const interceptor = createLoggerInterceptor({ logger: (message) => lines.push(message) });

@@ -244,6 +244,27 @@ describe("provider lifecycle", () => {
 			assert.deepStrictEqual(freeSlots(), { trace: false, context: true, propagation: true, metrics: false, logs: true });
 		});
 
+		it("leaves foreign context, propagation and logs registrations alone", async () => {
+			const foreignContextManager = new AsyncLocalStorageContextManager();
+			const foreignPropagator = new CompositePropagator({ propagators: [new W3CTraceContextPropagator()] });
+			const foreignLogger = new LoggerProvider();
+			assert.ok(context.setGlobalContextManager(foreignContextManager));
+			assert.ok(propagation.setGlobalPropagator(foreignPropagator));
+			logs.setGlobalLoggerProvider(foreignLogger);
+
+			// The API reports each refused registration through its diagnostic logger.
+			mock.method(console, "error", () => {});
+			initProvider({ settings: OTLP_HTTP });
+			await shutdownProvider();
+
+			assert.strictEqual(logs.getLoggerProvider(), foreignLogger, "the foreign logger provider is still registered");
+			assert.deepStrictEqual(
+				freeSlots(),
+				{ trace: true, context: false, propagation: false, metrics: true, logs: false },
+				"only the slots the provider took are released; the foreign context manager, propagator and logger provider stay",
+			);
+		});
+
 		it("re-initializes with a working meter and without a duplicate-registration diagnostic", async () => {
 			initProvider({ settings: OTLP_HTTP });
 			await shutdownProvider();
@@ -262,6 +283,7 @@ describe("provider lifecycle", () => {
 
 	describe("interceptors created before a shutdown", () => {
 		const METRICS_ONLY: NonNullable<ProviderOptions["settings"]> = { traces: "none", metrics: "otlp/http", logs: "none" };
+		const TRACES_ONLY: NonNullable<ProviderOptions["settings"]> = { traces: "otlp/http", metrics: "none", logs: "none" };
 		const message = { toBinary: () => new Uint8Array(1) };
 
 		const interceptors = {
@@ -285,6 +307,23 @@ describe("provider lifecycle", () => {
 				await shutdownProvider();
 
 				assert.deepStrictEqual(collector?.paths, ["/v1/metrics"], "the second provider must receive the call made through the same interceptor");
+			});
+
+			it(`${side} interceptor keeps exporting spans after the provider was shut down and created again`, async () => {
+				const interceptor = create();
+				const call = async () => interceptor(createMockNext({ message }))(createMockRequest({ message }));
+
+				initProvider({ settings: TRACES_ONLY });
+				await call();
+				await shutdownProvider();
+				assert.deepStrictEqual(collector?.paths, ["/v1/traces"], "the first provider exports the span of the recorded call");
+				collector?.paths.splice(0);
+
+				initProvider({ settings: TRACES_ONLY });
+				await call();
+				await shutdownProvider();
+
+				assert.deepStrictEqual(collector?.paths, ["/v1/traces"], "the span of a call through the same interceptor must reach the second provider, not the stopped first one");
 			});
 		}
 	});

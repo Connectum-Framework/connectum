@@ -40,7 +40,9 @@ describe("process exit after stop() with a client that never closes", () => {
 
     for (const { name, allowHTTP1, payload } of cases) {
         it(`${name}: the child process exits with code 0 within the timeout plus slack`, { timeout: 30_000 }, async () => {
-            const child = fork(SERVER_SCRIPT, [], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+            // Node 22.13 runs a TypeScript entry point only with the flag; Bun runs it natively.
+            const execArgv = "bun" in process.versions ? process.execArgv : ["--experimental-strip-types", ...process.execArgv];
+            const child = fork(SERVER_SCRIPT, [], { execArgv, stdio: ["ignore", "inherit", "inherit", "ipc"] });
             children.push(child);
             const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
             const reply = (type: string) =>

@@ -63,6 +63,35 @@ Compression: `gzip` works as shipped. `snappy`, `lz4` and `zstd` need a codec th
 application registers with the client library before the first publish; without one,
 publishing fails.
 
+## Commit strategy
+
+`consumerOptions.commitStrategy` chooses when the consumer group's offset is committed.
+`KafkaAdapter()` throws a `RangeError` for any other value.
+
+| Value | `OffsetCommit` requests | `await ack()` returns |
+|---|---|---|
+| `'per-message'` (default) | one for every acknowledged message | after the broker accepted the commit |
+| `'per-batch'` | one for the last acknowledged message of the batch | at once, before anything is sent |
+
+```typescript
+KafkaAdapter({
+  brokers: ['localhost:9092'],
+  consumerOptions: { commitStrategy: 'per-batch' },
+});
+```
+
+With `'per-batch'` the commit is sent when the adapter stops working on the batch: at its end,
+at a message that is requeued or left unsettled, when the handler throws, when the consumer
+stops, and when the group membership is lost. A message that was not acknowledged is never
+committed.
+
+The price of `'per-batch'` is a wider window of duplicates. An acknowledgement is not durable
+until the batch ends: if the process dies, or the broker refuses the commit, between an `ack()`
+and the end of the batch, every message acknowledged in that batch is delivered again, up to the
+size of the batch, instead of at most one. Handlers must be idempotent, and a dead-letter copy
+published before the original is acknowledged can be published twice. Delivery stays
+at-least-once. See the [commit strategy guide](https://connectum.dev/en/guide/events/adapters#kafka-commit-strategy).
+
 ## Broker versions
 
 The integration suite passes on Apache Kafka 4.2.0; other broker versions and
