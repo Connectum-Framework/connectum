@@ -522,8 +522,10 @@ const FATAL_TOPOLOGY_REPLY_TEXTS: ReadonlyMap<number, RegExp> = new Map([
  * text, stay in recovery: that errs toward retrying (visible through
  * `reconnecting` / `setup-failed`) rather than toward a silent permanent stop.
  * `instanceof AmqpTopologyError` alone is NOT a valid gate: the adapter wraps
- * ANY setup-pass cause into it, including transient ones (320 connection-forced,
- * 541 internal-error, 405 resource locked, a mid-setup connection drop).
+ * ANY broker reply to a declare/check/bind into it, including transient ones
+ * (320 connection-forced, 541 internal-error, 405 resource locked). A connection
+ * lost while the pass runs is not among them: the setup hook re-reports it as
+ * `AmqpConnectionError`.
  * Exported (not via the package barrel) for direct cross-runtime unit testing.
  */
 export function isDeterministicTopologyDrift(err: unknown): boolean {
@@ -1947,8 +1949,33 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * A setup that `isCurrent()` no longer covers (its connect() was superseded
      * by disconnect()) touches no adapter state, swallows its own failures —
      * the connection it ran on is being discarded — and returns quietly.
+     *
+     * A failure of the pass is classified by what happened to the connection,
+     * not by the error text: when the connection closed while the pass ran,
+     * every pending request is rejected and every later send fails with a
+     * channel error, and the topology wrappers would report those as
+     * `AmqpTopologyError`. That class means "the broker answered a declare,
+     * check or bind with a refusal, or the configuration is invalid" and is the
+     * only one the fail-fast gates act on, so a lost connection is re-reported
+     * as `AmqpConnectionError` and stays a transient failure for recovery. The
+     * connection emits `close` before it rejects the pending requests, so the
+     * flag is set by the time the failure arrives here.
+     *
+     * The connection reports its loss as an `error` event too, and while the
+     * pass runs nothing else listens to it (the recovering wrapper binds the
+     * connection only after the hook succeeds): an unhandled `error` event
+     * would crash the process instead of reaching the recovery loop. The loss
+     * itself reaches the caller through the rejected hook, so the event is
+     * swallowed here; the listener stays on the connection, which is discarded
+     * or taken over by the wrapper's own listeners.
      */
     async function onSetup(model: amqp.ChannelModel, isCurrent: () => boolean): Promise<void> {
+        let lost = false;
+        const onClose = (): void => {
+            lost = true;
+        };
+        model.on("error", () => undefined);
+        model.once("close", onClose);
         try {
             if (!isCurrent()) {
                 return;
@@ -1972,8 +1999,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
         } catch (err) {
             if (isCurrent()) {
-                throw err;
+                throw lost ? new AmqpConnectionError("Connection lost during the topology setup pass", { cause: err }) : err;
             }
+        } finally {
+            model.off("close", onClose);
         }
     }
 
