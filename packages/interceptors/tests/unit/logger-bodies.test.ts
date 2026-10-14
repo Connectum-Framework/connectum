@@ -78,13 +78,33 @@ describe("logger bodies: streaming", () => {
         assert.ok(!JSON.stringify(sink.entries).includes(SECRET));
     });
 
-    it("does not convert response messages to JSON when bodies are off", async () => {
-        const sink = collect();
-        const brokenSchemaNext = (() => Promise.resolve({ stream: true, message: messages({ value: "x" }), method: { output: {} } })) as never;
-        const result = await createLoggerInterceptor({ logger: sink.logger })(brokenSchemaNext)(streamRequest());
-        await drain(result.message as AsyncIterable<unknown>);
+    describe("conversion of response messages to JSON", () => {
+        /** A schema that counts every property read: converting a message with it reads it, not converting leaves it alone. */
+        function spiedSchema(): { schema: unknown; reads: () => number } {
+            let reads = 0;
+            const schema = new Proxy(ItemSchema, {
+                get(target, property, receiver) {
+                    reads++;
+                    return Reflect.get(target, property, receiver);
+                },
+            });
+            return { schema, reads: () => reads };
+        }
+        const run = async (includeBodies: boolean) => {
+            const spy = spiedSchema();
+            const next = (() => Promise.resolve({ stream: true, message: messages(create(ItemSchema, { value: "x" })), method: { output: spy.schema } })) as never;
+            const result = await createLoggerInterceptor({ includeBodies, logger: collect().logger })(next)(streamRequest());
+            await drain(result.message as AsyncIterable<unknown>);
+            return spy.reads();
+        };
 
-        assert.ok(!JSON.stringify(sink.entries).includes("could not be converted"), "the conversion must not even be attempted");
+        it("does not touch the message schema when bodies are off", async () => {
+            assert.strictEqual(await run(false), 0, "converting a message would have read the schema");
+        });
+
+        it("does read the message schema when bodies are on", async () => {
+            assert.ok((await run(true)) > 0, "the spy must observe a conversion, otherwise the off-case proves nothing");
+        });
     });
 
     it("passes the JSON form of each streamed message to the sink when includeBodies is set", async () => {

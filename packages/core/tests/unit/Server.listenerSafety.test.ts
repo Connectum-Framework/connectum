@@ -186,6 +186,27 @@ describe("lifecycle listener safety", () => {
             assert.deepStrictEqual(errors, [boom]);
         });
 
+        it("a throwing stop listener does not keep the other stop listeners from being called", async () => {
+            const server = make();
+            const boom = new Error("stop listener failed");
+            const before = mock.fn();
+            const after = mock.fn();
+            const errors: Error[] = [];
+            server.on("stop", before);
+            server.on("stop", () => {
+                throw boom;
+            });
+            server.on("stop", after);
+            server.on("error", (err) => errors.push(err));
+            await server.start();
+
+            await server.stop();
+
+            assert.strictEqual(before.mock.calls.length, 1, "listener registered before the throwing one is called");
+            assert.strictEqual(after.mock.calls.length, 1, "listener registered after the throwing one is still called");
+            assert.deepStrictEqual(errors, [boom]);
+        });
+
         it("without an error listener the listener failure is printed, not thrown", async () => {
             const server = make();
             const boom = new Error("stopping listener failed");
