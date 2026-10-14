@@ -103,6 +103,11 @@ describe("headers", () => {
             assert.strictEqual(result.type, "unknown");
         });
 
+        // Решение Connectum, документированного источника нет: guide/auth/context.md
+        // перечисляет заголовки x-auth-*, но не называет предел длины. Выбрано:
+        // subject режется до 512 символов, а не отклоняется. Побочное следствие
+        // политики: два subject с общим префиксом в 512 знаков после усечения
+        // неразличимы.
         it("should truncate subject exceeding 512 characters", () => {
             const headers = new Headers();
             const longSubject = "a".repeat(600);
@@ -115,6 +120,8 @@ describe("headers", () => {
             assert.strictEqual(result.subject, "a".repeat(512));
         });
 
+        // Нижняя половина пары: значение ровно на пределе (решение Connectum, см. выше)
+        // проходит без изменений, значит усечение начинается именно с 513-го знака.
         it("should not truncate subject within 512 character limit", () => {
             const headers = new Headers();
             const subject = "a".repeat(512);
@@ -126,6 +133,8 @@ describe("headers", () => {
             assert.strictEqual(result.subject.length, 512);
         });
 
+        // Решение Connectum, документированного источника нет: тип аутентификации
+        // x-auth-type режется до 128 знаков, а не отклоняется.
         it("should truncate type exceeding 128 characters", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "user-1");
@@ -227,6 +236,8 @@ describe("headers", () => {
             assert.strictEqual(headers.get(AUTH_HEADERS.NAME), null);
         });
 
+        // Решение Connectum, документированного источника нет: отображаемое имя
+        // режется до 256 знаков при записи в x-auth-name, а не отклоняется.
         it("should truncate name exceeding 256 characters", () => {
             const headers = new Headers();
             const context: AuthContext = {
