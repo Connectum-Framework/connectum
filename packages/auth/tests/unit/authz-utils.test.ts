@@ -40,11 +40,12 @@ describe("authz-utils", () => {
                 assert.strictEqual(satisfiesRequirements(context, requires), true);
             });
 
-            it("should return true when only scopes are required and user has them", () => {
-                const context = { roles: [], scopes: ["read", "write"] };
-                const requires = { roles: [], scopes: ["read"] };
+            it("should return true when a required scope is one of several the user holds, regardless of order", () => {
+                const context = { roles: [], scopes: ["write", "read"] };
 
-                assert.strictEqual(satisfiesRequirements(context, requires), true);
+                assert.strictEqual(satisfiesRequirements(context, { roles: [], scopes: ["read"] }), true);
+                assert.strictEqual(satisfiesRequirements(context, { roles: [], scopes: ["read", "write"] }), true);
+                assert.strictEqual(satisfiesRequirements(context, { roles: [], scopes: ["write", "read"] }), true);
             });
 
             it("should return true when roles field is undefined in requirements", () => {
@@ -89,6 +90,17 @@ describe("authz-utils", () => {
                 const requires = { roles: ["admin"], scopes: ["read"] };
 
                 assert.strictEqual(satisfiesRequirements(context, requires), false);
+            });
+
+            it("should compare roles and scopes by exact value, not by prefix, substring or case", () => {
+                // A held "administrator" role or "read:all" scope is not the required "admin" / "read".
+                assert.strictEqual(satisfiesRequirements({ roles: ["administrator"], scopes: [] }, { roles: ["admin"] }), false);
+                assert.strictEqual(satisfiesRequirements({ roles: ["adm"], scopes: [] }, { roles: ["admin"] }), false);
+                assert.strictEqual(satisfiesRequirements({ roles: ["Admin"], scopes: [] }, { roles: ["admin"] }), false);
+                assert.strictEqual(satisfiesRequirements({ roles: [], scopes: ["read:all"] }, { scopes: ["read"] }), false);
+                assert.strictEqual(satisfiesRequirements({ roles: [], scopes: ["rea"] }, { scopes: ["read"] }), false);
+                // The same-case exact values do match.
+                assert.strictEqual(satisfiesRequirements({ roles: ["admin"], scopes: ["read"] }, { roles: ["admin"], scopes: ["read"] }), true);
             });
 
             it("should return false when context has empty roles/scopes but requirements are non-empty", () => {
