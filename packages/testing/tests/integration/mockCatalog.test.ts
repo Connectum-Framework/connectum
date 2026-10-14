@@ -15,7 +15,7 @@ import * as core from "@connectum/core";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import { defineCatalog } from "@connectum/core";
 import { createMockContext } from "../../src/mockContext.ts";
-import { MOCK_RESPONSE_HEADER, mockResolver, mockService } from "../../src/mockResolver.ts";
+import { mockResolver, mockService } from "../../src/mockResolver.ts";
 import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
@@ -34,10 +34,15 @@ describe("mockResolver", () => {
         const transport = resolver({ typeName: EchoService.typeName });
         assert.ok(transport, "resolver must return a transport for the mocked service");
 
+        // The header name and the value "true" are the documented contract
+        // (service-communication/resolvers guide and the service-catalog spec),
+        // so they are spelled out as literals here instead of being read back
+        // from the exported constant: renaming the constant or the value in
+        // the source must break this test.
         let tag: string | null = null;
         const res = await createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "x" }), {
             onHeader: (header) => {
-                tag = header.get(MOCK_RESPONSE_HEADER);
+                tag = header.get("x-connectum-mock");
             },
         });
         assert.strictEqual(res.message, "mock:x");
