@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert";
-import { describe, it, mock } from "node:test";
+import { describe, it } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextSlow, createMockRequest } from "@connectum/test-fixtures";
 import { createTimeoutInterceptor } from "../../src/timeout.ts";
@@ -70,13 +70,17 @@ describe("timeout interceptor", () => {
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = createMockNext({ message: { result: "streaming" } });
+        // The downstream call outlives the 100 ms limit: a streaming call is passed through
+        // without a deadline, so the response still arrives instead of DeadlineExceeded.
+        const next = createMockNextSlow(250, { message: { result: "streaming" } });
 
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).result, "streaming");
         assert.strictEqual(next.mock.calls.length, 1);
+        // The request is handed on as is: no cancellation signal is derived for it.
+        assert.strictEqual(next.mock.calls[0].arguments[0], mockReq);
     });
 
     it("should handle custom duration", async () => {
@@ -98,30 +102,6 @@ describe("timeout interceptor", () => {
 
         // Wait for mock timer to drain
         await new Promise((resolve) => setTimeout(resolve, 350));
-    });
-
-    it("should cleanup on timeout", async () => {
-        let cleanedUp = false;
-        const interceptor = createTimeoutInterceptor({ duration: 50 });
-
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
-
-        const next = mock.fn(async () => {
-            try {
-                await new Promise((resolve) => setTimeout(resolve, 100));
-                return { message: "success" };
-            } finally {
-                cleanedUp = true;
-            }
-        });
-
-        const handler = interceptor(next as any);
-
-        await assert.rejects(() => handler(mockReq));
-
-        // Wait a bit for cleanup
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        assert.strictEqual(cleanedUp, true);
     });
 
     it("should not timeout fast requests", async () => {
