@@ -6,6 +6,11 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { Meter } from "@opentelemetry/api";
 import { AggregationTemporality, AggregationType, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import {
+	METRIC_RPC_SERVER_CALL_DURATION,
+	METRIC_RPC_SERVER_REQUEST_SIZE,
+	METRIC_RPC_SERVER_RESPONSE_SIZE,
+} from "@opentelemetry/semantic-conventions/incubating";
 import { createRpcClientMetrics, createRpcServerMetrics, RPC_DURATION_BUCKETS } from "../../src/metrics.ts";
 
 interface HistogramCall {
@@ -76,7 +81,7 @@ describe("metrics", () => {
 			createRpcServerMetrics(meter);
 
 			const durationCall = calls.find(
-				(c) => c.name === "rpc.server.call.duration",
+				(c) => c.name === METRIC_RPC_SERVER_CALL_DURATION,
 			);
 			assert.ok(durationCall, "should create rpc.server.call.duration");
 			assert.strictEqual(
@@ -92,7 +97,7 @@ describe("metrics", () => {
 			createRpcServerMetrics(meter);
 
 			const requestCall = calls.find(
-				(c) => c.name === "rpc.server.request.size",
+				(c) => c.name === METRIC_RPC_SERVER_REQUEST_SIZE,
 			);
 			assert.ok(requestCall, "should create rpc.server.request.size");
 			assert.strictEqual(
@@ -108,7 +113,7 @@ describe("metrics", () => {
 			createRpcServerMetrics(meter);
 
 			const responseCall = calls.find(
-				(c) => c.name === "rpc.server.response.size",
+				(c) => c.name === METRIC_RPC_SERVER_RESPONSE_SIZE,
 			);
 			assert.ok(responseCall, "should create rpc.server.response.size");
 			assert.strictEqual(
