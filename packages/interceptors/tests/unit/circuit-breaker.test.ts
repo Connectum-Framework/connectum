@@ -183,30 +183,18 @@ describe("circuit breaker interceptor", () => {
     });
 
     it("should skip streaming when skipStreaming=true", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 1, skipStreaming: true });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000, skipStreaming: true });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = createMockNext({ message: { result: "streaming" } });
-
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
-
-        assert.strictEqual((result.message as any).result, "streaming");
-        assert.strictEqual(next.mock.calls.length, 1);
-    });
-
-    it("should handle custom threshold", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 5, halfOpenAfter: 60_000 });
-
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
-
+        // A failing streaming call: with threshold 1 a single failure would open the circuit, and the
+        // next call would be refused with Unavailable. Skipped, the breaker never sees the failures,
+        // so every call reaches the downstream and gets its own error.
         const next = createMockNextError(Code.Internal, "Service error");
 
         const handler = interceptor(next as any);
 
-        // Should require 5 failures to open circuit
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 3; i++) {
             await assert.rejects(
                 () => handler(mockReq),
                 (err: unknown) => {
@@ -215,16 +203,41 @@ describe("circuit breaker interceptor", () => {
                 },
             );
         }
-
-        // 6th should be rejected with Unavailable
-        await assert.rejects(
-            () => handler(mockReq),
-            (err: unknown) => {
-                assertConnectError(err, Code.Unavailable);
-                return true;
-            },
-        );
+        assert.strictEqual(next.mock.calls.length, 3);
     });
+
+    for (const threshold of [2, 7]) {
+        it(`should handle custom threshold (${threshold}, the default is 5)`, async () => {
+            const interceptor = createCircuitBreakerInterceptor({ threshold, halfOpenAfter: 60_000 });
+
+            const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+
+            const next = createMockNextError(Code.Internal, "Service error");
+
+            const handler = interceptor(next as any);
+
+            // Exactly `threshold` failures reach the downstream and are passed on as they are
+            for (let i = 0; i < threshold; i++) {
+                await assert.rejects(
+                    () => handler(mockReq),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Internal);
+                        return true;
+                    },
+                );
+            }
+
+            // The next call is refused by the open circuit without reaching the downstream
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, threshold);
+        });
+    }
 
     it("should handle custom halfOpenAfter", async () => {
         const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 50 });
