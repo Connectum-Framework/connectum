@@ -161,13 +161,23 @@ describe("lifecycle listener safety", () => {
             });
             server.on("stopping", second);
             server.on("error", (err) => errors.push(err));
+            let hookRan = false;
+            server.onShutdown("probe", () => {
+                hookRan = true;
+            });
             await server.start();
+            const port = server.address?.port ?? 0;
+            assert.notStrictEqual(port, 0);
 
             await server.stop();
 
             assert.strictEqual(second.mock.calls.length, 1, "later listener still called");
             assert.strictEqual(server.state, ServerState.STOPPED);
             assert.deepStrictEqual(errors, [boom]);
+            // A failing listener is isolated: the shutdown itself still ran to the end,
+            // closing the transport and running the hooks.
+            assert.strictEqual(hookRan, true, "shutdown hooks must still run");
+            assert.strictEqual(await isPortClosed(port), true, "the port must still be released");
         });
 
         it("a throwing stop listener does not make stop() reject", async () => {
@@ -215,6 +225,8 @@ describe("lifecycle listener safety", () => {
             await server.stop();
 
             assert.strictEqual(once.mock.calls.length, 1);
+            // once() semantics: the listener is consumed by the emit, not merely called.
+            assert.strictEqual(server.listenerCount("stopping"), 0, "a once() listener must be removed after it fired");
         });
 
         it("a failed shutdown emits stopping, error, stop in that order and rejects stop()", async () => {
@@ -289,8 +301,14 @@ describe("lifecycle listener safety", () => {
             const onRejection = (reason: unknown) => rejections.push(reason);
             process.on("unhandledRejection", onRejection);
             const info = captureConsole("info");
+            let stopEmitted = false;
             try {
-                const stopped = new Promise<void>((resolve) => server.once("stop", () => resolve()));
+                const stopped = new Promise<void>((resolve) =>
+                    server.once("stop", () => {
+                        stopEmitted = true;
+                        resolve();
+                    }),
+                );
                 process.emit("SIGWINCH");
                 await Promise.race([stopped, tick(1500)]);
                 await tick();
@@ -299,6 +317,10 @@ describe("lifecycle listener safety", () => {
                 process.removeListener("unhandledRejection", onRejection);
             }
 
+            // Without proof that the signal really started the shutdown, an empty list
+            // of rejections would also be the outcome of a signal that did nothing.
+            assert.strictEqual(stopEmitted, true, "the signal must have driven the shutdown to its end");
+            assert.strictEqual(server.state, ServerState.STOPPED);
             assert.deepStrictEqual(rejections, []);
         });
     });
