@@ -352,6 +352,22 @@ describe("TransportManager", () => {
             assert.strictEqual(transport.server, null);
             assert.strictEqual(transport.address, null);
         });
+
+        it("should be idempotent: a second dispose() after a real listen/close/dispose cycle does not throw and leaves the state empty", async () => {
+            // A repeated dispose() is what a stop() that failed halfway and is
+            // retried does; it must not dereference the already-dropped server.
+            transport = new TransportManager();
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+            await transport.close();
+            transport.dispose();
+
+            assert.doesNotThrow(() => {
+                transport.dispose();
+            });
+
+            assert.strictEqual(transport.server, null);
+            assert.strictEqual(transport.address, null);
+        });
     });
 
     // -----------------------------------------------------------------
