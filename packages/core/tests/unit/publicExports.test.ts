@@ -18,11 +18,16 @@ import { EffectiveTransport, ServerState, TransportValidationMode } from "../../
 describe("public exports — const-object enums are runtime values from the barrel", () => {
     it("TransportValidationMode is a runtime object with its documented members", () => {
         assert.strictEqual(typeof TransportValidationMode, "object");
+        // The string values are the literals the transport guide tells users to write
+        // for the `transportValidation` option ("warn", "off"); "error" is the third
+        // severity listed by the published API reference.
         assert.deepStrictEqual({ ...TransportValidationMode }, { ERROR: "error", WARN: "warn", OFF: "off" });
     });
 
     it("EffectiveTransport is a runtime object with its documented members", () => {
         assert.strictEqual(typeof EffectiveTransport, "object");
+        // The values are the identifiers the published API reference lists for each
+        // transport (plaintext HTTP/1.1, h2c, TLS with HTTP/1.1 negotiable, TLS HTTP/2 only).
         assert.deepStrictEqual({ ...EffectiveTransport }, {
             PLAINTEXT_H1: "plaintext-h1",
             H2C: "h2c",

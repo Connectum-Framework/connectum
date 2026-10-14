@@ -3,11 +3,14 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { generateBufGenYaml } from "../../src/scaffold/bufConfig.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
+import { createServerOptions, importsOf, interfaceKeys, parseGenerated, propertyValue } from "../helpers/generatedCode.ts";
 
 const catalogConfig: ScaffoldConfig = { dir: "svc", name: "svc", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { catalog: true } };
 
@@ -51,10 +54,30 @@ describe("generateBufGenYaml", () => {
 });
 
 describe("generateServer with catalog", () => {
-    it("imports serviceCatalog and passes catalog to createServer", () => {
-        const s = generateServer(catalogConfig);
-        assert.match(s, /import \{ serviceCatalog \} from "#gen\/catalog\.gen\.ts"/);
-        assert.match(s, /catalog: serviceCatalog,/);
+    // The catalog plugin decides the file name and the export the generated server has to import;
+    // the expectation is read from the plugin, not from the generator under test.
+    it("imports the catalog the plugin emits and passes it as the catalog option of createServer", () => {
+        const plugin = readFileSync(join(import.meta.dirname, "../../../protoc-gen-catalog/src/plugin.ts"), "utf8");
+        assert.ok(plugin.includes('"catalog.gen.ts"'), "the plugin no longer emits catalog.gen.ts");
+        assert.ok(plugin.includes('f.export("const", "serviceCatalog")'), "the plugin no longer exports serviceCatalog");
+
+        const sf = parseGenerated(generateServer(catalogConfig), "server.ts");
+        assert.deepEqual(
+            importsOf(sf).filter((record) => record.from.includes("catalog")),
+            [{ from: "#gen/catalog.gen.ts", names: ["serviceCatalog"], typeOnly: false }],
+        );
+        const options = createServerOptions(sf);
+        assert.equal(propertyValue(options, "catalog")?.getText(), "serviceCatalog");
+        assert.ok(interfaceKeys("core/src/types.ts", "CreateServerOptions").has("catalog"));
+    });
+
+    it("passes no catalog when the module is off", () => {
+        const sf = parseGenerated(generateServer({ ...catalogConfig, modules: {} }), "server.ts");
+        assert.equal(propertyValue(createServerOptions(sf), "catalog"), undefined);
+        assert.deepEqual(
+            importsOf(sf).filter((record) => record.from.includes("catalog")),
+            [],
+        );
     });
 });
 

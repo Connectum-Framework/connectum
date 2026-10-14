@@ -9,7 +9,6 @@ import { assertConnectError, createMockNext, createMockRequest } from "@connectu
 import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
@@ -30,19 +29,26 @@ const DEFAULT_OPTIONS: GatewayAuthInterceptorOptions = {
 
 describe("gateway-auth-interceptor", () => {
     describe("createGatewayAuthInterceptor()", () => {
-        it("should throw when headerMapping.subject is empty", () => {
-            assert.throws(
-                () => createGatewayAuthInterceptor({
-                    ...DEFAULT_OPTIONS,
-                    headerMapping: { ...DEFAULT_OPTIONS.headerMapping, subject: "" },
-                }),
-                (err: unknown) => {
-                    assert.ok(err instanceof Error);
-                    assert.ok(err.message.includes("subject"));
-                    return true;
-                },
-            );
-        });
+        // A gateway interceptor without a subject mapping could never build an identity, so the
+        // factory fails at configuration time and names the offending option.
+        for (const [label, subject] of [
+            ["empty", ""],
+            ["missing", undefined],
+        ] as const) {
+            it(`should throw naming headerMapping.subject when it is ${label}`, () => {
+                assert.throws(
+                    () => createGatewayAuthInterceptor({
+                        ...DEFAULT_OPTIONS,
+                        headerMapping: { ...DEFAULT_OPTIONS.headerMapping, subject: subject as unknown as string },
+                    }),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        assert.ok(err.message.includes("headerMapping.subject"), err.message);
+                        return true;
+                    },
+                );
+            });
+        }
 
         it("should throw when expectedValues is empty", () => {
             assert.throws(
@@ -76,23 +82,29 @@ describe("gateway-auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 0);
         });
 
-        it("should reject request with wrong trust header value", async () => {
-            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
-            const next = createMockNext();
-            const handler = interceptor(next);
+        // The guide: a trust header whose value matches none of the configured values is
+        // Unauthenticated. The configured secret is "my-secret-123"; the near-misses below share a
+        // prefix, extend it, differ in case, or differ in length, so only an exact comparison rejects all.
+        for (const wrong of ["wrong-secret", "my-secret-12", "my-secret-1234", "my-secret-123 extra", "MY-SECRET-123", "y-secret-123", "x"]) {
+            it(`should reject trust header value ${JSON.stringify(wrong)} and never run the handler`, async () => {
+                const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+                const next = createMockNext();
+                const handler = interceptor(next);
 
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            req.header.set("x-gateway-secret", "wrong-secret");
-            req.header.set("x-user-id", "user-1");
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-gateway-secret", wrong);
+                req.header.set("x-user-id", "user-1");
 
-            await assert.rejects(
-                () => handler(req),
-                (err: unknown) => {
-                    assertConnectError(err, Code.Unauthenticated);
-                    return true;
-                },
-            );
-        });
+                await assert.rejects(
+                    () => handler(req),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        }
 
         it("should reject trusted request without subject header", async () => {
             const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
@@ -186,31 +198,69 @@ describe("gateway-auth-interceptor", () => {
             assert.strictEqual(capturedContext.type, "custom-gateway");
         });
 
-        it("should strip mapped headers after extraction", async () => {
-            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
-            const next = createMockNext();
-            const handler = interceptor(next);
+        it("should prefer the type header over defaultType when the gateway sends one", async () => {
+            const interceptor = createGatewayAuthInterceptor({
+                ...DEFAULT_OPTIONS,
+                defaultType: "custom-gateway",
+            });
 
+            let capturedContext: AuthContext | undefined;
+            const handler = interceptor((async () => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            }) as any);
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "user-1");
-            req.header.set("x-user-name", "Test");
+            req.header.set("x-auth-type", "oauth2");
 
             await handler(req);
 
-            // All mapped headers should be stripped
-            assert.strictEqual(req.header.get("x-gateway-secret"), null);
-            assert.strictEqual(req.header.get("x-user-id"), null);
-            assert.strictEqual(req.header.get("x-user-name"), null);
+            assert.strictEqual(capturedContext?.type, "oauth2");
         });
 
-        it("should strip custom headers from stripHeaders option", async () => {
+        // Every header the gateway contributes: all six mapped identity headers, the trust header
+        // and a deployment-specific extra. The guide says they are deleted from the admitted
+        // request, so the handler chain (next) must never observe any of them.
+        const GATEWAY_HEADERS = {
+            "x-gateway-secret": "my-secret-123",
+            "x-user-id": "user-1",
+            "x-user-name": "Test",
+            "x-user-roles": '["admin"]',
+            "x-user-scopes": "read write",
+            "x-auth-type": "oauth2",
+            "x-user-claims": '{"tenant":"acme"}',
+            "x-custom-internal": "should-be-stripped",
+        } as const;
+
+        it("should delete every mapped header and the trust header before the handler chain runs", async () => {
+            const interceptor = createGatewayAuthInterceptor({ ...DEFAULT_OPTIONS, stripHeaders: ["x-custom-internal"] });
+            const seenByNext: Record<string, string | null> = {};
+            const handler = interceptor((async (r: any) => {
+                for (const name of Object.keys(GATEWAY_HEADERS)) seenByNext[name] = r.header.get(name);
+                return { message: {} };
+            }) as any);
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            for (const [name, value] of Object.entries(GATEWAY_HEADERS)) req.header.set(name, value);
+
+            await handler(req);
+
+            for (const name of Object.keys(GATEWAY_HEADERS)) {
+                assert.strictEqual(seenByNext[name], null, `${name} must already be absent while the handler chain runs`);
+            }
+        });
+
+        it("should delete a header listed in stripHeaders before the handler chain runs", async () => {
             const interceptor = createGatewayAuthInterceptor({
                 ...DEFAULT_OPTIONS,
                 stripHeaders: ["x-custom-internal"],
             });
-            const next = createMockNext();
-            const handler = interceptor(next);
+            let seenByNext: string | null = "unset";
+            const handler = interceptor((async (r: any) => {
+                seenByNext = r.header.get("x-custom-internal");
+                return { message: {} };
+            }) as any);
 
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
@@ -219,22 +269,71 @@ describe("gateway-auth-interceptor", () => {
 
             await handler(req);
 
-            assert.strictEqual(req.header.get("x-custom-internal"), null);
+            assert.strictEqual(seenByNext, null);
         });
 
-        it("should skip auth for matching skipMethods", async () => {
+        it("should keep an unlisted extra header untouched (stripHeaders is an explicit list)", async () => {
+            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+            let seenByNext: string | null = null;
+            const handler = interceptor((async (r: any) => {
+                seenByNext = r.header.get("x-custom-internal");
+                return { message: {} };
+            }) as any);
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "my-secret-123");
+            req.header.set("x-user-id", "user-1");
+            req.header.set("x-custom-internal", "keep-me");
+
+            await handler(req);
+
+            assert.strictEqual(seenByNext, "keep-me");
+        });
+
+        it("should skip auth for matching skipMethods, strip spoofed identity headers and leave other methods protected", async () => {
             const interceptor = createGatewayAuthInterceptor({
                 ...DEFAULT_OPTIONS,
                 skipMethods: ["test.Service/Method"],
             });
-            const next = createMockNext();
+            let seenByNext: Record<string, string | null> = {};
+            let contextInNext: AuthContext | undefined;
+            const next = mock.fn(async (r: any) => {
+                seenByNext = Object.fromEntries(Object.keys(GATEWAY_HEADERS).map((name) => [name, r.header.get(name)]));
+                contextInNext = getAuthContext();
+                return { message: {} };
+            }) as any;
             const handler = interceptor(next);
 
+            // A caller on a skipped method may still try to smuggle an identity in: the guide says
+            // the mapped and trust headers are deleted on skipped methods too, and no identity is created.
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            // No trust header, no subject — should still pass
+            req.header.set("x-user-id", "spoofed-admin");
+            req.header.set("x-user-roles", '["admin"]');
+            req.header.set("x-gateway-secret", "attacker-guess");
 
             await handler(req);
 
+            assert.strictEqual(next.mock.calls.length, 1);
+            assert.strictEqual(contextInNext, undefined, "a skipped method must not receive an identity");
+            for (const name of Object.keys(GATEWAY_HEADERS)) {
+                assert.strictEqual(seenByNext[name], null, `${name} must be deleted on a skipped method`);
+            }
+
+            // Neighbours of the skipped method are still protected.
+            for (const other of [
+                { service: "test.Service", method: "OtherMethod" },
+                { service: "other.Service", method: "Method" },
+            ]) {
+                const otherReq = createMockRequest(other);
+                otherReq.header.set("x-user-id", "spoofed-admin");
+                await assert.rejects(
+                    () => handler(otherReq),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+            }
             assert.strictEqual(next.mock.calls.length, 1);
         });
 
@@ -378,13 +477,39 @@ describe("gateway-auth-interceptor", () => {
             const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
             req.header.set("x-gateway-secret", "my-secret-123");
             req.header.set("x-user-id", "prop-user");
+            req.header.set("x-user-name", "Prop User");
             req.header.set("x-user-roles", '["admin"]');
+            req.header.set("x-user-scopes", "read write");
+            req.header.set("x-user-claims", '{"tenant":"acme"}');
+            req.header.set("x-auth-type", "oauth2");
 
             await handler(req);
 
-            // Standard auth headers should be set
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "prop-user");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.ROLES), JSON.stringify(["admin"]));
+            // The verified identity is written back under the documented standard names.
+            assert.strictEqual(req.header.get("x-auth-subject"), "prop-user");
+            assert.strictEqual(req.header.get("x-auth-type"), "oauth2");
+            assert.strictEqual(req.header.get("x-auth-name"), "Prop User");
+            assert.strictEqual(req.header.get("x-auth-roles"), '["admin"]');
+            assert.strictEqual(req.header.get("x-auth-scopes"), "read write");
+            assert.strictEqual(req.header.get("x-auth-claims"), '{"tenant":"acme"}');
+            // The gateway's own headers, trust secret included, are not restored.
+            assert.strictEqual(req.header.get("x-gateway-secret"), null);
+            assert.strictEqual(req.header.get("x-user-id"), null);
+        });
+
+        it("should not write x-auth-* identity headers by default", async () => {
+            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+            const handler = interceptor(createMockNext());
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "my-secret-123");
+            req.header.set("x-user-id", "prop-user");
+
+            await handler(req);
+
+            for (const name of ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"]) {
+                assert.strictEqual(req.header.get(name), null, `${name} must stay absent without propagateHeaders`);
+            }
         });
     });
 });

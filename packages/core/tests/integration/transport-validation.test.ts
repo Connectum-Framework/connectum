@@ -78,7 +78,14 @@ describe("Server.start() transport validation", () => {
         await server.stop();
     });
 
-    it("starts on plaintext HTTP/1.1 with transportValidation: warn", async () => {
+    it("starts on plaintext HTTP/1.1 with transportValidation: warn, logging one warning that names the bidi method", async () => {
+        // The warning has no channel other than the console, so it is read
+        // from console.warn (replaced by hand: mock.method is absent under Bun).
+        const original = console.warn;
+        const warnings: string[] = [];
+        console.warn = (...args: unknown[]): void => {
+            warnings.push(args.map(String).join(" "));
+        };
         const server = createServer({
             services: [bidiUserService()],
             port: 0,
@@ -86,9 +93,49 @@ describe("Server.start() transport validation", () => {
             transportValidation: "warn",
         });
 
-        await server.start();
-        assert.ok(server.isRunning);
-        await server.stop();
+        try {
+            await server.start();
+        } finally {
+            console.warn = original;
+        }
+        try {
+            assert.ok(server.isRunning);
+            // "log once, start anyway": exactly one diagnostic, the same one the "error" mode would have thrown
+            const diagnostics = warnings.filter((w) => w.includes(TRANSPORT_VALIDATION_ERROR_CODE));
+            assert.strictEqual(diagnostics.length, 1);
+            assert.ok(diagnostics[0]?.includes("streaming.v1.StreamingService.Bidi"));
+        } finally {
+            await server.stop();
+        }
+    });
+
+    it("starts on plaintext HTTP/1.1 with transportValidation: off, logging nothing", async () => {
+        const original = console.warn;
+        const warnings: string[] = [];
+        console.warn = (...args: unknown[]): void => {
+            warnings.push(args.map(String).join(" "));
+        };
+        const server = createServer({
+            services: [bidiUserService()],
+            port: 0,
+            interceptors: [],
+            transportValidation: "off",
+        });
+
+        try {
+            await server.start();
+        } finally {
+            console.warn = original;
+        }
+        try {
+            assert.ok(server.isRunning);
+            assert.deepStrictEqual(
+                warnings.filter((w) => w.includes(TRANSPORT_VALIDATION_ERROR_CODE)),
+                [],
+            );
+        } finally {
+            await server.stop();
+        }
     });
 
     // The check is about methods the server serves. A mounted unary service

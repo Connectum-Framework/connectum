@@ -118,9 +118,22 @@ describe("validateTransport", () => {
         assert.strictEqual(warnings.length, 0);
     });
 
-    it("never fires for unary/server-streaming-only services on any transport", () => {
-        assert.strictEqual(validateTransport({ services: UNARY_ONLY.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "error" }), null);
-    });
+    // Every transport and every mode: without a bidi method there is nothing
+    // to report, neither an error nor a warning — in particular on TLS that
+    // also negotiates HTTP/1.1, where a bidi method would produce a warning.
+    for (const transport of Object.values(EffectiveTransport)) {
+        for (const mode of ["error", "warn", "off"] as const) {
+            it(`never fires for unary/server-streaming-only services on ${transport} in ${mode} mode`, () => {
+                let result: TransportValidationError | null = null;
+                const warnings = captureWarnings(() => {
+                    result = validateTransport({ services: UNARY_ONLY.services, transport, mode });
+                });
+
+                assert.strictEqual(result, null);
+                assert.deepStrictEqual(warnings, []);
+            });
+        }
+    }
 
     it("mode off skips the check entirely", () => {
         assert.strictEqual(validateTransport({ services: WITH_BIDI.services, transport: EffectiveTransport.PLAINTEXT_H1, mode: "off" }), null);
@@ -134,6 +147,14 @@ describe("validateTransport", () => {
 
         assert.strictEqual(result, null);
         assert.strictEqual(warnings.length, 1);
+        // The logged text is the plaintext-HTTP/1.1 diagnostic that "error"
+        // mode would throw: stable code, the affected method and both fixes.
+        const text = String(warnings[0]?.[0]);
+        assert.ok(text.includes(TRANSPORT_VALIDATION_ERROR_CODE));
+        assert.ok(text.includes("acme.v1.ScannerService.StreamCodes"));
+        assert.ok(text.includes("plaintext HTTP/1.1"));
+        assert.ok(text.includes("allowHTTP1: false"));
+        assert.ok(text.includes("TLS"));
     });
 
     it("client-streaming alone does NOT trigger validation (works over HTTP/1.1)", () => {
@@ -147,9 +168,8 @@ describe("formatTransportValidationMessage", () => {
 
         // Stable code for log searchability
         assert.ok(message.includes(TRANSPORT_VALIDATION_ERROR_CODE));
-        // Offending method with kind
-        assert.ok(message.includes("acme.v1.ScannerService.StreamCodes"));
-        assert.ok(message.includes("bidi_streaming"));
+        // Offending method with kind, on its own list line as the documented startup diagnostic shows it
+        assert.ok(message.includes("- acme.v1.ScannerService.StreamCodes (bidi_streaming)"));
         // Effective transport mode
         assert.ok(message.includes("plaintext HTTP/1.1"));
         // Both remediations

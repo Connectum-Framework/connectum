@@ -126,12 +126,22 @@ describe("ctx.call — signal cascade", () => {
         const startedPromise = new Promise<void>((resolve) => {
             started = resolve;
         });
+        // Whether the abort reached the remote handler is read from its own
+        // signal. If the cascade is broken the handler gives up by itself after
+        // a second with a different code, so the test fails on an assertion
+        // instead of waiting for the runner's timeout.
+        let remoteSawAbort = false;
         const blockingRemote = createRouterTransport((router) => {
             router.service(StreamingService, {
                 echo: (_req, ctx) =>
                     new Promise<Item>((_resolve, reject) => {
                         started();
-                        ctx.signal.addEventListener("abort", () => reject(new ConnectError("aborted by inbound signal", Code.Canceled)));
+                        const giveUp = setTimeout(() => reject(new ConnectError("the abort never reached the remote handler", Code.Aborted)), 1000);
+                        ctx.signal.addEventListener("abort", () => {
+                            remoteSawAbort = true;
+                            clearTimeout(giveUp);
+                            reject(new ConnectError("aborted by inbound signal", Code.Canceled));
+                        });
                     }),
                 async *server() {},
                 client: async () => create(CountSchema, { total: 0 }),
@@ -163,6 +173,7 @@ describe("ctx.call — signal cascade", () => {
         controller.abort();
 
         await assert.rejects(pending);
+        assert.strictEqual(remoteSawAbort, true, "the inbound abort must reach the downstream handler's signal");
         assert.ok(captured instanceof ConnectError, `inner error must be a ConnectError, got: ${String(captured)}`);
         assert.strictEqual((captured as ConnectError).code, Code.Canceled, "cascade must cancel the downstream call");
     });
@@ -401,6 +412,47 @@ describe("ctx.call — server shutdown reaches every hop of a local chain", () =
         await server.stop();
         assert.strictEqual(inner.signal?.aborted, true, "the inner hop must see the shutdown");
         await assert.rejects(pending, (err: unknown) => err instanceof ConnectError && err.code === Code.Canceled);
+    });
+});
+
+describe("ctx.call — shutdown reaches the inner hop directly", () => {
+    // The inner call is given its own signal, so it does not inherit the outer
+    // call's: the only way stop() can abort the inner handler is through the
+    // shutdown signal the in-process transport itself carries.
+    it("aborts an inner local handler whose call has its own unrelated signal when stop() runs", async () => {
+        let onInner: () => void = () => {};
+        const innerEntered = new Promise<void>((resolve) => {
+            onInner = resolve;
+        });
+        const inner: { signal: AbortSignal | null } = { signal: null };
+        const unrelated = new AbortController();
+        const server = createServer({
+            services: [
+                defineService(EchoService, {
+                    echo: (_req, ctx) =>
+                        new Promise((_resolve, reject) => {
+                            inner.signal = ctx.signal;
+                            onInner();
+                            ctx.signal.addEventListener("abort", () => reject(ConnectError.from(ctx.signal.reason)), { once: true });
+                        }),
+                    secureEcho: async (req, ctx) => {
+                        const res = await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: req.message }), { signal: unrelated.signal });
+                        return create(EchoResponseSchema, { message: res.message, timestamp: 0n });
+                    },
+                    rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+                }),
+            ],
+            catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+            port: 0,
+        });
+        await server.start();
+        const pending = server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        pending.catch(() => {});
+        await innerEntered;
+        await server.stop();
+        assert.strictEqual(unrelated.signal.aborted, false, "the unrelated signal was never aborted");
+        assert.strictEqual(inner.signal?.aborted, true, "the inner hop must see the shutdown through its own transport");
+        await assert.rejects(pending);
     });
 });
 

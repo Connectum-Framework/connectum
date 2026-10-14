@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import { defineLazyService, defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { HTTP2_FRAME_SETTINGS, HTTP2_PREFACE, settlesWithin, stubbornClient } from "../helpers/rawClients.ts";
 
 const MAX_TIMER_MS = 2_147_483_647;
 const MAX_READ_MAX_BYTES = 4_294_967_295;
@@ -38,6 +39,74 @@ describe("shutdown.timeout", () => {
         assert.doesNotThrow(serverWith({}));
         assert.doesNotThrow(serverWith({ timeout: undefined }));
         assert.doesNotThrow(() => createServer({ services: [] }));
+    });
+
+    describe("effect on server.stop()", () => {
+        /** Delays handed to `setTimeout` while `fn` runs; patched by hand because `mock.method` does not exist under Bun. */
+        async function recordTimerDelays(fn: () => Promise<void>): Promise<number[]> {
+            const delays: number[] = [];
+            const original = globalThis.setTimeout;
+            globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+                delays.push(delay ?? 0);
+                return original(handler as () => void, delay, ...args);
+            }) as typeof globalThis.setTimeout;
+            try {
+                await fn();
+            } finally {
+                globalThis.setTimeout = original;
+            }
+            return delays;
+        }
+
+        for (const [name, shutdown] of [
+            ["no shutdown option", undefined],
+            ["an empty shutdown option", {}],
+            ["an undefined timeout", { timeout: undefined }],
+        ] as const) {
+            it(`waits for the documented 30000 ms graceful phase with ${name}`, async () => {
+                const server = createServer({ services: [], port: 0, host: "127.0.0.1", ...(shutdown === undefined ? {} : { shutdown: shutdown as never }) });
+                await server.start();
+
+                const delays = await recordTimerDelays(() => server.stop());
+
+                assert.ok(delays.includes(30_000), `no 30000 ms timer was armed, saw ${JSON.stringify(delays)}`);
+            });
+        }
+
+        it("a configured timeout replaces the default graceful phase", async () => {
+            const server = createServer({ services: [], port: 0, host: "127.0.0.1", shutdown: { timeout: 12_345 } });
+            await server.start();
+
+            const delays = await recordTimerDelays(() => server.stop());
+
+            assert.ok(delays.includes(12_345), `the configured timeout was not armed, saw ${JSON.stringify(delays)}`);
+            assert.ok(!delays.includes(30_000), "the default must not be armed next to the configured value");
+        });
+
+        it("0 means the graceful phase is not waited for, even while a client holds its connection open", async () => {
+            const server = createServer({ services: [], port: 0, host: "127.0.0.1", allowHTTP1: false, shutdown: { timeout: 0, forceCloseOnTimeout: false } });
+            await server.start();
+            let settings: () => void = () => {};
+            const settingsSeen = new Promise<void>((resolve) => {
+                settings = resolve;
+            });
+            const client = await stubbornClient({
+                port: server.address?.port ?? 0,
+                payload: HTTP2_PREFACE,
+                onHttp2Frame: (type) => {
+                    if (type === HTTP2_FRAME_SETTINGS) settings();
+                },
+            });
+            try {
+                await settingsSeen;
+
+                const stopped = server.stop();
+
+                assert.strictEqual(await settlesWithin(stopped, 2000), true, "stop() waited for a client that never leaves although the timeout is 0");
+            } finally {
+                client.destroy();
+            }
+        });
     });
 });
 

@@ -143,6 +143,28 @@ describe("Server.client (unified auto-routing)", () => {
         assert.strictEqual(r2.message, "echo:b");
     });
 
+    // Every router the server builds calls each protocol's `register` once, and
+    // each in-process transport builds its own router. A constant count after
+    // the first local call therefore means all later clients share that one
+    // transport; a client that built a new transport would add a router.
+    function countingRegisterProtocol() {
+        const state = { registers: 0, name: "counting", register: () => void state.registers++ };
+        return state;
+    }
+
+    it("repeated client() calls share one local transport: later clients build no further router", async () => {
+        const protocol = countingRegisterProtocol();
+        const server = createServer({ services: [makeEchoRoutes()], protocols: [protocol] });
+
+        await server.client(EchoService).echo(create(EchoRequestSchema, { message: "a" }));
+        const routersAfterFirstCall = protocol.registers;
+        await server.client(EchoService).echo(create(EchoRequestSchema, { message: "b" }));
+        await server.client(EchoService).echo(create(EchoRequestSchema, { message: "c" }));
+
+        assert.ok(routersAfterFirstCall >= 1);
+        assert.strictEqual(protocol.registers, routersAfterFirstCall);
+    });
+
     it("repeated client() calls for a remote service consistently use the resolver (cached)", async () => {
         let resolverCalls = 0;
         const remote = makeRemoteTransport("R");
@@ -184,6 +206,37 @@ describe("Server.client (unified auto-routing)", () => {
         const b = await viaLocalClient.echo(create(EchoRequestSchema, { message: "p" }));
 
         assert.strictEqual(a.message, b.message);
+    });
+
+    it("server.client(LocalService) and server.localClient(LocalService) fail the same way: same code, message and metadata", async () => {
+        const server = createServer({
+            services: [
+                defineService(EchoService, {
+                    echo: () => {
+                        throw new ConnectError("no such item", Code.NotFound, { "x-detail": "42" });
+                    },
+                    secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+                    rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+                }),
+            ],
+        });
+        const failures: ConnectError[] = [];
+        for (const client of [server.client(EchoService), server.localClient(EchoService)]) {
+            try {
+                await client.echo(create(EchoRequestSchema, { message: "p" }));
+                assert.fail("expected the call to fail");
+            } catch (err) {
+                failures.push(ConnectError.from(err));
+            }
+        }
+
+        const [viaClient, viaLocalClient] = failures as [ConnectError, ConnectError];
+        assert.strictEqual(viaClient.code, Code.NotFound);
+        assert.strictEqual(viaClient.code, viaLocalClient.code);
+        assert.strictEqual(viaClient.rawMessage, "no such item");
+        assert.strictEqual(viaClient.rawMessage, viaLocalClient.rawMessage);
+        assert.strictEqual(viaClient.metadata.get("x-detail"), "42");
+        assert.strictEqual(viaLocalClient.metadata.get("x-detail"), "42");
     });
 });
 

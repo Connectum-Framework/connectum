@@ -9,7 +9,6 @@ import { assertConnectError, createMockNext, createMockRequest } from "@connectu
 import { getAuthContext } from "../../src/context.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
@@ -159,12 +158,39 @@ describe("session-auth-interceptor", () => {
 				skipMethods: ["test.Service/Method"],
 			});
 
-			const next = createMockNext();
+			let identityHeaderSeenByNext: string | null = "unset";
+			let contextSeenByNext: AuthContext | undefined;
+			const next = mock.fn(async (r: any) => {
+				identityHeaderSeenByNext = r.header.get("x-auth-subject");
+				contextSeenByNext = getAuthContext();
+				return { message: {} };
+			}) as any;
 			const handler = interceptor(next);
 			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+			// A client-supplied identity header must not survive on a skipped method either.
+			req.header.set("x-auth-subject", "spoofed-admin");
 
 			await handler(req);
 
+			assert.strictEqual(next.mock.calls.length, 1);
+			assert.strictEqual(verifySession.mock.calls.length, 0);
+			assert.strictEqual(identityHeaderSeenByNext, null, "the spoofed identity header must be removed before the handler chain");
+			assert.strictEqual(contextSeenByNext, undefined, "a skipped method gets no identity");
+
+			// Everything outside skipMethods still needs credentials and never reaches the backend or the handler.
+			for (const other of [
+				{ service: "test.Service", method: "OtherMethod" },
+				{ service: "other.Service", method: "Method" },
+			]) {
+				await assert.rejects(
+					() => handler(createMockRequest(other)),
+					(err: unknown) => {
+						assertConnectError(err, Code.Unauthenticated);
+						return true;
+					},
+					`${other.service}/${other.method} must not be skipped`,
+				);
+			}
 			assert.strictEqual(next.mock.calls.length, 1);
 			assert.strictEqual(verifySession.mock.calls.length, 0);
 		});
@@ -191,6 +217,103 @@ describe("session-auth-interceptor", () => {
 			req2.header.set("authorization", "Bearer cached-token");
 			await handler(req2);
 			assert.strictEqual(verifySession.mock.calls.length, 1); // Still 1
+		});
+
+		// The guide: cached identities are keyed by the extracted session token. Two callers with
+		// different tokens must each get their own identity, never the other's.
+		it("should cache per session token and never serve one caller the identity cached for another", async () => {
+			const sessions: Record<string, typeof MOCK_SESSION> = {
+				"token-alice": { ...MOCK_SESSION, user: { id: "alice", name: "Alice", email: "alice@example.com" } },
+				"token-bob": { ...MOCK_SESSION, user: { id: "bob", name: "Bob", email: "bob@example.com" } },
+			};
+			const verifySession = mock.fn(async (token: string) => sessions[token]);
+			const interceptor = createSessionAuthInterceptor({
+				verifySession: verifySession as any,
+				mapSession: MOCK_MAP_SESSION,
+				cache: { ttl: 60_000 },
+			});
+
+			const subjectSeenFor = async (token: string): Promise<string | undefined> => {
+				let seen: string | undefined;
+				const handler = interceptor((async () => {
+					seen = getAuthContext()?.subject;
+					return { message: {} };
+				}) as any);
+				const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+				req.header.set("authorization", `Bearer ${token}`);
+				await handler(req);
+				return seen;
+			};
+
+			assert.strictEqual(await subjectSeenFor("token-alice"), "alice");
+			assert.strictEqual(await subjectSeenFor("token-bob"), "bob", "bob must not receive alice's cached identity");
+			assert.strictEqual(await subjectSeenFor("token-alice"), "alice");
+			assert.strictEqual(await subjectSeenFor("token-bob"), "bob");
+			// Each token was verified once; the repeats were served from the cache.
+			assert.strictEqual(verifySession.mock.calls.length, 2);
+		});
+
+		it("should verify again once the cache ttl has elapsed", async () => {
+			const verifySession = mock.fn(async () => MOCK_SESSION);
+			const interceptor = createSessionAuthInterceptor({
+				verifySession: verifySession as any,
+				mapSession: MOCK_MAP_SESSION,
+				cache: { ttl: 60_000 },
+			});
+			const handler = interceptor(createMockNext());
+			const call = async () => {
+				const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+				req.header.set("authorization", "Bearer ttl-token");
+				await handler(req);
+			};
+
+			const originalNow = Date.now;
+			let currentTime = originalNow();
+			Date.now = () => currentTime;
+			try {
+				await call();
+				currentTime += 59_000;
+				await call();
+				assert.strictEqual(verifySession.mock.calls.length, 1, "still inside the ttl: served from the cache");
+
+				currentTime += 2_000;
+				await call();
+				assert.strictEqual(verifySession.mock.calls.length, 2, "past the ttl: the backend is asked again");
+			} finally {
+				Date.now = originalNow;
+			}
+		});
+
+		it("should bypass the cache once the mapped identity's own expiresAt has passed", async () => {
+			const verifySession = mock.fn(async () => MOCK_SESSION);
+			const originalNow = Date.now;
+			let currentTime = originalNow();
+			const interceptor = createSessionAuthInterceptor({
+				verifySession: verifySession as any,
+				// The identity expires in 30 s, well before the 10-minute cache ttl.
+				mapSession: (session) => ({ ...MOCK_MAP_SESSION(session), expiresAt: new Date(currentTime + 30_000) }),
+				cache: { ttl: 600_000 },
+			});
+			const handler = interceptor(createMockNext());
+			const call = async () => {
+				const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+				req.header.set("authorization", "Bearer expiring-token");
+				await handler(req);
+			};
+
+			Date.now = () => currentTime;
+			try {
+				await call();
+				currentTime += 10_000;
+				await call();
+				assert.strictEqual(verifySession.mock.calls.length, 1, "identity still valid: cached");
+
+				currentTime += 30_000;
+				await call();
+				assert.strictEqual(verifySession.mock.calls.length, 2, "identity expired: the cached copy must not be reused");
+			} finally {
+				Date.now = originalNow;
+			}
 		});
 
 		it("should use custom extractToken", async () => {
@@ -232,8 +355,28 @@ describe("session-auth-interceptor", () => {
 
 			await handler(req);
 
-			assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "user-42");
-			assert.strictEqual(req.header.get(AUTH_HEADERS.TYPE), "session");
+			// Documented header names of the auth context guide, spelled out rather than read from the implementation.
+			assert.strictEqual(req.header.get("x-auth-subject"), "user-42");
+			assert.strictEqual(req.header.get("x-auth-type"), "session");
+			assert.strictEqual(req.header.get("x-auth-name"), "John Doe");
+		});
+
+		it("should not write identity headers by default", async () => {
+			const interceptor = createSessionAuthInterceptor({
+				verifySession: (async () => MOCK_SESSION) as any,
+				mapSession: MOCK_MAP_SESSION,
+			});
+			const next = createMockNext();
+			const handler = interceptor(next);
+			const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+			req.header.set("authorization", "Bearer token");
+
+			await handler(req);
+
+			assert.strictEqual(next.mock.calls.length, 1);
+			for (const name of ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"]) {
+				assert.strictEqual(req.header.get(name), null, `${name} must stay absent unless propagateHeaders is enabled`);
+			}
 		});
 	});
 });

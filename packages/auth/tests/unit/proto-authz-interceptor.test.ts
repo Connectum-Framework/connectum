@@ -240,6 +240,9 @@ describe("proto-authz-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 1);
         });
 
+        // Documented in the guide's decision flow: the first method-matching rule without `requires`
+        // matches unconditionally, even without context (the method-mismatch and deny counterparts
+        // are covered in the "fallback rules" group).
         it("should allow via unconditional rule without auth context", async () => {
             const service = createFakeService();
             const method = createFakeMethod(service, "PublicFallback");
@@ -302,6 +305,169 @@ describe("proto-authz-interceptor", () => {
                     return true;
                 },
             );
+        });
+    });
+
+    // The guide's decision flow, stage "programmatic rules": the first method-matching rule without
+    // `requires` matches unconditionally, even without an auth context; a rule with `requires` is
+    // skipped when its requirements fail; a matching deny rule refuses.
+    describe("fallback rules (decision flow)", () => {
+        const roleRule = (effect: "allow" | "deny", role: string): AuthzRule => ({
+            name: `${effect}-${role}`,
+            methods: ["test.v1.TestService/*"],
+            requires: { roles: [role] },
+            effect,
+        });
+
+        it("should skip a fallback rule whose requirements are not met and apply defaultPolicy", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "FallbackMethod");
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules: [roleRule("allow", "superadmin")] });
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => authContextStorage.run(defaultContext, () => interceptor(next)(createProtoMockRequest(service, method))),
+                (err: unknown) => {
+                    assertConnectError(err, Code.PermissionDenied, "default policy");
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("should apply a fallback deny rule with requirements only to callers who satisfy them", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "FallbackMethod");
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow", rules: [roleRule("deny", "banned")] });
+
+            // Not banned: the deny rule is skipped and the allow default applies.
+            const nextOk = createMockNext();
+            await authContextStorage.run(defaultContext, () => interceptor(nextOk)(createProtoMockRequest(service, method)));
+            assert.strictEqual(nextOk.mock.calls.length, 1);
+
+            // Banned: the deny rule matches and refuses.
+            const nextBanned = createMockNext();
+            await assert.rejects(
+                () => authContextStorage.run({ ...defaultContext, roles: ["banned"] }, () => interceptor(nextBanned)(createProtoMockRequest(service, method))),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.strictEqual(err.name, "AuthzDeniedError");
+                    assert.strictEqual((err as { code?: unknown }).code, Code.PermissionDenied);
+                    return true;
+                },
+            );
+            assert.strictEqual(nextBanned.mock.calls.length, 0);
+        });
+
+        it("should not apply a fallback rule written for a different method", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "FallbackMethod");
+            const rules: AuthzRule[] = [{ name: "other-method", methods: ["test.v1.TestService/SomethingElse", "other.v1.OtherService/*"], effect: "allow" }];
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", rules });
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => interceptor(next)(createProtoMockRequest(service, method)),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("should refuse with a matching unconditional deny rule even without an auth context", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "FallbackMethod");
+            const rules: AuthzRule[] = [{ name: "block-all", methods: ["test.v1.TestService/FallbackMethod"], effect: "deny" }];
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow", rules });
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => interceptor(next)(createProtoMockRequest(service, method)),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.strictEqual(err.name, "AuthzDeniedError");
+                    assert.strictEqual((err as { code?: unknown }).code, Code.PermissionDenied);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+    });
+
+    // The guide's decision flow, stage "authorize callback": it receives the context and the method,
+    // `false` is PermissionDenied and is terminal (defaultPolicy is not consulted afterwards), a
+    // missing context is Unauthenticated, and an earlier decision makes the callback unnecessary.
+    describe("authorize callback (decision flow)", () => {
+        it("should pass the auth context and the called method to authorize", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "CallbackMethod");
+            const authorize = mock.fn(async (_ctx: AuthContext, _req: { service: string; method: string }) => true);
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny", authorize });
+
+            await authContextStorage.run(defaultContext, () => interceptor(createMockNext())(createProtoMockRequest(service, method)));
+
+            assert.strictEqual(authorize.mock.calls.length, 1);
+            const [ctx, called] = authorize.mock.calls[0]!.arguments;
+            assert.strictEqual(ctx.subject, "user-1");
+            assert.deepStrictEqual(called, { service: "test.v1.TestService", method: "CallbackMethod" });
+        });
+
+        for (const defaultPolicy of ["deny", "allow"] as const) {
+            it(`should refuse with PermissionDenied when authorize returns false (defaultPolicy ${defaultPolicy})`, async () => {
+                const service = createFakeService();
+                const method = createFakeMethod(service, "CallbackMethod");
+                const authorize = mock.fn(async () => false);
+                const interceptor = createProtoAuthzInterceptor({ defaultPolicy, authorize });
+                const next = createMockNext();
+
+                await assert.rejects(
+                    () => authContextStorage.run(defaultContext, () => interceptor(next)(createProtoMockRequest(service, method))),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.PermissionDenied);
+                        return true;
+                    },
+                );
+                assert.strictEqual(authorize.mock.calls.length, 1);
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        }
+
+        it("should throw Unauthenticated without calling authorize when there is no auth context", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "CallbackMethod");
+            const authorize = mock.fn(async () => true);
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow", authorize });
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => interceptor(next)(createProtoMockRequest(service, method)),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(authorize.mock.calls.length, 0);
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("should not call authorize when a proto option or a rule already decided", async () => {
+            const authorize = mock.fn(async () => false);
+            const service = createFakeService();
+
+            const protoMethod = createFakeMethod(service, "ProtoDecided", createMethodOptions({ policy: "allow" }));
+            const nextProto = createMockNext();
+            await authContextStorage.run(defaultContext, () => createProtoAuthzInterceptor({ authorize })(nextProto)(createProtoMockRequest(service, protoMethod)));
+            assert.strictEqual(nextProto.mock.calls.length, 1);
+
+            const ruleMethod = createFakeMethod(service, "RuleDecided");
+            const rules: AuthzRule[] = [{ name: "allow-all", methods: ["*"], effect: "allow" }];
+            const nextRule = createMockNext();
+            await authContextStorage.run(defaultContext, () => createProtoAuthzInterceptor({ authorize, rules })(nextRule)(createProtoMockRequest(service, ruleMethod)));
+            assert.strictEqual(nextRule.mock.calls.length, 1);
+
+            assert.strictEqual(authorize.mock.calls.length, 0);
         });
     });
 

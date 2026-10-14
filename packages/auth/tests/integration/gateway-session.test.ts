@@ -14,7 +14,6 @@ import { getAuthContext } from "../../src/context.ts";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
@@ -178,6 +177,8 @@ describe("Gateway + Session Auth Integration", () => {
                     subject: "x-user-id",
                     name: "x-user-name",
                     roles: "x-user-roles",
+                    scopes: "x-user-scopes",
+                    claims: "x-user-claims",
                 },
                 trustSource: {
                     header: "x-gateway-secret",
@@ -191,17 +192,29 @@ describe("Gateway + Session Auth Integration", () => {
             headers.set("x-user-id", "prop-user");
             headers.set("x-user-name", "Prop User");
             headers.set("x-user-roles", '["admin"]');
+            headers.set("x-user-scopes", "read write");
+            headers.set("x-user-claims", '{"tenant":"acme"}');
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
-            const next = mock.fn(async () => ({ message: {} }));
+            // Guide: the gateway's own headers and the trust header are deleted, and the verified
+            // identity is written back under the standard x-auth-* names (not the trust secret).
+            // The downstream handler's view is what matters, so it is captured inside next().
+            let seen: Record<string, string> = {};
+            const next = mock.fn(async (r: { header: Headers }) => {
+                seen = Object.fromEntries(r.header);
+                return { message: {} };
+            });
             const handler = gatewayAuth(next as any);
             await handler(req);
 
-            // Standard auth headers should be set for downstream
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "prop-user");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.NAME), "Prop User");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.ROLES), JSON.stringify(["admin"]));
-            assert.strictEqual(req.header.get(AUTH_HEADERS.TYPE), "gateway");
+            assert.deepStrictEqual(seen, {
+                "x-auth-subject": "prop-user",
+                "x-auth-type": "gateway",
+                "x-auth-name": "Prop User",
+                "x-auth-roles": '["admin"]',
+                "x-auth-scopes": "read write",
+                "x-auth-claims": '{"tenant":"acme"}',
+            });
         });
 
         it("should propagate session auth headers with name", async () => {
@@ -215,25 +228,37 @@ describe("Gateway + Session Auth Integration", () => {
                         subject: s.user.id,
                         name: s.user.name,
                         roles: ["user"],
-                        scopes: [],
-                        claims: {},
+                        scopes: ["profile", "email"],
+                        claims: { org_id: "org-7", email: "s@example.com", secret: "hide-me" },
                         type: "session",
                     };
                 },
                 propagateHeaders: true,
+                // Guide: propagatedClaims filters which claims are written into x-auth-claims.
+                propagatedClaims: ["org_id", "email"],
             });
 
             const headers = new Headers();
             headers.set("authorization", "Bearer token");
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
 
-            const next = mock.fn(async () => ({ message: {} }));
+            let seen: Record<string, string> = {};
+            const next = mock.fn(async (r: { header: Headers }) => {
+                seen = Object.fromEntries(r.header);
+                return { message: {} };
+            });
             const handler = sessionAuth(next as any);
             await handler(req);
 
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "s-user");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.NAME), "Session Name");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.TYPE), "session");
+            assert.deepStrictEqual(seen, {
+                authorization: "Bearer token",
+                "x-auth-subject": "s-user",
+                "x-auth-type": "session",
+                "x-auth-name": "Session Name",
+                "x-auth-roles": '["user"]',
+                "x-auth-scopes": "profile email",
+                "x-auth-claims": '{"org_id":"org-7","email":"s@example.com"}',
+            });
         });
     });
 });

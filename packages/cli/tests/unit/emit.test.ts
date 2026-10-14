@@ -30,14 +30,30 @@ describe("assertSafeRelativePath", () => {
         assert.throws(() => assertSafeRelativePath("C:\\Windows\\x"), /Unsafe emit path/);
     });
 
-    it("rejects a UNC path", () => {
+    // A UNC path names a network share, so it is absolute on Windows. Its segments contain no
+    // "..", no leading "/" and (apart from the empty ones) nothing else suspicious, so only an
+    // explicit UNC rule keeps it out; the long-path prefix forms are the same escape.
+    it("rejects a UNC path, including the long-path prefix forms", () => {
         assert.throws(() => assertSafeRelativePath("\\\\server\\share"), /Unsafe emit path/);
+        assert.throws(() => assertSafeRelativePath("\\\\server\\share\\file.ts"), /Unsafe emit path/);
+        assert.throws(() => assertSafeRelativePath("\\\\?\\C:\\x"), /Unsafe emit path/);
+        assert.throws(() => assertSafeRelativePath("//server/share"), /Unsafe emit path/);
     });
 
     it("rejects parent traversal in any position", () => {
         assert.throws(() => assertSafeRelativePath("../escape.ts"), /Unsafe emit path/);
         assert.throws(() => assertSafeRelativePath("a/../../b"), /Unsafe emit path/);
         assert.throws(() => assertSafeRelativePath("a\\..\\b"), /Unsafe emit path/);
+        assert.throws(() => assertSafeRelativePath(".."), /Unsafe emit path/);
+        assert.throws(() => assertSafeRelativePath("a/.."), /Unsafe emit path/);
+    });
+
+    // Only a whole ".." segment is a traversal. A file name that merely contains two dots is a
+    // legitimate name and must not be refused, otherwise valid generated files are lost.
+    it("accepts names that only contain two dots", () => {
+        for (const name of ["a..b", "..foo", "foo..", "src/v1..2/x.ts", "...", ".hidden/x"]) {
+            assert.doesNotThrow(() => assertSafeRelativePath(name), name);
+        }
     });
 });
 

@@ -68,11 +68,20 @@ describe("LruCache", () => {
 
     it("should default maxSize to 1000", () => {
         const cache = new LruCache<string>({ ttl: 60_000 });
-        // Add more than a few entries
-        for (let i = 0; i < 100; i++) {
+        // Fill exactly to the default capacity: nothing may be evicted yet.
+        for (let i = 0; i < 1000; i++) {
             cache.set(`key${i}`, `value${i}`);
         }
-        assert.strictEqual(cache.size, 100);
+        assert.strictEqual(cache.size, 1000);
+        assert.strictEqual(cache.get("key0"), "value0");
+
+        // One more entry evicts exactly the least recently used one.
+        cache.set("key1000", "value1000");
+        assert.strictEqual(cache.size, 1000);
+        assert.strictEqual(cache.get("key1"), undefined);
+        assert.strictEqual(cache.get("key1000"), "value1000");
+        // key0 was read above, so it is more recent than key1 and survives.
+        assert.strictEqual(cache.get("key0"), "value0");
     });
 
     it("should clear all entries", () => {

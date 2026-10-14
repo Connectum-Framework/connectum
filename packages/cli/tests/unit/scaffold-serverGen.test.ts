@@ -1,61 +1,127 @@
 /**
  * Unit tests for the composition-root generator (server.ts / index.ts) and the
- * otel module fragment — most importantly the interceptor-ordering policy (D-3).
+ * otel module fragment — most importantly the interceptor-ordering policy.
+ *
+ * The generated modules are parsed, and the names they use are resolved against the sources of
+ * the workspace packages that export them (the options `createServer` accepts, the flags
+ * `createDefaultInterceptors` knows, the exports of `@connectum/*`), so a comment that merely
+ * mentions a call, a misspelled option or a dropped flag cannot satisfy a check.
  */
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import ts from "typescript";
 import { generateIndex, generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformPackageJson } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
+import {
+    callsTo,
+    createServerOptions,
+    elementsOf,
+    interfaceKeys,
+    parseGenerated,
+    propertiesOf,
+    propertyValue,
+    unresolvedWorkspaceImports,
+} from "../helpers/generatedCode.ts";
+
+/** Options the real `createServer`, `createDefaultInterceptors`, `createOtelInterceptor` and `initProvider` accept. */
+const CREATE_SERVER_OPTIONS = interfaceKeys("core/src/types.ts", "CreateServerOptions");
+const DEFAULT_INTERCEPTOR_OPTIONS = interfaceKeys("interceptors/src/defaults.ts", "DefaultInterceptorOptions");
+const OTEL_INTERCEPTOR_OPTIONS = interfaceKeys("otel/src/types.ts", "OtelInterceptorOptions");
+const PROVIDER_OPTIONS = interfaceKeys("otel/src/provider.ts", "ProviderOptions");
+const HEALTHCHECK_OPTIONS = interfaceKeys("healthcheck/src/types.ts", "HealthcheckOptions");
+
+function serverOf(config: ScaffoldConfig): { sf: ts.SourceFile; options: ts.ObjectLiteralExpression } {
+    const sf = parseGenerated(generateServer(config), "server.ts");
+    assert.deepEqual(unresolvedWorkspaceImports(sf), []);
+    const options = createServerOptions(sf);
+    const unknown = propertiesOf(options)
+        .map((p) => p.name)
+        .filter((name) => !CREATE_SERVER_OPTIONS.has(name));
+    assert.deepEqual(unknown, [], "createServer is given an option it does not have");
+    return { sf, options };
+}
+
+/** The `createDefaultInterceptors({...})` flags of an interceptor expression, as name -> initializer text. */
+function defaultInterceptorFlags(expression: string): Record<string, string> {
+    const call = callsTo(parseGenerated(`const x = ${expression.replace(/^\.\.\./, "")};`), "createDefaultInterceptors")[0];
+    assert.ok(call !== undefined, expression);
+    const [argument] = call.arguments;
+    if (argument === undefined) {
+        return {};
+    }
+    const flags = Object.fromEntries(propertiesOf(argument).map((p) => [p.name, p.value]));
+    assert.deepEqual(
+        Object.keys(flags).filter((name) => !DEFAULT_INTERCEPTOR_OPTIONS.has(name)),
+        [],
+        "createDefaultInterceptors is given a flag it does not have",
+    );
+    return flags;
+}
 
 const base: ScaffoldConfig = { dir: "payments", name: "payments", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: {} };
 const withOtel: ScaffoldConfig = { ...base, modules: { otel: true } };
 
 describe("generateServer", () => {
-    it("base uses createDefaultInterceptors() and wires health/reflection/greeter", () => {
-        const s = generateServer(base);
-        assert.match(s, /interceptors: createDefaultInterceptors\(\)/);
-        assert.match(s, /Healthcheck\(\{ httpEnabled: true \}\)/);
-        assert.match(s, /Reflection\(\)/);
-        assert.match(s, /services: \[greeterService\]/);
-        assert.doesNotMatch(s, /createOtelInterceptor/);
+    it("base hosts the greeter with the default chain, health and reflection, as calls and not as comments", () => {
+        const { sf, options } = serverOf(base);
+        assert.equal(propertyValue(options, "services")?.getText(), "[greeterService]");
+        assert.equal(propertyValue(options, "interceptors")?.getText(), "createDefaultInterceptors()");
+        assert.deepEqual(elementsOf(propertyValue(options, "protocols")), ["Healthcheck({ httpEnabled: true })", "Reflection()"]);
+        // Healthcheck is given an option the real Healthcheck() has.
+        assert.ok(HEALTHCHECK_OPTIONS.has("httpEnabled"));
+        assert.equal(callsTo(sf, "Reflection").length, 1);
+        assert.equal(callsTo(sf, "Healthcheck").length, 1);
+        assert.equal(callsTo(sf, "createDefaultInterceptors").length, 1);
+        assert.equal(callsTo(sf, "createOtelInterceptor").length, 0);
     });
 
-    it("otel is outermost in the interceptor chain (D-3)", () => {
-        const s = generateServer(withOtel);
-        assert.match(s, /import \{ createOtelInterceptor \} from "@connectum\/otel"/);
+    it("otel is outermost in the interceptor chain", () => {
+        const { sf, options } = serverOf(withOtel);
         // trustRemote stays false (the framework default): the scaffolded server binds
         // 0.0.0.0, so inheriting a caller's trace context and sampling decision must be
         // an explicit deployment choice, never a generator default.
-        assert.match(s, /interceptors: \[createOtelInterceptor\(\{ trustRemote: false \}\), \.\.\.createDefaultInterceptors\(\)\]/);
-        // otel must appear before createDefaultInterceptors in the array (outermost).
-        const arr = s.slice(s.indexOf("interceptors: ["));
-        assert.ok(arr.indexOf("createOtelInterceptor") < arr.indexOf("createDefaultInterceptors"));
+        assert.deepEqual(elementsOf(propertyValue(options, "interceptors")), ["createOtelInterceptor({ trustRemote: false })", "...createDefaultInterceptors()"]);
+        assert.ok(OTEL_INTERCEPTOR_OPTIONS.has("trustRemote"));
+        assert.equal(callsTo(sf, "createOtelInterceptor").length, 1);
     });
 });
 
 describe("resilience + protocol toggles", () => {
-    it("injects opt-in resilience flags into createDefaultInterceptors", () => {
-        const s = generateServer({ ...base, modules: { resilience: ["retry", "timeout"] } });
-        assert.match(s, /createDefaultInterceptors\(\{ retry: true, timeout: true \}\)/);
+    it("injects exactly the selected opt-in resilience flags, each enabled, into createDefaultInterceptors", () => {
+        const { options } = serverOf({ ...base, modules: { resilience: ["retry", "timeout"] } });
+        const flags = defaultInterceptorFlags(propertyValue(options, "interceptors")?.getText() ?? "");
+        assert.deepEqual(flags, { retry: "true", timeout: "true" });
     });
 
-    it("merges resilience with the auth errorHandler:false branch", () => {
-        const s = generateServer({ ...base, modules: { auth: true, resilience: ["retry"] } });
-        assert.match(s, /createDefaultInterceptors\(\{ errorHandler: false, retry: true \}\)/);
+    // Every value the --resilience flag accepts has to name a flag createDefaultInterceptors has;
+    // a value mapped to a misspelled flag would enable nothing and report no error.
+    it("maps every documented --resilience value to a flag createDefaultInterceptors has", () => {
+        const documented = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"] as const;
+        const { options } = serverOf({ ...base, modules: { resilience: [...documented] } });
+        const flags = defaultInterceptorFlags(propertyValue(options, "interceptors")?.getText() ?? "");
+        assert.deepEqual(Object.keys(flags).sort(), [...documented].sort());
+    });
+
+    it("keeps every resilience flag when merged with the auth errorHandler:false branch", () => {
+        const { options } = serverOf({ ...base, modules: { auth: true, resilience: ["retry", "bulkhead"] } });
+        const chain = elementsOf(propertyValue(options, "interceptors"));
+        assert.deepEqual(chain.slice(0, 2), ["createErrorHandlerInterceptor()", "...buildAuthInterceptors()"]);
+        assert.equal(chain.length, 3);
+        assert.deepEqual(defaultInterceptorFlags(chain[2] as string), { errorHandler: "false", retry: "true", bulkhead: "true" });
     });
 
     it("omits Healthcheck / Reflection when toggled off", () => {
-        const s = generateServer({ ...base, modules: { healthcheck: false, reflection: false } });
-        assert.match(s, /protocols: \[\]/);
-        assert.doesNotMatch(s, /Healthcheck/);
-        assert.doesNotMatch(s, /import \{ Reflection \}/);
+        const { sf, options } = serverOf({ ...base, modules: { healthcheck: false, reflection: false } });
+        assert.deepEqual(elementsOf(propertyValue(options, "protocols")), []);
+        assert.equal(callsTo(sf, "Healthcheck").length, 0);
+        assert.equal(callsTo(sf, "Reflection").length, 0);
     });
 
     it("keeps both protocols by default", () => {
-        const s = generateServer(base);
-        assert.match(s, /protocols: \[Healthcheck\(\{ httpEnabled: true \}\), Reflection\(\)\]/);
+        const { options } = serverOf(base);
+        assert.deepEqual(elementsOf(propertyValue(options, "protocols")), ["Healthcheck({ httpEnabled: true })", "Reflection()"]);
     });
 
     it("index.ts drops healthcheckManager when healthcheck is off", () => {
@@ -71,11 +137,29 @@ describe("generateIndex", () => {
         assert.doesNotMatch(i, /shutdownProvider/);
     });
 
-    it("otel initializes and shuts down the provider", () => {
-        const i = generateIndex(withOtel);
-        assert.match(i, /import \{ initProvider, shutdownProvider \} from "@connectum\/otel"/);
-        assert.match(i, /initProvider\(\{ serviceName: "payments" \}\)/);
-        assert.match(i, /await shutdownProvider\(\)/);
+    it("otel initializes the provider at startup and shuts it down in the stop handler", () => {
+        const sf = parseGenerated(generateIndex(withOtel), "index.ts");
+        assert.deepEqual(unresolvedWorkspaceImports(sf), []);
+
+        const [init] = callsTo(sf, "initProvider");
+        assert.ok(init !== undefined);
+        assert.equal(callsTo(sf, "initProvider").length, 1);
+        // The provider is started by the module itself, not inside a handler that may never run.
+        assert.ok(ts.isExpressionStatement(init.parent) && init.parent.parent === sf, "initProvider is not a top-level statement");
+        const [initOptions] = init.arguments;
+        assert.deepEqual(propertiesOf(initOptions as ts.Node), [{ name: "serviceName", value: '"payments"' }]);
+        assert.ok(PROVIDER_OPTIONS.has("serviceName"));
+
+        // Shutting down has to be awaited inside the handler that runs when the server stops,
+        // otherwise buffered telemetry is lost on exit.
+        const stopHandlers = callsTo(sf, "server.on").filter((call) => call.arguments[0]?.getText() === '"stop"');
+        assert.equal(stopHandlers.length, 1);
+        const handler = stopHandlers[0]?.arguments[1];
+        assert.ok(handler !== undefined);
+        const shutdowns = callsTo(handler, "shutdownProvider");
+        assert.equal(shutdowns.length, 1);
+        assert.ok(ts.isAwaitExpression(shutdowns[0]?.parent as ts.Node), "shutdownProvider is not awaited");
+        assert.equal(callsTo(sf, "shutdownProvider").length, 1);
     });
 });
 
