@@ -9,10 +9,11 @@
  *   4.6 streaming cancellation mid-stream
  */
 
+import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
-import { transportParityTest } from "../../src/transportParityTest.ts";
+import { defaultCompare, transportParityTest } from "../../src/transportParityTest.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 function streamingRoutes() {
@@ -159,27 +160,27 @@ transportParityTest("parity 4.6: streaming cancellation stops iteration", {
         try {
             for await (const m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: ac.signal })) {
                 received.push(m.sequence);
-                if (received.length >= 1) {
-                    ac.abort();
-                }
+                ac.abort();
             }
         } catch (err) {
             const code = err instanceof ConnectError ? err.code : -1;
-            return { response: { received: received.length >= 1, terminated: true }, error: { code, message: "<canceled>" } };
+            return { response: { received }, error: { code, message: "<canceled>" } };
         }
-        return { response: { received: received.length >= 1, terminated: true } };
+        // The loop ended without an error: the abort did not cancel the stream.
+        return { response: { received } };
     },
+    // The client aborts after the first message. Iteration stops there, with a
+    // `canceled` error, on both transports: the same message count and the same
+    // code, not merely "at least one message and the loop ended".
     compare: (http, local) => {
-        // Both should terminate (either cleanly or with Canceled). The key
-        // parity invariant is that iteration stops after abort on both.
-        if (!http.response || !local.response) {
-            throw new Error("expected response on both");
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.deepStrictEqual(result.response, { received: [0] }, `${name} transport must stop iterating after the message that preceded the abort`);
+            assert.strictEqual(result.error?.code, Code.Canceled, `${name} transport must reject the aborted stream with Canceled`);
         }
-        const h = http.response as { received: boolean; terminated: boolean };
-        const l = local.response as { received: boolean; terminated: boolean };
-        if (!h.received || !l.received || !h.terminated || !l.terminated) {
-            throw new Error(`expected terminated iteration; http=${JSON.stringify(h)} local=${JSON.stringify(l)}`);
-        }
+        defaultCompare(http, local);
     },
 });
 
@@ -263,6 +264,14 @@ transportParityTest("parity 4.7: aborting a server stream runs the handler's cle
         }
         return await handlerOutcome(abortProbe, 2_000);
     },
+    // Equal pairs would also be `{ finallyRan: false, ... }` on both transports if the
+    // cleanup never ran, so the expected values are spelled out: after an abort the
+    // handler's `finally` ran and its signal was aborted.
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { finallyRan: true, signalAborted: true }, "HTTP transport must run the handler's cleanup after an abort");
+        assert.deepStrictEqual(local.response, { finallyRan: true, signalAborted: true }, "Local transport must run the handler's cleanup after an abort");
+        defaultCompare(http, local);
+    },
 });
 
 const breakProbe = newProbe();
@@ -280,5 +289,41 @@ transportParityTest("parity 4.8: break followed by abort runs the handler's clea
         }
         ac.abort();
         return await handlerOutcome(breakProbe, 2_000);
+    },
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { finallyRan: true, signalAborted: true }, "HTTP transport must run the handler's cleanup after break and abort");
+        assert.deepStrictEqual(local.response, { finallyRan: true, signalAborted: true }, "Local transport must run the handler's cleanup after break and abort");
+        defaultCompare(http, local);
+    },
+});
+
+// Leaving a `for await` loop with `break` is not cancellation: without an abort the
+// handler's signal stays un-aborted on both transports.
+const breakOnlyProbe = newProbe();
+transportParityTest("parity 4.9: break without abort does not abort the handler's signal", {
+    services: [observableStreamRoutes(breakOnlyProbe)],
+    scenario: async ({ transport }) => {
+        resetProbe(breakOnlyProbe);
+        const client = createClient(StreamingService, transport);
+        const ac = new AbortController();
+        let seen = 0;
+        for await (const _m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: ac.signal })) {
+            if (++seen === 2) {
+                break;
+            }
+        }
+        // Give a (wrongly) propagated cancellation time to reach the handler.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const signalAborted = breakOnlyProbe.signalAborted;
+        // The stream is still open on the server (that is the point); end it explicitly so
+        // that stopping the server does not wait for its shutdown timeout.
+        ac.abort();
+        await handlerOutcome(breakOnlyProbe, 2_000);
+        return { response: { signalAborted } };
+    },
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { signalAborted: false }, "HTTP transport must not treat break as cancellation");
+        assert.deepStrictEqual(local.response, { signalAborted: false }, "Local transport must not treat break as cancellation");
+        defaultCompare(http, local);
     },
 });
