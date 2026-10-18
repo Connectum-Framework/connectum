@@ -56,10 +56,17 @@ describe("HealthcheckManager", () => {
             );
         });
 
-        it("should not throw when updating all services on empty manager", () => {
+        // "Without a service name, update() updates all registered entries":
+        // with none registered it has nothing to update, so it must neither
+        // fail nor invent an entry that would make an empty registry look
+        // healthy (an empty registry is never healthy).
+        it("updating all entries of an empty manager creates nothing and leaves it unhealthy", () => {
             const emptyManager = new HealthcheckManager();
-            // Should not throw, just no-op
+
             emptyManager.update(ServingStatus.SERVING);
+
+            assert.strictEqual(emptyManager.getAllStatuses().size, 0);
+            assert.strictEqual(emptyManager.areAllHealthy(), false);
         });
     });
 
@@ -77,22 +84,49 @@ describe("HealthcheckManager", () => {
     });
 
     describe("getAllStatuses", () => {
-        it("should return a copy of all statuses", () => {
+        // The result feeds Health.List, which the protocol defines as a
+        // snapshot. Each entry carries the serving status and nothing else:
+        // the internal service/component kind must not leak into it.
+        it("should return a snapshot holding only the status of every entry", () => {
             manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
-            const statuses = manager.getAllStatuses();
+            manager.register("process");
+            const snapshot = manager.getAllStatuses();
 
-            assert.strictEqual(statuses.size, 2);
-            assert.ok(statuses.has("svc.v1.Foo"));
-            assert.ok(statuses.has("svc.v1.Bar"));
+            assert.deepStrictEqual(
+                [...snapshot.entries()],
+                [
+                    ["svc.v1.Foo", { status: ServingStatus.UNKNOWN }],
+                    ["svc.v1.Bar", { status: ServingStatus.UNKNOWN }],
+                    ["process", { status: ServingStatus.UNKNOWN }],
+                ],
+            );
 
-            // Verify it's a copy (modifying the returned map shouldn't affect the manager)
-            statuses.clear();
-            assert.strictEqual(manager.getAllStatuses().size, 2);
+            // Later changes of the manager do not rewrite an earlier snapshot.
+            manager.update(ServingStatus.SERVING);
+            assert.strictEqual(snapshot.get("svc.v1.Foo")?.status, ServingStatus.UNKNOWN);
+
+            // Changing the snapshot does not write through to the manager.
+            snapshot.get("svc.v1.Bar")!.status = ServingStatus.NOT_SERVING;
+            snapshot.delete("process");
+            snapshot.clear();
+            assert.strictEqual(manager.getStatus("svc.v1.Bar")?.status, ServingStatus.SERVING);
+            assert.strictEqual(manager.getAllStatuses().size, 3);
         });
     });
 
     describe("areAllHealthy", () => {
+        // An empty registry has no evidence that anything is ready, so it is
+        // never healthy: a worker without RPCs must register a component to
+        // become ready. This holds for a fresh manager and for one that was
+        // healthy and then emptied.
         it("should return false when no services registered", () => {
+            assert.strictEqual(manager.areAllHealthy(), false);
+
+            manager.initialize(["svc.v1.Foo"]);
+            manager.update(ServingStatus.SERVING);
+            assert.strictEqual(manager.areAllHealthy(), true, "precondition: a tracked SERVING service is healthy");
+
+            manager.clear();
             assert.strictEqual(manager.areAllHealthy(), false);
         });
 
@@ -148,33 +182,39 @@ describe("HealthcheckManager — additional scenarios", () => {
     });
 
     describe("initialize merge behavior", () => {
+        // Re-initialization keeps what the application already reported for a
+        // service that is still mounted, starts a newly mounted one as UNKNOWN
+        // and drops one that is gone (a dropped service must not stay SERVING).
         it("should preserve existing service status when re-initialized with overlapping names", () => {
-            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar", "svc.v1.Qux"]);
             manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            manager.update(ServingStatus.NOT_SERVING, "svc.v1.Bar");
+            manager.update(ServingStatus.SERVING, "svc.v1.Qux");
 
-            // Re-initialize with overlapping "Foo" and new "Baz"
-            manager.initialize(["svc.v1.Foo", "svc.v1.Baz"]);
+            // Re-initialize with overlapping "Foo" and "Bar", new "Baz", without "Qux"
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar", "svc.v1.Baz"]);
 
-            // Foo should retain SERVING status
             assert.strictEqual(
                 manager.getStatus("svc.v1.Foo")?.status,
                 ServingStatus.SERVING,
-                "Overlapping service should retain its current status",
+                "Overlapping SERVING service should retain its status",
             );
-
-            // Baz is new, should be UNKNOWN
+            assert.strictEqual(
+                manager.getStatus("svc.v1.Bar")?.status,
+                ServingStatus.NOT_SERVING,
+                "Overlapping NOT_SERVING service should retain its status, not be reset to UNKNOWN",
+            );
             assert.strictEqual(
                 manager.getStatus("svc.v1.Baz")?.status,
                 ServingStatus.UNKNOWN,
                 "New service should start as UNKNOWN",
             );
-
-            // Bar was not in the new list, should be gone
             assert.strictEqual(
-                manager.getStatus("svc.v1.Bar"),
+                manager.getStatus("svc.v1.Qux"),
                 undefined,
                 "Service not in new list should be removed",
             );
+            assert.strictEqual(manager.getAllStatuses().size, 3);
         });
 
         it("should clear all services when initialized with empty array", () => {
@@ -188,11 +228,20 @@ describe("HealthcheckManager — additional scenarios", () => {
             assert.strictEqual(manager.getStatus("svc.v1.Bar"), undefined);
         });
 
+        // Health.List returns a map keyed by service name, so a name given
+        // more than once appears once. Repeating a name must also not reset
+        // the status the application already set.
         it("should deduplicate when initialized with duplicate names", () => {
             manager.initialize(["svc.v1.Foo", "svc.v1.Foo", "svc.v1.Foo"]);
 
-            assert.strictEqual(manager.getAllStatuses().size, 1);
+            assert.deepStrictEqual([...manager.getAllStatuses().keys()], ["svc.v1.Foo"]);
             assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.UNKNOWN);
+
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            manager.initialize(["svc.v1.Foo", "svc.v1.Foo"]);
+
+            assert.deepStrictEqual([...manager.getAllStatuses().keys()], ["svc.v1.Foo"]);
+            assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.SERVING);
         });
     });
 
@@ -251,25 +300,53 @@ describe("HealthcheckManager components", () => {
             assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
         });
 
+        // Dotted names are reserved for RPC service typeNames, so a component
+        // name is non-empty and dot-free. A rejected call must leave the
+        // registry exactly as it was.
         it("should reject empty component name", () => {
-            assert.throws(() => manager.register(""), /must not be empty/);
+            manager.register("keep");
+
+            assert.throws(() => manager.register(""), Error);
+
+            assert.deepStrictEqual([...manager.getAllStatuses().keys()], ["keep"]);
         });
 
-        it("should reject dotted component name", () => {
-            assert.throws(() => manager.register("acme.process"), /must not contain dots/);
-        });
+        for (const name of ["acme.process", "a.b", ".leading", "trailing.", "svc.v1.Foo"]) {
+            it(`should reject dotted component name '${name}'`, () => {
+                manager.register("keep");
 
+                assert.throws(() => manager.register(name), /must not contain dots/);
+
+                assert.deepStrictEqual([...manager.getAllStatuses().keys()], ["keep"]);
+            });
+        }
+
+        // A package-less (dot-free) service name passes name validation and
+        // reaches the kind check, which must refuse to turn the service into a
+        // component or touch its status.
         it("should reject register() of a name already held by an RPC service", () => {
-            // A dot-free (package-less) service name reaches the kind check.
             manager.initialize(["Health"]);
-            assert.throws(() => manager.register("Health"), /registered RPC service/);
+            manager.update(ServingStatus.SERVING, "Health");
+
+            assert.throws(() => manager.register("Health", ServingStatus.NOT_SERVING), /registered RPC service/);
+
+            assert.strictEqual(manager.getStatus("Health")?.status, ServingStatus.SERVING);
+            // Still a service: protocol re-initialization without it removes it.
+            manager.initialize([]);
+            assert.strictEqual(manager.getStatus("Health"), undefined);
         });
     });
 
     describe("set (upsert)", () => {
         it("should reject set() of a name already held by an RPC service", () => {
             manager.initialize(["Health"]);
+
             assert.throws(() => manager.set("Health", ServingStatus.SERVING), /registered RPC service/);
+
+            // The refused call changed neither the status nor the entry kind.
+            assert.strictEqual(manager.getStatus("Health")?.status, ServingStatus.UNKNOWN);
+            manager.initialize([]);
+            assert.strictEqual(manager.getStatus("Health"), undefined);
         });
 
         it("should register an unknown component on set", () => {
@@ -286,9 +363,13 @@ describe("HealthcheckManager components", () => {
             assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.NOT_SERVING);
         });
 
-        it("should reject empty and dotted names", () => {
-            assert.throws(() => manager.set("", ServingStatus.SERVING), /must not be empty/);
-            assert.throws(() => manager.set("a.b", ServingStatus.SERVING), /must not contain dots/);
+        it("should reject empty and dotted names without creating an entry", () => {
+            assert.throws(() => manager.set("", ServingStatus.SERVING), Error);
+            for (const name of ["a.b", ".leading", "trailing.", "svc.v1.Foo"]) {
+                assert.throws(() => manager.set(name, ServingStatus.SERVING), /must not contain dots/, name);
+            }
+
+            assert.strictEqual(manager.getAllStatuses().size, 0);
         });
     });
 
@@ -304,10 +385,14 @@ describe("HealthcheckManager components", () => {
             manager.unregister("ghost");
         });
 
-        it("should reject unregistering an RPC service", () => {
+        it("should reject unregistering an RPC service and keep it tracked", () => {
             manager.initialize(["svc.v1.Foo"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
 
             assert.throws(() => manager.unregister("svc.v1.Foo"), /registered RPC service/);
+
+            // The refusal must not have removed the service or reset its status.
+            assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.SERVING);
         });
     });
 
