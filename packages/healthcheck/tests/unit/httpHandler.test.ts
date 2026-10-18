@@ -156,20 +156,28 @@ describe("createHttpHealthHandler", () => {
         assert.strictEqual(body.status, "SERVICE_UNKNOWN");
     });
 
-    it("should use Map-based status names instead of enum reverse mapping", () => {
-        manager.update(ServingStatus.SERVING, "svc.v1.Foo");
-        const handler = createHttpHealthHandler(manager);
+    // The published mapping: each serving status has exactly one name in the
+    // JSON body and one HTTP code. A swapped or collapsed entry (for example
+    // every status reported as "UNKNOWN", or 404 for NOT_SERVING) must fail.
+    const statusTable = [
+        { status: ServingStatus.UNKNOWN, name: "UNKNOWN", httpCode: 503 },
+        { status: ServingStatus.SERVING, name: "SERVING", httpCode: 200 },
+        { status: ServingStatus.NOT_SERVING, name: "NOT_SERVING", httpCode: 503 },
+        { status: ServingStatus.SERVICE_UNKNOWN, name: "SERVICE_UNKNOWN", httpCode: 404 },
+    ];
 
-        const req = createMockRequest("/healthz");
-        const res = createMockResponse();
+    for (const { status, name, httpCode } of statusTable) {
+        it(`reports ${name} as the exact status name with HTTP ${httpCode}`, () => {
+            manager.update(status, "svc.v1.Foo");
+            const handler = createHttpHealthHandler(manager);
 
-        handler(req as any, res as any);
+            const res = createMockResponse();
+            handler(createMockRequest("/healthz?service=svc.v1.Foo") as any, res as any);
 
-        const body = JSON.parse(res.getBody());
-        // Should be a proper string, not a number or undefined
-        assert.strictEqual(typeof body.status, "string");
-        assert.ok(["UNKNOWN", "SERVING", "NOT_SERVING", "SERVICE_UNKNOWN"].includes(body.status));
-    });
+            assert.strictEqual(res.statusCode, httpCode);
+            assert.deepStrictEqual(JSON.parse(res.getBody()).status, name);
+        });
+    }
 });
 
 describe("parseServiceFromUrl", () => {
@@ -183,20 +191,40 @@ describe("parseServiceFromUrl", () => {
         assert.strictEqual(service, undefined);
     });
 
-    it("should return undefined for undefined URL", () => {
-        const service = parseServiceFromUrl(undefined, "localhost:5000");
-        assert.strictEqual(service, undefined);
-    });
+    // The documented contract: the result is undefined when the URL is absent
+    // or malformed, never an exception and never a placeholder string.
+    for (const { url, desc } of [
+        { url: undefined, desc: "undefined URL" },
+        { url: "", desc: "empty URL" },
+        { url: "http://", desc: "malformed absolute URL" },
+    ]) {
+        it(`should return undefined for ${desc}`, () => {
+            assert.strictEqual(parseServiceFromUrl(url, "localhost:5000"), undefined);
+        });
+    }
 
     it("should return undefined when no service param", () => {
         const service = parseServiceFromUrl("/healthz?other=value", "localhost:5000");
         assert.strictEqual(service, undefined);
     });
 
-    it("should handle missing host", () => {
-        const service = parseServiceFromUrl("/healthz?service=test.Svc", undefined);
-        assert.strictEqual(service, "test.Svc");
-    });
+    // The host only resolves a relative URL: the answer must not depend on
+    // which (or whether a) Host header the client sent.
+    for (const host of [undefined, "localhost:5000", "example.com", "[::1]:5000"]) {
+        it(`should read the service parameter with host ${host === undefined ? "missing" : host}`, () => {
+            assert.strictEqual(parseServiceFromUrl("/healthz?service=test.Svc", host), "test.Svc");
+        });
+    }
+
+    // Known divergence from the documented contract, not fixed here: an empty
+    // or syntactically invalid host makes the base URL unparseable, the
+    // constructor throws, and the service parameter is silently dropped (the
+    // HTTP handler then reports overall health instead of the named service).
+    for (const host of ["", "bad host"]) {
+        it(`should read the service parameter with host "${host}"`, { skip: "the implementation drops the service parameter when the host is empty or invalid; the documented contract says the host is used only to resolve relative URLs" }, () => {
+            assert.strictEqual(parseServiceFromUrl("/healthz?service=test.Svc", host), "test.Svc");
+        });
+    }
 });
 
 describe("createHttpHealthHandler — additional scenarios", () => {
@@ -248,15 +276,20 @@ describe("createHttpHealthHandler — additional scenarios", () => {
         const req = createMockRequest("/healthz");
         const res = createMockResponse();
 
+        const before = Date.now();
         handler(req as any, res as any);
+        const after = Date.now();
 
         const body = JSON.parse(res.getBody());
-        assert.ok(body.timestamp, "Response should include timestamp field");
         assert.strictEqual(typeof body.timestamp, "string");
 
-        // Verify it parses as a valid date (ISO 8601)
-        const parsed = new Date(body.timestamp);
-        assert.ok(!Number.isNaN(parsed.getTime()), "timestamp should be a valid ISO date string");
+        // The published form is "2026-02-12T10:30:00.000Z": a UTC instant with
+        // milliseconds. Date.parse alone also accepts non-ISO strings.
+        assert.match(body.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+        // The instant is the moment of the request, not a constant or an epoch.
+        const instant = Date.parse(body.timestamp);
+        assert.ok(instant >= before && instant <= after, `timestamp ${body.timestamp} must lie within the request window [${before}, ${after}]`);
     });
 
     it("should set Content-Type header to application/json", () => {
@@ -268,10 +301,13 @@ describe("createHttpHealthHandler — additional scenarios", () => {
 
         handler(req as any, res as any);
 
+        // The body is JSON, whose registered media type is application/json
+        // (RFC 8259). Parameters such as charset are allowed, a different type
+        // or a missing header is not.
         const headers = res.getHeaders();
         const contentType = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
         assert.ok(contentType, "Content-Type header should be set");
-        assert.strictEqual(headers[contentType], "application/json");
+        assert.strictEqual(headers[contentType]?.split(";")[0]?.trim().toLowerCase(), "application/json");
     });
 
     it("should not match any path when custom paths array is empty", () => {
