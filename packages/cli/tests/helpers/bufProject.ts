@@ -46,6 +46,10 @@ export function runBuf(args: string[], files: ReadonlyMap<string, string>, optio
         if (run.error !== undefined) {
             throw new Error(`buf could not run (${BUF}): ${run.error.message}`);
         }
+        // A process killed by a signal has no exit status either and fails the same way.
+        if (run.status === null) {
+            throw new Error(`buf was terminated by ${run.signal ?? "an unknown signal"}`);
+        }
         return { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
     } finally {
         rmSync(dir, { recursive: true, force: true });
