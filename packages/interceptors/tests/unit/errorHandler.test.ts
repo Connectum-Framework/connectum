@@ -116,7 +116,14 @@ describe("errorHandler interceptor", () => {
 
         const handler = interceptor(next as any);
 
-        await assert.rejects(() => handler(mockReq));
+        let rejected: unknown;
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                rejected = err;
+                return true;
+            },
+        );
 
         // The documented guarantee: the original failure stays in the console log, and the
         // log also shows the ConnectError the client receives. Both are checked by what they
@@ -125,6 +132,7 @@ describe("errorHandler interceptor", () => {
         assert.ok(logged.includes(original), "the original failure itself must be logged");
         const clientFacing = logged.find((arg): arg is ConnectError => arg instanceof ConnectError);
         assert.ok(clientFacing, "the ConnectError sent to the client must be logged");
+        assert.strictEqual(clientFacing, rejected, "the logged ConnectError must be the one the client receives");
         assert.strictEqual(clientFacing.code, Code.Internal);
 
         originalError.mock.restore();

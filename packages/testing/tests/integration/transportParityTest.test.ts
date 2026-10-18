@@ -83,7 +83,8 @@ describe("transportParityTest with an asymmetric scenario", () => {
         // The runner marks its children with NODE_TEST_CONTEXT; inheriting it would make
         // the child report into this process instead of running as a standalone run.
         const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
-        const result = spawnSync("node", ["--test", fixture], { encoding: "utf8", timeout: 60_000, env });
+        // The fixture is TypeScript; Node 22.13 needs the flag to load it, newer versions accept it.
+        const result = spawnSync("node", ["--experimental-strip-types", "--test", fixture], { encoding: "utf8", timeout: 60_000, env });
         const output = `${result.stdout}\n${result.stderr}`;
         assert.notStrictEqual(result.status, 0, `the child test run must fail, output:\n${output}`);
         assert.match(output, /response payload mismatch between HTTP and local transports/);
