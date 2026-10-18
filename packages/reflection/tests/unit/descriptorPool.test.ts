@@ -31,7 +31,12 @@ describe("createDescriptorPool", () => {
         const pool = createDescriptorPool({ files: diamond, services: [] });
         const top = pool.fileByName("top.proto");
         assert.ok(top);
-        assert.deepStrictEqual(names(pool.withDependencies(top, new Set())), ["top.proto", "left.proto", "right.proto", "base.proto"]);
+        // The protocol fixes only the first entry and the set: the requested file,
+        // then every transitive import once. The order among the imports is not
+        // part of the contract, so it is not pinned here.
+        const sent = names(pool.withDependencies(top, new Set()));
+        assert.strictEqual(sent[0], "top.proto");
+        assert.deepStrictEqual([...sent].sort(), ["base.proto", "left.proto", "right.proto", "top.proto"]);
     });
 
     it("always includes the requested file but skips imports already sent", () => {
@@ -43,11 +48,20 @@ describe("createDescriptorPool", () => {
         assert.deepStrictEqual([...sent].sort(), ["base.proto", "left.proto", "right.proto", "top.proto"]);
     });
 
+    // A server's pool is closed under imports (protobuf-es refuses to build a
+    // file registry with an unresolved import), so this is a guard for a
+    // hand-built pool: the answer must still carry the file and the imports that
+    // do exist, and must not fail or stop at the missing one.
     it("skips an import that is not in the pool instead of failing the answer", () => {
-        const pool = createDescriptorPool({ files: [file({ name: "a.proto", dependency: ["missing.proto"] })], services: [] });
+        const pool = createDescriptorPool({
+            files: [file({ name: "a.proto", dependency: ["missing.proto", "b.proto"] }), file({ name: "b.proto" })],
+            services: [],
+        });
         const a = pool.fileByName("a.proto");
         assert.ok(a);
-        assert.deepStrictEqual(names(pool.withDependencies(a, new Set())), ["a.proto"]);
+        const sent = new Set<string>();
+        assert.deepStrictEqual(names(pool.withDependencies(a, sent)), ["a.proto", "b.proto"]);
+        assert.deepStrictEqual([...sent].sort(), ["a.proto", "b.proto"], "a missing file is not recorded as sent");
     });
 
     it("keeps the first of two files with the same name and the first declaration of a symbol", () => {
