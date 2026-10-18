@@ -285,11 +285,26 @@ describe("readMaxBytes — server default on both transports", () => {
     });
 
     it("accepts the bounds 1 and 4294967295 (Connect's maximum)", async () => {
-        for (const bound of [1, 0xffff_ffff]) {
-            const server = createServer({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: bound });
-            // Building the in-process router runs Connect's own range check.
-            const res = await server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "" }));
-            assert.strictEqual(res.message, "echo:");
+        // At the lower bound an empty message (zero bytes encoded) fits and a
+        // one-character one (tag + length + 1 byte = 3) does not: the value 1
+        // is applied as given, not rounded or defaulted.
+        const tiny = createServer({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: 1 });
+        const empty = await tiny.localClient(EchoService).echo(create(EchoRequestSchema, { message: "" }));
+        assert.strictEqual(empty.message, "echo:");
+        const tooBig = await captureError(() => tiny.localClient(EchoService).echo(echoOfEncodedSize(3)));
+        assert.strictEqual(tooBig.code, Code.ResourceExhausted);
+
+        // At the upper bound a message far larger than any smaller cap in the
+        // path (a few megabytes) is admitted: the value is not clamped.
+        const { server: huge, transport } = await startH2c({ services: [makeEchoRoutes({ count: 0 })], readMaxBytes: 0xffff_ffff });
+        try {
+            const message = "x".repeat(5_000_000);
+            const viaLocal = await huge.localClient(EchoService).echo(create(EchoRequestSchema, { message }));
+            const viaHttp = await createClient(EchoService, transport).echo(create(EchoRequestSchema, { message }));
+            assert.strictEqual(viaLocal.message, `echo:${message}`);
+            assert.strictEqual(viaHttp.message, `echo:${message}`);
+        } finally {
+            await huge.stop();
         }
     });
 
@@ -331,7 +346,7 @@ describe("requestGate — errors that are not ConnectError are sanitised", () =>
         }
     });
 
-    it("sanitises a thrown non-Error value and a rejected promise alike", async () => {
+    it("sanitises a thrown non-Error value and a rejected promise alike, over HTTP and in-process", async () => {
         for (const gate of [
             (): void => {
                 throw SECRET;
@@ -341,10 +356,18 @@ describe("requestGate — errors that are not ConnectError are sanitised", () =>
                 throw new TypeError(SECRET);
             },
         ]) {
-            const server = createServer({ services: [makeEchoRoutes({ count: 0 })], requestGate: gate });
-            const err = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
-            assert.strictEqual(err.code, Code.Internal);
-            assert.strictEqual(err.rawMessage, "internal error");
+            const { server, transport } = await startH2c({ services: [makeEchoRoutes({ count: 0 })], requestGate: gate });
+            try {
+                const httpErr = await captureError(() => createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "a" })));
+                const localErr = await captureError(() => server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" })));
+                for (const err of [httpErr, localErr]) {
+                    assert.strictEqual(err.code, Code.Internal);
+                    assert.strictEqual(err.rawMessage, "internal error");
+                    assert.ok(!JSON.stringify({ m: err.message, d: err.details }).includes("hunter2"), "no original text may reach the client");
+                }
+            } finally {
+                await server.stop();
+            }
         }
     });
 

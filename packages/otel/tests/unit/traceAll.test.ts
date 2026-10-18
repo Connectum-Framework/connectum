@@ -6,6 +6,24 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { shutdownProvider } from "../../src/provider.ts";
 import { traceAll } from "../../src/traceAll.ts";
+import { observe } from "./observe.ts";
+
+/** Runs a body and returns the names of the spans it produced, sorted. */
+async function spanNamesOf(body: () => unknown): Promise<string[]> {
+    const observed = await observe(async () => {
+        await body();
+    });
+    return observed.spans.map((span) => span.name).sort();
+}
+
+/** Runs a body and returns the one `function.args` value it recorded, or undefined when none was recorded. */
+async function recordedArgsOf(body: () => unknown): Promise<unknown> {
+    const observed = await observe(async () => {
+        await body();
+    });
+    assert.strictEqual(observed.spans.length, 1, "expected exactly one span");
+    return observed.spans[0]?.attributes["function.args"];
+}
 
 describe("traceAll", () => {
     afterEach(async () => {
@@ -74,8 +92,9 @@ describe("traceAll", () => {
         });
     });
 
+    // Each traced call produces one span named "<prefix>.<method>"; an untraced call produces none.
     describe("include/exclude", () => {
-        it("should only wrap included methods (both still callable)", () => {
+        it("should only trace included methods, leaving the others callable", async () => {
             const obj = traceAll(
                 {
                     add(a: number, b: number) {
@@ -85,15 +104,19 @@ describe("traceAll", () => {
                         return a - b;
                     },
                 },
-                { include: ["add"] },
+                { include: ["add"], prefix: "Calc" },
             );
+            const results: number[] = [];
 
-            // Both methods should work -- include only affects tracing, not availability
-            assert.strictEqual(obj.add(2, 3), 5);
-            assert.strictEqual(obj.sub(5, 3), 2);
+            const names = await spanNamesOf(() => {
+                results.push(obj.add(2, 3), obj.sub(5, 3));
+            });
+
+            assert.deepStrictEqual(results, [5, 2]);
+            assert.deepStrictEqual(names, ["Calc.add"]);
         });
 
-        it("should skip excluded methods (both still callable)", () => {
+        it("should skip excluded methods, leaving them callable", async () => {
             const obj = traceAll(
                 {
                     pub() {
@@ -103,14 +126,19 @@ describe("traceAll", () => {
                         return "private";
                     },
                 },
-                { exclude: ["priv"] },
+                { exclude: ["priv"], prefix: "Svc" },
             );
+            const results: string[] = [];
 
-            assert.strictEqual(obj.pub(), "public");
-            assert.strictEqual(obj.priv(), "private");
+            const names = await spanNamesOf(() => {
+                results.push(obj.pub(), obj.priv());
+            });
+
+            assert.deepStrictEqual(results, ["public", "private"]);
+            assert.deepStrictEqual(names, ["Svc.pub"]);
         });
 
-        it("should handle empty include array (no methods traced)", () => {
+        it("should trace no method when include is an empty list", async () => {
             const obj = traceAll(
                 {
                     method() {
@@ -119,19 +147,33 @@ describe("traceAll", () => {
                 },
                 { include: [] },
             );
-            assert.strictEqual(obj.method(), 1);
+            let result: number | undefined;
+
+            const names = await spanNamesOf(() => {
+                result = obj.method();
+            });
+
+            assert.strictEqual(result, 1);
+            assert.deepStrictEqual(names, []);
         });
 
-        it("should handle empty exclude array (all methods traced)", () => {
+        it("should trace every method when exclude is an empty list", async () => {
             const obj = traceAll(
                 {
                     method() {
                         return 1;
                     },
                 },
-                { exclude: [] },
+                { exclude: [], prefix: "All" },
             );
-            assert.strictEqual(obj.method(), 1);
+            let result: number | undefined;
+
+            const names = await spanNamesOf(() => {
+                result = obj.method();
+            });
+
+            assert.strictEqual(result, 1);
+            assert.deepStrictEqual(names, ["All.method"]);
         });
     });
 
@@ -172,17 +214,24 @@ describe("traceAll", () => {
     });
 
     describe("prefix", () => {
-        it("should use constructor name as default prefix for class instances", () => {
+        it("should use constructor name as default prefix for class instances", async () => {
             class MyService {
                 greet() {
                     return "hello";
                 }
             }
             const obj = traceAll(new MyService());
-            assert.strictEqual(obj.greet(), "hello");
+            let result: string | undefined;
+
+            const names = await spanNamesOf(() => {
+                result = obj.greet();
+            });
+
+            assert.strictEqual(result, "hello");
+            assert.deepStrictEqual(names, ["MyService.greet"]);
         });
 
-        it("should use custom prefix", () => {
+        it("should use custom prefix", async () => {
             const obj = traceAll(
                 {
                     greet() {
@@ -191,21 +240,48 @@ describe("traceAll", () => {
                 },
                 { prefix: "Custom" },
             );
-            assert.strictEqual(obj.greet(), "hello");
+            let result: string | undefined;
+
+            const names = await spanNamesOf(() => {
+                result = obj.greet();
+            });
+
+            assert.strictEqual(result, "hello");
+            assert.deepStrictEqual(names, ["Custom.greet"]);
         });
 
-        it("should default to 'Object' for plain objects", () => {
+        it("should default to 'Object' for plain objects", async () => {
             const obj = traceAll({
                 greet() {
                     return "hello";
                 },
             });
-            assert.strictEqual(obj.greet(), "hello");
+            let result: string | undefined;
+
+            const names = await spanNamesOf(() => {
+                result = obj.greet();
+            });
+
+            assert.strictEqual(result, "hello");
+            assert.deepStrictEqual(names, ["Object.greet"]);
         });
     });
 
+    // The tracing guide: `recordArgs: true` serializes the arguments into the `function.args`
+    // span attribute, an array selects zero-based argument positions, and `argsFilter`
+    // redacts what is recorded.
     describe("recordArgs and argsFilter", () => {
-        it("should work with recordArgs=true", () => {
+        it("records no function.args by default", async () => {
+            const obj = traceAll({
+                add(a: number, b: number) {
+                    return a + b;
+                },
+            });
+
+            assert.strictEqual(await recordedArgsOf(() => obj.add(2, 3)), undefined);
+        });
+
+        it("records the serialized arguments with recordArgs=true", async () => {
             const obj = traceAll(
                 {
                     add(a: number, b: number) {
@@ -214,22 +290,37 @@ describe("traceAll", () => {
                 },
                 { recordArgs: true },
             );
-            assert.strictEqual(obj.add(2, 3), 5);
+            let result: number | undefined;
+
+            const recorded = await recordedArgsOf(() => {
+                result = obj.add(2, 3);
+            });
+
+            assert.strictEqual(result, 5);
+            assert.strictEqual(recorded, "[2,3]");
         });
 
-        it("should work with recordArgs whitelist", () => {
+        it("records only the arguments at the listed positions", async () => {
             const obj = traceAll(
                 {
                     add(a: number, b: number) {
                         return a + b;
                     },
                 },
-                { recordArgs: ["0"] },
+                { recordArgs: ["1"] },
             );
-            assert.strictEqual(obj.add(2, 3), 5);
+            let result: number | undefined;
+
+            const recorded = await recordedArgsOf(() => {
+                result = obj.add(2, 3);
+            });
+
+            assert.strictEqual(result, 5);
+            assert.strictEqual(recorded, "[3]");
         });
 
-        it("should work with argsFilter", () => {
+        it("masks the recorded arguments with argsFilter, which also receives the method name", async () => {
+            const seenMethods: string[] = [];
             const obj = traceAll(
                 {
                     login(data: { pass: string }) {
@@ -239,18 +330,27 @@ describe("traceAll", () => {
                 {
                     recordArgs: true,
                     argsFilter: (name, args) => {
+                        seenMethods.push(name);
                         if (name === "login") return [{ pass: "***" }];
                         return args;
                     },
                 },
             );
-            // argsFilter only affects recorded span attributes, not actual arguments
-            assert.strictEqual(obj.login({ pass: "secret" }), "secret");
+            let result: string | undefined;
+
+            const observed = await observe(async () => {
+                result = obj.login({ pass: "secret" });
+            });
+
+            assert.strictEqual(result, "secret", "argsFilter only affects the recorded attribute, not the actual arguments");
+            assert.deepStrictEqual(seenMethods, ["login"]);
+            assert.strictEqual(observed.spans[0]?.attributes["function.args"], '[{"pass":"***"}]');
+            assert.ok(!JSON.stringify(observed.spans).includes("secret"), "the secret does not appear anywhere in the exported span");
         });
     });
 
     describe("constructor property", () => {
-        it("should not wrap constructor", () => {
+        it("should not wrap constructor", async () => {
             class MyClass {
                 value = 10;
                 getValue() {
@@ -258,8 +358,14 @@ describe("traceAll", () => {
                 }
             }
             const obj = traceAll(new MyClass());
-            // constructor should still be accessible and not wrapped
-            assert.strictEqual(typeof obj.constructor, "function");
+            let constructorOfProxy: unknown;
+
+            const names = await spanNamesOf(() => {
+                constructorOfProxy = obj.constructor;
+            });
+
+            assert.strictEqual(constructorOfProxy, MyClass, "reading constructor yields the class itself, not a traced wrapper");
+            assert.deepStrictEqual(names, []);
         });
     });
 

@@ -84,46 +84,62 @@ describe("TLSConfig", () => {
 			const certPath = resolve(testDir, "test.crt");
 			writeFileSync(certPath, "test-cert-content");
 
-			assert.throws(() => {
-				readTLSCertificates({
-					keyPath: resolve(testDir, "nonexistent.key"),
-					certPath,
-				});
-			});
+			// A missing file surfaces as the file system's ENOENT naming the
+			// missing path (Node.js fs error contract), not as a generic failure.
+			const missing = resolve(testDir, "nonexistent.key");
+			assert.throws(
+				() => {
+					readTLSCertificates({
+						keyPath: missing,
+						certPath,
+					});
+				},
+				{ code: "ENOENT", path: missing },
+			);
 		});
 
 		it("should throw error if cert file not found with explicit paths", () => {
 			const keyPath = resolve(testDir, "test.key");
 			writeFileSync(keyPath, "test-key-content");
 
-			assert.throws(() => {
-				readTLSCertificates({
-					keyPath,
-					certPath: resolve(testDir, "nonexistent.crt"),
-				});
-			});
+			const missing = resolve(testDir, "nonexistent.crt");
+			assert.throws(
+				() => {
+					readTLSCertificates({
+						keyPath,
+						certPath: missing,
+					});
+				},
+				{ code: "ENOENT", path: missing },
+			);
 		});
 
 		it("should throw error if server.key not found in directory", () => {
 			const certPath = resolve(testDir, "server.crt");
 			writeFileSync(certPath, "server-cert-content");
 
-			assert.throws(() => {
-				readTLSCertificates({
-					dirPath: testDir,
-				});
-			});
+			assert.throws(
+				() => {
+					readTLSCertificates({
+						dirPath: testDir,
+					});
+				},
+				{ code: "ENOENT", path: resolve(testDir, "server.key") },
+			);
 		});
 
 		it("should throw error if server.crt not found in directory", () => {
 			const keyPath = resolve(testDir, "server.key");
 			writeFileSync(keyPath, "server-key-content");
 
-			assert.throws(() => {
-				readTLSCertificates({
-					dirPath: testDir,
-				});
-			});
+			assert.throws(
+				() => {
+					readTLSCertificates({
+						dirPath: testDir,
+					});
+				},
+				{ code: "ENOENT", path: resolve(testDir, "server.crt") },
+			);
 		});
 
 		it("should prioritize explicit paths over dirPath", () => {

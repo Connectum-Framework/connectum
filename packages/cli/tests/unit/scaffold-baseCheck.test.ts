@@ -102,17 +102,26 @@ describe("findBaseDefects", () => {
         ]);
     });
 
-    it("reports every defect together, in a fixed order", () => {
+    // The requirement is that one message lists every defect found; no order is promised, so the
+    // comparison is by content. A check that stops at the first defect, or one that swallows a
+    // defect while another is present, leaves a list shorter than the set of seeded defects.
+    it("reports every defect together, whatever the order", () => {
         const broken = withPackageJson((pkg) => {
             pkg.imports = {};
+            pkg.dependencies = "not an object";
+            pkg.devDependencies = ["not", "an", "object"];
         });
         broken.delete("tsconfig.json");
         broken.delete("proto/greeter/v1/greeter.proto");
-        assert.deepEqual(findBaseDefects(broken, { sample: true }), [
-            'package.json "imports" has no "#gen/*" alias, which the generated code imports through',
+        broken.delete("src/services/greeterService.ts");
+        assert.deepEqual(findBaseDefects(broken, { sample: true }).sort(), [
+            'package.json "dependencies" must be an object',
+            'package.json "devDependencies" must be an object',
             'package.json "imports" has no "#*" alias, which the generated code imports through',
-            "tsconfig.json is missing (the generated `typecheck` script runs `tsc`)",
+            'package.json "imports" has no "#gen/*" alias, which the generated code imports through',
             "proto/greeter/v1/greeter.proto is missing",
+            "src/services/greeterService.ts is missing",
+            "tsconfig.json is missing (the generated `typecheck` script runs `tsc`)",
         ]);
     });
 });

@@ -131,7 +131,25 @@ describe("Authz Edge Cases — Integration", () => {
     });
 
     describe("AuthzDeniedError details", () => {
-        it("should include requiredRoles in AuthzDeniedError details", async () => {
+        // A deny rule whose requirements are not met does not match (guide: a rule applies only
+        // when the caller satisfies its requires), so the outcome is decided by the default policy.
+        // The pair of cases separates "default policy decides" from "the unmet deny rule denies anyway".
+        it("should not apply a deny rule whose requirements are unmet: defaultPolicy allow lets the caller through", async () => {
+            const token = await createTestJwt({ sub: "user-1", roles: ["viewer"] });
+            const authInterceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET, claimsMapping: { roles: "roles" } });
+            const authzInterceptor = createAuthzInterceptor({
+                defaultPolicy: "allow",
+                rules: [{ name: "admin-rule", methods: ["test.v1.TestService/*"], requires: { roles: ["admin"] }, effect: "deny" }],
+            });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: new Headers({ authorization: `Bearer ${token}` }) });
+            const next = mock.fn(async () => ({ message: {} }));
+
+            await buildChainedHandler(authInterceptor, authzInterceptor, next)(req);
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it("should fall back to defaultPolicy deny when a deny rule's requirements are unmet", async () => {
             const token = await createTestJwt({
                 sub: "user-1",
                 roles: ["viewer"],
@@ -170,6 +188,7 @@ describe("Authz Edge Cases — Integration", () => {
                     return true;
                 },
             );
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         it("should produce AuthzDeniedError with serverDetails when deny rule matches", async () => {
@@ -386,6 +405,60 @@ describe("Authz Edge Cases — Integration", () => {
 
             await handler(req);
             assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        // Guide, "Method Patterns": '*' matches all services and methods, and a rule without
+        // requires matches every authenticated caller. Three different services and methods are
+        // allowed by one rule; an exact-method rule on another method is the control that
+        // shows the allowance comes from '*' and not from a default.
+        it("should let a '*' rule match every service and method for an authenticated caller", async () => {
+            const authzInterceptor = createAuthzInterceptor({
+                defaultPolicy: "deny",
+                rules: [{ name: "allow-all", methods: ["*"], effect: "allow" }],
+            });
+            const caller = createMockAuthContext({ subject: "user-1", roles: [] });
+
+            for (const [service, method] of [
+                ["test.v1.TestService", "TestMethod"],
+                ["other.v2.OtherService", "OtherMethod"],
+                ["third.Service", "Another"],
+            ] as const) {
+                const next = mock.fn(async () => ({ message: {} }));
+                await withAuthContext(caller, () => authzInterceptor(next as any)(createMockRequest({ service, method })));
+                assert.strictEqual(next.mock.calls.length, 1, `${service}/${method} should be allowed`);
+            }
+        });
+
+        it("should still require an authenticated caller for a '*' rule", async () => {
+            const authzInterceptor = createAuthzInterceptor({
+                defaultPolicy: "allow",
+                rules: [{ name: "allow-all", methods: ["*"], effect: "allow" }],
+            });
+            const next = mock.fn(async () => ({ message: {} }));
+
+            await assert.rejects(authzInterceptor(next as any)(createMockRequest(MOCK_REQUEST_DEFAULTS)), (err: unknown) => {
+                assertConnectError(err, Code.Unauthenticated);
+                return true;
+            });
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("should not let an exact-method rule act as a wildcard", async () => {
+            const authzInterceptor = createAuthzInterceptor({
+                defaultPolicy: "deny",
+                rules: [{ name: "allow-one", methods: ["test.v1.TestService/Other"], effect: "allow" }],
+            });
+            const caller = createMockAuthContext({ subject: "user-1", roles: [] });
+            const next = mock.fn(async () => ({ message: {} }));
+
+            await assert.rejects(
+                withAuthContext(caller, () => authzInterceptor(next as any)(createMockRequest(MOCK_REQUEST_DEFAULTS))),
+                (err: unknown) => {
+                    assertConnectError(err, Code.PermissionDenied);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         it("should match '*' wildcard in rule methods", async () => {

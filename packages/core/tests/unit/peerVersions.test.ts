@@ -65,7 +65,16 @@ describe("checkPeerVersions — decision", () => {
 
     it("reports a too-old connect, the case Bun and pnpm let through with at most a warning", () => {
         const report = checkPeerVersions({ selfUrl: CORE_SELF, resolve: resolverFor({ ...IN_RANGE, "@connectrpc/connect": "connect-2.1.2" }) });
-        assert.strictEqual(report.status === "checked" && report.problems.map((p) => `${p.packageName}@${p.loadedVersion}`).join(), "@connectrpc/connect@2.1.2");
+        assert.deepStrictEqual(report.status === "checked" ? report.problems : undefined, [
+            {
+                kind: "range",
+                requiredBy: "@connectum/core",
+                packageName: "@connectrpc/connect",
+                loadedVersion: "2.1.2",
+                requiredRange: "^2.2.0",
+                loadedFrom: fileURLToPath(new URL("libs/connect-2.1.2", FIXTURES)),
+            },
+        ]);
     });
 
     it("skips the unnamed `{type: module}` marker next to the entry and reads the package's own manifest", () => {

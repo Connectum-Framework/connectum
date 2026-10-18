@@ -11,12 +11,21 @@ import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { defineCatalog } from "../../src/serviceCatalog.ts";
 import { EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { CountSchema, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 const echo = () =>
     defineService(EchoService, {
         echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
         secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
         rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+    });
+
+const streaming = () =>
+    defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+        async *server() {},
+        client: async () => create(CountSchema, { total: 0 }),
+        async *bidi() {},
     });
 
 describe("createServer enabledServices", () => {
@@ -31,8 +40,10 @@ describe("createServer enabledServices", () => {
     });
 
     it("mounts only the services listed in enabledServices", () => {
-        const server = createServer({ services: [echo()], enabledServices: [EchoService.typeName] });
+        const server = createServer({ services: [echo(), streaming()], enabledServices: [EchoService.typeName] });
         assert.equal(server.hasService(EchoService), true);
+        // A second configured service that is not listed stays unmounted.
+        assert.equal(server.hasService(StreamingService), false, "a service outside the list must not be local");
     });
 });
 

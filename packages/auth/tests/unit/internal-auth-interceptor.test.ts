@@ -77,25 +77,44 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 0);
         });
 
-        it("maps a throwing trust source to Unauthenticated (never leaks as Internal)", async () => {
-            const interceptor = createInternalAuthInterceptor({
-                internalMethods: [INTERNAL_PATTERN],
-                trustSource: () => {
+        // A trust source that fails (synchronously, asynchronously, or with a non-Error value)
+        // must fail the call closed as Unauthenticated: the caller learns nothing about the
+        // internal failure and the handler never runs.
+        const failingTrustSources: ReadonlyArray<readonly [string, () => never | Promise<never>]> = [
+            [
+                "throws synchronously",
+                () => {
                     throw new Error("boom from trust source");
                 },
-            });
-            const next = createMockNext();
-            const handler = interceptor(next);
-
-            await assert.rejects(
-                () => handler(internalReq()),
-                (err: unknown) => {
-                    assertConnectError(err, Code.Unauthenticated);
-                    return true;
+            ],
+            ["rejects asynchronously", () => Promise.reject(new Error("boom from trust source"))],
+            [
+                "throws a non-Error value",
+                () => {
+                    throw "boom from trust source";
                 },
-            );
-            assert.strictEqual(next.mock.calls.length, 0);
-        });
+            ],
+        ];
+        for (const [label, failing] of failingTrustSources) {
+            it(`maps a trust source that ${label} to Unauthenticated without leaking its text`, async () => {
+                const interceptor = createInternalAuthInterceptor({
+                    internalMethods: [INTERNAL_PATTERN],
+                    trustSource: failing,
+                });
+                const next = createMockNext();
+                const handler = interceptor(next);
+
+                await assert.rejects(
+                    () => handler(internalReq()),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        assert.ok(!err.message.includes("boom from trust source"), `client-visible message leaks the failure: ${err.message}`);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        }
     });
 
     describe("meshIdentityTrust", () => {
@@ -125,26 +144,39 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(headers.get("x-forwarded-client-principal"), null);
         });
 
-        it("rejects a non-allow-listed principal as Unauthenticated", async () => {
-            const interceptor = createInternalAuthInterceptor({
-                internalMethods: [INTERNAL_PATTERN],
-                trustSource: meshIdentityTrust({ allowlist: [{ principal: PRINCIPAL, roles: ["worker"] }] }),
-            });
-            const next = createMockNext();
-            const handler = interceptor(next);
+        // Only an exact allow-list entry is admitted. The near-misses extend the allowed principal,
+        // truncate it, change its case, swap one segment, or reuse a namespace, so a lookup that
+        // matches by prefix, substring, length or case rejects none of them.
+        for (const other of [
+            "cluster.local/ns/default/sa/evil",
+            `${PRINCIPAL}-evil`,
+            `${PRINCIPAL}/extra`,
+            PRINCIPAL.slice(0, -1),
+            PRINCIPAL.toUpperCase(),
+            "cluster.local/ns/other/sa/trips",
+            "cluster.local/ns/default",
+        ]) {
+            it(`rejects the non-allow-listed principal ${JSON.stringify(other)} as Unauthenticated`, async () => {
+                const interceptor = createInternalAuthInterceptor({
+                    internalMethods: [INTERNAL_PATTERN],
+                    trustSource: meshIdentityTrust({ allowlist: [{ principal: PRINCIPAL, roles: ["worker"] }] }),
+                });
+                const next = createMockNext();
+                const handler = interceptor(next);
 
-            const headers = new Headers({ "x-forwarded-client-principal": "cluster.local/ns/default/sa/evil" });
-            await assert.rejects(
-                () => handler(internalReq(headers)),
-                (err: unknown) => {
-                    assertConnectError(err, Code.Unauthenticated);
-                    return true;
-                },
-            );
-            assert.strictEqual(next.mock.calls.length, 0);
-            // Header stripped even on rejection.
-            assert.strictEqual(headers.get("x-forwarded-client-principal"), null);
-        });
+                const headers = new Headers({ "x-forwarded-client-principal": other });
+                await assert.rejects(
+                    () => handler(internalReq(headers)),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
+                // Header stripped even on rejection.
+                assert.strictEqual(headers.get("x-forwarded-client-principal"), null);
+            });
+        }
     });
 
     describe("sharedSecretTrust (dev-only)", () => {
@@ -168,25 +200,38 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(headers.get("x-internal-secret"), null, "secret header stripped");
         });
 
-        it("rejects a mismatched secret (and a length mismatch does not throw a length oracle)", async () => {
-            const interceptor = createInternalAuthInterceptor({
-                internalMethods: [INTERNAL_PATTERN],
-                trustSource: sharedSecretTrust({ secret: SECRET }),
-            });
-            const next = createMockNext();
-            const handler = interceptor(next);
+        // Near-misses of the configured secret: same length with one character changed, a prefix,
+        // an extension, a case change, an unrelated value, and no header at all.
+        const lastCharChanged = `${SECRET.slice(0, -1)}${SECRET.endsWith("x") ? "y" : "x"}`;
+        for (const bad of ["wrong", `${SECRET}x`, SECRET.slice(0, -1), lastCharChanged, SECRET.toUpperCase(), undefined]) {
+            it(`rejects the mismatched secret ${bad === undefined ? "(header absent)" : JSON.stringify(bad)} as Unauthenticated`, async () => {
+                const interceptor = createInternalAuthInterceptor({
+                    internalMethods: [INTERNAL_PATTERN],
+                    trustSource: sharedSecretTrust({ secret: SECRET }),
+                });
+                const next = createMockNext();
+                const handler = interceptor(next);
 
-            for (const bad of ["wrong", `${SECRET}x`, ""]) {
-                const headers = new Headers(bad === "" ? {} : { "x-internal-secret": bad });
                 await assert.rejects(
-                    () => handler(internalReq(headers)),
+                    () => handler(internalReq(bad === undefined ? new Headers() : new Headers({ "x-internal-secret": bad }))),
                     (err: unknown) => {
                         assertConnectError(err, Code.Unauthenticated);
                         return true;
                     },
                 );
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        }
+
+        it("answers a value of a different length with null instead of throwing", async () => {
+            // The trust source is a public building block. Comparing raw buffers of unequal length
+            // would make the comparison itself throw, and the throw (versus a quiet rejection) would
+            // tell a caller the length of the secret; the source must report a plain mismatch.
+            const trust = sharedSecretTrust({ secret: SECRET });
+            for (const value of ["x", SECRET.slice(0, -1), `${SECRET}x`, SECRET.repeat(3)]) {
+                const result = await trust(internalReq(new Headers({ "x-internal-secret": value })));
+                assert.strictEqual(result, null, `length ${value.length} must be a quiet mismatch`);
             }
-            assert.strictEqual(next.mock.calls.length, 0);
         });
     });
 
@@ -240,7 +285,40 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(ctx?.subject, ISS_B, "identity bound to B");
             assert.strictEqual(ctx?.claims.iss, ISS_B);
             assert.deepStrictEqual([...(ctx?.roles ?? [])], ["worker"]);
+            // The credential type defaults to "service" (documented default of the trust source).
+            assert.strictEqual(ctx?.type, "service");
             assert.strictEqual(headers.get("x-internal-token"), null, "token header stripped");
+        });
+
+        it("identifies a verified token that carries no sub claim by its issuer, the configured service name", async () => {
+            // No `sub`: the only identity left is the issuer the token was verified against, which is
+            // the key of the service in the `issuers` configuration. Nothing from the token's other
+            // claims may stand in for it.
+            const token = await createTestJwtRS256(kpB.privateKey, { roles: ["worker"] }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+            const cap = capturingNext();
+            const handler = buildInterceptor()(cap.next as never);
+
+            await handler(internalReq(new Headers({ "x-internal-token": token })));
+
+            assert.strictEqual(cap.calls(), 1);
+            assert.strictEqual(cap.getSeen()?.subject, ISS_B);
+        });
+
+        it("rejects a token that is validly signed by the issuer's key but meant for another audience", async () => {
+            const token = await createTestJwtRS256(kpB.privateKey, { sub: ISS_B }, { kid: kpB.kid, issuer: ISS_B, audience: "someone-else" });
+
+            const next = createMockNext();
+            const handler = buildInterceptor()(next);
+
+            await assert.rejects(
+                () => handler(internalReq(new Headers({ "x-internal-token": token }))),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         // ====================================================================
@@ -305,6 +383,8 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 0);
         });
 
+        // The published API reference of the token header states that its value "may be a bare
+        // token or a `Bearer <token>` value"; the bare form is covered by the self-signed case above.
         it("accepts a Bearer-prefixed token value", async () => {
             const token = await createTestJwtRS256(kpA.privateKey, { sub: ISS_A }, { kid: kpA.kid, issuer: ISS_A, audience: AUDIENCE });
 
@@ -319,18 +399,29 @@ describe("internal-auth-interceptor", () => {
     });
 
     describe("construction guards", () => {
-        it("throws when trustSource is missing", () => {
-            assert.throws(
-                // @ts-expect-error intentionally missing trustSource
-                () => createInternalAuthInterceptor({ internalMethods: [INTERNAL_PATTERN] }),
-                /requires a trustSource/,
-            );
+        // A JavaScript consumer can bypass the types. An interceptor without a callable trust source
+        // would either crash on the first internal call or, worse, be assumed protected, so the
+        // factory refuses at configuration time and names the option.
+        for (const [label, trustSource] of [
+            ["missing", undefined],
+            ["null", null],
+            ["a string", "shared-secret"],
+            ["an object", { header: "x-internal-secret" }],
+        ] as const) {
+            it(`throws naming trustSource when it is ${label}`, () => {
+                assert.throws(
+                    () => createInternalAuthInterceptor({ internalMethods: [INTERNAL_PATTERN], trustSource: trustSource as never }),
+                    /trustSource/,
+                );
+            });
+        }
+        // An empty list would silently reject every caller; failing at construction exposes the
+        // misconfiguration, and the message names the offending option.
+        it("meshIdentityTrust throws on empty allowlist, naming allowlist", () => {
+            assert.throws(() => meshIdentityTrust({ allowlist: [] }), /allowlist/);
         });
-        it("meshIdentityTrust throws on empty allowlist", () => {
-            assert.throws(() => meshIdentityTrust({ allowlist: [] }), /non-empty allowlist/);
-        });
-        it("signedTokenTrust throws with no issuers", () => {
-            assert.throws(() => signedTokenTrust({ issuers: {} }), /at least one issuer/);
+        it("signedTokenTrust throws with no issuers, naming issuer", () => {
+            assert.throws(() => signedTokenTrust({ issuers: {} }), /issuer/);
         });
         it("sharedSecretTrust throws on empty secret", () => {
             assert.throws(() => sharedSecretTrust({ secret: "" }), /non-empty secret/);

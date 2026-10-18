@@ -236,8 +236,9 @@ describe("Synthetic origin (Phase 2.3)", () => {
         assert.strictEqual(observedUrls.length, 1);
         const url = observedUrls[0] ?? "";
         assert.ok(url.length > 0, "req.url must be non-empty");
-        assert.ok(url.includes("echo.v1.EchoService"), `req.url must include service name, got: ${url}`);
-        assert.ok(url.includes("Echo"), `req.url must include method name, got: ${url}`);
+        // The path is exactly /<service>/<method>: "Echo" alone would also match
+        // the service name, so the method is checked as the final path segment.
+        assert.ok(url.endsWith(`/${EchoService.typeName}/${EchoService.method.echo.name}`), `req.url must end with /<service>/<method>, got: ${url}`);
     });
 
     // The user guide tells authors of policy interceptors that a local call

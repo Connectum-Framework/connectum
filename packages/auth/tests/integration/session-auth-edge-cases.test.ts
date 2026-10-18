@@ -13,7 +13,6 @@ import { assertConnectError, createMockRequest } from "@connectum/testing";
 import { getAuthContext } from "../../src/context.ts";
 import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMethod" } as const;
 
@@ -119,6 +118,39 @@ describe("Session Auth Edge Cases — Integration", () => {
                     return true;
                 },
             );
+            // Fail closed: the call is refused before the handler runs.
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        // Guide: a backend response that cannot be mapped is rejected with Unauthenticated.
+        // The refusal must not leave anything behind in the cache that would let the same
+        // token through on the next call without being mapped again.
+        it("should not cache a session whose mapping failed", async () => {
+            let mappings = 0;
+            const verifySession = mock.fn(async () => ({ userId: "u1" }));
+            const interceptor = createSessionAuthInterceptor({
+                verifySession: verifySession as any,
+                mapSession: (session) => {
+                    mappings++;
+                    if (mappings === 1) throw new Error("Unexpected format");
+                    return validMapSession(session);
+                },
+                cache: { ttl: 60_000 },
+            });
+            const next = mock.fn(async () => ({ message: {} }));
+            const handler = interceptor(next as any);
+            const call = () => handler(createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: new Headers({ authorization: "Bearer same-token" }) }));
+
+            await assert.rejects(call(), (err: unknown) => {
+                assertConnectError(err, Code.Unauthenticated);
+                return true;
+            });
+            assert.strictEqual(next.mock.calls.length, 0);
+
+            await call();
+            assert.strictEqual(verifySession.mock.calls.length, 2, "the failed attempt must not be served from the cache");
+            assert.strictEqual(mappings, 2);
+            assert.strictEqual(next.mock.calls.length, 1);
         });
 
         it("should re-throw ConnectError from mapSession", async () => {
@@ -156,20 +188,52 @@ describe("Session Auth Edge Cases — Integration", () => {
                 skipMethods: ["test.v1.TestService/Health"],
             });
 
+            // Guide: the interceptor removes incoming x-auth-* identity headers. A client could
+            // send any of the six to impersonate a caller on a method that skips authentication,
+            // so all six are planted and what the next handler sees is inspected from inside it.
+            const identityHeaders = ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"];
             const headers = new Headers();
-            headers.set(AUTH_HEADERS.SUBJECT, "spoofed-user");
-            headers.set(AUTH_HEADERS.TYPE, "spoofed-type");
+            for (const name of identityHeaders) headers.set(name, "spoofed");
+            headers.set("x-unrelated", "keep-me");
             const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "Health", headers });
 
-            const next = mock.fn(async () => ({ message: {} }));
+            let seenByNext: Record<string, string | null> = {};
+            const next = mock.fn(async (r: { header: Headers }) => {
+                seenByNext = Object.fromEntries([...identityHeaders, "x-unrelated"].map((name) => [name, r.header.get(name)]));
+                return { message: {} };
+            });
             const handler = interceptor(next as any);
             await handler(req);
 
             assert.strictEqual(next.mock.calls.length, 1);
             assert.strictEqual(verifySession.mock.calls.length, 0); // not called
-            // Auth headers should be stripped to prevent spoofing
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), null);
-            assert.strictEqual(req.header.get(AUTH_HEADERS.TYPE), null);
+            assert.deepStrictEqual(seenByNext, {
+                "x-auth-subject": null,
+                "x-auth-type": null,
+                "x-auth-name": null,
+                "x-auth-roles": null,
+                "x-auth-scopes": null,
+                "x-auth-claims": null,
+                "x-unrelated": "keep-me",
+            });
+        });
+
+        // Skipping is per method: a method that is not listed still needs a credential, so a
+        // non-empty skipMethods list cannot turn authentication off for the whole service.
+        it("should still require credentials on a method that is not in skipMethods", async () => {
+            const verifySession = mock.fn(async () => ({ userId: "u1" }));
+            const interceptor = createSessionAuthInterceptor({
+                verifySession: verifySession as any,
+                mapSession: validMapSession,
+                skipMethods: ["test.v1.TestService/Health"],
+            });
+            const next = mock.fn(async () => ({ message: {} }));
+
+            await assert.rejects(interceptor(next as any)(createMockRequest({ ...MOCK_REQUEST_DEFAULTS, method: "Other" })), (err: unknown) => {
+                assertConnectError(err, Code.Unauthenticated);
+                return true;
+            });
+            assert.strictEqual(next.mock.calls.length, 0);
         });
     });
 

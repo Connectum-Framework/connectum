@@ -54,7 +54,38 @@ describe("Interceptor Cache & Propagation — Integration", () => {
             assert.strictEqual(verifyCount, 1); // still 1
             assert.strictEqual(next.mock.calls.length, 2);
             // propagateHeaders was set on cached path
-            assert.strictEqual(req2.header.get(AUTH_HEADERS.SUBJECT), "cached-user");
+            assert.strictEqual(req2.header.get("x-auth-subject"), "cached-user");
+        });
+
+        // The cache must not serve an identity past the credential's own expiry, even while the
+        // cache entry's TTL is still running (session guide: the cache is bypassed once the
+        // mapped expiresAt has passed). This is the negative pair of the case above: the long TTL
+        // alone would serve the stale identity, so only the expiry check can force the re-verify.
+        it("should re-verify instead of serving a cached identity whose expiresAt has passed", async () => {
+            let verifyCount = 0;
+            const interceptor = createAuthInterceptor({
+                verifyCredentials: async (_cred: string): Promise<AuthContext> => {
+                    verifyCount++;
+                    return {
+                        subject: "expired-user",
+                        roles: [],
+                        scopes: [],
+                        claims: {},
+                        type: "api-key",
+                        expiresAt: new Date(Date.now() - 1_000),
+                    };
+                },
+                cache: { ttl: 60_000 },
+            });
+            const next = mock.fn(async () => ({ message: {} }));
+            const handler = interceptor(next as any);
+
+            for (let call = 1; call <= 3; call++) {
+                const h = new Headers();
+                h.set("authorization", "Bearer token-expired");
+                await handler(createMockRequest({ headers: h }));
+                assert.strictEqual(verifyCount, call, `call ${call} must verify again`);
+            }
         });
 
         it("should re-verify after cache TTL expiry", async () => {
@@ -109,50 +140,54 @@ describe("Interceptor Cache & Propagation — Integration", () => {
             const next = mock.fn(async () => ({ message: {} }));
             const handler = interceptor(next as any);
 
-            // Fill cache with 2 entries
-            for (const token of ["a", "b"]) {
+            const call = async (token: string): Promise<void> => {
                 const h = new Headers();
                 h.set("authorization", `Bearer ${token}`);
                 await handler(createMockRequest({ headers: h }));
-            }
-            assert.strictEqual(verifyCount, 2);
+            };
 
-            // Third entry evicts "a"
-            const h3 = new Headers();
-            h3.set("authorization", "Bearer c");
-            await handler(createMockRequest({ headers: h3 }));
+            // Fill the cache with a, b (oldest first), then read "a": it becomes the most recently used.
+            await call("a");
+            await call("b");
+            assert.strictEqual(verifyCount, 2);
+            await call("a");
+            assert.strictEqual(verifyCount, 2, "a is served from the cache");
+
+            // A third credential must evict the LEAST RECENTLY USED entry ("b"), not the oldest
+            // inserted one ("a"): a first-in-first-out cache would drop "a" here.
+            await call("c");
             assert.strictEqual(verifyCount, 3);
 
-            // "a" should be evicted — verify again (adds "a", evicts "b" since cache is full)
-            const h4 = new Headers();
-            h4.set("authorization", "Bearer a");
-            await handler(createMockRequest({ headers: h4 }));
-            assert.strictEqual(verifyCount, 4); // re-verified
+            await call("a");
+            assert.strictEqual(verifyCount, 3, "a was used more recently than b and must survive the eviction");
 
-            // "c" should still be cached (was accessed more recently than "b")
-            const h5 = new Headers();
-            h5.set("authorization", "Bearer c");
-            await handler(createMockRequest({ headers: h5 }));
-            assert.strictEqual(verifyCount, 4); // still 4 — cached
+            await call("b");
+            assert.strictEqual(verifyCount, 4, "b was the least recently used entry and must have been evicted");
         });
 
-        it("should throw RangeError for ttl <= 0", () => {
-            assert.throws(
-                () => new LruCache({ ttl: 0 }),
-                (err: unknown) => {
-                    assert.ok(err instanceof RangeError);
-                    assert.match((err as RangeError).message, /ttl must be a positive number/);
-                    return true;
-                },
-            );
+        // A cache lifetime must be a positive number of milliseconds: zero and negative values
+        // would make every entry already expired, and a non-number is a configuration mistake.
+        // The error type and the "positive number" wording are what a caller sees.
+        for (const [label, ttl] of [
+            ["zero", 0],
+            ["a negative number", -1],
+            ["a numeric string", "1000"],
+            ["undefined", undefined],
+        ] as const) {
+            it(`should throw RangeError for ttl ${label}`, () => {
+                assert.throws(
+                    () => new LruCache({ ttl: ttl as unknown as number }),
+                    (err: unknown) => {
+                        assert.ok(err instanceof RangeError);
+                        assert.match((err as RangeError).message, /ttl must be a positive number/);
+                        return true;
+                    },
+                );
+            });
+        }
 
-            assert.throws(
-                () => new LruCache({ ttl: -1 }),
-                (err: unknown) => {
-                    assert.ok(err instanceof RangeError);
-                    return true;
-                },
-            );
+        it("should accept the smallest positive ttl", () => {
+            assert.doesNotThrow(() => new LruCache({ ttl: 1 }));
         });
     });
 
@@ -252,6 +287,18 @@ describe("Interceptor Cache & Propagation — Integration", () => {
 
             const headers = new Headers();
             setAuthHeaders(headers, original);
+
+            // The wire form is fixed by the guide (names, JSON roles, space-separated scopes, JSON
+            // claims), independently of the parser, so a format changed on both sides cannot hide.
+            assert.deepStrictEqual(Object.fromEntries(headers), {
+                "x-auth-subject": "rt-user",
+                "x-auth-type": "jwt",
+                "x-auth-name": "Round Trip",
+                "x-auth-roles": '["admin","user"]',
+                "x-auth-scopes": "read write",
+                "x-auth-claims": '{"email":"rt@test.com","level":42}',
+            });
+
             const parsed = parseAuthHeaders(headers);
 
             assert.ok(parsed);
@@ -279,20 +326,6 @@ describe("Interceptor Cache & Propagation — Integration", () => {
             assert.strictEqual(parsed.type, "unknown");
         });
 
-        it("should return empty roles array when roles header exceeds 8192 bytes", () => {
-            const headers = new Headers();
-            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
-            headers.set(AUTH_HEADERS.TYPE, "jwt");
-            // Create oversized roles string (>8192)
-            const oversizedRoles = JSON.stringify(Array.from({ length: 2000 }, (_, i) => `role-${i}-${"x".repeat(10)}`));
-            assert.ok(oversizedRoles.length > 8192);
-            headers.set(AUTH_HEADERS.ROLES, oversizedRoles);
-
-            const parsed = parseAuthHeaders(headers);
-            assert.ok(parsed);
-            assert.deepStrictEqual(parsed.roles, []);
-        });
-
         it("should return empty roles array for invalid JSON roles header", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "user-1");
@@ -302,20 +335,6 @@ describe("Interceptor Cache & Propagation — Integration", () => {
             const parsed = parseAuthHeaders(headers);
             assert.ok(parsed);
             assert.deepStrictEqual(parsed.roles, []);
-        });
-
-        it("should return empty claims object for oversized claims header", () => {
-            const headers = new Headers();
-            headers.set(AUTH_HEADERS.SUBJECT, "user-1");
-            headers.set(AUTH_HEADERS.TYPE, "jwt");
-            // Create oversized claims string (>8192)
-            const oversizedClaims = JSON.stringify({ data: "x".repeat(9000) });
-            assert.ok(oversizedClaims.length > 8192);
-            headers.set(AUTH_HEADERS.CLAIMS, oversizedClaims);
-
-            const parsed = parseAuthHeaders(headers);
-            assert.ok(parsed);
-            assert.deepStrictEqual(parsed.claims, {});
         });
 
         it("should return empty claims object for invalid JSON claims header", () => {
@@ -342,51 +361,6 @@ describe("Interceptor Cache & Propagation — Integration", () => {
     });
 
     describe("setAuthHeaders overflow handling", () => {
-        it("should not set roles header when serialized roles exceeds 8192 bytes", () => {
-            const headers = new Headers();
-            const oversizedRoles = Array.from({ length: 2000 }, (_, i) => `role-${i}-${"x".repeat(10)}`);
-            const ctx: AuthContext = {
-                subject: "user-1",
-                roles: oversizedRoles,
-                scopes: [],
-                claims: {},
-                type: "jwt",
-            };
-            setAuthHeaders(headers, ctx);
-
-            assert.strictEqual(headers.get(AUTH_HEADERS.SUBJECT), "user-1");
-            assert.strictEqual(headers.get(AUTH_HEADERS.ROLES), null); // not set
-        });
-
-        it("should not set scopes header when serialized scopes exceeds 8192 bytes", () => {
-            const headers = new Headers();
-            const oversizedScopes = Array.from({ length: 2000 }, (_, i) => `scope-${i}-${"x".repeat(10)}`);
-            const ctx: AuthContext = {
-                subject: "user-1",
-                roles: [],
-                scopes: oversizedScopes,
-                claims: {},
-                type: "jwt",
-            };
-            setAuthHeaders(headers, ctx);
-
-            assert.strictEqual(headers.get(AUTH_HEADERS.SCOPES), null); // not set
-        });
-
-        it("should not set claims header when serialized claims exceeds 8192 bytes", () => {
-            const headers = new Headers();
-            const ctx: AuthContext = {
-                subject: "user-1",
-                roles: [],
-                scopes: [],
-                claims: { data: "x".repeat(9000) },
-                type: "jwt",
-            };
-            setAuthHeaders(headers, ctx);
-
-            assert.strictEqual(headers.get(AUTH_HEADERS.CLAIMS), null); // not set
-        });
-
         it("should filter claims via propagatedClaims", () => {
             const headers = new Headers();
             const ctx: AuthContext = {

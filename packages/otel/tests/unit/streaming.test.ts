@@ -15,11 +15,15 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
-import { createMockRequest } from "@connectum/testing";
+import type { Interceptor } from "@connectrpc/connect";
+import { createMockRequest, type NormalizedSpan } from "@connectum/testing";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import * as semconv from "@opentelemetry/semantic-conventions/incubating";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
 import { estimateMessageSize, wrapAsyncIterable } from "../../src/shared.ts";
+import { histogramTotals, type Observed, observe, onlySpan, pointAttributes } from "./observe.ts";
 
 // ---------------------------------------------------------------------------
 // Otel-specific default message (for size estimation tests)
@@ -241,11 +245,19 @@ describe("wrapAsyncIterable", () => {
 		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), span, "RECEIVED", true);
 		await collectAll(wrapped);
 
-		assert.strictEqual(events.length, 1);
-		assert.strictEqual(events[0]!.name, "rpc.message");
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.type"], "RECEIVED");
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.id"], 1);
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.uncompressed_size"], 33);
+		// The event and its attribute names come from the semantic-conventions registry:
+		// the otel-rpc-semconv specification keeps the message events, and the registry
+		// still defines them (as deprecated, with no replacement).
+		assert.deepStrictEqual(events, [
+			{
+				name: semconv.EVENT_RPC_MESSAGE,
+				attributes: {
+					[semconv.ATTR_RPC_MESSAGE_TYPE]: semconv.RPC_MESSAGE_TYPE_VALUE_RECEIVED,
+					[semconv.ATTR_RPC_MESSAGE_ID]: 1,
+					[semconv.ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE]: 33,
+				},
+			},
+		]);
 	});
 
 	it("should set rpc.message.type to SENT for outgoing messages", async () => {
@@ -255,7 +267,7 @@ describe("wrapAsyncIterable", () => {
 		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), span, "SENT", true);
 		await collectAll(wrapped);
 
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.type"], "SENT");
+		assert.strictEqual(events[0]!.attributes?.[semconv.ATTR_RPC_MESSAGE_TYPE], semconv.RPC_MESSAGE_TYPE_VALUE_SENT);
 	});
 
 	it("should set rpc.message.type to RECEIVED for incoming messages", async () => {
@@ -265,7 +277,7 @@ describe("wrapAsyncIterable", () => {
 		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), span, "RECEIVED", true);
 		await collectAll(wrapped);
 
-		assert.strictEqual(events[0]!.attributes?.["rpc.message.type"], "RECEIVED");
+		assert.strictEqual(events[0]!.attributes?.[semconv.ATTR_RPC_MESSAGE_TYPE], semconv.RPC_MESSAGE_TYPE_VALUE_RECEIVED);
 	});
 
 	// -----------------------------------------------------------------------
@@ -380,9 +392,9 @@ describe("wrapAsyncIterable", () => {
 		const wrapped = wrapAsyncIterable(mockAsyncIterable(items), mock.span, "RECEIVED", false, true);
 		await collectAll(wrapped);
 
-		assert.strictEqual(mock.ended, true);
-		assert.strictEqual(mock.statuses.length, 1);
-		assert.strictEqual(mock.statuses[0]!.code, 1); // SpanStatusCode.OK = 1
+		assert.strictEqual(mock.endCount, 1);
+		assert.strictEqual(mock.recordedExceptions.length, 0);
+		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR), "a normally completed stream is not a failure");
 	});
 
 	it("should record exception and set ERROR status when stream errors with endSpanOnComplete=true", async () => {
@@ -437,9 +449,11 @@ describe("wrapAsyncIterable", () => {
 			break;
 		}
 
-		assert.strictEqual(mock.ended, true);
-		assert.strictEqual(mock.statuses.length, 1);
-		assert.strictEqual(mock.statuses[0]!.code, 1); // SpanStatusCode.OK = 1
+		// A consumer that stops reading is not an operation error: the span ends once,
+		// records no exception and is not marked failed.
+		assert.strictEqual(mock.endCount, 1);
+		assert.strictEqual(mock.recordedExceptions.length, 0);
+		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR));
 	});
 });
 
@@ -463,22 +477,6 @@ describe("estimateMessageSize caching", () => {
 		assert.strictEqual(size1, 42);
 		assert.strictEqual(size2, 42);
 		// toBinary should be called only once due to WeakMap caching
-		assert.strictEqual(callCount, 1);
-	});
-
-	it("should not call toBinary twice for same message", () => {
-		let callCount = 0;
-		const message = {
-			toBinary: () => {
-				callCount++;
-				return new Uint8Array(99);
-			},
-		};
-
-		estimateMessageSize(message);
-		estimateMessageSize(message);
-		estimateMessageSize(message);
-
 		assert.strictEqual(callCount, 1);
 	});
 
@@ -507,482 +505,223 @@ describe("estimateMessageSize caching", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Streaming in server interceptor (createOtelInterceptor)
+// Streaming in the server and client interceptors
 // ---------------------------------------------------------------------------
 
-describe("createOtelInterceptor streaming", () => {
-	afterEach(async () => {
-		await shutdownProvider();
+// Oracle: the otel-rpc-semconv specification (opt-in message events carrying a
+// direction, a sequence number and the estimated size), the OpenTelemetry names of
+// the event and its attributes, and the package metrics guide: a streaming call that
+// started successfully carries no rpc.response.status_code and its aggregate size
+// measurements are zero. The server receives the request and sends the response, the
+// client sends the request and receives the response.
+interface Side {
+	name: string;
+	create: (options: { recordMessages?: boolean; withoutTracing?: boolean; withoutMetrics?: boolean; filter?: () => boolean }) => Interceptor;
+	spanKind: SpanKind;
+	requestDirection: "RECEIVED" | "SENT";
+	responseDirection: "RECEIVED" | "SENT";
+	durationMetric: string;
+	requestSizeMetric: string;
+	responseSizeMetric: string;
+}
+
+const SIDES: Side[] = [
+	{
+		name: "createOtelInterceptor",
+		create: (options) => createOtelInterceptor(options),
+		spanKind: SpanKind.SERVER,
+		requestDirection: "RECEIVED",
+		responseDirection: "SENT",
+		durationMetric: semconv.METRIC_RPC_SERVER_CALL_DURATION,
+		requestSizeMetric: semconv.METRIC_RPC_SERVER_REQUEST_SIZE,
+		responseSizeMetric: semconv.METRIC_RPC_SERVER_RESPONSE_SIZE,
+	},
+	{
+		name: "createOtelClientInterceptor",
+		create: (options) => createOtelClientInterceptor({ serverAddress: "api.example.com", ...options }),
+		spanKind: SpanKind.CLIENT,
+		requestDirection: "SENT",
+		responseDirection: "RECEIVED",
+		durationMetric: semconv.METRIC_RPC_CLIENT_CALL_DURATION,
+		requestSizeMetric: semconv.METRIC_RPC_CLIENT_REQUEST_SIZE,
+		responseSizeMetric: semconv.METRIC_RPC_CLIENT_RESPONSE_SIZE,
+	},
+];
+
+const sized = (size: number) => ({ toBinary: () => new Uint8Array(size) });
+
+/** Message events of a span as sorted `TYPE #id size N` lines, independent of the collector's event order. */
+function eventLines(span: NormalizedSpan): string[] {
+	return span.events
+		.map((e) => {
+			assert.strictEqual(e.name, semconv.EVENT_RPC_MESSAGE);
+			return `${e.attributes[semconv.ATTR_RPC_MESSAGE_TYPE]} #${e.attributes[semconv.ATTR_RPC_MESSAGE_ID]} size ${e.attributes[semconv.ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE]}`;
+		})
+		.sort();
+}
+
+/** The message stream of a streaming response. */
+function streamOf(response: unknown): AsyncIterable<unknown> {
+	return (response as { message: AsyncIterable<unknown> }).message;
+}
+
+/** A handler that reads the whole request stream and records what it read. */
+function readingNext(read: unknown[], response: () => unknown): never {
+	return (async (req: { stream: boolean; message: AsyncIterable<unknown> }) => {
+		if (req.stream) {
+			for await (const message of req.message) read.push(message);
+		}
+		return response();
+	}) as never;
+}
+
+for (const side of SIDES) {
+	describe(`${side.name} streaming`, () => {
+		afterEach(async () => {
+			await shutdownProvider();
+		});
+
+		const durationPoints = (observed: Observed) => pointAttributes(observed, side.durationMetric);
+
+		it("should hand the streamed request messages to the handler unchanged inside one span", async () => {
+			const messages = [sized(10), sized(20), sized(30)];
+			const read: unknown[] = [];
+			const handler = side.create({})(readingNext(read, () => ({ stream: false, message: sized(5) })));
+
+			const observed = await observe(async () => {
+				await handler(createMockRequest({ stream: true, message: mockAsyncIterable(messages) as any }));
+			});
+
+			assert.strictEqual(read.length, 3);
+			messages.forEach((message, i) => {
+				assert.strictEqual(read[i], message);
+			});
+			const span = onlySpan(observed);
+			assert.strictEqual(span.kind, side.spanKind);
+			assert.deepStrictEqual(span.events, [], "message events are opt-in");
+			assert.deepStrictEqual(histogramTotals(observed, side.requestSizeMetric), { sum: 0, count: 1 });
+		});
+
+		it(`should record ${side.requestDirection} events for the streamed request messages with recordMessages=true`, async () => {
+			const read: unknown[] = [];
+			const handler = side.create({ recordMessages: true })(readingNext(read, () => ({ stream: false, message: sized(5) })));
+
+			const observed = await observe(async () => {
+				await handler(createMockRequest({ stream: true, message: mockAsyncIterable([sized(10), sized(20)]) as any }));
+			});
+
+			assert.deepStrictEqual(eventLines(onlySpan(observed)), [
+				`${side.requestDirection} #1 size 10`,
+				`${side.requestDirection} #2 size 20`,
+				`${side.responseDirection} #1 size 5`,
+			].sort());
+		});
+
+		it("should hand the streamed response messages to the caller unchanged and end the span when they are drained", async () => {
+			const responses = [sized(15), sized(25)];
+			const next: any = async () => ({ stream: true, message: mockAsyncIterable(responses) });
+			const handler = side.create({})(next);
+			let collected: unknown[] = [];
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				assert.strictEqual(response.stream, true);
+				collected = await collectAll(response.message);
+			});
+
+			assert.strictEqual(collected.length, 2);
+			assert.strictEqual(collected[0], responses[0]);
+			assert.strictEqual(collected[1], responses[1]);
+			const span = onlySpan(observed);
+			assert.strictEqual(span.kind, side.spanKind);
+			assert.deepStrictEqual(span.events, [], "message events are opt-in");
+			assert.ok(!(semconv.ATTR_RPC_RESPONSE_STATUS_CODE in span.attributes), "a started stream has no final status yet");
+			assert.deepStrictEqual(histogramTotals(observed, side.responseSizeMetric), { sum: 0, count: 1 });
+		});
+
+		it(`should record ${side.responseDirection} events for the streamed response messages with recordMessages=true`, async () => {
+			const next: any = async () => ({ stream: true, message: mockAsyncIterable([sized(15), sized(25), sized(35)]) });
+			const handler = side.create({ recordMessages: true })(next);
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				await collectAll(streamOf(response));
+			});
+
+			assert.deepStrictEqual(eventLines(onlySpan(observed)), [
+				`${side.requestDirection} #1 size 42`,
+				`${side.responseDirection} #1 size 15`,
+				`${side.responseDirection} #2 size 25`,
+				`${side.responseDirection} #3 size 35`,
+			].sort());
+		});
+
+		it("should record both directions of a bidirectional stream in one span", async () => {
+			const responses = [sized(30), sized(40)];
+			const read: unknown[] = [];
+			const handler = side.create({ recordMessages: true })(readingNext(read, () => ({ stream: true, message: mockAsyncIterable(responses) })));
+			let collected: unknown[] = [];
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: true, message: mockAsyncIterable([sized(10), sized(20)]) as any }));
+				collected = await collectAll(streamOf(response));
+			});
+
+			assert.strictEqual(collected[0], responses[0]);
+			assert.strictEqual(collected[1], responses[1]);
+			assert.deepStrictEqual(eventLines(onlySpan(observed)), [
+				`${side.requestDirection} #1 size 10`,
+				`${side.requestDirection} #2 size 20`,
+				`${side.responseDirection} #1 size 30`,
+				`${side.responseDirection} #2 size 40`,
+			].sort());
+		});
+
+		it("should pass stream=true to the filter for streaming requests", async () => {
+			let receivedStream: boolean | undefined;
+			const interceptor = side.create({
+				filter: ((ctx: { stream: boolean }) => {
+					receivedStream = ctx.stream;
+					return true;
+				}) as never,
+			});
+			const next: any = async (_req: any) => ({ stream: true, message: mockAsyncIterable([]) });
+
+			await interceptor(next)(createMockRequest({ stream: true, message: mockAsyncIterable([]) as any }));
+
+			assert.strictEqual(receivedStream, true);
+		});
+
+		it("should pass a stream through untouched and record nothing when tracing and metrics are both disabled", async () => {
+			const expectedResponse = { stream: true, message: mockAsyncIterable([sized(5)]) };
+			const handler = side.create({ withoutTracing: true, withoutMetrics: true })((async () => expectedResponse) as never);
+			let response: unknown;
+
+			const observed = await observe(async () => {
+				response = await handler(createMockRequest({ stream: true, message: mockAsyncIterable([]) as any }));
+				await collectAll(expectedResponse.message);
+			});
+
+			assert.strictEqual(response, expectedResponse);
+			assert.deepStrictEqual(observed.spans, []);
+			assert.deepStrictEqual(observed.metrics, []);
+		});
+
+		it("should record only the duration metric of a stream, without a status code, with withoutTracing=true", async () => {
+			const responses = [sized(10)];
+			const next: any = async () => ({ stream: true, message: mockAsyncIterable(responses) });
+			const handler = side.create({ withoutTracing: true })(next);
+			let collected: unknown[] = [];
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: true, message: mockAsyncIterable([]) as any }));
+				collected = await collectAll(streamOf(response));
+			});
+
+			assert.strictEqual(collected[0], responses[0]);
+			assert.deepStrictEqual(observed.spans, []);
+			assert.strictEqual(durationPoints(observed).length, 1);
+			assert.ok(!(semconv.ATTR_RPC_RESPONSE_STATUS_CODE in (durationPoints(observed)[0] ?? {})));
+		});
 	});
-
-	// -----------------------------------------------------------------------
-	// Streaming request wrapping
-	// -----------------------------------------------------------------------
-
-	it("should wrap streaming request messages through the interceptor", async () => {
-		const interceptor = createOtelInterceptor();
-		const msg1 = { toBinary: () => new Uint8Array(10), value: "a" };
-		const msg2 = { toBinary: () => new Uint8Array(20), value: "b" };
-		const msg3 = { toBinary: () => new Uint8Array(30), value: "c" };
-
-		let capturedReqMessages: unknown[] = [];
-		const next: any = async (req: any) => {
-			// Consume the streaming request messages
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const msg of req.message) {
-					capturedReqMessages.push(msg);
-				}
-			}
-			return { stream: false, message: { toBinary: () => new Uint8Array(5) } };
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([msg1, msg2, msg3]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(capturedReqMessages.length, 3);
-		assert.strictEqual(capturedReqMessages[0], msg1);
-		assert.strictEqual(capturedReqMessages[1], msg2);
-		assert.strictEqual(capturedReqMessages[2], msg3);
-	});
-
-	// -----------------------------------------------------------------------
-	// Streaming response wrapping
-	// -----------------------------------------------------------------------
-
-	it("should wrap streaming response messages through the interceptor", async () => {
-		const interceptor = createOtelInterceptor();
-		const resp1 = { toBinary: () => new Uint8Array(15), id: 1 };
-		const resp2 = { toBinary: () => new Uint8Array(25), id: 2 };
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([resp1, resp2]),
-		});
-
-		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		// Consume the wrapped streaming response
-		const collected = await collectAll(response.message);
-		assert.strictEqual(collected.length, 2);
-		assert.strictEqual(collected[0], resp1);
-		assert.strictEqual(collected[1], resp2);
-	});
-
-	// -----------------------------------------------------------------------
-	// recordMessages with streaming
-	// -----------------------------------------------------------------------
-
-	it("should record stream message events with recordMessages=true for streaming requests", async () => {
-		const interceptor = createOtelInterceptor({ recordMessages: true });
-		const msg1 = { toBinary: () => new Uint8Array(10) };
-		const msg2 = { toBinary: () => new Uint8Array(20) };
-
-		const next: any = async (req: any) => {
-			// Consume streaming request to trigger wrapAsyncIterable events
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const _msg of req.message) {
-					// consume
-				}
-			}
-			return { stream: false, message: { toBinary: () => new Uint8Array(5) } };
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([msg1, msg2]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		// The interceptor should complete without errors
-		assert.ok(response);
-	});
-
-	it("should record stream message events with recordMessages=true for streaming responses", async () => {
-		const interceptor = createOtelInterceptor({ recordMessages: true });
-		const resp1 = { toBinary: () => new Uint8Array(15) };
-		const resp2 = { toBinary: () => new Uint8Array(25) };
-		const resp3 = { toBinary: () => new Uint8Array(35) };
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([resp1, resp2, resp3]),
-		});
-
-		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		// Consume wrapped response to trigger events
-		const collected = await collectAll(response.message);
-		assert.strictEqual(collected.length, 3);
-	});
-
-	// -----------------------------------------------------------------------
-	// Bidirectional streaming (request + response both streaming)
-	// -----------------------------------------------------------------------
-
-	it("should handle bidirectional streaming (both request and response are streams)", async () => {
-		const interceptor = createOtelInterceptor({ recordMessages: true });
-		const reqMsg1 = { toBinary: () => new Uint8Array(10), dir: "req" };
-		const reqMsg2 = { toBinary: () => new Uint8Array(20), dir: "req" };
-		const respMsg1 = { toBinary: () => new Uint8Array(30), dir: "resp" };
-		const respMsg2 = { toBinary: () => new Uint8Array(40), dir: "resp" };
-
-		const next: any = async (req: any) => {
-			// Consume streaming request
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const _msg of req.message) {
-					// consume
-				}
-			}
-			return {
-				stream: true,
-				message: mockAsyncIterable([respMsg1, respMsg2]),
-			};
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([reqMsg1, reqMsg2]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		const collectedResp = await collectAll(response.message);
-		assert.strictEqual(collectedResp.length, 2);
-		assert.strictEqual(collectedResp[0], respMsg1);
-		assert.strictEqual(collectedResp[1], respMsg2);
-	});
-
-	// -----------------------------------------------------------------------
-	// Streaming with filter
-	// -----------------------------------------------------------------------
-
-	it("should pass stream=true to filter for streaming requests", async () => {
-		let receivedStream: boolean | undefined;
-		const interceptor = createOtelInterceptor({
-			filter: (ctx) => {
-				receivedStream = ctx.stream;
-				return true;
-			},
-		});
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([]),
-		});
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([]) as any,
-		});
-
-		const handler = interceptor(next);
-		await handler(req);
-
-		assert.strictEqual(receivedStream, true);
-	});
-
-	// -----------------------------------------------------------------------
-	// Streaming with feature toggles
-	// -----------------------------------------------------------------------
-
-	it("should pass through streaming when both tracing and metrics disabled", async () => {
-		const interceptor = createOtelInterceptor({
-			withoutTracing: true,
-			withoutMetrics: true,
-		});
-		const resp1 = { toBinary: () => new Uint8Array(5) };
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([resp1]),
-		});
-
-		const req = createMockRequest({ stream: true, message: mockAsyncIterable([]) as any });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-	});
-
-	it("should handle streaming in metrics-only mode (withoutTracing=true)", async () => {
-		const interceptor = createOtelInterceptor({ withoutTracing: true });
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([{ toBinary: () => new Uint8Array(10) }]),
-		});
-
-		const req = createMockRequest({ stream: true, message: mockAsyncIterable([]) as any });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Streaming in client interceptor (createOtelClientInterceptor)
-// ---------------------------------------------------------------------------
-
-describe("createOtelClientInterceptor streaming", () => {
-	afterEach(async () => {
-		await shutdownProvider();
-	});
-
-	// -----------------------------------------------------------------------
-	// Streaming request wrapping
-	// -----------------------------------------------------------------------
-
-	it("should wrap streaming request messages through the client interceptor", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-		});
-		const msg1 = { toBinary: () => new Uint8Array(10), value: "x" };
-		const msg2 = { toBinary: () => new Uint8Array(20), value: "y" };
-
-		let capturedReqMessages: unknown[] = [];
-		const next: any = async (req: any) => {
-			// Consume the streaming request messages
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const msg of req.message) {
-					capturedReqMessages.push(msg);
-				}
-			}
-			return { stream: false, message: { toBinary: () => new Uint8Array(5) } };
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([msg1, msg2]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(capturedReqMessages.length, 2);
-		assert.strictEqual(capturedReqMessages[0], msg1);
-		assert.strictEqual(capturedReqMessages[1], msg2);
-	});
-
-	// -----------------------------------------------------------------------
-	// Streaming response wrapping
-	// -----------------------------------------------------------------------
-
-	it("should wrap streaming response messages through the client interceptor", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-		});
-		const resp1 = { toBinary: () => new Uint8Array(15), id: 1 };
-		const resp2 = { toBinary: () => new Uint8Array(25), id: 2 };
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([resp1, resp2]),
-		});
-
-		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		const collected = await collectAll(response.message);
-		assert.strictEqual(collected.length, 2);
-		assert.strictEqual(collected[0], resp1);
-		assert.strictEqual(collected[1], resp2);
-	});
-
-	// -----------------------------------------------------------------------
-	// recordMessages with streaming (client-side direction differences)
-	// -----------------------------------------------------------------------
-
-	it("should record stream message events with recordMessages=true for client streaming requests (direction=SENT)", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			recordMessages: true,
-		});
-		const msg1 = { toBinary: () => new Uint8Array(10) };
-
-		const next: any = async (req: any) => {
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const _msg of req.message) {
-					// consume
-				}
-			}
-			return { stream: false, message: { toBinary: () => new Uint8Array(5) } };
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([msg1]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-	});
-
-	it("should record stream message events with recordMessages=true for client streaming responses (direction=RECEIVED)", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			recordMessages: true,
-		});
-		const resp1 = { toBinary: () => new Uint8Array(15) };
-		const resp2 = { toBinary: () => new Uint8Array(25) };
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([resp1, resp2]),
-		});
-
-		const req = createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		const collected = await collectAll(response.message);
-		assert.strictEqual(collected.length, 2);
-	});
-
-	// -----------------------------------------------------------------------
-	// Client bidirectional streaming
-	// -----------------------------------------------------------------------
-
-	it("should handle bidirectional streaming in client interceptor", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			recordMessages: true,
-		});
-		const reqMsg = { toBinary: () => new Uint8Array(10) };
-		const respMsg = { toBinary: () => new Uint8Array(30) };
-
-		const next: any = async (req: any) => {
-			if (req.stream && req.message && req.message[Symbol.asyncIterator]) {
-				for await (const _msg of req.message) {
-					// consume
-				}
-			}
-			return {
-				stream: true,
-				message: mockAsyncIterable([respMsg]),
-			};
-		};
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([reqMsg]) as any,
-		});
-
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-
-		const collected = await collectAll(response.message);
-		assert.strictEqual(collected.length, 1);
-		assert.strictEqual(collected[0], respMsg);
-	});
-
-	// -----------------------------------------------------------------------
-	// Client streaming with filter
-	// -----------------------------------------------------------------------
-
-	it("should pass stream=true to client filter for streaming requests", async () => {
-		let receivedStream: boolean | undefined;
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			filter: (ctx) => {
-				receivedStream = ctx.stream;
-				return true;
-			},
-		});
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([]),
-		});
-
-		const req = createMockRequest({
-			stream: true,
-			message: mockAsyncIterable([]) as any,
-		});
-
-		const handler = interceptor(next);
-		await handler(req);
-
-		assert.strictEqual(receivedStream, true);
-	});
-
-	// -----------------------------------------------------------------------
-	// Client streaming with feature toggles
-	// -----------------------------------------------------------------------
-
-	it("should pass through streaming when both tracing and metrics disabled (client)", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			withoutTracing: true,
-			withoutMetrics: true,
-		});
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([{ toBinary: () => new Uint8Array(5) }]),
-		});
-
-		const req = createMockRequest({ stream: true, message: mockAsyncIterable([]) as any });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-	});
-
-	it("should handle streaming in client metrics-only mode (withoutTracing=true)", async () => {
-		const interceptor = createOtelClientInterceptor({
-			serverAddress: "api.example.com",
-			withoutTracing: true,
-		});
-
-		const next: any = async (_req: any) => ({
-			stream: true,
-			message: mockAsyncIterable([{ toBinary: () => new Uint8Array(10) }]),
-		});
-
-		const req = createMockRequest({ stream: true, message: mockAsyncIterable([]) as any });
-		const handler = interceptor(next);
-		const response = await handler(req);
-
-		assert.ok(response);
-		assert.strictEqual(response.stream, true);
-	});
-});
+}

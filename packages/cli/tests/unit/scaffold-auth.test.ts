@@ -5,12 +5,16 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import ts from "typescript";
 import { applyAuthProtoAnnotations, generateAuthFile } from "../../src/scaffold/authFragment.ts";
 import { generateBufYaml } from "../../src/scaffold/bufConfig.ts";
 import { resolveConfig } from "../../src/scaffold/config.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
+import { GREETER_PROTO } from "../helpers/baseFixture.ts";
+import { runBuf } from "../helpers/bufProject.ts";
+import { callsTo, collectNodes, exportedBindings, interfaceKeys, parseGenerated, propertiesOf, unresolvedWorkspaceImports } from "../helpers/generatedCode.ts";
 
 const authConfig: ScaffoldConfig = { dir: "acct", name: "acct", runtime: "node", packageManager: "pnpm", nodeExec: "raw", sample: true, modules: { auth: true } };
 
@@ -22,12 +26,41 @@ describe("resolveConfig auth flag", () => {
 });
 
 describe("generateAuthFile", () => {
-    it("wires the JWT + proto-authz interceptors", () => {
-        const f = generateAuthFile();
-        assert.match(f, /import \{ createJwtAuthInterceptor \} from "@connectum\/auth"/);
-        assert.match(f, /import \{ createProtoAuthzInterceptor, getPublicMethods \} from "@connectum\/auth\/proto"/);
-        assert.match(f, /export function buildAuthInterceptors\(\): Interceptor\[\]/);
-        assert.match(f, /getPublicMethods\(\[GreeterService\]\)/);
+    // The names are resolved against the sources of @connectum/auth, so a renamed or misspelled
+    // factory, a stale option and a dropped call all fail, and a comment that only mentions
+    // them does not count.
+    it("authenticates with the JWT interceptor first and authorizes from the proto annotations second", () => {
+        const sf = parseGenerated(generateAuthFile(), "auth.ts");
+        assert.deepEqual(unresolvedWorkspaceImports(sf), []);
+        assert.deepEqual(exportedBindings(sf), ["buildAuthInterceptors"]);
+
+        const [jwt] = callsTo(sf, "createJwtAuthInterceptor");
+        assert.ok(jwt !== undefined);
+        assert.equal(callsTo(sf, "createJwtAuthInterceptor").length, 1);
+        const jwtOptions = propertiesOf(jwt.arguments[0] as ts.Node);
+        assert.deepEqual(
+            jwtOptions.map((p) => p.name).filter((name) => !interfaceKeys("auth/src/types.ts", "JwtAuthInterceptorOptions").has(name)),
+            [],
+            "createJwtAuthInterceptor is given an option it does not have",
+        );
+        assert.equal(callsTo(sf, "createProtoAuthzInterceptor").length, 1);
+
+        // The public methods are read from the proto annotations of the sample service and handed
+        // to the JWT interceptor, which must not demand a token for them.
+        const [publicMethods] = callsTo(sf, "getPublicMethods");
+        assert.equal(publicMethods?.arguments.map((a) => a.getText()).join(), "[GreeterService]");
+        const skipMethods = jwtOptions.find((p) => p.name === "skipMethods")?.value ?? "";
+        assert.ok(skipMethods.includes("...publicMethods"), skipMethods);
+        // The gRPC health and reflection protocols are reachable by probes and tooling without a token.
+        assert.ok(skipMethods.includes('"grpc.health.v1.Health/*"') && skipMethods.includes('"grpc.reflection.v1.ServerReflection/*"'), skipMethods);
+
+        // The chain is authentication, then authorization: the authorizer reads the identity the
+        // JWT interceptor established.
+        const [fn] = collectNodes(sf, ts.isFunctionDeclaration);
+        const returned = collectNodes(fn as ts.Node, ts.isReturnStatement)[0]?.expression?.getText();
+        assert.equal(returned, "[jwtAuth, authz]");
+        const declared = Object.fromEntries(collectNodes(fn as ts.Node, ts.isVariableDeclaration).map((d) => [d.name.getText(), d.initializer?.getText().split("(")[0]]));
+        assert.deepEqual(declared, { jwtAuth: "createJwtAuthInterceptor", authz: "createProtoAuthzInterceptor" });
     });
 });
 
@@ -48,10 +81,42 @@ describe("generateServer with auth (D-3 ordering)", () => {
 });
 
 describe("generateBufYaml with auth", () => {
-    it("adds the node_modules auth module and RPC_* excepts", () => {
-        const y = generateBufYaml(authConfig);
-        assert.match(y, /- path: node_modules\/@connectum\/auth\/proto/);
-        assert.match(y, /RPC_REQUEST_STANDARD_NAME/);
+    const authProject = (yaml: string): Map<string, string> =>
+        new Map([
+            ["buf.yaml", yaml],
+            ["proto/greeter/v1/greeter.proto", applyAuthProtoAnnotations(GREETER_PROTO)],
+        ]);
+
+    // The judge is buf itself, run over the scaffolded layout: the auth option proto lives in a
+    // second module under node_modules, and the annotated sample proto imports it.
+    it("declares the node_modules auth module so buf resolves the annotated sample proto against it", () => {
+        const yaml = generateBufYaml(authConfig);
+        const accepted = runBuf(["build", "-o", "-#format=json"], authProject(yaml), { withAuthModule: true });
+        assert.equal(accepted.status, 0, accepted.output);
+        const greeter = (JSON.parse(accepted.output) as { file: Array<{ name: string; dependency?: string[] }> }).file.find((file) => file.name === "greeter/v1/greeter.proto");
+        assert.deepEqual(greeter?.dependency, ["connectum/auth/v1/options.proto"]);
+
+        // Without the module declaration the import cannot be resolved.
+        const rejected = runBuf(["build"], authProject(yaml.replace("  - path: node_modules/@connectum/auth/proto\n", "")), { withAuthModule: true });
+        assert.notEqual(rejected.status, 0);
+    });
+
+    it("lets buf lint accept the scaffolded auth project", () => {
+        const accepted = runBuf(["lint"], authProject(generateBufYaml(authConfig)), { withAuthModule: true });
+        assert.equal(accepted.status, 0, accepted.output);
+    });
+
+    // Every rule the generator switches off has to be one the project would otherwise break.
+    // buf lint accepts the scaffolded auth project (sample service, auth option proto) without
+    // any exception, so the RPC_* excepts added for auth alone silence rules that nothing in
+    // the project violates, and they also switch those rules off for every service the user adds.
+    it("excepts no lint rule that the scaffolded auth project does not break", { skip: "known defect, fails against buf lint: the generator adds three RPC_* excepts for auth alone; buf lint passes without them" }, () => {
+        const yaml = generateBufYaml(authConfig);
+        const withoutExcepts = yaml.replace(/\n {2}except:\n(?: {4}- [A-Z_]+\n?)+/, "\n");
+        assert.ok(!withoutExcepts.includes("except"), withoutExcepts);
+        // The excepts are needed only if lint fails without them; the oracle says it does not.
+        const rejected = runBuf(["lint"], authProject(withoutExcepts), { withAuthModule: true });
+        assert.notEqual(rejected.status, 0, "buf lint passes without the excepts generated for auth");
     });
     it("has no auth module when auth is disabled", () => {
         assert.doesNotMatch(generateBufYaml({ ...authConfig, modules: {} }), /node_modules/);

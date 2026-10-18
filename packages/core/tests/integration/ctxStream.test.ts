@@ -95,6 +95,37 @@ describe("ctx.stream — server-streaming", () => {
         assert.strictEqual(res.message, "z-0,z-1");
     });
 
+    it("returns promptly on early-break while the producer is still parked", async () => {
+        // The target yields three messages and then parks forever: leaving the
+        // loop after the second must not wait for the stream to finish.
+        const parkedTarget = defineService(StreamingService, {
+            echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+            async *server(req) {
+                for (let i = 0; i < 3; i++) yield create(ItemSchema, { value: `${req.value}-${i}`, sequence: i });
+                await new Promise<never>(() => {});
+            },
+            async client() {
+                return create(CountSchema, { total: 0 });
+            },
+            async *bidi() {},
+        });
+        const server = makeServer(async (req, ctx) => {
+            const out: string[] = [];
+            for await (const item of ctx.stream("streaming.v1.StreamingService/Server")(create(ItemSchema, { value: req.message, sequence: 0 }))) {
+                out.push(item.value);
+                if (out.length === 2) break;
+            }
+            return create(EchoResponseSchema, { message: out.join(","), timestamp: 0n });
+        }, parkedTarget);
+
+        const outcome = await Promise.race([
+            server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "p" })),
+            new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2000).unref()),
+        ]);
+        assert.notStrictEqual(outcome, "hung", "early break must not wait for the parked producer");
+        assert.strictEqual((outcome as EchoResponse).message, "p-0,p-1");
+    });
+
     it("delivers received messages, then throws on a mid-stream error", async () => {
         const failingTarget = defineService(StreamingService, {
             echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
@@ -125,6 +156,9 @@ describe("ctx.stream — server-streaming", () => {
         const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "m" }));
         assert.strictEqual(res.message, "m-0,m-1", "messages before the error are delivered");
         assert.ok(captured instanceof ConnectError, `terminal error must surface after delivery, got: ${String(captured)}`);
+        // The terminal error is the target's own: its code and text are not rewritten.
+        assert.strictEqual((captured as ConnectError).code, Code.DataLoss);
+        assert.strictEqual((captured as ConnectError).rawMessage, "boom mid-stream");
     });
 });
 
@@ -171,7 +205,11 @@ describe("ctx.stream — validation", () => {
             return create(EchoResponseSchema, { message: "ok", timestamp: 0n });
         });
         await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        // A streaming/unary kind mismatch is a dispatch miss, which the service-catalog
+        // contract reports as Unimplemented; it is raised by the factory call itself,
+        // before any iteration, and names the offending method.
         assert.ok(captured instanceof ConnectError && captured.code === Code.Unimplemented, `expected Unimplemented, got: ${String(captured)}`);
+        assert.ok((captured as ConnectError).message.includes("streaming.v1.StreamingService/Echo"));
     });
 
     it("resolves a remote stream target LAZILY — the resolver runs on iteration, not on factory invocation", async () => {

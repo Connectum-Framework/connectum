@@ -12,7 +12,6 @@ import { assertConnectError, createMockNext, createMockRequest } from "@connectu
 import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { getAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
-import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
@@ -136,6 +135,23 @@ describe("auth-interceptor", () => {
 
             assert.strictEqual(verifyCredentials.mock.calls.length, 0);
             assert.strictEqual(next.mock.calls.length, 1);
+
+            // An exact entry names one method: a sibling method of the same service and the
+            // same method name on another service both still demand credentials.
+            for (const other of [
+                { service: "test.Service", method: "OtherMethod" },
+                { service: "other.Service", method: "Method" },
+            ]) {
+                await assert.rejects(
+                    () => handler(createMockRequest(other)),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                    `${other.service}/${other.method} must not be skipped`,
+                );
+            }
+            assert.strictEqual(next.mock.calls.length, 1, "a method outside skipMethods must not reach next");
         });
 
         it("should skip auth for matching skipMethods patterns (wildcard)", async () => {
@@ -154,12 +170,29 @@ describe("auth-interceptor", () => {
             const next = createMockNext();
             const handler = interceptor(next);
 
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-
-            await handler(req);
+            await handler(createMockRequest(MOCK_REQUEST_DEFAULTS));
+            await handler(createMockRequest({ service: "test.Service", method: "AnotherMethod" }));
 
             assert.strictEqual(verifyCredentials.mock.calls.length, 0);
-            assert.strictEqual(next.mock.calls.length, 1);
+            assert.strictEqual(next.mock.calls.length, 2);
+
+            // `Service/*` covers every method of that one service only: the same method name on
+            // another service, and a service whose name merely starts with the pattern's, still
+            // demand credentials.
+            for (const other of [
+                { service: "other.Service", method: "Method" },
+                { service: "test.ServiceExtended", method: "Method" },
+            ]) {
+                await assert.rejects(
+                    () => handler(createMockRequest(other)),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                    `${other.service}/${other.method} must not be skipped`,
+                );
+            }
+            assert.strictEqual(next.mock.calls.length, 2, "a method outside the service wildcard must not reach next");
         });
 
         it("should set auth context in AsyncLocalStorage", async () => {
@@ -193,20 +226,42 @@ describe("auth-interceptor", () => {
             assert.deepStrictEqual(capturedContext.claims, { custom: true });
         });
 
-        it("should propagate headers when propagateHeaders is true", async () => {
-            const expectedContext: AuthContext = {
-                subject: "propagated-user",
-                roles: ["admin"],
-                scopes: ["write"],
-                claims: {},
-                type: "jwt",
-            };
+        // Header names and encodings are the documented wire contract of the auth context guide
+        // (x-auth-subject, x-auth-type, x-auth-name, x-auth-roles as JSON, x-auth-scopes
+        // space-separated, x-auth-claims as JSON), so they are spelled out, not read from the
+        // implementation's constants.
+        const propagationContext: AuthContext = {
+            subject: "propagated-user",
+            name: "Alice Example",
+            roles: ["admin", "editor"],
+            scopes: ["write", "read"],
+            claims: { org: "acme" },
+            type: "jwt",
+        };
 
-            const verifyCredentials = mock.fn(async () => expectedContext);
-
+        it("should write the documented identity headers when propagateHeaders is true", async () => {
             const interceptor = createAuthInterceptor({
-                verifyCredentials: verifyCredentials as any,
+                verifyCredentials: (async () => propagationContext) as any,
                 propagateHeaders: true,
+            });
+            const handler = interceptor(createMockNext());
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("authorization", "Bearer test-token");
+
+            await handler(req);
+
+            assert.strictEqual(req.header.get("x-auth-subject"), "propagated-user");
+            assert.strictEqual(req.header.get("x-auth-type"), "jwt");
+            assert.strictEqual(req.header.get("x-auth-name"), "Alice Example");
+            assert.strictEqual(req.header.get("x-auth-roles"), '["admin","editor"]');
+            assert.strictEqual(req.header.get("x-auth-scopes"), "write read");
+            assert.strictEqual(req.header.get("x-auth-claims"), '{"org":"acme"}');
+        });
+
+        it("should not write identity headers by default", async () => {
+            const interceptor = createAuthInterceptor({
+                verifyCredentials: (async () => propagationContext) as any,
             });
             const next = createMockNext();
             const handler = interceptor(next);
@@ -216,10 +271,10 @@ describe("auth-interceptor", () => {
 
             await handler(req);
 
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "propagated-user");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.TYPE), "jwt");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.ROLES), JSON.stringify(["admin"]));
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SCOPES), "write");
+            assert.strictEqual(next.mock.calls.length, 1);
+            for (const name of ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"]) {
+                assert.strictEqual(req.header.get(name), null, `${name} must stay absent unless propagateHeaders is enabled`);
+            }
         });
     });
 });

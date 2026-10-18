@@ -54,7 +54,47 @@ describe("JWT Auth Interceptor — Integration", () => {
             assert.deepStrictEqual([...capturedContext!.roles], ["admin", "user"]);
             assert.deepStrictEqual([...capturedContext!.scopes], ["read", "write"]);
             assert.strictEqual(capturedContext!.type, "jwt");
-            assert.ok(capturedContext!.expiresAt instanceof Date);
+            // RFC 7519 section 4.1.4: exp is a NumericDate, seconds since the epoch.
+            // The expected instant comes from the token's own exp claim; it also bounds how
+            // long a cached authentication may be served, so seconds vs milliseconds matters.
+            const exp = jose.decodeJwt(token).exp;
+            assert.strictEqual(typeof exp, "number");
+            assert.strictEqual(capturedContext!.expiresAt?.getTime(), (exp as number) * 1000);
+        });
+
+        it("should expose expiresAt matching a custom expiration, not the issue time", async () => {
+            const token = await createTestJwt({ sub: "user-exp" }, { expiresIn: "5m" });
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: new Headers({ authorization: `Bearer ${token}` }) });
+
+            let captured: ReturnType<typeof getAuthContext>;
+            const next = mock.fn(async () => {
+                captured = getAuthContext();
+                return { message: {} };
+            });
+            await interceptor(next as any)(req);
+
+            const exp = jose.decodeJwt(token).exp as number;
+            assert.strictEqual(captured!.expiresAt?.getTime(), exp * 1000);
+            const remainingMs = (captured!.expiresAt as Date).getTime() - Date.now();
+            assert.ok(remainingMs > 4 * 60_000 && remainingMs <= 5 * 60_000, `expected about 5 minutes left, got ${remainingMs} ms`);
+        });
+
+        // RFC 6749 section 3.3: a space-delimited "scope" claim; without a claimsMapping it is
+        // still read from the standard claim.
+        it("should read scopes from the standard scope claim without a claimsMapping", async () => {
+            const token = await createTestJwt({ sub: "user-scope", scope: "read  write" });
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers: new Headers({ authorization: `Bearer ${token}` }) });
+
+            let captured: ReturnType<typeof getAuthContext>;
+            const next = mock.fn(async () => {
+                captured = getAuthContext();
+                return { message: {} };
+            });
+            await interceptor(next as any)(req);
+
+            assert.deepStrictEqual([...captured!.scopes], ["read", "write"]);
         });
 
         it("should use sub claim as subject by default", async () => {

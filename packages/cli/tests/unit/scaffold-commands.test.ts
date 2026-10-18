@@ -16,6 +16,7 @@ import { executeInit, initCommand } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
 import { cloneOf, cloneStub } from "../helpers/baseFixture.ts";
+import { protoRpcMethods as rpcMethods } from "../helpers/generatedCode.ts";
 
 describe("init command", () => {
     it("exports a citty command with a run handler", () => {
@@ -139,6 +140,14 @@ describe("executeInit pipeline (injected clone, no network)", () => {
     });
 });
 
+/** A generated module without comment lines and with whitespace collapsed, so checks do not depend on layout. */
+function codeOf(source: string): string {
+    return source
+        .replace(/^\s*\/\/.*$/gm, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
 describe("executeGenerateService", () => {
     let dir: string;
 
@@ -153,19 +162,56 @@ describe("executeGenerateService", () => {
         assert.equal(typeof generateServiceCommand.run, "function");
     });
 
-    it("scaffolds a proto + defineService skeleton (throwing Unimplemented, D-6)", async () => {
+    // A handler that is generated for fewer rpc methods than the proto declares leaves the others
+    // to fail at runtime without a trace, so the check is derived from the generated proto: every
+    // rpc it declares must own exactly one throwing handler, keyed by the camelCase method name.
+    it("answers Unimplemented from one handler per rpc the generated proto declares", async () => {
         await executeGenerateService({ name: "billing", cwd: dir });
-        assert.match(readFileSync(join(dir, "proto/billing/v1/billing.proto"), "utf8"), /service BillingService/);
+        const proto = readFileSync(join(dir, "proto/billing/v1/billing.proto"), "utf8");
+        assert.match(proto, /^package billing\.v1;$/m);
+        const methods = rpcMethods(proto, "BillingService");
+        assert.deepEqual(methods, ["Ping"]);
+
         const impl = readFileSync(join(dir, "src/services/billingService.ts"), "utf8");
-        assert.match(impl, /defineService\(BillingService/);
-        assert.match(impl, /Code\.Unimplemented/);
+        const source = codeOf(impl);
+        assert.ok(source.includes('import { defineService } from "@connectum/core";'), source);
+        assert.ok(source.includes('import { Code, ConnectError } from "@connectrpc/connect";'), source);
+        assert.ok(source.includes('import { BillingService } from "#gen/billing/v1/billing_pb.ts";'), source);
+        assert.match(source, /export const billingService = defineService\(BillingService, \{/);
+        for (const method of methods) {
+            const key = method.charAt(0).toLowerCase() + method.slice(1);
+            assert.ok(
+                source.includes(`${key}: (_req, _ctx) => { throw new ConnectError("${method} not implemented", Code.Unimplemented); },`),
+                `no throwing handler for ${method}: ${source}`,
+            );
+        }
+        assert.equal(source.match(/throw new ConnectError\(/g)?.length, methods.length);
     });
 
-    it("with --with-events emits the event-handler proto + vendored option proto", async () => {
+    it("with --with-events emits the event-handler proto, the vendored option proto and acknowledging handlers", async () => {
         await executeGenerateService({ name: "orders", withEvents: true, cwd: dir });
-        assert.match(readFileSync(join(dir, "proto/orders/v1/orders.proto"), "utf8"), /service OrdersEventHandlers/);
-        assert.match(readFileSync(join(dir, "src/services/ordersService.ts"), "utf8"), /EventRoute/);
-        assert.ok(existsSync(join(dir, "proto/connectum/events/v1/options.proto")));
+        const proto = readFileSync(join(dir, "proto/orders/v1/orders.proto"), "utf8");
+        const source = codeOf(readFileSync(join(dir, "src/services/ordersService.ts"), "utf8"));
+
+        // The event proto: the option proto and Empty are imported, the handler service declares
+        // the handler rpc returning Empty and annotates it with the subscription topic.
+        assert.match(proto, /^import "connectum\/events\/v1\/options\.proto";$/m);
+        assert.match(proto, /^import "google\/protobuf\/empty\.proto";$/m);
+        assert.deepEqual(rpcMethods(proto, "OrdersEventHandlers"), ["OnOrdersEvent"]);
+        assert.match(proto, /rpc OnOrdersEvent\(OrdersEvent\) returns \(google\.protobuf\.Empty\) \{\s*option \(connectum\.events\.v1\.event\)\.topic = "[^"]+";\s*\}/);
+        const optionProto = readFileSync(join(dir, "proto/connectum/events/v1/options.proto"), "utf8");
+        assert.match(optionProto, /^package connectum\.events\.v1;$/m);
+
+        // The event handler: registered through events.service for every handler rpc, ends with
+        // `await ctx.ack()` and never throws (a throw would start retry and dead-letter delivery).
+        const route = source.match(/events\.service\(OrdersEventHandlers, \{(.*)\}\);/)?.[1];
+        assert.ok(route !== undefined, source);
+        assert.match(route, /^ async onOrdersEvent\(event, ctx\) \{/);
+        assert.match(route, /await ctx\.ack\(\); \},? ?$/, route);
+        assert.ok(!route.includes("throw"), route);
+        assert.equal(route.match(/async on\w+\(/g)?.length, 1);
+        // The unary skeleton in the same module still answers Unimplemented.
+        assert.ok(source.includes('throw new ConnectError("Ping not implemented", Code.Unimplemented);'), source);
     });
 
     it("rejects a service name that starts with a digit", async () => {
@@ -180,11 +226,9 @@ describe("executeGenerateService", () => {
         await assert.rejects(() => executeGenerateService({ name: "!!!", cwd: dir }), /must start with a letter/);
     });
 
-    it("refuses to clobber and requires a name", async () => {
+    it("requires a service name and writes nothing without one", async () => {
         await assert.rejects(() => executeGenerateService({ name: "  ", cwd: dir }), /service name is required/);
-        await executeGenerateService({ name: "billing", cwd: dir });
-        // Second run without force skips existing files (no throw).
-        await executeGenerateService({ name: "billing", cwd: dir });
+        assert.deepEqual(readdirSync(dir), []);
     });
 });
 

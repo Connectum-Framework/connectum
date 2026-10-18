@@ -17,7 +17,7 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
-import { ConnectError, createClient } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
@@ -140,6 +140,8 @@ for (const kind of ["http", "local"] as const) {
                     failure = ConnectError.from(error);
                 }
                 assert.ok(failure, "the client iteration must end with an error");
+                // A client that aborts its own call sees it end as canceled, on both transports.
+                assert.strictEqual(failure.code, Code.Canceled);
                 assert.ok(await settlesWithin(probe.finallyRan, 2_000), "the handler's finally must run");
                 assert.strictEqual(probe.signalAborted(), true);
                 assert.strictEqual(probe.finallyRuns(), 1);

@@ -100,6 +100,35 @@ describe("performGracefulShutdown()", () => {
             assert.strictEqual(mockCallCount(transport.close), 1);
         });
 
+        // Graceful-shutdown guide, steps 3-6: the hooks run once the connections have
+        // closed, not while the transport is still draining. A close that finishes inside
+        // the timeout must therefore be waited for.
+        it("should wait for a close that finishes inside the timeout before running the hooks", async () => {
+            let closeFinished = false;
+            let closeFinishedAtHooks: boolean | undefined;
+            const transport = {
+                get server() {
+                    return {};
+                },
+                close: mock.fn(async () => {
+                    await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+                    closeFinished = true;
+                }),
+                destroyAllSessions: mock.fn(),
+                dispose: mock.fn(),
+            } as unknown as TransportManager;
+            const shutdownManager = {
+                executeAll: mock.fn(async () => {
+                    closeFinishedAtHooks = closeFinished;
+                }),
+            } as unknown as ShutdownManager;
+
+            await performGracefulShutdown(transport, shutdownManager, { timeout: 5000, forceCloseOnTimeout: true });
+
+            assert.strictEqual(closeFinishedAtHooks, true, "hooks started before the transport finished closing");
+            assert.strictEqual(mockCallCount(transport.destroyAllSessions), 0);
+        });
+
         it("should NOT call destroyAllSessions", async () => {
             const transport = createMockTransport();
             const shutdownManager = createMockShutdownManager();
@@ -168,29 +197,34 @@ describe("performGracefulShutdown()", () => {
             );
         });
 
-        it("should still call executeAll after timeout", async () => {
-            const transport = createMockTransport({ closeDelay: 500 });
-            const shutdownManager = createMockShutdownManager();
+        // Graceful-shutdown guide, "Timeout and Force Close Behavior": with and without
+        // force close alike, `stop()` runs the shutdown hooks as soon as the timeout has
+        // won, and the transport state is released afterwards.
+        for (const forceCloseOnTimeout of [true, false]) {
+            it(`should still call executeAll after timeout with forceCloseOnTimeout=${forceCloseOnTimeout}`, async () => {
+                const transport = createMockTransport({ closeDelay: 500 });
+                const shutdownManager = createMockShutdownManager();
 
-            await performGracefulShutdown(transport, shutdownManager, {
-                timeout: 50,
-                forceCloseOnTimeout: true,
+                await performGracefulShutdown(transport, shutdownManager, {
+                    timeout: 50,
+                    forceCloseOnTimeout,
+                });
+
+                assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1);
             });
 
-            assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1);
-        });
+            it(`should still call dispose after timeout with forceCloseOnTimeout=${forceCloseOnTimeout}`, async () => {
+                const transport = createMockTransport({ closeDelay: 500 });
+                const shutdownManager = createMockShutdownManager();
 
-        it("should still call dispose after timeout", async () => {
-            const transport = createMockTransport({ closeDelay: 500 });
-            const shutdownManager = createMockShutdownManager();
+                await performGracefulShutdown(transport, shutdownManager, {
+                    timeout: 50,
+                    forceCloseOnTimeout,
+                });
 
-            await performGracefulShutdown(transport, shutdownManager, {
-                timeout: 50,
-                forceCloseOnTimeout: true,
+                assert.strictEqual(mockCallCount(transport.dispose), 1);
             });
-
-            assert.strictEqual(mockCallCount(transport.dispose), 1);
-        });
+        }
     });
 
     // -----------------------------------------------------------------
@@ -219,6 +253,40 @@ describe("performGracefulShutdown()", () => {
             assert.strictEqual(mockCallCount(transport.dispose), 1);
         });
 
+        // Graceful-shutdown guide: "A close failure that only arrives after the timeout
+        // has already won is logged, not thrown". The failure below arrives 150 ms after
+        // performGracefulShutdown() has returned, so the test waits for it and checks both
+        // halves: it is reported to the log and it does not surface as an unhandled rejection.
+        it("should log, and not throw or leave unhandled, a close failure that arrives after the timeout won", async () => {
+            const closeError = new Error("close failed late");
+            const transport = createMockTransport({ closeDelay: 200, closeError });
+            const shutdownManager = createMockShutdownManager();
+            const unhandled: unknown[] = [];
+            const onUnhandled = (reason: unknown) => unhandled.push(reason);
+            const logged: unknown[][] = [];
+            const originalError = console.error;
+            process.on("unhandledRejection", onUnhandled);
+            console.error = (...args: unknown[]) => {
+                logged.push(args);
+            };
+
+            try {
+                await performGracefulShutdown(transport, shutdownManager, { timeout: 50, forceCloseOnTimeout: true });
+                assert.strictEqual(logged.length, 0, "the failure had not arrived yet when the shutdown returned");
+
+                await new Promise((resolve) => globalThis.setTimeout(resolve, 300));
+            } finally {
+                console.error = originalError;
+                process.removeListener("unhandledRejection", onUnhandled);
+            }
+
+            assert.ok(
+                logged.some((args) => args.includes(closeError)),
+                "the late close failure must be logged",
+            );
+            assert.deepStrictEqual(unhandled, []);
+        });
+
         // Hooks release the application's own resources (brokers, databases);
         // a listener that fails to close cleanly must not make shutdown skip
         // them. The close error is still reported to the caller afterwards.
@@ -243,48 +311,69 @@ describe("performGracefulShutdown()", () => {
     // -----------------------------------------------------------------
 
     describe("timer cleanup", () => {
-        it("should not leak timers when close completes before timeout", async () => {
-            // Spy on clearTimeout to verify it's called
+        /**
+         * Run `fn` while recording the handle of every timer armed with `delayMs` and every
+         * handle passed to `clearTimeout` (patched by hand: `mock.method` does not exist
+         * under Bun).
+         */
+        async function trackTimer(delayMs: number, fn: () => Promise<void>): Promise<{ armed: unknown[]; cleared: unknown[] }> {
+            const originalSetTimeout = globalThis.setTimeout;
             const originalClearTimeout = globalThis.clearTimeout;
-            let clearTimeoutCalled = false;
-            globalThis.clearTimeout = ((...args: Parameters<typeof originalClearTimeout>) => {
-                clearTimeoutCalled = true;
-                return originalClearTimeout(...args);
+            const armed: unknown[] = [];
+            const cleared: unknown[] = [];
+            globalThis.setTimeout = ((handler: () => void, delay?: number, ...args: unknown[]) => {
+                const handle = originalSetTimeout(handler, delay, ...args);
+                if (delay === delayMs) armed.push(handle);
+                return handle;
+            }) as typeof globalThis.setTimeout;
+            globalThis.clearTimeout = ((handle?: Parameters<typeof originalClearTimeout>[0]) => {
+                cleared.push(handle);
+                return originalClearTimeout(handle);
             }) as typeof globalThis.clearTimeout;
-
             try {
-                const transport = createMockTransport();
-                const shutdownManager = createMockShutdownManager();
-
-                await performGracefulShutdown(transport, shutdownManager, defaultOptions);
-
-                assert.strictEqual(clearTimeoutCalled, true, "clearTimeout should be called");
+                await fn();
             } finally {
+                globalThis.setTimeout = originalSetTimeout;
                 globalThis.clearTimeout = originalClearTimeout;
             }
+            return { armed, cleared };
+        }
+
+        // A timer that outlives the shutdown keeps the host process alive until it fires,
+        // so the very timer armed for the graceful phase has to be the one cancelled.
+        it("should cancel the timeout timer it armed when close completes before the timeout", async () => {
+            const transport = createMockTransport();
+            const shutdownManager = createMockShutdownManager();
+
+            const { armed, cleared } = await trackTimer(7777, () => performGracefulShutdown(transport, shutdownManager, { timeout: 7777, forceCloseOnTimeout: true }));
+
+            assert.strictEqual(armed.length, 1, "exactly one graceful-phase timer is armed");
+            assert.ok(cleared.includes(armed[0]), "the armed timer must be the one that is cancelled");
         });
 
-        it("should not leak timers when timeout fires", async () => {
-            const originalClearTimeout = globalThis.clearTimeout;
-            let clearTimeoutCalled = false;
-            globalThis.clearTimeout = ((...args: Parameters<typeof originalClearTimeout>) => {
-                clearTimeoutCalled = true;
-                return originalClearTimeout(...args);
-            }) as typeof globalThis.clearTimeout;
+        it("should cancel the timeout timer it armed when the timeout fires", async () => {
+            const transport = createMockTransport({ closeDelay: 500 });
+            const shutdownManager = createMockShutdownManager();
 
-            try {
-                const transport = createMockTransport({ closeDelay: 500 });
-                const shutdownManager = createMockShutdownManager();
+            const { armed, cleared } = await trackTimer(50, () => performGracefulShutdown(transport, shutdownManager, { timeout: 50, forceCloseOnTimeout: true }));
 
-                await performGracefulShutdown(transport, shutdownManager, {
-                    timeout: 50,
-                    forceCloseOnTimeout: true,
-                });
+            assert.strictEqual(armed.length, 1);
+            assert.ok(cleared.includes(armed[0]), "the armed timer must be cancelled even after it fired");
+        });
 
-                assert.strictEqual(clearTimeoutCalled, true, "clearTimeout should be called even on timeout");
-            } finally {
-                globalThis.clearTimeout = originalClearTimeout;
-            }
+        it("should cancel the timeout timer it armed when transport.close() rejects", async () => {
+            const transport = createMockTransport({ closeError: new Error("close failed") });
+            const shutdownManager = createMockShutdownManager();
+
+            const { armed, cleared } = await trackTimer(7777, () =>
+                performGracefulShutdown(transport, shutdownManager, { timeout: 7777, forceCloseOnTimeout: true }).then(
+                    () => assert.fail("the close failure must be reported"),
+                    () => undefined,
+                ),
+            );
+
+            assert.strictEqual(armed.length, 1);
+            assert.ok(cleared.includes(armed[0]), "a failed close must not leave the graceful-phase timer armed");
         });
     });
 
