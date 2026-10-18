@@ -38,19 +38,49 @@ describe("createBroadcastSubscribers", () => {
         );
     });
 
-    it("builds one independent, startable bus per reactor", () => {
+    it("builds one bus per reactor, each subscribing to its OWN topics under its OWN consumer group", async () => {
+        // Each reactor declares a distinct topic. A bus that dropped its reactor's
+        // routes would not subscribe at all; one that dropped the group would
+        // subscribe without the consumer group that makes fan-out independent.
+        const subscribed: Array<{ patterns: string[]; group: string | undefined }> = [];
+        const adapter = MemoryAdapter();
+        const recording = {
+            ...adapter,
+            subscribe: (patterns: string[], handler: Parameters<typeof adapter.subscribe>[1], options?: Parameters<typeof adapter.subscribe>[2]) => {
+                subscribed.push({ patterns, group: options?.group });
+                return adapter.subscribe(patterns, handler, options);
+            },
+        };
+        const routeFor =
+            (topic: string): EventRoute =>
+            (router) => {
+                const method = fakeDescMethod("onEvent", topic, EventOptionsSchema);
+                // biome-ignore lint/suspicious/noExplicitAny: fake service desc
+                router.service(fakeDescService(`test.v1.Service_${topic}`, [method]) as any, { onEvent: async () => {} } as any);
+            };
+
         const buses = createBroadcastSubscribers({
-            adapter: MemoryAdapter(),
+            adapter: recording,
             reactors: [
-                { group: "a", routes: [] },
-                { group: "b", routes: [] },
-                { group: "c", routes: [] },
+                { group: "a", routes: [routeFor("topic.a")] },
+                { group: "b", routes: [routeFor("topic.b")] },
+                { group: "c", routes: [routeFor("topic.c")] },
             ],
         });
         assert.equal(buses.length, 3);
-        for (const bus of buses) {
-            assert.equal(typeof bus.start, "function");
-            assert.equal(typeof bus.stop, "function");
+
+        try {
+            // Starting sequentially keeps the recorded order tied to the reactor order.
+            for (const bus of buses) {
+                await bus.start();
+            }
+            assert.deepEqual(subscribed, [
+                { patterns: ["topic.a"], group: "a" },
+                { patterns: ["topic.b"], group: "b" },
+                { patterns: ["topic.c"], group: "c" },
+            ]);
+        } finally {
+            await Promise.all(buses.map((bus) => bus.stop()));
         }
     });
 
