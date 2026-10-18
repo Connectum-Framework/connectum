@@ -82,19 +82,27 @@ describe("fallback interceptor", () => {
     });
 
     it("should skip streaming when skipStreaming=true", async () => {
+        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
         const interceptor = createFallbackInterceptor({
-            handler: () => ({ fallback: "value" }),
+            handler: fallbackHandler,
             skipStreaming: true,
         });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
 
-        const next = createMockNext({ message: { result: "streaming" } });
+        // A failing streaming call: with the fallback applied it would turn into a substitute response.
+        // Skipped, the failure reaches the caller untouched and the fallback handler is never asked.
+        const failure = new ConnectError("Service error", Code.Internal);
+        const next = mock.fn(async () => {
+            throw failure;
+        });
 
         const handler = interceptor(next as any);
-        const result = await handler(mockReq);
-
-        assert.strictEqual((result.message as any).result, "streaming");
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => err === failure,
+        );
+        assert.strictEqual(fallbackHandler.mock.calls.length, 0);
     });
 
     it("should handle async handler", async () => {
@@ -156,15 +164,25 @@ describe("fallback interceptor", () => {
         assert.strictEqual((capturedError as ConnectError).code, Code.Internal);
     });
 
-    it("should reject invalid handler", () => {
-        assert.throws(
-            () =>
-                createFallbackInterceptor({
-                    handler: "not a function" as unknown as () => unknown,
-                }),
-            /handler must be a function/,
-        );
-    });
+    // The handler is required and must be a function (FallbackOptions.handler); anything else is refused
+    // when the interceptor is created, not on the first failure.
+    for (const [label, value] of [
+        ["a string", "not a function"],
+        ["undefined", undefined],
+        ["null", null],
+        ["an object", { fallback: "value" }],
+        ["a number", 42],
+    ] as const) {
+        it(`should reject ${label} as the handler`, () => {
+            assert.throws(
+                () =>
+                    createFallbackInterceptor({
+                        handler: value as unknown as () => unknown,
+                    }),
+                { name: "Error", message: /handler/ },
+            );
+        });
+    }
 
     it("should handle handler returning different types", async () => {
         const interceptor = createFallbackInterceptor({

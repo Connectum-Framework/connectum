@@ -70,12 +70,26 @@ describe("drainPublishTimeout (#196)", () => {
         const publishSettled = bus.publish(EventOptionsSchema, eventMsg()).catch(() => undefined);
         await sleep(10); // let publish reach the adapter
 
-        await bus.stop();
-        assert.deepEqual(order, ["disconnect"], "stop() must not wait for the pending publish by default");
+        // The publish never settles on its own. A bus that waited for it (for
+        // example under a non-zero built-in default budget) would still be inside
+        // stop() when the guard timer fires, so a bounded race tells "returns
+        // promptly" from "waits for the publish" without a 30 s test.
+        let guard: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+            bus.stop().then(() => "stopped" as const),
+            new Promise<"still waiting">((resolve) => {
+                guard = setTimeout(() => resolve("still waiting"), 1_000);
+            }),
+        ]);
+        clearTimeout(guard);
+        const orderAtOutcome = [...order];
 
-        // Settle afterwards — must not throw or become unhandled.
+        // Settle afterwards — releases a waiting bus too, must not throw or become unhandled.
         pending[0]?.resolve();
         await publishSettled;
+
+        assert.equal(outcome, "stopped", "stop() must return without waiting for the pending publish by default");
+        assert.deepEqual(orderAtOutcome, ["disconnect"], "stop() must not wait for the pending publish by default");
     });
 
     it("set: stop() waits for the pending publish to settle before disconnect", async () => {
@@ -178,8 +192,10 @@ describe("drainPublishTimeout (#196)", () => {
         let abortObservedAt = 0;
         const bus = createEventBus({
             adapter,
-            drainTimeout: 100,
-            drainPublishTimeout: 500,
+            // Budgets far enough apart that "slower of the two" (~1000ms) and
+            // "their sum" (~1300ms) are separated by more than scheduler jitter.
+            drainTimeout: 300,
+            drainPublishTimeout: 1_000,
             routes: [
                 (router) => {
                     router.service(fakeService, {
@@ -228,9 +244,10 @@ describe("drainPublishTimeout (#196)", () => {
 
         assert.ok(abortObservedAt > 0, "the hung handler must have been force-aborted");
         const abortLatency = abortObservedAt - stopStartedAt;
-        assert.ok(abortLatency < 350, `force-abort must fire at the HANDLER drain deadline (~100ms), not after the publish drain (fired at ${abortLatency}ms)`);
-        assert.ok(stopTook >= 450, `stop() must still hold for the publish budget (took ${stopTook}ms)`);
-        assert.ok(stopTook < 2_000, `stop() must be slower-of, never the sum (took ${stopTook}ms)`);
+        assert.ok(abortLatency >= 250, `force-abort must wait for the handler drain budget, not fire immediately (fired at ${abortLatency}ms)`);
+        assert.ok(abortLatency < 700, `force-abort must fire at the HANDLER drain deadline (~300ms), not after the publish drain (fired at ${abortLatency}ms)`);
+        assert.ok(stopTook >= 950, `stop() must still hold for the publish budget (took ${stopTook}ms)`);
+        assert.ok(stopTook < 1_200, `stop() must be slower-of (~1000ms), never the sum (~1300ms) (took ${stopTook}ms)`);
     });
 
     it("0 disables waiting (same as unset)", async () => {
