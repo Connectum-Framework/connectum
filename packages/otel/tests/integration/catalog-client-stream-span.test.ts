@@ -126,8 +126,8 @@ describe("catalog client-stream span — ctx.stream to a local service through o
         });
     }
 
-    it("a successful call starts, ends and exports exactly one span with OK status", async () => {
-        let outcome: { value?: Count; error?: unknown } | undefined;
+    it("a successful call starts, ends and exports exactly one span with unset status", async () => {
+let outcome: { value?: Count; error?: unknown } | undefined;
         const server = makeServer(
             async (requests) => {
                 let total = 0;
@@ -142,7 +142,7 @@ describe("catalog client-stream span — ctx.stream to a local service through o
         assert.strictEqual(outcome?.error, undefined);
         assert.strictEqual(outcome?.value?.total, 2);
         const span = assertOneSpan();
-        assert.strictEqual(span.status.code, SpanStatusCode.OK);
+        assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
     });
 
     // A failure raised before any response was produced already surfaced before the fix, so this case guards the ERROR
@@ -247,7 +247,7 @@ describe("catalog client-stream span — standalone catalog client over gRPC wit
         return client.stream as unknown as (method: string) => (options?: CallOptions) => ClientStreamHandle<unknown, Count>;
     }
 
-    it("a response followed by OK status starts, ends and exports exactly one span with OK status", async () => {
+    it("a response followed by OK status starts, ends and exports exactly one span with unset status", async () => {
         await serveOneResponseThen({ code: 0 }, async (baseUrl) => {
             const handle = clientFor(baseUrl)(CLIENT_STREAM)();
             handle.send(create(ItemSchema, { value: "a", sequence: 0 }));
@@ -255,7 +255,7 @@ describe("catalog client-stream span — standalone catalog client over gRPC wit
             assert.strictEqual(res.total, 1);
         });
         const span = assertOneSpan();
-        assert.strictEqual(span.status.code, SpanStatusCode.OK);
+        assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
     });
 
     it("a response followed by a failure status rejects and ends exactly one span with ERROR status", async () => {

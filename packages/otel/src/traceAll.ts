@@ -91,7 +91,7 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
                         if (result instanceof Promise) {
                             return result.then(
                                 (val) => {
-                                    span.setStatus({ code: SpanStatusCode.OK });
+                                    // Success leaves the status unset; only a failure sets ERROR.
                                     span.end();
                                     return val;
                                 },
@@ -107,8 +107,7 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
                             );
                         }
 
-                        // Sync result
-                        span.setStatus({ code: SpanStatusCode.OK });
+                        // Sync result: success leaves the status unset.
                         span.end();
                         return result;
                     } catch (error) {

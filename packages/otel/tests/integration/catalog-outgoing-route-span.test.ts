@@ -106,7 +106,7 @@ function assertOneClientSpan(): ReadableSpan {
     assert.strictEqual(spans.length, 1, "exported span count");
     const span = spans[0] as ReadableSpan;
     assert.strictEqual(span.kind, SpanKind.CLIENT);
-    assert.strictEqual(span.status.code, SpanStatusCode.OK);
+    assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
     assert.strictEqual(span.attributes["connectum.transport"], "http");
     assert.ok(lastTraceparent?.includes(span.spanContext().traceId), "the receiver must see the traceparent of the client span");
     return span;
