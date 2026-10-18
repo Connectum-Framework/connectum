@@ -32,6 +32,26 @@ import { createHealthcheckManager } from "../../src/HealthcheckManager.ts";
 import { ServingStatus } from "../../src/types.ts";
 
 /**
+ * Make an HTTP/1.1 GET request to a local port and return status code,
+ * headers and body.
+ */
+function httpGetFrom(port: number, path: string): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }> {
+    return new Promise((resolve, reject) => {
+        const req = http.get(`http://localhost:${port}${path}`, (res) => {
+            let data = "";
+            res.on("data", (chunk: string) => {
+                data += chunk;
+            });
+            res.on("end", () => {
+                resolve({ statusCode: res.statusCode ?? 0, headers: res.headers, body: data });
+            });
+        });
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+/**
  * Fake service name used to simulate a real application scenario.
  * In production, this would be populated from the proto DescFile registry.
  */
@@ -146,22 +166,33 @@ describe("Healthcheck gRPC Integration", () => {
         );
     });
 
-    it("should list all services via Health.List", async () => {
-        const transport = createGrpcTransport({ baseUrl: serverUrl });
-        const client = createClient(Health, transport);
+    // grpc.health.v1 List returns a map of every tracked service name to its
+    // current status. The case sets a distinct status per entry (services and a
+    // component), so a response that lists the right names with wrong statuses,
+    // or with every status collapsed to one value, fails.
+    it("should list every tracked entry with its own current status via Health.List", async () => {
+        const otherService = "test.v1.OtherService";
+        const client = createClient(Health, createGrpcTransport({ baseUrl: serverUrl }));
 
-        const response = await client.list({});
+        manager.initialize([FAKE_SERVICE, otherService]);
+        manager.update(ServingStatus.SERVING, FAKE_SERVICE);
+        manager.update(ServingStatus.NOT_SERVING, otherService);
+        manager.register("worker");
+        try {
+            const response = await client.list({});
 
-        assert.ok(response, "Should return a list response");
-        assert.ok(response.statuses, "Should have statuses map");
-
-        // The statuses map should contain our fake service
-        const serviceNames = Object.keys(response.statuses);
-        assert.ok(serviceNames.length > 0, "Should have at least one service in the list");
-        assert.ok(
-            serviceNames.includes(FAKE_SERVICE),
-            `Expected ${FAKE_SERVICE} in statuses, got: ${JSON.stringify(serviceNames)}`,
-        );
+            assert.deepStrictEqual(
+                Object.fromEntries(Object.entries(response.statuses).map(([name, entry]) => [name, entry.status])),
+                {
+                    [FAKE_SERVICE]: ServingStatus.SERVING,
+                    [otherService]: ServingStatus.NOT_SERVING,
+                    worker: ServingStatus.UNKNOWN,
+                },
+            );
+        } finally {
+            manager.unregister("worker");
+            manager.initialize([FAKE_SERVICE]);
+        }
     });
 });
 
@@ -200,20 +231,8 @@ describe("Healthcheck HTTP Integration", () => {
     /**
      * Helper to make an HTTP/1.1 GET request and return status code + body.
      */
-    function httpGet(path: string): Promise<{ statusCode: number; body: string }> {
-        return new Promise((resolve, reject) => {
-            const req = http.get(`http://localhost:${port}${path}`, (res) => {
-                let data = "";
-                res.on("data", (chunk: string) => {
-                    data += chunk;
-                });
-                res.on("end", () => {
-                    resolve({ statusCode: res.statusCode ?? 0, body: data });
-                });
-            });
-            req.on("error", reject);
-            req.end();
-        });
+    function httpGet(path: string) {
+        return httpGetFrom(port, path);
     }
 
     it("should return 503 when services are not healthy", async () => {
@@ -238,6 +257,25 @@ describe("Healthcheck HTTP Integration", () => {
         const parsed = JSON.parse(body);
         assert.strictEqual(parsed.status, "SERVING");
         assert.strictEqual(parsed.service, "overall");
+    });
+
+    // The documented response is a JSON body {status, service, timestamp}; on
+    // the wire that means the application/json media type and an ISO-8601 UTC
+    // timestamp of the moment of the request.
+    it("should answer with a JSON content type and the current UTC timestamp", async () => {
+        manager.update(ServingStatus.SERVING);
+
+        const before = Date.now();
+        const { headers, body } = await httpGet("/healthz");
+        const after = Date.now();
+
+        assert.strictEqual(headers["content-type"]?.split(";")[0]?.trim().toLowerCase(), "application/json");
+
+        const parsed = JSON.parse(body);
+        assert.deepStrictEqual(Object.keys(parsed).sort(), ["service", "status", "timestamp"]);
+        assert.match(parsed.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+        const instant = Date.parse(parsed.timestamp);
+        assert.ok(instant >= before && instant <= after, `timestamp ${parsed.timestamp} must lie within the request window [${before}, ${after}]`);
     });
 
     it("should respond on /health path as well", async () => {
@@ -275,5 +313,82 @@ describe("Healthcheck HTTP Integration", () => {
 
         const healthy = await httpGet("/healthz");
         assert.strictEqual(healthy.statusCode, 200, "Should be 200 for SERVING");
+    });
+});
+
+describe("Healthcheck HTTP endpoints are opt-in", () => {
+    let server: Server;
+    let port: number;
+    let manager: ReturnType<typeof createHealthcheckManager>;
+
+    before(async () => {
+        manager = createHealthcheckManager();
+        manager.register("process", ServingStatus.SERVING);
+
+        // No httpEnabled option at all: the documented default is off.
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck({ manager })],
+            interceptors: [],
+            allowHTTP1: true,
+        });
+        await server.start();
+        assert.ok(server.address?.port);
+        port = server.address.port;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    it("serves no HTTP health endpoint when httpEnabled is not given", async () => {
+        for (const path of ["/healthz", "/health", "/readyz"]) {
+            const { statusCode, body } = await httpGetFrom(port, path);
+
+            assert.strictEqual(statusCode, 404, `${path} must not be served`);
+            assert.doesNotMatch(body, /"timestamp"/, `${path} must not return a health payload`);
+        }
+    });
+});
+
+describe("Healthcheck HTTP custom httpPaths", () => {
+    let server: Server;
+    let port: number;
+
+    before(async () => {
+        const manager = createHealthcheckManager();
+        manager.register("process", ServingStatus.SERVING);
+
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck({ httpEnabled: true, httpPaths: ["/custom-health"], manager })],
+            interceptors: [],
+            allowHTTP1: true,
+        });
+        await server.start();
+        assert.ok(server.address?.port);
+        port = server.address.port;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    it("answers on the configured path and on none of the default paths", async () => {
+        const configured = await httpGetFrom(port, "/custom-health");
+        assert.strictEqual(configured.statusCode, 200);
+        assert.strictEqual(JSON.parse(configured.body).status, "SERVING");
+
+        for (const path of ["/healthz", "/health", "/readyz"]) {
+            const { statusCode, body } = await httpGetFrom(port, path);
+            assert.strictEqual(statusCode, 404, `${path} must no longer be served`);
+            assert.doesNotMatch(body, /"timestamp"/, `${path} must not return a health payload`);
+        }
     });
 });
