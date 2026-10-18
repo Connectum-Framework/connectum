@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MemoryAdapter } from "../../src/MemoryAdapter.ts";
+import type { RawEvent } from "../../src/types.ts";
 
 describe("MemoryAdapter", () => {
     it("connects and disconnects", async () => {
@@ -13,13 +14,28 @@ describe("MemoryAdapter", () => {
         const adapter = MemoryAdapter();
         await adapter.connect();
 
-        const received: string[] = [];
+        const received: RawEvent[] = [];
         await adapter.subscribe(["test.topic"], async (event) => {
-            received.push(event.eventType);
+            received.push(event);
         });
 
-        await adapter.publish("test.topic", new Uint8Array([1, 2, 3]));
-        assert.deepEqual(received, ["test.topic"]);
+        const before = Date.now();
+        await adapter.publish("test.topic", new Uint8Array([1, 2, 3]), { metadata: { "x-trace": "abc" } });
+        await adapter.publish("test.topic", new Uint8Array([4]));
+        const after = Date.now();
+
+        assert.equal(received.length, 2);
+        const [first, second] = received as [RawEvent, RawEvent];
+        assert.equal(first.eventType, "test.topic");
+        assert.deepEqual([...first.payload], [1, 2, 3], "the published bytes are delivered unchanged");
+        assert.equal(first.attempt, 1, "first delivery is attempt 1 (attempts are 1-based)");
+        assert.ok(first.publishedAt.getTime() >= before && first.publishedAt.getTime() <= after, "publishedAt is the publish time");
+        assert.equal(first.metadata.get("x-trace"), "abc", "publish metadata is delivered as event headers");
+        assert.equal(first.metadata.size, 1);
+        assert.ok(first.eventId.length > 0, "every event has an identifier");
+        assert.notEqual(first.eventId, second.eventId, "event identifiers are unique per event");
+        assert.deepEqual([...second.payload], [4]);
+        assert.equal(second.metadata.size, 0, "metadata of one event does not leak into the next");
 
         await adapter.disconnect();
     });

@@ -95,17 +95,35 @@ describe("EventBus lifecycle", () => {
     });
 
     it("resets shutdown signal between start-stop cycles", async () => {
+        const adapter = MemoryAdapter();
+        const seen: boolean[] = [];
+        const method = fakeDescMethod("onEvent", EventOptionsSchema.typeName, EventOptionsSchema);
         const bus = createEventBus({
-            adapter: MemoryAdapter(),
+            adapter,
+            routes: [
+                (router) => {
+                    router.service(fakeDescService("test.v1.ResetService", [method]), {
+                        onEvent: async (_msg: unknown, ctx: { signal: AbortSignal }) => {
+                            seen.push(ctx.signal.aborted);
+                        },
+                    } as any);
+                },
+            ],
         });
 
-        // Start with a signal
-        await bus.start({ signal: AbortSignal.timeout(5000) });
+        // First cycle runs under a shutdown signal that is aborted afterwards.
+        const firstCycle = new AbortController();
+        await bus.start({ signal: firstCycle.signal });
+        await bus.stop();
+        firstCycle.abort();
+
+        // Second cycle starts without a signal. Its handlers must not inherit the
+        // first cycle's (now aborted) signal.
+        await bus.start();
+        await adapter.publish(EventOptionsSchema.typeName, new Uint8Array());
         await bus.stop();
 
-        // Start again without signal -- should not fail due to stale signal
-        await bus.start();
-        await bus.stop();
+        assert.deepEqual(seen, [false], "a handler in the second cycle must see a live signal");
     });
 });
 
