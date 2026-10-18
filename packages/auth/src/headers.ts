@@ -7,6 +7,7 @@
  * @module headers
  */
 
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { AuthContext } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -15,6 +16,10 @@ export const MAX_HEADER_BYTES = 8192;
 
 /**
  * Sanitize a header value by removing control characters and enforcing length limits.
+ *
+ * Tab, LF and CR are kept by this function itself; on the write path
+ * ({@link setAuthHeaders}) LF, CR and NUL never get here because an identity holding
+ * one of them is refused first.
  */
 export function sanitizeHeaderValue(value: string, maxLength: number): string {
     // Remove control characters (except tab/LF/CR which are valid in headers)
@@ -24,16 +29,83 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 }
 
 /**
+ * Thrown by {@link setAuthHeaders} when an identity field holds NUL, CR or LF and so
+ * cannot be written into a header. `field` names the offending `AuthContext` field.
+ */
+export class UnsafeHeaderValueError extends TypeError {
+    readonly field: "subject" | "type" | "name" | "scopes";
+
+    constructor(field: UnsafeHeaderValueError["field"]) {
+        super(`AuthContext.${field} must not contain NUL, CR or LF characters when auth headers are propagated`);
+        this.name = "UnsafeHeaderValueError";
+        this.field = field;
+    }
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: NUL, CR and LF are exactly the characters being detected
+export const HEADER_BREAKING_CHARS = /[\x00\r\n]/;
+
+/**
+ * Find the first identity field that cannot be written into a header.
+ *
+ * NUL, CR and LF are rejected rather than stripped: removing a line break would turn
+ * two different subjects (`al\nice` and `alice`) into the same header value, merging
+ * their identities downstream. Scopes are checked one by one and are otherwise left
+ * exactly as granted, because an edited scope could match a privilege nobody granted.
+ */
+function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] | undefined {
+    if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
+    if (HEADER_BREAKING_CHARS.test(context.type)) return "type";
+    if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
+    if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope))) return "scopes";
+    return undefined;
+}
+
+/**
+ * Write an identity into request headers for downstream services, or reject the call.
+ *
+ * Interceptors use this instead of {@link setAuthHeaders} so that an identity which cannot
+ * be propagated ends the request with `Code.Unauthenticated` (and is never cached) instead
+ * of surfacing as an internal error. Every other failure of {@link setAuthHeaders} is rethrown as is.
+ *
+ * @param headers - Headers object to set auth headers on
+ * @param context - Auth context to serialize
+ * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF
+ */
+export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
+    try {
+        setAuthHeaders(headers, context, propagatedClaims);
+    } catch (err) {
+        if (err instanceof UnsafeHeaderValueError) {
+            throw new ConnectError("Authentication failed", Code.Unauthenticated, undefined, undefined, err);
+        }
+        throw err;
+    }
+}
+
+/**
  * Serialize AuthContext to request headers.
  *
  * Sets standard auth headers on the provided Headers object.
  * Used by auth interceptors when propagateHeaders is enabled.
  *
+ * `subject`, `type`, `name` are stripped of control characters (tab is kept) and truncated;
+ * roles and claims are JSON; scopes are written as granted. A `subject`, `type`, `name` or
+ * scope containing NUL, CR or LF is not sanitised but refused.
+ *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
+ * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR or LF; the message
+ *   names the field and no header has been set
  */
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
+    const unsafeField = findUnsafeField(context);
+    if (unsafeField) {
+        throw new UnsafeHeaderValueError(unsafeField);
+    }
+
     headers.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(context.subject, 512));
     headers.set(AUTH_HEADERS.TYPE, sanitizeHeaderValue(context.type, 128));
 

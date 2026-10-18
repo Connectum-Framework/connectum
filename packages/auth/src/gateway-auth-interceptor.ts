@@ -12,8 +12,8 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { setAuthHeaders } from "./headers.ts";
-import { matchesMethodPattern } from "./method-match.ts";
+import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
+import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 
@@ -92,6 +92,8 @@ function isTrusted(headerValue: string, expectedValues: readonly string[]): bool
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
+ * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
+ *   contains `"*"`, or `defaultType` contains NUL, CR or LF
  *
  * @example Kong/Envoy gateway with shared secret
  * ```typescript
@@ -117,6 +119,12 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
     }
     if (trustSource.expectedValues.length === 0) {
         throw new Error("@connectum/auth: Gateway auth requires non-empty trustSource.expectedValues");
+    }
+    assertNoCatchAllSkip(skipMethods);
+    // defaultType becomes AuthContext.type of every request that sends no type header, and
+    // is propagated as a header; a value that cannot be a header would fail every such request.
+    if (HEADER_BREAKING_CHARS.test(defaultType)) {
+        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters");
     }
 
     // Pre-compute headers to strip (prevents downstream spoofing on all routes)
@@ -214,7 +222,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         stripGatewayHeaders(req.header);
 
         if (propagateHeaders) {
-            setAuthHeaders(req.header, authContext);
+            propagateAuthHeaders(req.header, authContext);
         }
 
         return await runWithAuthContext(authContext, () => next(req));

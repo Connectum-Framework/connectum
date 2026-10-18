@@ -204,13 +204,142 @@ describe("proto-reader", () => {
             assert.strictEqual(first, second);
         });
 
-        it("should ignore invalid policy strings", () => {
+        // A misspelled policy used to be read as "not set" and the decision silently fell to the
+        // interceptor default; the contract is now an error that names value, method and option.
+        for (const bad of ["invalid", "Allow", "DENY", " allow", "allow ", "permit"]) {
+            it(`should reject the method policy ${JSON.stringify(bad)} naming value, method and option`, () => {
+                const service = createFakeService();
+                const method = createFakeMethod(service, "InvalidPolicy", createMethodOptions({ policy: bad }), { register: true });
+
+                assert.throws(
+                    () => resolveMethodAuth(method),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        assert.ok(err.message.includes(JSON.stringify(bad)), err.message);
+                        assert.ok(err.message.includes("test.v1.TestService/InvalidPolicy"), err.message);
+                        assert.ok(err.message.includes("method_auth.policy"), err.message);
+                        return true;
+                    },
+                );
+            });
+        }
+
+        it("should reject an invalid service default_policy for a method that has no policy of its own", () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ defaultPolicy: "dney" }) });
+            const method = createFakeMethod(service, "Inherits", undefined, { register: true });
+
+            assert.throws(
+                () => resolveMethodAuth(method),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.ok(err.message.includes('"dney"'), err.message);
+                    assert.ok(err.message.includes("service_auth.default_policy"), err.message);
+                    assert.ok(err.message.includes("test.v1.TestService/Inherits"), err.message);
+                    return true;
+                },
+            );
+        });
+
+        it("should not cache a failed resolution", () => {
             const service = createFakeService();
-            const method = createFakeMethod(service, "InvalidPolicy", createMethodOptions({ policy: "invalid" }), { register: true });
+            const method = createFakeMethod(service, "StillBroken", createMethodOptions({ policy: "nope" }), { register: true });
 
-            const resolved = resolveMethodAuth(method);
+            assert.throws(() => resolveMethodAuth(method), /nope/);
+            assert.throws(() => resolveMethodAuth(method), /nope/);
+        });
 
-            assert.strictEqual(resolved.policy, undefined);
+        it("should treat an empty policy string as not set and defer to the service default", () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ defaultPolicy: "deny" }) });
+            const method = createFakeMethod(service, "EmptyPolicy", createMethodOptions({ policy: "" }), { register: true });
+
+            assert.strictEqual(resolveMethodAuth(method).policy, "deny");
+        });
+
+        it("should leave policy undefined when neither level sets one", () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ defaultPolicy: "" }) });
+            const method = createFakeMethod(service, "NoPolicy", createMethodOptions({ policy: "" }), { register: true });
+
+            assert.strictEqual(resolveMethodAuth(method).policy, undefined);
+        });
+
+        it("should surface an invalid policy when public methods are listed at startup", () => {
+            const service = createFakeService({ typeName: "typo.v1.TypoService" });
+            createFakeMethod(service, "Ok", createMethodOptions({ public: true }), { register: true });
+            createFakeMethod(service, "Typo", createMethodOptions({ policy: "alow" }), { register: true });
+
+            assert.throws(() => getPublicMethods([service]), /typo\.v1\.TypoService\/Typo/);
+            assert.throws(() => getInternalMethods([service]), /"alow"/);
+        });
+
+        describe("public together with internal", () => {
+            it("should reject a method marked both public and internal and suggest the fix", () => {
+                const service = createFakeService();
+                const method = createFakeMethod(service, "Both", createMethodOptions({ public: true, internal: true }), { register: true });
+
+                assert.throws(
+                    () => resolveMethodAuth(method),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        assert.ok(err.message.includes("test.v1.TestService/Both"), err.message);
+                        assert.ok(err.message.includes("public: true, internal: false"), err.message);
+                        return true;
+                    },
+                );
+            });
+
+            it("should reject a service-level public combined with a method-level internal", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ public: true }) });
+                const method = createFakeMethod(service, "Mixed", createMethodOptions({ internal: true }), { register: true });
+
+                assert.throws(() => resolveMethodAuth(method), /public: true, internal: false/);
+            });
+
+            it("should reject a service-level internal combined with a method-level public", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ internal: true }) });
+                const method = createFakeMethod(service, "Mixed", createMethodOptions({ public: true }), { register: true });
+
+                assert.throws(() => resolveMethodAuth(method), /public: true, internal: false/);
+            });
+
+            it("should reject both flags inherited from the service", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ public: true, internal: true }) });
+                const method = createFakeMethod(service, "Inherits", undefined, { register: true });
+
+                assert.throws(() => resolveMethodAuth(method), /public: true, internal: false/);
+            });
+
+            it("should accept the suggested fix: public with an explicit internal false", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ internal: true }) });
+                const method = createFakeMethod(service, "Fixed", createMethodOptions({ public: true, internal: false }), { register: true });
+
+                const resolved = resolveMethodAuth(method);
+
+                assert.strictEqual(resolved.public, true);
+                assert.strictEqual(resolved.internal, false);
+            });
+        });
+
+        describe("empty requires", () => {
+            it("should resolve requires {} as a requirement with no roles and no scopes", () => {
+                const service = createFakeService();
+                const method = createFakeMethod(service, "AuthOnly", createMethodOptions({ requires: {} }), { register: true });
+
+                const resolved = resolveMethodAuth(method);
+
+                assert.deepStrictEqual(
+                    { roles: [...(resolved.requires?.roles ?? ["unset"])], scopes: [...(resolved.requires?.scopes ?? ["unset"])] },
+                    { roles: [], scopes: [] },
+                );
+            });
+
+            it("should resolve requires { roles: [] } as present, so it overrides a service default requirement", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ defaultRequires: { roles: ["admin"] } }) });
+                const method = createFakeMethod(service, "Open", createMethodOptions({ requires: { roles: [] } }), { register: true });
+
+                const resolved = resolveMethodAuth(method);
+
+                assert.deepStrictEqual([...(resolved.requires?.roles ?? ["unset"])], []);
+            });
         });
     });
 
