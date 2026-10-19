@@ -29,29 +29,34 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 }
 
 /**
- * Thrown by {@link setAuthHeaders} when an identity field holds NUL, CR or LF and so
- * cannot be written into a header. `field` names the offending `AuthContext` field.
+ * Thrown by {@link setAuthHeaders} when an identity field holds a character that cannot be
+ * written into a header: NUL, CR, LF, or any character above U+00FF (a header value is a
+ * byte string, so the platform refuses such a value). `field` names the offending
+ * `AuthContext` field.
  */
 export class UnsafeHeaderValueError extends TypeError {
     readonly field: "subject" | "type" | "name" | "scopes";
 
     constructor(field: UnsafeHeaderValueError["field"]) {
-        super(`AuthContext.${field} must not contain NUL, CR or LF characters when auth headers are propagated`);
+        super(`AuthContext.${field} must not contain NUL, CR or LF characters, or characters above U+00FF, when auth headers are propagated`);
         this.name = "UnsafeHeaderValueError";
         this.field = field;
     }
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: NUL, CR and LF are exactly the characters being detected
-export const HEADER_BREAKING_CHARS = /[\x00\r\n]/;
+export const HEADER_BREAKING_CHARS = /[\x00\r\nĀ-￿]/;
 
 /**
  * Find the first identity field that cannot be written into a header.
  *
- * NUL, CR and LF are rejected rather than stripped: removing a line break would turn
- * two different subjects (`al\nice` and `alice`) into the same header value, merging
- * their identities downstream. Scopes are checked one by one and are otherwise left
- * exactly as granted, because an edited scope could match a privilege nobody granted.
+ * NUL, CR, LF and every character above U+00FF are rejected rather than stripped:
+ * removing a line break would turn two different subjects (`al\nice` and `alice`) into
+ * the same header value, merging their identities downstream, and the platform refuses
+ * a header value that is not a byte string (a Cyrillic name, for example). Scopes are
+ * checked one by one and are otherwise left exactly as granted, because an edited scope
+ * could match a privilege nobody granted. Whitespace at the edges of a value keeps the
+ * behavior of the platform.
  */
 function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] | undefined {
     if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
@@ -59,6 +64,15 @@ function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] 
     if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
     if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope))) return "scopes";
     return undefined;
+}
+
+/**
+ * Serialize roles or claims for a header. JSON may hold any text, a header value only bytes,
+ * so each character above U+00FF is written as a `\uXXXX` escape; the reader's `JSON.parse`
+ * restores the original value, nothing is lost and the other characters stay as they are.
+ */
+function jsonForHeader(value: unknown): string {
+    return JSON.stringify(value).replace(/[Ā-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 /**
@@ -71,7 +85,7 @@ function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] 
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR, LF or a character above U+00FF
  */
 export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
     try {
@@ -91,13 +105,14 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * Used by auth interceptors when propagateHeaders is enabled.
  *
  * `subject`, `type`, `name` are stripped of control characters (tab is kept) and truncated;
- * roles and claims are JSON; scopes are written as granted. A `subject`, `type`, `name` or
- * scope containing NUL, CR or LF is not sanitised but refused.
+ * roles and claims are JSON (characters above U+00FF are written as `\uXXXX` escapes, which
+ * the reader restores); scopes are written as granted. A `subject`, `type`, `name` or
+ * scope containing NUL, CR, LF or a character above U+00FF is not sanitised but refused.
  *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR or LF; the message
+ * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR, LF or a character above U+00FF; the message
  *   names the field and no header has been set
  */
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
@@ -114,7 +129,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     }
 
     if (context.roles.length > 0) {
-        const rolesValue = JSON.stringify(context.roles);
+        const rolesValue = jsonForHeader(context.roles);
         if (rolesValue.length <= MAX_HEADER_BYTES) {
             headers.set(AUTH_HEADERS.ROLES, rolesValue);
         }
@@ -131,7 +146,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     if (claimKeys.length > 0) {
         const filteredClaims = propagatedClaims ? Object.fromEntries(Object.entries(context.claims).filter(([key]) => propagatedClaims.includes(key))) : context.claims;
         if (Object.keys(filteredClaims).length > 0) {
-            const claimsValue = JSON.stringify(filteredClaims);
+            const claimsValue = jsonForHeader(filteredClaims);
             if (claimsValue.length <= MAX_HEADER_BYTES) {
                 headers.set(AUTH_HEADERS.CLAIMS, claimsValue);
             }

@@ -124,7 +124,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
     // defaultType becomes AuthContext.type of every request that sends no type header, and
     // is propagated as a header; a value that cannot be a header would fail every such request.
     if (HEADER_BREAKING_CHARS.test(defaultType)) {
-        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters");
+        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters, or characters above U+00FF");
     }
 
     // Pre-compute headers to strip (prevents downstream spoofing on all routes)

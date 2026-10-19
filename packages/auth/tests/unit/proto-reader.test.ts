@@ -240,6 +240,28 @@ describe("proto-reader", () => {
             );
         });
 
+        it("should reject an invalid service default_policy even when the method sets its own policy", () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ defaultPolicy: "dney" }) });
+            const method = createFakeMethod(service, "Overrides", createMethodOptions({ policy: "allow" }), { register: true });
+
+            assert.throws(
+                () => resolveMethodAuth(method),
+                (err: unknown) => {
+                    assert.ok(err instanceof Error);
+                    assert.ok(err.message.includes('"dney"'), err.message);
+                    assert.ok(err.message.includes("service_auth.default_policy"), err.message);
+                    return true;
+                },
+            );
+        });
+
+        it("should keep the method policy as the effective one when both are valid", () => {
+            const service = createFakeService({ serviceOptions: createServiceOptions({ defaultPolicy: "deny" }) });
+            const method = createFakeMethod(service, "Overrides", createMethodOptions({ policy: "allow" }), { register: true });
+
+            assert.strictEqual(resolveMethodAuth(method).policy, "allow");
+        });
+
         it("should not cache a failed resolution", () => {
             const service = createFakeService();
             const method = createFakeMethod(service, "StillBroken", createMethodOptions({ policy: "nope" }), { register: true });
@@ -292,6 +314,23 @@ describe("proto-reader", () => {
                 const method = createFakeMethod(service, "Mixed", createMethodOptions({ internal: true }), { register: true });
 
                 assert.throws(() => resolveMethodAuth(method), /public: true, internal: false/);
+            });
+
+            it("should tell how to override a public flag inherited from the service", () => {
+                const service = createFakeService({ serviceOptions: createServiceOptions({ public: true }) });
+                const method = createFakeMethod(service, "Mixed", createMethodOptions({ internal: true }), { register: true });
+
+                assert.throws(
+                    () => resolveMethodAuth(method),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        // Removing a method-level setting cannot clear a service-level one, so the
+                        // advice has to name the method-level override.
+                        assert.ok(err.message.includes('"internal: true, public: false"'), err.message);
+                        assert.ok(err.message.includes("inherited from the service"), err.message);
+                        return true;
+                    },
+                );
             });
 
             it("should reject a service-level internal combined with a method-level public", () => {

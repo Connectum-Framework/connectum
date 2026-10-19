@@ -127,7 +127,8 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
         throw new Error(
             `@connectum/auth: ${service.typeName}/${method.name} is marked both public and internal, which contradicts itself ` +
                 `(public skips every check, internal requires a trusted peer). ` +
-                `To make the method public set "public: true, internal: false"; to make it internal remove "public".`,
+                `To make the method public set "public: true, internal: false" on it; to make it internal set "internal: true, public: false" ` +
+                `(a method-level "public: false" also overrides a "public: true" inherited from the service).`,
         );
     }
 
@@ -152,12 +153,10 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     // Resolve `policy` field.
     // Method-level policy overrides service-level default_policy.
     // For proto2 optional string: default is "", so non-empty means explicitly set.
-    let policy: ResolvedMethodAuth["policy"];
-    if (mtdAuth !== undefined && mtdAuth.policy !== "") {
-        policy = normalizePolicy(mtdAuth.policy, method, "method_auth.policy");
-    } else if (svcAuth !== undefined && svcAuth.defaultPolicy !== "") {
-        policy = normalizePolicy(svcAuth.defaultPolicy, method, "service_auth.default_policy");
-    }
+    // Both values are validated even when the method policy wins: a typo in the service
+    // default must not stay hidden just because every method happens to set its own policy.
+    const servicePolicy = svcAuth !== undefined && svcAuth.defaultPolicy !== "" ? normalizePolicy(svcAuth.defaultPolicy, method, "service_auth.default_policy") : undefined;
+    const policy: ResolvedMethodAuth["policy"] = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : servicePolicy;
 
     return { public: isPublic, internal: isInternal, policy, requires };
 }

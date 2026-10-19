@@ -353,6 +353,12 @@ describe("headers", () => {
             ["a scope with LF", "scopes", { scopes: ["ok", "re\nad"] }],
             ["a scope with CR", "scopes", { scopes: ["re\rad"] }],
             ["a scope with NUL", "scopes", { scopes: ["re\0ad"] }],
+            // A header value is a byte string: the platform refuses a character above U+00FF.
+            ["a Cyrillic subject", "subject", { subject: "Иван" }],
+            ["a subject with an emoji", "subject", { subject: "user-\u{1F600}" }],
+            ["a type above U+00FF", "type", { type: "тип" }],
+            ["a name with a line separator", "name", { name: "a b" }],
+            ["a scope above U+00FF", "scopes", { scopes: ["ok", "чтение"] }],
         ];
 
         for (const [label, field, override] of cases) {
@@ -378,6 +384,29 @@ describe("headers", () => {
             setAuthHeaders(headers, { ...base, name: "Jo Doe\tJr" });
             assert.strictEqual(headers.get("x-auth-subject"), "user");
             assert.strictEqual(headers.get("x-auth-name"), "Jo Doe\tJr");
+        });
+
+        it("should still write Latin-1 text, which is a valid byte string", () => {
+            const headers = new Headers();
+            setAuthHeaders(headers, { ...base, subject: "café", name: "Zoë", scopes: ["lecture-é"] });
+            assert.strictEqual(headers.get("x-auth-subject"), "café");
+            assert.strictEqual(headers.get("x-auth-name"), "Zoë");
+            assert.strictEqual(headers.get("x-auth-scopes"), "lecture-é");
+        });
+
+        it("should write roles and claims above U+00FF as JSON escapes and give them back unchanged", () => {
+            const headers = new Headers();
+            const roles = ["админ", "o\u{1F600}"];
+            const claims = { city: "Москва", note: "ok" };
+            setAuthHeaders(headers, { ...base, roles, claims });
+
+            // The wire value is plain ASCII/Latin-1 JSON ...
+            assert.ok(/^[\x00-\xFF]*$/.test(headers.get("x-auth-roles") ?? ""), "roles header holds bytes only");
+            assert.ok(/^[\x00-\xFF]*$/.test(headers.get("x-auth-claims") ?? ""), "claims header holds bytes only");
+            // ... and the reader restores the original values.
+            const parsed = parseAuthHeaders(headers);
+            assert.deepStrictEqual(parsed?.roles, roles);
+            assert.deepStrictEqual(parsed?.claims, claims);
         });
 
         it("should not look at claims or roles, which are JSON-encoded and cannot contain a raw line break", () => {
