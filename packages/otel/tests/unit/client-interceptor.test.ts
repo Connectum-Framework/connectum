@@ -120,6 +120,8 @@ describe("createOtelClientInterceptor", () => {
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_METHOD], FULL_METHOD);
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
 			assert.ok(!(semconv.ATTR_ERROR_TYPE in span.attributes), "a successful call must not carry error.type");
+			// Instrumentation never reports OK: a successful span keeps the default UNSET status.
+			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
 			assert.strictEqual(observed.durationPoints.length, 1);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_METHOD], FULL_METHOD);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
