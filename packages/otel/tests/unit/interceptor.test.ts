@@ -23,7 +23,7 @@ import { hostname } from "node:os";
 import { afterEach, describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
-import { SpanKind } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import * as semconv from "@opentelemetry/semantic-conventions/incubating";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
 import { shutdownProvider } from "../../src/provider.ts";
@@ -107,6 +107,8 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_METHOD], FULL_METHOD);
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
 			assert.ok(!(semconv.ATTR_ERROR_TYPE in span.attributes), "a successful call must not carry error.type");
+			// Instrumentation never reports OK: a successful span keeps the default UNSET status.
+			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
 			assert.strictEqual(observed.durationPoints.length, 1);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_METHOD], FULL_METHOD);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "OK");
@@ -359,9 +361,29 @@ describe("createOtelInterceptor", () => {
 			const span = onlySpan(observed);
 			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
+			// A failure is the only case that sets a span status: ERROR with the error message.
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+			assert.strictEqual(span.status.message, "[not_found] not found");
 			assert.strictEqual(observed.durationPoints.length, 1);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
+		});
+
+		// The Connect spelling of code 1 has one L (as the Connect protocol, Connect-ES and
+		// otelconnect-go write it); the gRPC spelling with two Ls is never produced.
+		it("should report a canceled call as CANCELED with one L and an ERROR span status", async () => {
+			const next: any = async (_req: unknown) => { throw new ConnectError("stopped", Code.Canceled); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			const span = onlySpan(observed);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
+			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "CANCELED");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
 		});
 
 		// One test per code so a failure names the code. Names are the Connect protocol's
