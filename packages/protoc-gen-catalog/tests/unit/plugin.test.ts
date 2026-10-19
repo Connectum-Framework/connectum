@@ -13,8 +13,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { create, fromBinary } from "@bufbuild/protobuf";
-import { CodeGeneratorRequestSchema, type FileDescriptorProto, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
+import { create, createFileRegistry, fromBinary } from "@bufbuild/protobuf";
+import { CodeGeneratorRequestSchema, type FileDescriptorProto, FileDescriptorProtoSchema, FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import { protocGenCatalog } from "../../src/plugin.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,13 +26,17 @@ function fdpFromFixture(relPbPath: string): FileDescriptorProto {
     return fromBinary(FileDescriptorProtoSchema, Buffer.from(match[1], "base64"));
 }
 
-function generate(fileToGenerate: string[], parameter = "target=ts,import_extension=.js"): { name: string; content: string } {
+function runPlugin(fileToGenerate: string[], parameter: string) {
     const request = create(CodeGeneratorRequestSchema, {
         fileToGenerate,
         parameter,
         protoFile: [fdpFromFixture("echo/v1/echo_pb.ts"), fdpFromFixture("streaming/v1/streaming_pb.ts")],
     });
-    const response = protocGenCatalog.run(request);
+    return protocGenCatalog.run(request);
+}
+
+function generate(fileToGenerate: string[], parameter = "target=ts,import_extension=.js"): { name: string; content: string } {
+    const response = runPlugin(fileToGenerate, parameter);
     assert.strictEqual(response.error, "", `plugin reported an error: ${response.error}`);
     const file = response.file[0];
     assert.ok(file, "plugin produced no file");
@@ -78,21 +82,68 @@ describe("protoc-gen-connectum-catalog — generation", () => {
         assert.match(content, /"streaming\.v1\.StreamingService\/Bidi": \{ request: MessageInitShape<typeof ItemSchema>; response: Item; kind: "bidi" \};/);
     });
 
-    it("does NOT place a streaming method in ConnectumCallMap", () => {
+    it("does NOT place any streaming method (server, client or bidi) in ConnectumCallMap", () => {
         const { content } = generate(["streaming/v1/streaming.proto"]);
-        const callMap = content.slice(content.indexOf("interface ConnectumCallMap"), content.indexOf("interface ConnectumStreamMap"));
-        assert.doesNotMatch(callMap, /\/Server"/);
-        assert.doesNotMatch(callMap, /\/Bidi"/);
+        const callMapStart = content.indexOf("interface ConnectumCallMap");
+        const streamMapStart = content.indexOf("interface ConnectumStreamMap");
+        // Both maps must exist and be in this order, otherwise the slice below would not isolate CallMap.
+        assert.ok(callMapStart >= 0 && streamMapStart > callMapStart, "CallMap must precede StreamMap");
+        const callMap = content.slice(callMapStart, streamMapStart);
+        // The only unary method of the streaming service is its own Echo.
+        assert.match(callMap, /"streaming\.v1\.StreamingService\/Echo":/);
+        for (const streaming of ["Server", "Client", "Bidi"]) {
+            assert.doesNotMatch(callMap, new RegExp(`/${streaming}"`), `${streaming} streaming method leaked into ConnectumCallMap`);
+        }
+        // Conversely a unary method must not appear in StreamMap.
+        const streamMap = content.slice(streamMapStart);
+        assert.doesNotMatch(streamMap, /StreamingService\/Echo"/);
     });
 
-    it("honours the output_file option", () => {
-        const { name } = generate(["echo/v1/echo.proto"], "target=ts,output_file=catalog/index.gen.ts");
-        assert.strictEqual(name, "catalog/index.gen.ts");
+    it("honours the output_file option and leaves the generated content unchanged", () => {
+        const inputs = ["echo/v1/echo.proto", "streaming/v1/streaming.proto"];
+        const byDefault = generate(inputs);
+        // `gen/catalog.ts` is the example given by the service-catalog specification.
+        const custom = generate(inputs, "target=ts,import_extension=.js,output_file=gen/catalog.ts");
+        assert.strictEqual(custom.name, "gen/catalog.ts");
+        // Relative imports of the *_pb modules are resolved from the catalog's own directory: one level
+        // deeper means `./` becomes `../`. Everything else must be identical.
+        assert.strictEqual(custom.content, byDefault.content.replaceAll('from "./', 'from "../'));
+        assert.strictEqual(byDefault.name, "catalog.gen.ts");
     });
 
-    it("rejects an output_file that escapes the output root", () => {
-        assert.throws(() => generate(["echo/v1/echo.proto"], "target=ts,output_file=../escape.ts"), /relative path inside the output root/);
-        assert.throws(() => generate(["echo/v1/echo.proto"], "target=ts,output_file=/abs.ts"), /relative path inside the output root/);
+    describe("output_file safety", () => {
+        // Absolute paths and `..` traversal must be refused with an error naming the path and the rule,
+        // and nothing may be written. Windows drive, UNC and backslash forms are covered by the package README.
+        const unsafe = [
+            { value: "../escape.ts", desc: "parent traversal at the start" },
+            { value: "a/../b.ts", desc: "parent traversal in the middle" },
+            { value: "a\\..\\b.ts", desc: "parent traversal with backslash separators" },
+            { value: "/etc/catalog.ts", desc: "POSIX absolute path" },
+            { value: "C:\\x.ts", desc: "Windows drive path with backslash" },
+            { value: "C:/x.ts", desc: "Windows drive path with slash" },
+            { value: "\\\\srv\\sh\\x.ts", desc: "Windows UNC path" },
+        ];
+        for (const { value, desc } of unsafe) {
+            it(`rejects ${desc}`, () => {
+                // The plugin fails before producing any response, so no file can be written.
+                assert.throws(
+                    () => runPlugin(["echo/v1/echo.proto"], `target=ts,output_file=${value}`),
+                    (err: Error) => err.message.includes(value) && /relative path inside the output root/.test(err.message),
+                );
+            });
+        }
+
+        it("accepts a nested relative path that merely contains dots in names", () => {
+            const { name } = generate(["echo/v1/echo.proto"], "target=ts,output_file=gen/v1.0/..catalog.ts");
+            assert.strictEqual(name, "gen/v1.0/..catalog.ts");
+        });
+
+        it("rejects any option other than output_file", () => {
+            assert.throws(
+                () => runPlugin(["echo/v1/echo.proto"], "target=ts,out_file=x.ts"),
+                (err: Error) => err.message.includes("out_file") && /unknown option/.test(err.message),
+            );
+        });
     });
 
     it("reports the package version in the preamble and as the plugin version", () => {
@@ -106,7 +157,40 @@ describe("protoc-gen-connectum-catalog — generation", () => {
         assert.strictEqual(protocGenCatalog.version, `v${manifest.version}`);
     });
 
-    it("emits exactly the documented catalog text, line for line", () => {
+    it("routes every method of every input service to the map for its kind, derived from the proto descriptors", () => {
+        const files = ["echo/v1/echo.proto", "streaming/v1/streaming.proto"];
+        const { content } = generate(files);
+        const registry = createFileRegistry(
+            create(FileDescriptorSetSchema, { file: [fdpFromFixture("echo/v1/echo_pb.ts"), fdpFromFixture("streaming/v1/streaming_pb.ts")] }),
+        );
+        const kinds = { server_streaming: "server-stream", client_streaming: "client-stream", bidi_streaming: "bidi" } as const;
+        const expectedCalls: string[] = [];
+        const expectedStreams: string[] = [];
+        for (const file of files) {
+            const desc = registry.getFile(file);
+            assert.ok(desc, `descriptor for ${file}`);
+            for (const service of desc.services) {
+                for (const method of service.methods) {
+                    const key = `${service.typeName}/${method.name}`;
+                    if (method.methodKind === "unary") expectedCalls.push(key);
+                    else expectedStreams.push(`${key}|${kinds[method.methodKind]}`);
+                }
+            }
+        }
+        const streamMapStart = content.indexOf("interface ConnectumStreamMap");
+        const callSection = content.slice(content.indexOf("interface ConnectumCallMap"), streamMapStart);
+        const streamSection = content.slice(streamMapStart);
+        const actualCalls = [...callSection.matchAll(/^\s+"([^"]+)": \{ request:/gm)].map((m) => m[1]);
+        const actualStreams = [...streamSection.matchAll(/^\s+"([^"]+)": \{ request:.*kind: "([^"]+)" \};$/gm)].map((m) => `${m[1]}|${m[2]}`);
+        // Order is declaration order: files as listed, services and methods as declared.
+        assert.deepStrictEqual(actualCalls, expectedCalls);
+        assert.deepStrictEqual(actualStreams, expectedStreams);
+        assert.ok(expectedCalls.length >= 4 && expectedStreams.length === 3, "fixtures must keep covering all four kinds");
+        // A single augmentation block carries both maps.
+        assert.strictEqual(content.split('declare module "@connectum/core"').length - 1, 1);
+    });
+
+    it("pins the full generated layout of a two-file catalog (layout literals are the current output, not an external layout)", () => {
         const { content } = generate(["echo/v1/echo.proto", "streaming/v1/streaming.proto"]);
         const text = content.replace(/protoc-gen-connectum-catalog v\S+\. DO NOT EDIT/, "protoc-gen-connectum-catalog v<version>. DO NOT EDIT");
         const expected = [
@@ -142,9 +226,42 @@ describe("protoc-gen-connectum-catalog — generation", () => {
         assert.strictEqual(text, expected);
     });
 
-    it("emits a valid empty catalog with no augmentation when nothing is generated", () => {
-        const { content } = generate([]);
-        assert.match(content, /export const serviceCatalog = Object\.freeze\(\{\}\);/);
-        assert.doesNotMatch(content, /declare module/);
+    describe("empty input", () => {
+        // Run the plugin while capturing what it writes to stderr (restored in `finally`).
+        function runCapturingStderr(files: string[]) {
+            const writes: string[] = [];
+            const original = process.stderr.write;
+            process.stderr.write = ((chunk: string | Uint8Array) => {
+                writes.push(String(chunk));
+                return true;
+            }) as typeof process.stderr.write;
+            try {
+                return { response: runPlugin(files, "target=ts,import_extension=.js"), writes };
+            } finally {
+                process.stderr.write = original;
+            }
+        }
+
+        it("emits the empty catalog without augmentation, succeeds, and warns on stderr", () => {
+            const { response, writes } = runCapturingStderr([]);
+            // Success: failing on empty input breaks incremental buf workflows.
+            assert.strictEqual(response.error, "");
+            assert.strictEqual(response.file.length, 1);
+            const content = response.file[0]?.content ?? "";
+            assert.match(content, /^import type \{\} from "@connectum\/core";$/m);
+            assert.match(content, /^export const serviceCatalog = Object\.freeze\(\{\}\);$/m);
+            assert.doesNotMatch(content, /declare module/);
+            assert.doesNotMatch(content, /ConnectumCallMap|ConnectumStreamMap/);
+            assert.ok(
+                writes.some((w) => /no services/i.test(w)),
+                `a warning about missing services must be written to stderr, got: ${JSON.stringify(writes)}`,
+            );
+        });
+
+        it("does not warn when services are present", () => {
+            const { response, writes } = runCapturingStderr(["echo/v1/echo.proto"]);
+            assert.strictEqual(response.error, "");
+            assert.deepStrictEqual(writes, []);
+        });
     });
 });
