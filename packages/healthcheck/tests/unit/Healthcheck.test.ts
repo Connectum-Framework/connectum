@@ -118,7 +118,9 @@ describe("Healthcheck", () => {
 	it("should treat an undefined httpPaths as the default paths", () => {
 		const manager = createHealthcheckManager();
 		manager.set("process", ServingStatus.SERVING);
-		const handler = Healthcheck({ httpEnabled: true, httpPaths: undefined, manager }).httpHandler;
+		// An explicit undefined is not allowed by the option type, but plain
+		// JavaScript callers and spread option objects do pass it.
+		const handler = Healthcheck({ httpEnabled: true, httpPaths: undefined as unknown as string[], manager }).httpHandler;
 		assert.ok(handler);
 
 		assert.deepStrictEqual(askHttpHandler(handler, "/healthz"), { handled: true, statusCode: 200 });
