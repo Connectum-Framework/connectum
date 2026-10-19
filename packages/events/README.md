@@ -59,8 +59,10 @@ await bus.stop();
   settlement is needed.
 - A delivery whose event type matches no route is acknowledged and dropped:
   no handler or middleware runs, and it is neither nacked, requeued nor copied
-  to the DLQ. This happens, for example, on an AMQP fanout or headers exchange,
-  which delivers every message to the queue.
+  to the DLQ. This happens, for example, on an AMQP fanout exchange, or on a
+  headers exchange whose queue has no operator-declared bindings: such a queue
+  receives every message whatever the subscription pattern. A headers queue with
+  declared `x-match` bindings receives only messages whose headers match them.
 - Install the adapter for your broker separately: `@connectum/events-nats`,
   `@connectum/events-kafka`, `@connectum/events-redis`, or
   `@connectum/events-amqp`.
