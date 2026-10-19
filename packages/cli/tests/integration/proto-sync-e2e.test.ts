@@ -216,6 +216,18 @@ describe("proto sync as a process, with real buf", () => {
             assert.ok(run.code !== null && run.code !== 0, `a TLS handshake with a plaintext HTTP/2 server cannot succeed, got exit code ${run.code}:\n${run.output}`);
             assert.ok(run.output.includes(`https://127.0.0.1:${port}`), run.output);
         });
+
+        it("refuses a scheme the command does not speak, naming it, although a server listens there", async () => {
+            const { cwd, out, tmp } = sandbox();
+
+            const run = await runCli(["proto", "sync", "--from", `ftp://127.0.0.1:${port}`, "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}`);
+            assert.match(run.output, /"ftp"/);
+            assert.ok(run.output.includes("host:port") && run.output.includes("https://"), `the accepted forms must be listed, got: ${run.output}`);
+            assert.ok(!run.output.includes("Connecting to") && !run.output.includes("Connected to"), "the address must be refused before any connection attempt");
+            assert.equal(existsSync(out), false);
+        });
     });
 
     describe("failures reach the exit code", () => {

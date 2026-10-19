@@ -35,6 +35,36 @@ export interface ProtoSyncOptions {
     timeoutMs?: number | undefined;
 }
 
+/** Address that already is an `http` or `https` URL. Scheme names are case-insensitive (RFC 3986 section 3.1). */
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+
+/** Address that starts with some other `<scheme>://`; captures the scheme name. Anchored and bounded: no backtracking on hostile input. */
+const FOREIGN_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*):\/\//i;
+
+/**
+ * Turn the `--from` value into the URL that reflection requests are sent to.
+ *
+ * An address starting with `http://` or `https://` (any letter case) is returned exactly as
+ * typed. An address that carries any other `<scheme>://` is refused, because the command
+ * speaks HTTP/2 over `http` and `https` only and passing it on would end in a resolver error
+ * naming the wrong host. Every other address is a bare `host:port` and gets `http://` in
+ * front of it, whatever letters its host name starts with (`httpbin.local:5000` included).
+ *
+ * @param from - Raw `--from` value
+ * @returns URL for the reflection client
+ * @throws Error naming the scheme and the accepted forms when the address carries a non-HTTP scheme
+ */
+export function normalizeServerUrl(from: string): string {
+    if (HTTP_URL_PATTERN.test(from)) {
+        return from;
+    }
+    const foreign = FOREIGN_SCHEME_PATTERN.exec(from);
+    if (foreign !== null) {
+        throw new Error(`--from scheme "${foreign[1]}" is not supported. Use host:port, http://... or https://...; got "${from}".`);
+    }
+    return `http://${from}`;
+}
+
 /**
  * Fetch service descriptors from a running server and generate client types with `buf`.
  *
@@ -51,8 +81,9 @@ export async function executeProtoSync(options: ProtoSyncOptions): Promise<void>
         throw new Error(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got ${timeoutMs}.`);
     }
 
-    // Ensure URL has protocol
-    const url = from.startsWith("http") ? from : `http://${from}`;
+    // Resolved before the dry-run/full-sync split, so a refused address produces no output,
+    // no connection and no temporary directory.
+    const url = normalizeServerUrl(from);
 
     if (dryRun) {
         await executeDryRun(url, out, timeoutMs);
