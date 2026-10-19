@@ -6,7 +6,7 @@
  * Key characteristics:
  * - Does NOT manage process signals (Server handles that)
  * - Does NOT use global state (each Server gets its own instance)
- * - Supports repeated `executeAll()` calls (clears pending promises each time)
+ * - Is run once per server shutdown: the class is internal and `Server.stop()` is idempotent
  *
  * @module ShutdownManager
  */
@@ -25,7 +25,8 @@ export type ShutdownHook = () => void | Promise<void>;
  * - Dependency-ordered shutdown (dependencies execute first)
  * - Multiple handlers per named module
  * - Cycle detection in dependency graph
- * - Reusable (can call `executeAll()` multiple times)
+ * - Fail-fast hook failures: `executeAll()` rejects with the first failure
+ *   (see {@link ShutdownManager.executeAll})
  *
  * @example
  * ```typescript
@@ -144,8 +145,12 @@ export class ShutdownManager {
      * Execute all registered shutdown hooks in dependency order.
      *
      * Dependencies are executed before their dependents. Hooks within
-     * the same module run in parallel. The method can be called multiple
-     * times (pending promises are cleared before each execution).
+     * the same module run in parallel.
+     *
+     * Failure policy: the returned promise rejects with the first hook failure.
+     * Independent hooks that have already started keep running but are not
+     * awaited; hooks that depend on the failed module do not run; later
+     * failures are not reported.
      */
     async executeAll(): Promise<void> {
         if (!this._hooks.size) return;
