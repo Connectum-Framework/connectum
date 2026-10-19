@@ -358,6 +358,16 @@ describe("createMockDescMessage", () => {
     assert.deepStrictEqual(mock.credentials, real.credentials);
   });
 
+  it("a oneof group name is turned into the localName of a real oneof group", () => {
+    const real = realMessage("acme.v1.SnakeOneof");
+
+    const msg = createMockDescMessage("acme.v1.SnakeOneof", { oneofs: ["login_method"] });
+
+    assert.strictEqual(msg.oneofs[0]!.name, real.oneofs[0]!.name);
+    assert.strictEqual(msg.oneofs[0]!.localName, real.oneofs[0]!.localName);
+    assert.deepStrictEqual(Object.keys(create(msg)).sort(), Object.keys(create(real)).filter((k) => k !== "apiKey").sort());
+  });
+
   it("members lists standalone fields in declaration order followed by the oneof groups", () => {
     const msg = createMockDescMessage("test.Order", { fields: [{ name: "b" }, { name: "a" }], oneofs: ["choice"] });
 
