@@ -15,7 +15,7 @@ import { beforeEach, describe, it, mock } from "node:test";
 // Module-level mocks (must be registered BEFORE importing the module under test)
 // ---------------------------------------------------------------------------
 
-const mockFetchReflectionData = mock.fn(async (_url: string) => ({
+const mockFetchReflectionData = mock.fn(async (_url: string, _options?: { timeoutMs?: number }) => ({
 	services: ["test.Service", "grpc.health.v1.Health"],
 	registry: {} as any,
 	fileNames: ["test.proto", "health.proto"],
@@ -30,8 +30,8 @@ mock.module("../../src/utils/reflection.ts", {
 		fetchReflectionData: mockFetchReflectionData,
 		fetchFileDescriptorSetBinary: mockFetchFileDescriptorSetBinary,
 		DEFAULT_REFLECTION_TIMEOUT_MS: 10_000,
-		MAX_REFLECTION_TIMEOUT_MS: 2_147_483_647,
-		isValidReflectionTimeout: (v: number) => Number.isInteger(v) && v >= 1 && v <= 2_147_483_647,
+		MAX_REFLECTION_TIMEOUT_MS: 99_999_999,
+		isValidReflectionTimeout: (v: number) => Number.isInteger(v) && v >= 1 && v <= 99_999_999,
 	},
 });
 
@@ -415,6 +415,32 @@ describe("proto-sync unit tests", () => {
 				1,
 				"rmSync should still be called for cleanup after failure",
 			);
+		});
+
+		it("removes the temporary directory and stops before buf when writing the descriptor file fails", async () => {
+			const writeFailure = new Error("ENOSPC: no space left on device");
+			mockWriteFileSync.mock.mockImplementationOnce(() => {
+				throw writeFailure;
+			});
+
+			await assert.rejects(
+				async () => {
+					await captureConsoleLog(async () => {
+						await executeProtoSync({
+							from: "http://localhost:5000",
+							out: "./gen",
+						});
+					});
+				},
+				(err: unknown) => err === writeFailure,
+			);
+
+			assert.strictEqual(mockMkdtempSync.mock.calls.length, 1);
+			assert.strictEqual(mockRmSync.mock.calls.length, 1, "the directory that was created must be removed");
+			const [removed, removeOptions] = mockRmSync.mock.calls[0]!.arguments;
+			assert.strictEqual(removed, "/fake-tmp/connectum-proto-sync-XXXXXX");
+			assert.deepStrictEqual(removeOptions, { recursive: true, force: true });
+			assert.strictEqual(mockExecFileSync.mock.calls.length, 0, "buf must not run without a descriptor file");
 		});
 
 		// The progress lines of a full sync are not described by the guide or the specs, so their
@@ -844,11 +870,27 @@ describe("parseTimeoutOption", () => {
 		assert.throws(() => parseTimeoutOption("007"), /--timeout must be a positive integer/);
 	});
 
-	it("leaves the upper bound to executeProtoSync, which refuses it before connecting", async () => {
-		assert.equal(parseTimeoutOption("2147483648"), 2147483648);
+	it("leaves the upper bound to executeProtoSync, which refuses it before connecting and quotes the maximum", async () => {
+		mockFetchReflectionData.mock.resetCalls();
+		assert.equal(parseTimeoutOption("100000000"), 100000000);
 		await assert.rejects(
-			executeProtoSync({ from: "localhost:5000", out: "gen", timeoutMs: 2147483648 }),
-			/--timeout must be a positive integer/,
+			executeProtoSync({ from: "localhost:5000", out: "gen", timeoutMs: 100000000, dryRun: true }),
+			(err: unknown) => err instanceof Error && /--timeout must be a positive integer/.test(err.message) && err.message.includes("99999999"),
 		);
+		assert.equal(mockFetchReflectionData.mock.calls.length, 0, "the limit must be refused before any connection");
+	});
+
+	it("passes the maximum 99999999 on to the reflection call unchanged", async () => {
+		mockFetchReflectionData.mock.resetCalls();
+		assert.equal(parseTimeoutOption("99999999"), 99999999);
+		await captureConsoleLog(async () => {
+			await executeProtoSync({ from: "localhost:5000", out: "gen", timeoutMs: 99999999, dryRun: true });
+		});
+		assert.equal(mockFetchReflectionData.mock.calls.length, 1);
+		assert.deepEqual(mockFetchReflectionData.mock.calls[0]!.arguments[1], { timeoutMs: 99999999 });
+	});
+
+	it("names the maximum 99999999 when parseTimeoutOption refuses a malformed value", () => {
+		assert.throws(() => parseTimeoutOption("007"), (err: unknown) => err instanceof Error && err.message.includes("99999999"));
 	});
 });

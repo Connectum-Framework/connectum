@@ -43,14 +43,10 @@ interface CliRun {
  * system temporary directory lands in a directory this test can inspect.
  */
 function runCli(args: string[], options: { cwd: string; tmpdir: string; path: string }): Promise<CliRun> {
-    // The process currently stays alive until the deadline of its last reflection request
-    // expires (10 s by default), so every call that does not set its own limit gets a short one
-    // to keep the suite fast; the lingering itself is the subject of a dedicated test below.
-    const withLimit = args.includes("--timeout") ? args : [...args, "--timeout", "3000"];
     return new Promise((resolve) => {
         execFile(
             process.execPath,
-            [cliBinary, ...withLimit],
+            [cliBinary, ...args],
             { cwd: options.cwd, env: { PATH: options.path, TMPDIR: options.tmpdir, HOME: join(options.cwd, "home") }, timeout: 60_000, killSignal: "SIGKILL" },
             (error, stdout, stderr) => {
                 const code = error === null ? 0 : typeof error.code === "number" ? error.code : null;
@@ -257,22 +253,20 @@ describe("proto sync as a process, with real buf", () => {
     });
 
     describe("--timeout bounds", () => {
-        // The guide documents 1 to 2147483647. The gRPC HTTP/2 specification gives the grpc-timeout
-        // header at most eight digits, so a server answers 2147483647 ms with "invalid grpc timeout
-        // value" and the sync fails: the documented upper bound is not usable in practice.
-        it(
-            "accepts the documented maximum 2147483647 and completes against a live server",
-            { skip: "known defect, fails against the documented behaviour: the server refuses a 10-digit grpc-timeout, so 2147483647 (the documented maximum) ends in 'invalid grpc timeout value'" },
-            async () => {
-                const { cwd, out, tmp } = sandbox();
+        // The Connect client sends the limit as the grpc-timeout header in milliseconds, and the
+        // gRPC HTTP/2 protocol allows the header value at most eight digits. 99999999 is therefore
+        // the largest limit a server accepts; one more (nine digits) is refused here, before any
+        // connection, instead of being sent and refused by the server as "invalid grpc timeout value".
+        it("accepts the maximum 99999999 and completes against a live server", async () => {
+            const { cwd, out, tmp } = sandbox();
 
-                const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--dry-run", "--timeout", "2147483647"], { cwd, tmpdir: tmp, path: withoutBuf });
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--dry-run", "--timeout", "99999999"], { cwd, tmpdir: tmp, path: withoutBuf });
 
-                assert.equal(run.code, 0, run.output);
-            },
-        );
+            assert.equal(run.code, 0, run.output);
+            assert.match(run.output, /grpc\.health\.v1\.Health/);
+        });
 
-        it("ends promptly after the work is done instead of waiting for the per-request limit to expire", { skip: "known defect, fails against the observed behaviour: the process stays alive until the deadline of its last reflection request, so --timeout 20000 keeps a finished dry run alive for about 20 s" }, async () => {
+        it("ends promptly after the work is done instead of waiting for the per-request limit to expire", async () => {
             const { cwd, out, tmp } = sandbox();
             const started = Date.now();
 
@@ -282,13 +276,24 @@ describe("proto sync as a process, with real buf", () => {
             assert.ok(Date.now() - started < 8000, `a finished dry run must not outlive the work by the whole limit, took ${Date.now() - started} ms`);
         });
 
-        it("refuses 2147483648 before connecting, although the server is up", async () => {
+        it("ends promptly with the default 10000 ms limit too", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const started = Date.now();
+
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assert.equal(run.code, 0, run.output);
+            assert.ok(Date.now() - started < 8000, `a finished dry run must not wait out the 10000 ms default limit, took ${Date.now() - started} ms`);
+        });
+
+        it("refuses 100000000 before connecting, although the server is up", async () => {
             const { cwd, out, tmp } = sandbox();
 
-            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--dry-run", "--timeout", "2147483648"], { cwd, tmpdir: tmp, path: withoutBuf });
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--dry-run", "--timeout", "100000000"], { cwd, tmpdir: tmp, path: withoutBuf });
 
             assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}`);
             assert.match(run.output, /--timeout must be a positive integer/);
+            assert.ok(run.output.includes("99999999"), `the message must quote the maximum 99999999:\n${run.output}`);
             assert.ok(!run.output.includes("Connected to"), "the limit must be refused before any connection");
         });
     });

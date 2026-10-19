@@ -129,9 +129,12 @@ async function executeFullSync(url: string, out: string, timeoutMs: number, temp
     // Step 2: Write to temporary file
     const tmpDir = mkdtempSync(join(tmpdir(), "connectum-proto-sync-"));
     const binpbPath = join(tmpDir, "descriptors.binpb");
-    writeFileSync(binpbPath, binpb);
 
+    // The write is inside the try on purpose: when it fails (disk full, permissions) the
+    // directory just created must still be removed by the finally below.
     try {
+        writeFileSync(binpbPath, binpb);
+
         // Step 3: Run buf generate (execFileSync prevents command injection)
         const args = ["generate", binpbPath, "--output", out];
         if (template) {

@@ -89,6 +89,56 @@ export function partialReflectionServer(): Http2Server {
     );
 }
 
+/** A valid answer to a service listing; a fresh object per call, as the handler types want mutable arrays. */
+function listServicesAnswer() {
+    return { messageResponse: { case: "listServicesResponse" as const, value: { service: [{ name: "fixture.v1.FixtureService" }] } } };
+}
+
+/** A reflection server that answers every request with two responses, which the protocol forbids. */
+export function twoResponsesServer(): Http2Server {
+    return createHttp2Server(
+        connectNodeAdapter({
+            routes: (router) => {
+                router.service(ServerReflection, {
+                    async *serverReflectionInfo(requests) {
+                        for await (const _request of requests) {
+                            yield listServicesAnswer();
+                            yield listServicesAnswer();
+                        }
+                    },
+                });
+            },
+        }),
+    );
+}
+
+/**
+ * A reflection server that answers a request and then keeps the response stream open: it waits
+ * for the client to give up (the time limit resets the stream) instead of ending the stream.
+ */
+export function neverEndingStreamServer(): Http2Server {
+    return createHttp2Server(
+        connectNodeAdapter({
+            routes: (router) => {
+                router.service(ServerReflection, {
+                    async *serverReflectionInfo(requests, context) {
+                        for await (const _request of requests) {
+                            yield listServicesAnswer();
+                        }
+                        await new Promise<void>((resolve) => {
+                            if (context.signal.aborted) {
+                                resolve();
+                                return;
+                            }
+                            context.signal.addEventListener("abort", () => resolve(), { once: true });
+                        });
+                    },
+                });
+            },
+        }),
+    );
+}
+
 /** Accepts the HTTP/2 connection and every stream on it, and never sends a byte back. */
 export function silentServer(): Http2Server {
     const server = createHttp2Server();
