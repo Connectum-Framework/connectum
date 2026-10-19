@@ -82,7 +82,9 @@ handler for the whole call, including after its first `await` or `yield`.
   interceptor. A cache `ttl` must be finite and greater than 0 and `maxSize` an
   integer of at least 1.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
-  or LF is rejected with `Unauthenticated` before it is cached.
+  LF, or a character above U+00FF (a header value is a byte string) is rejected
+  with `Unauthenticated` before it is cached. Roles and claims are written as
+  JSON with `\uXXXX` escapes for such characters and read back unchanged.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
   headers before setting verified auth
   context. Header values for roles, scopes, and claims are bounded; oversized
