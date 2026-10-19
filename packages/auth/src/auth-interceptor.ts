@@ -11,8 +11,8 @@
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { LruCache } from "./cache.ts";
-import { setAuthHeaders } from "./headers.ts";
-import { matchesMethodPattern } from "./method-match.ts";
+import { propagateAuthHeaders } from "./headers.ts";
+import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, AuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -39,8 +39,14 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
  * a user-provided callback, and stores the resulting AuthContext
  * in AsyncLocalStorage for downstream access.
  *
+ * A `ConnectError` thrown by `verifyCredentials` reaches the client unchanged (code and
+ * message), so choose its text as public. Any other thrown value is replaced by
+ * `Unauthenticated: Authentication failed`.
+ *
  * @param options - Authentication options
  * @returns ConnectRPC interceptor
+ * @throws {Error} When `skipMethods` contains `"*"`
+ * @throws {RangeError} When `cache` has a `ttl` that is not finite and positive, or a `maxSize` that is not an integer of at least 1
  *
  * @example API key authentication
  * ```typescript
@@ -81,6 +87,8 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
 export function createAuthInterceptor(options: AuthInterceptorOptions): Interceptor {
     const { extractCredentials = defaultExtractCredentials, verifyCredentials, skipMethods = [], propagateHeaders = false, cache: cacheOptions, propagatedClaims } = options;
 
+    assertNoCatchAllSkip(skipMethods);
+
     const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
@@ -107,7 +115,7 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
         const cached = cache?.get(credentials);
         if (cached && (!cached.expiresAt || cached.expiresAt.getTime() > Date.now())) {
             if (propagateHeaders) {
-                setAuthHeaders(req.header, cached, propagatedClaims);
+                propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
             return await runWithAuthContext(cached, () => next(req));
         }
@@ -123,13 +131,15 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             throw new ConnectError("Authentication failed", Code.Unauthenticated);
         }
 
+        // Propagate auth context as headers if enabled. This runs BEFORE the cache write:
+        // an identity that cannot be propagated (NUL/CR/LF) is rejected here and must never
+        // be stored, otherwise every later request with the same credentials would hit it.
+        if (propagateHeaders) {
+            propagateAuthHeaders(req.header, authContext, propagatedClaims);
+        }
+
         // Cache the verification result
         cache?.set(credentials, authContext);
-
-        // Propagate auth context as headers if enabled
-        if (propagateHeaders) {
-            setAuthHeaders(req.header, authContext, propagatedClaims);
-        }
 
         // Run downstream with auth context in AsyncLocalStorage
         return await runWithAuthContext(authContext, () => next(req));
