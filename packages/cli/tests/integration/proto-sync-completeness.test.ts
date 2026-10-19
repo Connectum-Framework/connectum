@@ -72,9 +72,21 @@ describe("proto sync completeness and time limit", () => {
 });
 
 describe("proto sync --timeout validation", () => {
-    for (const bad of [0, -5, 1.5, Number.NaN, 2 ** 31]) {
+    // 100000000 has nine digits and cannot be carried by a grpc-timeout header; the literal is
+    // written out so the test does not agree with whatever maximum the source holds.
+    for (const bad of [0, -5, 1.5, Number.NaN, 100_000_000, 2 ** 31]) {
         it(`rejects ${bad} without opening a connection`, async () => {
-            await assert.rejects(() => executeProtoSync({ from: "127.0.0.1:1", out: "unused", timeoutMs: bad }), /--timeout must be a positive integer/);
+            await assert.rejects(
+                () => executeProtoSync({ from: "127.0.0.1:1", out: "unused", timeoutMs: bad }),
+                (err: unknown) => err instanceof Error && /--timeout must be a positive integer/.test(err.message) && err.message.includes("at most 99999999"),
+            );
         });
     }
+
+    it("makes the reflection client itself refuse a limit above 99999999, for callers that bypass the command", async () => {
+        await assert.rejects(
+            () => fetchReflectionData("http://127.0.0.1:1", { timeoutMs: 100_000_000 }),
+            (err: unknown) => err instanceof Error && err.message.includes("from 1 to 99999999 ms"),
+        );
+    });
 });
