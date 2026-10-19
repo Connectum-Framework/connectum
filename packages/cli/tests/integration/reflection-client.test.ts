@@ -17,9 +17,10 @@
 
 import assert from "node:assert";
 import { createHash } from "node:crypto";
+import type { Http2Server } from "node:http2";
 import { after, before, describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import type { ConnectRouter } from "@connectrpc/connect";
+import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import type { ProtocolRegistration, Server } from "@connectum/core";
 import { createServer, defineService } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
@@ -27,6 +28,7 @@ import { Reflection } from "@connectum/reflection";
 import { MetaSchema } from "../../../reflection/tests/fixtures/fixture/v1/common_pb.ts";
 import { FixtureService } from "../../../reflection/tests/fixtures/fixture/v1/service_pb.ts";
 import { fetchFileDescriptorSetBinary, fetchReflectionData } from "../../src/utils/reflection.ts";
+import { close, listen, neverEndingStreamServer, twoResponsesServer } from "../helpers/reflectionServers.ts";
 
 const EXPECTED_SERVICES = ["fixture.v1.FixtureService", "grpc.health.v1.Health"];
 
@@ -183,5 +185,51 @@ describe("CLI reflection client output", () => {
         const binpb = await fetchFileDescriptorSetBinary(withoutImports.url);
         assert.strictEqual(createHash("sha256").update(binpb).digest("hex"), EXPECTED_SET_SHA256);
         assert.ok(withoutImportsStats.trimmed > 0, "the server must have dropped imports from its answers");
+    });
+});
+
+describe("CLI reflection client against servers that break the one-answer rule", () => {
+    let twice: Http2Server;
+    let twiceUrl: string;
+    let endless: Http2Server;
+    let endlessUrl: string;
+
+    before(async () => {
+        twice = twoResponsesServer();
+        twiceUrl = await listen(twice);
+        endless = neverEndingStreamServer();
+        endlessUrl = await listen(endless);
+    });
+
+    after(async () => {
+        await close(twice);
+        await close(endless);
+    });
+
+    it("rejects with an Internal error when a request gets two responses, returning no registry", async () => {
+        let registry: unknown;
+        await assert.rejects(
+            async () => {
+                registry = await fetchReflectionData(twiceUrl);
+            },
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Internal && /more than one response/.test(err.rawMessage),
+        );
+        assert.equal(registry, undefined, "nothing may be returned when the protocol was broken");
+    });
+
+    it("fails the binary descriptor-set fetch the same way", async () => {
+        await assert.rejects(
+            () => fetchFileDescriptorSetBinary(twiceUrl),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Internal && /more than one response/.test(err.rawMessage),
+        );
+    });
+
+    it("reports the time limit, naming the address and the limit, when the server answers but never ends the stream", async () => {
+        const started = Date.now();
+        await assert.rejects(
+            () => fetchReflectionData(endlessUrl, { timeoutMs: 500 }),
+            (err: Error) => err.message.includes(endlessUrl) && err.message.includes("500 ms") && /timed out/.test(err.message),
+        );
+        assert.ok(Date.now() - started < 5000, "the 500 ms limit must end the call within seconds");
     });
 });

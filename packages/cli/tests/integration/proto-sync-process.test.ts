@@ -103,6 +103,16 @@ describe("proto sync process exit code", () => {
         assert.match(run.output, /--timeout must be a positive integer/);
     });
 
+    it("refuses a --timeout above 99999999 before connecting, quoting the maximum", async () => {
+        // 100000000 has nine digits: a grpc-timeout header carries at most eight, so no server could take it.
+        const run = await runCli(["proto", "sync", "--from", "127.0.0.1:1", "--out", join(workdir, "over-max-out"), "--timeout", "100000000"], 30_000);
+
+        assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}`);
+        assert.match(run.output, /--timeout must be a positive integer/);
+        assert.ok(run.output.includes("99999999"), `the message must quote the maximum 99999999:\n${run.output}`);
+        assert.ok(!run.output.includes("Connecting to"), `the value must be refused before any connection:\n${run.output}`);
+    });
+
     it("documents the 10000 ms default in the --timeout help text", async () => {
         const run = await runCli(["proto", "sync", "--help"], 30_000);
 

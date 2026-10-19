@@ -43,8 +43,13 @@ export interface ReflectionResult {
 /** Time limit of one reflection request when the caller sets none. A design choice, not a measurement. */
 export const DEFAULT_REFLECTION_TIMEOUT_MS = 10_000;
 
-/** Largest value a timer (and therefore a call deadline) can carry; above it the deadline fires at once. */
-export const MAX_REFLECTION_TIMEOUT_MS = 2_147_483_647;
+/**
+ * Largest time limit that can be sent: the Connect client puts the deadline into the
+ * `grpc-timeout` header in milliseconds only, and the header value is at most eight decimal
+ * digits, so 99 999 999 ms (about 27.8 hours) is the longest limit a server accepts. A longer
+ * value is refused by the server as an invalid header.
+ */
+export const MAX_REFLECTION_TIMEOUT_MS = 99_999_999;
 
 /** Options of the reflection fetch. */
 export interface ReflectionOptions {
@@ -66,11 +71,26 @@ async function* once<T>(item: T): AsyncIterable<T> {
     yield item;
 }
 
+/**
+ * Takes the single answer of a stream and reads the stream to its end.
+ *
+ * The Connect client releases the timer of a call's deadline only when the response stream
+ * reports its end; leaving the loop early keeps the timer armed, and the process would then stay
+ * alive until the limit of its last request expires. The protocol answers a request with exactly
+ * one response, so a second one means the other side does not speak it as assumed.
+ */
 async function first<T>(responses: AsyncIterable<T>): Promise<T> {
+    let answer: { value: T } | undefined;
     for await (const response of responses) {
-        return response;
+        if (answer !== undefined) {
+            throw new ConnectError("reflection stream returned more than one response to a single request", Code.Internal);
+        }
+        answer = { value: response };
     }
-    throw new ConnectError("reflection stream closed without a response", Code.Internal);
+    if (answer === undefined) {
+        throw new ConnectError("reflection stream closed without a response", Code.Internal);
+    }
+    return answer.value;
 }
 
 /**
