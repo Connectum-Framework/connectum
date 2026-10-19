@@ -21,6 +21,7 @@
 
 import assert from "node:assert";
 import http from "node:http";
+import net from "node:net";
 import { after, before, describe, it } from "node:test";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
@@ -390,5 +391,109 @@ describe("Healthcheck HTTP custom httpPaths", () => {
             assert.strictEqual(statusCode, 404, `${path} must no longer be served`);
             assert.doesNotMatch(body, /"timestamp"/, `${path} must not return a health payload`);
         }
+    });
+
+    it("matches the path exactly: a trailing slash or another case is not served", async () => {
+        for (const path of ["/custom-health/", "/Custom-Health"]) {
+            const { statusCode, body } = await httpGetFrom(port, path);
+            assert.strictEqual(statusCode, 404, `${path} must not be served`);
+            assert.doesNotMatch(body, /"timestamp"/, `${path} must not return a health payload`);
+        }
+    });
+
+    it("ignores the query string when matching the path", async () => {
+        const { statusCode, body } = await httpGetFrom(port, "/custom-health?x=1");
+        assert.strictEqual(statusCode, 200);
+        assert.strictEqual(JSON.parse(body).status, "SERVING");
+    });
+});
+
+/**
+ * Send one HTTP/1.1 request over a bare TCP socket, so the Host header can be
+ * empty or malformed, which `http.get` refuses to produce.
+ */
+function rawHttp1Get(port: number, target: string, hostHeader: string): Promise<{ statusCode: number; body: string }> {
+    return new Promise((resolve, reject) => {
+        const socket = net.connect(port, "127.0.0.1");
+        let raw = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+            socket.write(`GET ${target} HTTP/1.1\r\nHost:${hostHeader}\r\nConnection: close\r\n\r\n`);
+        });
+        socket.on("data", (chunk: string) => {
+            raw += chunk;
+        });
+        socket.on("error", reject);
+        socket.on("close", () => {
+            const [head = "", ...rest] = raw.split("\r\n\r\n");
+            const statusCode = Number(/^HTTP\/1\.1 (\d{3})/.exec(head)?.[1] ?? 0);
+            resolve({ statusCode, body: rest.join("\r\n\r\n") });
+        });
+    });
+}
+
+describe("Healthcheck HTTP service query with a degenerate Host header", () => {
+    let server: Server;
+    let port: number;
+
+    before(async () => {
+        const manager = createHealthcheckManager();
+        // The named service is healthy while the process as a whole is not, so
+        // an answer about the whole process cannot be mistaken for the answer
+        // about the named service.
+        manager.register("named", ServingStatus.SERVING);
+        manager.register("broken", ServingStatus.NOT_SERVING);
+
+        server = createServer({
+            services: [],
+            port: 0,
+            protocols: [Healthcheck({ httpEnabled: true, manager })],
+            interceptors: [],
+            allowHTTP1: true,
+        });
+        await server.start();
+        assert.ok(server.address?.port);
+        port = server.address.port;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    it("sanity: a well-formed Host answers about the named service", async () => {
+        const { statusCode, body } = await rawHttp1Get(port, "/healthz?service=named", ` 127.0.0.1:${port}`);
+        assert.strictEqual(statusCode, 200);
+        assert.deepStrictEqual({ status: JSON.parse(body).status, service: JSON.parse(body).service }, { status: "SERVING", service: "named" });
+    });
+
+    for (const [desc, hostHeader] of [
+        ["an empty Host", ""],
+        ["a syntactically invalid Host", " bad host"],
+    ] as const) {
+        it(`answers about the named service with ${desc}`, async () => {
+            const { statusCode, body } = await rawHttp1Get(port, "/healthz?service=named", hostHeader);
+            const parsed = JSON.parse(body);
+
+            assert.strictEqual(statusCode, 200, "the named service is SERVING; the overall state would be 503");
+            assert.strictEqual(parsed.status, "SERVING");
+            assert.strictEqual(parsed.service, "named");
+        });
+
+        it(`answers 404 for an unknown service with ${desc}`, async () => {
+            const { statusCode, body } = await rawHttp1Get(port, "/healthz?service=missing.Svc", hostHeader);
+            const parsed = JSON.parse(body);
+
+            assert.strictEqual(statusCode, 404);
+            assert.strictEqual(parsed.status, "SERVICE_UNKNOWN");
+            assert.strictEqual(parsed.service, "missing.Svc");
+        });
+    }
+
+    it("reports the overall state for an empty service value", async () => {
+        const { statusCode, body } = await rawHttp1Get(port, "/healthz?service=", ` 127.0.0.1:${port}`);
+        assert.strictEqual(statusCode, 503, "the overall state is NOT_SERVING while 'broken' is");
+        assert.strictEqual(JSON.parse(body).status, "NOT_SERVING");
     });
 });
