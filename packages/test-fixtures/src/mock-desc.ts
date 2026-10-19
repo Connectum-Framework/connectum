@@ -10,7 +10,29 @@
  */
 
 import type { DescField, DescMessage, DescMethod } from "@bufbuild/protobuf";
+import { protoCamelCase, safeObjectProperty } from "@bufbuild/protobuf/reflect";
 import type { MockDescFieldOptions, MockDescMessageOptions, MockDescMethodOptions } from "./types.ts";
+
+/**
+ * Field presence value of google.protobuf.FeatureSet.FieldPresence.IMPLICIT:
+ * the field has no presence tracking and `create()` fills in its zero value.
+ * This is the presence every proto3 singular field has.
+ *
+ * @internal
+ */
+const PRESENCE_IMPLICIT = 2;
+
+/**
+ * Lower-case the first character only, the way protobuf-es derives the
+ * `localName` of an RPC (`GetUser` becomes `getUser`, `URLFetch` becomes
+ * `uRLFetch`), and escape names that collide with built-in object properties
+ * (`ToString` becomes `toString$`).
+ *
+ * @internal
+ */
+function methodLocalName(name: string): string {
+    return safeObjectProperty(name.charAt(0).toLowerCase() + name.slice(1));
+}
 
 /**
  * Map a human-readable scalar type name to the corresponding protobuf
@@ -46,26 +68,40 @@ function mapTypeToScalar(type: string): number {
  * Produces a minimal object that satisfies the `DescField` shape expected by
  * ConnectRPC interceptors and protobuf utilities.
  *
- * @param localName - The field's local (camelCase) name.
- * @param options   - Optional overrides for field number, scalar type, and sensitivity.
+ * The field is a proto3 singular scalar field with implicit presence: like a
+ * compiled descriptor, `getDefaultValue()` returns `undefined` (so `create()`
+ * fills in the scalar zero value) and `longAsString` is `false`.
+ *
+ * @param name    - The field's name as written in the `.proto` file (for example
+ *   `user_id`). `localName` and `jsonName` are derived from it by the protobuf-es
+ *   rules: `user_id` gives `userId`, and a name that collides with a built-in
+ *   object property (`constructor`, `toString`, `toJSON`, `valueOf`) gets a `$`
+ *   suffix in `localName`. A name that is already camelCase is kept unchanged.
+ *   A custom `json_name` option cannot be expressed.
+ * @param options - Optional overrides for field number, scalar type, and sensitivity.
  * @returns A mock `DescField` object.
  *
  * @example
  * ```ts
  * import { createMockDescField } from "@connectum/testing";
  *
- * const field = createMockDescField("userId", { type: "int32", fieldNumber: 1 });
+ * const field = createMockDescField("user_id", { type: "int32", fieldNumber: 1 });
+ * // field.name      === "user_id"
  * // field.localName === "userId"
  * // field.scalar    === 5  (INT32)
  * ```
  */
-export function createMockDescField(localName: string, options?: MockDescFieldOptions): DescField {
+export function createMockDescField(name: string, options?: MockDescFieldOptions): DescField {
+    const jsonName = protoCamelCase(name);
     return {
         kind: "field",
-        name: localName,
-        localName,
-        jsonName: localName,
+        name,
+        localName: safeObjectProperty(jsonName),
+        jsonName,
         fieldKind: "scalar",
+        presence: PRESENCE_IMPLICIT,
+        longAsString: false,
+        getDefaultValue: () => undefined,
         scalar: mapTypeToScalar(options?.type ?? "string"),
         number: options?.fieldNumber ?? 1,
         repeated: false,
@@ -83,13 +119,24 @@ export function createMockDescField(localName: string, options?: MockDescFieldOp
  * Create a mock {@link DescMessage} descriptor with all required structural
  * properties.
  *
- * **Important**: the returned object always includes `members: []` which is
- * required by `create()` from `@bufbuild/protobuf` — without it the runtime
- * crashes.
+ * `members` lists the standalone fields in declaration order followed by the
+ * oneof groups, so `create()` from `@bufbuild/protobuf` fills every declared
+ * field with its zero value and every oneof group with `{ case: undefined }`,
+ * as it does for a compiled descriptor.
+ *
+ * Field numbers that are not given explicitly continue from the highest number
+ * used so far (`max + 1`). Two fields with the same number make the factory
+ * throw, as `protoc` rejects such a message.
+ *
+ * Limitations: a mock oneof group has no fields (`fields: []`) and the declared
+ * fields are not attached to it, and a custom `json_name` option cannot be
+ * expressed.
  *
  * @param typeName - Fully-qualified protobuf type name (e.g. `"acme.v1.User"`).
- * @param options  - Optional field and oneof definitions.
+ * @param options  - Optional field and oneof definitions. A field `name` is the
+ *   proto name (see {@link createMockDescField}).
  * @returns A mock `DescMessage` object.
+ * @throws Error when two fields share the same field number.
  *
  * @example
  * ```ts
@@ -109,15 +156,28 @@ export function createMockDescField(localName: string, options?: MockDescFieldOp
 export function createMockDescMessage(typeName: string, options?: MockDescMessageOptions): DescMessage {
     const name = typeName.split(".").pop() ?? typeName;
 
-    const fields: DescField[] = (options?.fields ?? []).map((f, i) => {
-        const fieldOpts: MockDescFieldOptions = {
-            fieldNumber: f.fieldNumber ?? i + 1,
-        };
+    const usedNumbers = new Set<number>();
+    let highestNumber = 0;
+    const fields: DescField[] = (options?.fields ?? []).map((f) => {
+        const fieldNumber = f.fieldNumber ?? highestNumber + 1;
+        if (usedNumbers.has(fieldNumber)) {
+            throw new Error(`${typeName}: field number ${fieldNumber} is used by more than one field (field "${f.name}")`);
+        }
+        usedNumbers.add(fieldNumber);
+        highestNumber = Math.max(highestNumber, fieldNumber);
+        const fieldOpts: MockDescFieldOptions = { fieldNumber };
         if (f.type !== undefined) {
             fieldOpts.type = f.type;
         }
         return createMockDescField(f.name, fieldOpts);
     });
+
+    const oneofs = (options?.oneofs ?? []).map((oneofName) => ({
+        name: oneofName,
+        localName: safeObjectProperty(protoCamelCase(oneofName)),
+        fields: [],
+        kind: "oneof",
+    }));
 
     return {
         kind: "message",
@@ -125,13 +185,8 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         name,
         fields,
         field: Object.fromEntries(fields.map((f) => [f.localName, f])),
-        oneofs: (options?.oneofs ?? []).map((oneofName) => ({
-            name: oneofName,
-            localName: oneofName,
-            fields: [],
-            kind: "oneof",
-        })),
-        members: [], // CRITICAL: required for create() from @bufbuild/protobuf
+        oneofs,
+        members: [...fields, ...oneofs],
         nestedEnums: [],
         nestedMessages: [],
         nestedExtensions: [],
@@ -176,7 +231,7 @@ export function createMockDescMethod(name: string, options?: MockDescMethodOptio
     return {
         kind: "rpc",
         name,
-        localName: name.charAt(0).toLowerCase() + name.slice(1),
+        localName: methodLocalName(name),
         parent: undefined,
         methodKind: options?.kind ?? "unary",
         input: options?.input ?? defaultInput,

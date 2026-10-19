@@ -37,8 +37,20 @@ describe("strictTopics", () => {
     });
 
     it("silently falls back to the typeName by default (strictTopics off)", async () => {
-        bus = createEventBus({ adapter: MemoryAdapter() });
+        // The adapter records the topic it is asked to publish to, so the
+        // fallback itself is observed rather than only the absence of an error.
+        const inner = MemoryAdapter();
+        const publishedTopics: string[] = [];
+        const adapter = {
+            ...inner,
+            publish: (eventType: string, payload: Uint8Array, options?: Parameters<typeof inner.publish>[2]) => {
+                publishedTopics.push(eventType);
+                return inner.publish(eventType, payload, options);
+            },
+        };
+        bus = createEventBus({ adapter });
         await bus.start();
-        await assert.doesNotReject(bus.publish(EventOptionsSchema, eventMsg()));
+        await bus.publish(EventOptionsSchema, eventMsg());
+        assert.deepEqual(publishedTopics, [EventOptionsSchema.typeName]);
     });
 });

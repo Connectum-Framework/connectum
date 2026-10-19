@@ -36,6 +36,14 @@ export interface HealthcheckOptions {
 
     /**
      * HTTP health endpoint paths that all respond with health status.
+     *
+     * Must be a non-empty array of absolute paths: each starts with `/` and
+     * contains no `?` or `#`. An empty array throws `RangeError` and an
+     * invalid entry throws `TypeError` from `Healthcheck()`; to turn the HTTP
+     * endpoint off use `httpEnabled: false`. Request paths are compared
+     * exactly and case-sensitively (`/healthz/` does not match `/healthz`),
+     * the query string is ignored when matching, and the request method is
+     * not checked.
      * @default ["/healthz", "/health", "/readyz"]
      */
     httpPaths?: string[];

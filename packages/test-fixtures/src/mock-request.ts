@@ -17,6 +17,11 @@ const DEFAULT_METHOD = "TestMethod";
  * requestMethod, contextValues or complete protobuf descriptors must supply
  * those fields separately, or exercise an actual RPC transport.
  *
+ * The generated `url` is a placeholder: its origin is `http://localhost`, while
+ * a request produced by the in-process transport carries `https://in-memory/…`.
+ * Only the path (`/<service typeName>/<method name>`) mirrors a real request.
+ * Pass `url` explicitly when the code under test depends on the origin.
+ *
  * @param options - Optional overrides for request fields.
  * @returns A plain object containing simplified request fields.
  *

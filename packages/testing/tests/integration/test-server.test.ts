@@ -1,48 +1,73 @@
 /**
  * Integration tests for createTestServer and withTestServer.
  *
- * These tests start real gRPC servers to verify lifecycle management.
- * Empty service arrays are used since we only need to verify
- * server startup, port assignment, and shutdown — not actual RPC handling.
+ * These tests start real gRPC servers to verify lifecycle management: the
+ * assigned port, that the returned transport really reaches the server, and
+ * that a closed server stops accepting connections.
  */
 
 import assert from "node:assert";
+import { connect } from "node:net";
 import { describe, it } from "node:test";
+import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { defineService } from "@connectum/core";
 import { createTestServer, withTestServer } from "../../src/test-server.ts";
+import type { TestServer } from "../../src/types.ts";
+import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+
+const echoRoutes = defineService(EchoService, {
+	echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
+	secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+	rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+});
+
+/** Resolves true when a TCP connection to the port is accepted, false when it is refused. */
+function acceptsConnections(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = connect({ port, host: "localhost" });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
+
+async function callEcho(server: TestServer): Promise<string> {
+	const res = await createClient(EchoService, server.transport).echo(create(EchoRequestSchema, { message: "ping" }));
+	return res.message;
+}
 
 describe("createTestServer", () => {
-	it("should start on a random port", async () => {
-		const server = await createTestServer({ services: [] });
+	it("should start on a random port and serve calls through the returned transport", async () => {
+		const server = await createTestServer({ services: [echoRoutes] });
 		try {
 			assert.ok(server.port > 0, `Expected port > 0, got ${server.port}`);
-			assert.ok(
-				server.baseUrl.includes(String(server.port)),
-				`Expected baseUrl to contain port ${server.port}, got ${server.baseUrl}`,
-			);
-			assert.ok(server.transport, "Expected transport to be defined");
+			assert.strictEqual(new URL(server.baseUrl).port, String(server.port), "baseUrl must point at the reported port");
+			assert.strictEqual(await acceptsConnections(server.port), true, "the reported port must accept connections");
+			assert.strictEqual(await callEcho(server), "echo:ping", "the transport must reach the handler of the started server");
 		} finally {
 			await server.close();
 		}
 	});
 
-	it("should stop cleanly when close() is called", async () => {
-		const server = await createTestServer({ services: [] });
+	it("should stop accepting connections once close() has resolved", async () => {
+		const server = await createTestServer({ services: [echoRoutes] });
+		assert.strictEqual(await acceptsConnections(server.port), true, "the server must be listening before close()");
 		await server.close();
 
-		// Verify close resolves without error — server is stopped.
-		// Starting another server on port 0 confirms the runtime is healthy.
-		const server2 = await createTestServer({ services: [] });
-		try {
-			assert.ok(server2.port > 0, "Second server should start successfully");
-		} finally {
-			await server2.close();
-		}
+		assert.strictEqual(await acceptsConnections(server.port), false, "the port must refuse connections after close()");
+		await assert.rejects(callEcho(server), (err: unknown) => ConnectError.from(err).code === Code.Unavailable);
 	});
 
 	it("should support multiple servers running in parallel", async () => {
 		const [server1, server2] = await Promise.all([
-			createTestServer({ services: [] }),
-			createTestServer({ services: [] }),
+			createTestServer({ services: [echoRoutes] }),
+			createTestServer({ services: [echoRoutes] }),
 		]);
 
 		try {
@@ -53,6 +78,8 @@ describe("createTestServer", () => {
 				server2.port,
 				`Servers should have different ports: ${server1.port} vs ${server2.port}`,
 			);
+			assert.strictEqual(await callEcho(server1), "echo:ping");
+			assert.strictEqual(await callEcho(server2), "echo:ping");
 		} finally {
 			await Promise.all([server1.close(), server2.close()]);
 		}
@@ -60,29 +87,27 @@ describe("createTestServer", () => {
 });
 
 describe("withTestServer", () => {
-	it("should provide server and auto-close after testFn completes", async () => {
-		let capturedPort = 0;
+	it("should provide a serving server and close it after testFn completes", async () => {
+		let captured: TestServer | undefined;
 
-		await withTestServer({ services: [] }, async (server) => {
-			assert.ok(server.port > 0, `Expected port > 0, got ${server.port}`);
-			assert.ok(server.baseUrl, "Expected baseUrl to be defined");
-			assert.ok(server.transport, "Expected transport to be defined");
-			capturedPort = server.port;
+		await withTestServer({ services: [echoRoutes] }, async (server) => {
+			captured = server;
+			assert.strictEqual(await acceptsConnections(server.port), true, "the server must be listening inside testFn");
+			assert.strictEqual(await callEcho(server), "echo:ping");
 		});
 
-		// After withTestServer returns, the server should be closed.
-		// Verify by starting a new server (runtime is healthy after cleanup).
-		assert.ok(capturedPort > 0, "Test function should have run");
-		const verification = await createTestServer({ services: [] });
-		await verification.close();
+		assert.ok(captured, "Test function should have run");
+		assert.strictEqual(await acceptsConnections(captured.port), false, "the server must be closed once withTestServer returns");
 	});
 
 	it("should close server and re-throw when testFn throws", async () => {
 		const testError = new Error("intentional test failure");
+		let captured: TestServer | undefined;
 
 		await assert.rejects(
 			() =>
-				withTestServer({ services: [] }, async () => {
+				withTestServer({ services: [echoRoutes] }, async (server) => {
+					captured = server;
 					throw testError;
 				}),
 			(err: Error) => {
@@ -91,14 +116,12 @@ describe("withTestServer", () => {
 			},
 		);
 
-		// Server should be cleaned up despite the error.
-		// Verify runtime health by starting another server.
-		const verification = await createTestServer({ services: [] });
-		await verification.close();
+		assert.ok(captured, "Test function should have run");
+		assert.strictEqual(await acceptsConnections(captured.port), false, "the server must be closed even though testFn threw");
 	});
 
 	it("should return the value from testFn", async () => {
-		const result = await withTestServer({ services: [] }, async (server) => {
+		const result = await withTestServer({ services: [echoRoutes] }, async (server) => {
 			return { port: server.port, ok: true };
 		});
 

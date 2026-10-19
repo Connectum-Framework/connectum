@@ -68,21 +68,34 @@ describe("createMockStream", () => {
     );
   });
 
-  it("without delay, completes fast", async () => {
-    const items = Array.from({ length: 100 }, (_, i) => i);
-    const stream = createMockStream(items);
+  // Without a delay no item waits for a timer: the whole stream is consumed
+  // through promise callbacks alone, so a zero-delay timer scheduled before the
+  // iteration cannot fire until the iteration is over. Any per-item timer, however
+  // short, lets that rival fire first. The check needs no clock reading.
+  for (const [label, options] of [
+    ["no options", undefined],
+    ["empty options", {}],
+    ["delayMs: 0", { delayMs: 0 }],
+    ["negative delayMs", { delayMs: -5 }],
+  ] as const) {
+    it(`without a delay no item waits for a timer: ${label}`, async () => {
+      const items = Array.from({ length: 100 }, (_, i) => i);
+      let rivalTimerFired = false;
+      const rival = setTimeout(() => {
+        rivalTimerFired = true;
+      }, 0);
 
-    const start = Date.now();
-    for await (const _ of stream) {
-      // consume
-    }
-    const elapsed = Date.now() - start;
+      const collected: number[] = [];
+      for await (const item of createMockStream(items, options)) {
+        collected.push(item);
+      }
+      const firedDuringIteration = rivalTimerFired;
+      clearTimeout(rival);
 
-    assert.ok(
-      elapsed < 200,
-      `expected fast completion (<200ms), got ${elapsed}ms`,
-    );
-  });
+      assert.deepStrictEqual(collected, items);
+      assert.strictEqual(firedDuringIteration, false, "a timer fired while the stream was being consumed");
+    });
+  }
 
   it("works with different types (string, number, object)", async () => {
     const strings = createMockStream(["a", "b", "c"]);

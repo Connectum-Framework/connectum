@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { createMockFn } from "../../src/mock-compat.ts";
 
 describe("createMockFn", () => {
@@ -48,6 +48,25 @@ describe("createMockFn", () => {
     const call = fn.mock.calls[0];
     assert.ok(call, "expected at least one recorded call");
     assert.deepStrictEqual(call.arguments, ["foo", 42, true]);
+  });
+
+  // node:test's mock.fn() is the API this spy mirrors: it records a call whose
+  // implementation threw, and the error still reaches the caller.
+  it("records a call whose implementation throws, like node:test mock.fn()", () => {
+    const failure = new Error("boom");
+    const reference = mock.fn((_x: number) => {
+      throw failure;
+    });
+    assert.throws(() => reference(1), failure);
+    assert.strictEqual(reference.mock.callCount(), 1, "reference: node:test records the throwing call");
+
+    const fn = createMockFn((_x: number) => {
+      throw failure;
+    });
+
+    assert.throws(() => fn(1), failure);
+    assert.strictEqual(fn.mock.callCount(), reference.mock.callCount());
+    assert.deepStrictEqual(fn.mock.calls[0]?.arguments, [1]);
   });
 
   it("works with multiple calls", () => {

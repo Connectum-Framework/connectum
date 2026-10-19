@@ -17,17 +17,25 @@ function makeRawEvent(overrides?: Partial<RawEvent>): RawEvent {
 
 describe("createEventContext", () => {
     it("exposes raw event properties", () => {
-        const raw = makeRawEvent({ eventId: "abc", attempt: 3 });
+        const publishedAt = new Date("2025-03-04T05:06:07.000Z");
+        const metadata = new Map([["x-trace", "t-1"]]);
+        const signal = new AbortController().signal;
+        const raw = makeRawEvent({ eventId: "abc", attempt: 3, publishedAt, metadata });
         const ctx = createEventContext({
             raw,
-            signal: AbortSignal.timeout(1000),
+            signal,
             onAck: async () => {},
             onNack: async () => {},
         });
 
+        // Every documented property, each with a value distinct from any default.
         assert.equal(ctx.eventId, "abc");
         assert.equal(ctx.attempt, 3);
         assert.equal(ctx.eventType, "test.event");
+        assert.equal(ctx.publishedAt.toISOString(), "2025-03-04T05:06:07.000Z");
+        assert.equal(ctx.metadata.get("x-trace"), "t-1");
+        assert.equal(ctx.metadata.size, 1);
+        assert.equal(ctx.signal, signal);
     });
 
     it("ack is idempotent", async () => {

@@ -1,8 +1,19 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import { createMockRequest } from "../../src/mock-request.ts";
+import { type ObservedCall, observeRealCalls, REAL_METHODS } from "./support/real-protobuf.ts";
+
+// Expected values come from the request that a client interceptor receives from
+// a real transport (tests/unit/support/real-protobuf.ts), not from the factory.
 
 describe("createMockRequest", () => {
+    let unary: ObservedCall;
+    let serverStreaming: ObservedCall;
+
+    before(async () => {
+        ({ unary, serverStreaming } = await observeRealCalls());
+    });
+
     it("returns valid request with all defaults", () => {
         const req = createMockRequest();
 
@@ -16,10 +27,15 @@ describe("createMockRequest", () => {
         assert.deepStrictEqual(req.message, {});
     });
 
+    // A real request addresses its call as `<origin>/<service typeName>/<method name>`
+    // (Connect protocol). The origin differs, so only the path is compared.
     it("auto-generates url from default service and method", () => {
         const req = createMockRequest();
 
-        assert.strictEqual(req.url, "http://localhost/test.TestService/TestMethod");
+        assert.strictEqual(new URL(req.url).pathname, `/${req.service.typeName}/${req.method.name}`);
+        assert.strictEqual(req.service.typeName, "test.TestService");
+        assert.strictEqual(req.method.name, "TestMethod");
+        assert.strictEqual(new URL(req.url).pathname, "/test.TestService/TestMethod");
     });
 
     it("allocates independent live cancellation signals for separate requests", () => {
@@ -31,18 +47,34 @@ describe("createMockRequest", () => {
         assert.strictEqual(second.signal.aborted, false);
     });
 
-    it("custom service name flows into service.typeName and url", () => {
-        const req = createMockRequest({ service: "acme.UserService" });
+    it("custom service name flows into service.typeName and url path, as in the real request", () => {
+        for (const real of [unary.req, serverStreaming.req]) {
+            const req = createMockRequest({ service: real.service.typeName });
 
-        assert.strictEqual(req.service.typeName, "acme.UserService");
-        assert.strictEqual(req.url, "http://localhost/acme.UserService/TestMethod");
+            assert.strictEqual(req.service.typeName, real.service.typeName);
+            assert.strictEqual(new URL(req.url).pathname, `/${real.service.typeName}/TestMethod`);
+            assert.strictEqual(req.method.name, "TestMethod", "service option must not touch the method");
+        }
     });
 
-    it("custom method name flows into method.name and url", () => {
-        const req = createMockRequest({ method: "GetUser" });
+    for (const { name } of REAL_METHODS) {
+        it(`custom method name flows into method.name and the url path, as in the real request: ${name}`, () => {
+            const req = createMockRequest({ method: name });
 
-        assert.strictEqual(req.method.name, "GetUser");
-        assert.strictEqual(req.url, "http://localhost/test.TestService/GetUser");
+            assert.strictEqual(req.method.name, name);
+            assert.strictEqual(new URL(req.url).pathname, `/test.TestService/${name}`);
+            assert.strictEqual(req.service.typeName, "test.TestService", "method option must not touch the service");
+        });
+    }
+
+    it("service and method of a real request map to the same fields of the mock", () => {
+        for (const real of [unary.req, serverStreaming.req]) {
+            const req = createMockRequest({ service: real.service.typeName, method: real.method.name });
+
+            assert.strictEqual(req.service.typeName, real.service.typeName);
+            assert.strictEqual(req.method.name, real.method.name);
+            assert.strictEqual(new URL(req.url).pathname, new URL(real.url).pathname);
+        }
     });
 
     it("custom message is set", () => {
@@ -52,21 +84,21 @@ describe("createMockRequest", () => {
         assert.deepStrictEqual(req.message, payload);
     });
 
-    it("stream: true works", () => {
-        const req = createMockRequest({ stream: true });
+    it("stream defaults to the flag of a real unary request and stream: true to that of a real streaming request", () => {
+        assert.strictEqual(unary.req.stream, false, "reference: a unary request is not a stream");
+        assert.strictEqual(serverStreaming.req.stream, true, "reference: a server-streaming request is a stream");
 
-        assert.strictEqual(req.stream, true);
+        assert.strictEqual(createMockRequest().stream, unary.req.stream);
+        assert.strictEqual(createMockRequest({ stream: false }).stream, unary.req.stream);
+        assert.strictEqual(createMockRequest({ stream: true }).stream, serverStreaming.req.stream);
     });
 
     it("custom url overrides auto-generated url", () => {
-        const customUrl = "https://api.example.com/custom/path";
-        const req = createMockRequest({
-            service: "acme.UserService",
-            method: "GetUser",
-            url: customUrl,
-        });
+        const req = createMockRequest({ url: unary.req.url });
 
-        assert.strictEqual(req.url, customUrl);
+        assert.strictEqual(req.url, unary.req.url);
+        assert.strictEqual(req.service.typeName, "test.TestService", "url option must not rewrite the service");
+        assert.strictEqual(req.method.name, "TestMethod", "url option must not rewrite the method");
     });
 
     it("custom headers are set", () => {
@@ -74,6 +106,17 @@ describe("createMockRequest", () => {
         const req = createMockRequest({ headers });
 
         assert.strictEqual(req.header.get("authorization"), "Bearer token123");
+        assert.strictEqual(req.header, headers, "the supplied Headers object is used as is, so later edits stay visible to the test");
+    });
+
+    it("default headers are an empty Headers object, like the request of a call made without headers", () => {
+        assert.ok(unary.req.header instanceof Headers, "reference: a real request carries a Headers object");
+
+        const req = createMockRequest();
+
+        assert.ok(req.header instanceof Headers);
+        assert.deepStrictEqual([...req.header.keys()], []);
+        assert.notStrictEqual(createMockRequest().header, req.header, "requests must not share one default Headers object");
     });
 
     it("all options at once", () => {

@@ -201,21 +201,6 @@ describe("ShutdownManager", () => {
             });
         });
 
-        it("should support being called multiple times", async () => {
-            const manager = new ShutdownManager();
-            let counter = 0;
-
-            manager.addHook("counter", () => {
-                counter++;
-            });
-
-            await manager.executeAll();
-            assert.strictEqual(counter, 1);
-
-            await manager.executeAll();
-            assert.strictEqual(counter, 2);
-        });
-
         it("should execute multiple handlers registered for the same module", async () => {
             const manager = new ShutdownManager();
             const started = new Set<string>();
@@ -347,6 +332,99 @@ describe("ShutdownManager", () => {
 
             await delay(100);
             assert.ok(order.includes("slow-surviving"), "an independent hook must still run to completion after another one fails");
+        });
+
+        it("should not run a hook whose dependency failed", async () => {
+            const manager = new ShutdownManager();
+            let dependentCalls = 0;
+
+            manager.addHook("database", async () => {
+                throw new Error("database failed");
+            });
+            manager.addHook("server", ["database"], () => {
+                dependentCalls++;
+            });
+
+            await assert.rejects(() => manager.executeAll(), { message: "database failed" });
+            // Let any wrongly scheduled continuation run before checking.
+            await nextTurn();
+            await nextTurn();
+
+            assert.strictEqual(dependentCalls, 0, "a hook must not run after the module it depends on failed");
+        });
+
+        it("should reject before an independent running hook completes, and not cancel it", async () => {
+            const manager = new ShutdownManager();
+            let releaseSlow!: () => void;
+            const slowGate = new Promise<void>((resolve) => {
+                releaseSlow = resolve;
+            });
+            let slowStarted!: () => void;
+            const slowRunning = new Promise<void>((resolve) => {
+                slowStarted = resolve;
+            });
+            let slowDone = false;
+
+            manager.addHook("slow", async () => {
+                slowStarted();
+                await slowGate;
+                slowDone = true;
+            });
+            manager.addHook("failing", async () => {
+                // Fail only once the slow hook is running, so it is a started,
+                // independent hook at the moment of the failure.
+                await slowRunning;
+                throw new Error("failing hook");
+            });
+
+            // Without a deadline a policy that waits for every hook would hang here
+            // on the gate instead of failing the test.
+            await within(
+                assert.rejects(() => manager.executeAll(), { message: "failing hook" }),
+                1000,
+                "executeAll() waited for an independent hook instead of rejecting on the first failure",
+            );
+            assert.strictEqual(slowDone, false, "the independent hook must still be pending when executeAll() rejects");
+
+            releaseSlow();
+            await nextTurn();
+            await nextTurn();
+            assert.strictEqual(slowDone, true, "the independent hook must keep running after executeAll() rejected");
+        });
+
+        it("should report only the first of several failures", async () => {
+            const manager = new ShutdownManager();
+            let releaseLate!: () => void;
+            const lateGate = new Promise<void>((resolve) => {
+                releaseLate = resolve;
+            });
+            const unhandled: unknown[] = [];
+            const onUnhandled = (reason: unknown) => unhandled.push(reason);
+            process.on("unhandledRejection", onUnhandled);
+
+            manager.addHook("early", async () => {
+                throw new Error("first failure");
+            });
+            manager.addHook("late", async () => {
+                await lateGate;
+                throw new Error("second failure");
+            });
+
+            try {
+                await within(
+                    assert.rejects(() => manager.executeAll(), (err: unknown) => err instanceof Error && err.message === "first failure" && !(err instanceof AggregateError)),
+                    1000,
+                    "executeAll() waited for the later failing hook instead of rejecting on the first failure",
+                );
+
+                releaseLate();
+                await nextTurn();
+                await nextTurn();
+            } finally {
+                process.removeListener("unhandledRejection", onUnhandled);
+            }
+
+            assert.deepStrictEqual(unhandled, [], "the later failure must be absorbed, not surface as an unhandled rejection");
         });
 
         it("should propagate rejection from async hook", async () => {

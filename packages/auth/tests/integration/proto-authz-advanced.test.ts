@@ -299,13 +299,12 @@ describe("Proto Authz Advanced — Integration", () => {
             assert.strictEqual(resolved.public, true);
         });
 
-        it("should return undefined policy for unknown policy string", () => {
+        it("should reject an unknown service default_policy string instead of deferring to the interceptor default", () => {
             const svcOpts = createServiceOptions({ defaultPolicy: "unknown-value" });
             const service = createFakeService({ serviceOptions: svcOpts });
             const method = createFakeMethod(service, "UnknownPolicy");
 
-            const resolved = resolveMethodAuth(method);
-            assert.strictEqual(resolved.policy, undefined);
+            assert.throws(() => resolveMethodAuth(method), /service_auth\.default_policy "unknown-value" on test\.v1\.TestService\/UnknownPolicy/);
         });
 
         it("should override service defaults with method-level settings", () => {

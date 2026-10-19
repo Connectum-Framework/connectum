@@ -12,7 +12,7 @@ import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import type { GracefulShutdownOptions } from "../../src/gracefulShutdown.ts";
 import { performGracefulShutdown } from "../../src/gracefulShutdown.ts";
-import type { ShutdownManager } from "../../src/ShutdownManager.ts";
+import { ShutdownManager } from "../../src/ShutdownManager.ts";
 import type { TransportManager } from "../../src/TransportManager.ts";
 
 /** Extract mock call count from a mock.fn() disguised as a typed method */
@@ -290,6 +290,24 @@ describe("performGracefulShutdown()", () => {
         // Hooks release the application's own resources (brokers, databases);
         // a listener that fails to close cleanly must not make shutdown skip
         // them. The close error is still reported to the caller afterwards.
+        // Disposal releases the transport's own state and must not depend on the
+        // application's hooks succeeding: the hook failure is reported only after it.
+        it("should dispose the transport and re-throw the hook failure when a real hook rejects", async () => {
+            const hookError = new Error("hook failed");
+            const transport = createMockTransport();
+            const shutdownManager = new ShutdownManager();
+            shutdownManager.addHook("failing", async () => {
+                throw hookError;
+            });
+
+            await assert.rejects(
+                () => performGracefulShutdown(transport, shutdownManager, defaultOptions),
+                (err: unknown) => err === hookError,
+            );
+
+            assert.strictEqual(mockCallCount(transport.dispose), 1, "transport state must be disposed despite the hook failure");
+        });
+
         it("should run hooks and dispose, then re-throw, when transport.close() rejects before the timeout", async () => {
             const closeError = new Error("close failed");
             const transport = createMockTransport({ closeError });

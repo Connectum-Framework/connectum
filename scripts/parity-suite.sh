@@ -8,8 +8,13 @@
 # This script aggregates all parity tests that are driven through
 # `transportParityTest()` from `@connectum/testing/parity`:
 #   - packages/testing/tests/parity/*.parity.test.ts
-#       (interceptors, validation, authorization, streaming, errors, coexistence,
-#        reflection)
+#       (interceptors, validation on the shipped validation interceptor,
+#        streaming, errors, coexistence, reflection, request admission,
+#        resilience & cancellation)
+#   - packages/auth/tests/parity/*.parity.test.ts
+#       (authentication & proto-declared authorization on the shipped auth
+#        interceptors, verified identity in streaming handlers). Lives in
+#        @connectum/auth because @connectum/testing cannot depend on it.
 #   - packages/otel/tests/parity/*.parity.test.ts
 #       (OTEL tracing & metrics)
 #
@@ -34,6 +39,10 @@ fi
 echo ""
 echo "==> [parity-gate] Running @connectum/testing parity tests"
 pnpm --filter @connectum/testing exec exodus-test --typescript "tests/parity/**/*.test.ts"
+
+echo ""
+echo "==> [parity-gate] Running @connectum/auth parity tests"
+pnpm --filter @connectum/auth exec exodus-test --typescript "tests/parity/**/*.test.ts"
 
 echo ""
 echo "==> [parity-gate] Running @connectum/otel parity tests"

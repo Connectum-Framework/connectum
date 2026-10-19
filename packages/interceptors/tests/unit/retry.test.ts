@@ -11,51 +11,81 @@ import { assertConnectError, createMockNext, createMockNextError, createMockRequ
 import { createRetryInterceptor } from '../../src/retry.ts';
 
 describe('retry interceptor', () => {
-    it('should throw error for negative maxRetries', () => {
-        assert.throws(
-            () => createRetryInterceptor({ maxRetries: -1 }),
-            {
-                name: 'Error',
-                message: 'maxRetries must be a non-negative finite number',
-            }
-        );
-    });
+    // maxRetries is documented as a "non-negative finite number" of retries after the initial attempt.
+    for (const [label, value] of [
+        ['negative', -1],
+        ['negative fractional', -0.5],
+        ['negative infinite', Number.NEGATIVE_INFINITY],
+        ['positive infinite', Number.POSITIVE_INFINITY],
+        ['NaN', Number.NaN],
+    ] as const) {
+        it(`should throw a RangeError for ${label} maxRetries`, () => {
+            assert.throws(
+                () => createRetryInterceptor({ maxRetries: value }),
+                {
+                    name: 'RangeError',
+                    message: new RegExp(`^createRetryInterceptor: maxRetries must be a finite number of at least 0, got ${String(value)}$`),
+                }
+            );
+        });
+    }
 
-    it('should throw error for non-finite maxRetries', () => {
-        assert.throws(
-            () => createRetryInterceptor({ maxRetries: Number.POSITIVE_INFINITY }),
-            {
-                name: 'Error',
-                message: 'maxRetries must be a non-negative finite number',
-            }
-        );
+    // The boundary of the same documented range: zero and fractional values are valid.
+    // The retry count is compared as is, so 0 retries means a single attempt and 0.5 allows one retry.
+    for (const [maxRetries, expectedAttempts] of [
+        [0, 1],
+        [0.5, 2],
+    ] as const) {
+        it(`should accept maxRetries ${maxRetries} and make ${expectedAttempts} attempt(s) in total`, async () => {
+            const interceptor = createRetryInterceptor({ maxRetries, initialDelay: 1, maxDelay: 5 });
+            const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
+            const next = createMockNextError(Code.Unavailable, 'Service unavailable');
 
-        assert.throws(
-            () => createRetryInterceptor({ maxRetries: Number.NaN }),
-            {
-                name: 'Error',
-                message: 'maxRetries must be a non-negative finite number',
-            }
-        );
-    });
+            await assert.rejects(
+                () => interceptor(next as any)(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable);
+                    return true;
+                }
+            );
 
-    it('should throw error for negative initialDelay', () => {
-        assert.throws(
-            () => createRetryInterceptor({ initialDelay: -100 }),
-            {
-                name: 'Error',
-                message: 'initialDelay must be a non-negative finite number',
-            }
-        );
-    });
+            assert.strictEqual(next.mock.calls.length, expectedAttempts);
+        });
+    }
 
-    it('should throw error for negative maxDelay', () => {
+    for (const option of ['initialDelay', 'maxDelay'] as const) {
+        for (const [label, value, got] of [
+            ['negative', -100, '-100'],
+            ['infinite', Number.POSITIVE_INFINITY, 'Infinity'],
+            ['NaN', Number.NaN, 'NaN'],
+            ['fractional', 0.5, '0.5'],
+            ['above the timer ceiling', 2_147_483_648, '2147483648'],
+        ] as const) {
+            it(`should refuse a ${label} ${option} with a RangeError naming the option and the value`, () => {
+                assert.throws(
+                    () => createRetryInterceptor({ [option]: value }),
+                    (err: unknown) =>
+                        err instanceof RangeError &&
+                        err.message === `createRetryInterceptor: ${option} must be an integer from 0 to 2147483647 milliseconds, got ${got}`,
+                );
+            });
+        }
+
+        it(`should accept the boundary ${option} values 0 and 2147483647`, () => {
+            assert.strictEqual(typeof createRetryInterceptor({ [option]: 0 }), 'function');
+            assert.strictEqual(typeof createRetryInterceptor({ [option]: 2_147_483_647 }), 'function');
+        });
+    }
+
+    it('should refuse non-number options with a TypeError', () => {
         assert.throws(
-            () => createRetryInterceptor({ maxDelay: -100 }),
-            {
-                name: 'Error',
-                message: 'maxDelay must be a non-negative finite number',
-            }
+            () => createRetryInterceptor({ maxRetries: '3' as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createRetryInterceptor: maxRetries must be a finite number of at least 0, got "3"',
+        );
+        assert.throws(
+            () => createRetryInterceptor({ initialDelay: null as unknown as number }),
+            (err: unknown) =>
+                err instanceof TypeError && err.message === 'createRetryInterceptor: initialDelay must be an integer from 0 to 2147483647 milliseconds, got null',
         );
     });
 
@@ -117,6 +147,9 @@ describe('retry interceptor', () => {
                 return true;
             }
         );
+
+        // NotFound is not in the default retryable codes: one attempt, no retries
+        assert.strictEqual(next.mock.calls.length, 1);
     });
 
     it('should support custom retryableCodes', async () => {
@@ -160,10 +193,13 @@ describe('retry interceptor', () => {
                 return true;
             }
         );
+
+        // maxRetries counts retries after the initial attempt: 1 + 2 attempts
+        assert.strictEqual(next.mock.calls.length, 3);
     });
 
     it('should skip streaming calls when skipStreaming=true', async () => {
-        const interceptor = createRetryInterceptor({ skipStreaming: true });
+        const interceptor = createRetryInterceptor({ skipStreaming: true, initialDelay: 1, maxDelay: 5 });
 
         async function* mockStream() {
             yield { field: 'value1' };
@@ -171,13 +207,19 @@ describe('retry interceptor', () => {
 
         const mockReq = createMockRequest({ service: 'test.Service', method: 'StreamMethod', stream: true, message: mockStream() });
 
-        const next = createMockNext();
+        // A retryable failure: a streaming call that went through the retry loop would be attempted again
+        const next = createMockNextError(Code.Unavailable, 'Service unavailable');
 
         const handler = interceptor(next as any);
-        const result = await handler(mockReq);
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Unavailable);
+                return true;
+            }
+        );
 
         assert.strictEqual(next.mock.calls.length, 1);
-        assert.strictEqual((result.message as any).result, 'success');
     });
 
     it('should return immediately on success (no retries needed)', async () => {
@@ -194,19 +236,38 @@ describe('retry interceptor', () => {
         assert.strictEqual((result.message as any).result, 'success');
     });
 
-    it('should use exponential backoff between retries', async () => {
-        const interceptor = createRetryInterceptor({ maxRetries: 2, initialDelay: 50 });
+    it('should wait between retries and never longer than maxDelay', async () => {
+        // The delays are randomized (decorrelated jitter, scale initialDelay), so the random source is
+        // pinned. With a scale of 400 ms far above maxDelay the delay reaches its cap, which makes
+        // every wait equal to maxDelay: a retry without any wait, or a wait that ignores the cap
+        // (about 500 ms and more at this scale), both leave the window below.
+        const maxDelay = 30;
+        const random = mock.method(Math, 'random', () => 0.9);
+        try {
+            const interceptor = createRetryInterceptor({ maxRetries: 3, initialDelay: 400, maxDelay });
 
-        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
+            const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
 
-        const next = createMockNextError(Code.ResourceExhausted, 'Resource exhausted');
+            const attemptTimes: number[] = [];
+            const next = mock.fn(async () => {
+                attemptTimes.push(performance.now());
+                throw new ConnectError('Resource exhausted', Code.ResourceExhausted);
+            });
 
-        const handler = interceptor(next as any);
+            const handler = interceptor(next as any);
 
-        await assert.rejects(() => handler(mockReq));
+            await assert.rejects(() => handler(mockReq));
 
-        // Verify retries happened (initial + maxRetries = 3 attempts)
-        assert(next.mock.calls.length >= 3, `Expected at least 3 attempts, got ${next.mock.calls.length}`);
+            // initial attempt + maxRetries
+            assert.strictEqual(attemptTimes.length, 4);
+            for (let i = 1; i < attemptTimes.length; i++) {
+                const wait = attemptTimes[i]! - attemptTimes[i - 1]!;
+                assert.ok(wait >= maxDelay - 5, `wait before retry ${i} was ${wait} ms, expected about ${maxDelay} ms`);
+                assert.ok(wait <= maxDelay + 120, `wait before retry ${i} was ${wait} ms, expected at most maxDelay (${maxDelay} ms)`);
+            }
+        } finally {
+            random.mock.restore();
+        }
     });
 
     it('should use default values (maxRetries=3, initialDelay=200)', () => {
@@ -262,7 +323,8 @@ describe('retry interceptor', () => {
                 (err: unknown) => {
                     assertConnectError(err, Code.Unavailable);
                     assert.ok(err instanceof ConnectError);
-                    assert.ok(err.message.includes('Unavailable attempt'));
+                    // The error of the final attempt is the one that reaches the caller, not the first one
+                    assert.strictEqual(err.rawMessage, 'Unavailable attempt 3');
                     return true;
                 },
             );

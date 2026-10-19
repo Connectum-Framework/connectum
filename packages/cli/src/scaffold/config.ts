@@ -14,7 +14,7 @@ const RUNTIMES: readonly Runtime[] = ["node", "bun"];
 const PACKAGE_MANAGERS: readonly PackageManager[] = ["pnpm", "npm", "bun"];
 const NODE_EXECS: readonly NodeExec[] = ["raw", "tsx"];
 const EVENT_ADAPTERS: readonly EventAdapter[] = ["nats", "kafka", "redpanda", "redis", "amqp"];
-const RESILIENCE: readonly ResilienceInterceptor[] = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"];
+const RESILIENCE: readonly ResilienceInterceptor[] = ["timeout", "bulkhead", "circuitBreaker", "retry"];
 
 /** Raw, unvalidated input from flags or prompts (all optional except that name is required at resolve time). */
 export interface RawInput {
@@ -34,15 +34,25 @@ export interface RawInput {
     catalog?: boolean | undefined;
 }
 
-function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T): T {
+function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], field: string, fallback: T, hints: Readonly<Record<string, string>> = {}): T {
     if (value === undefined) {
         return fallback;
     }
     if (!(allowed as readonly string[]).includes(value)) {
-        throw new Error(`connectum init: invalid --${field} "${value}" (expected one of: ${allowed.join(", ")})`);
+        const hint = hints[value];
+        throw new Error(`connectum init: invalid --${field} "${value}" (expected one of: ${allowed.join(", ")})${hint === undefined ? "" : `; ${hint}`}`);
     }
     return value as T;
 }
+
+/**
+ * Why `--resilience` does not offer `fallback`: the interceptor needs a handler that
+ * produces an application-specific response, which a generator cannot invent, and
+ * `createDefaultInterceptors({ fallback: true })` is refused.
+ */
+const RESILIENCE_HINTS: Readonly<Record<string, string>> = {
+    fallback: "a fallback needs an application-specific handler; add createFallbackInterceptor({ handler }) to src/server.ts",
+};
 
 /**
  * Validate + default raw input into a resolved config.
@@ -78,7 +88,7 @@ export function resolveConfig(input: RawInput, cwd: string = process.cwd()): Sca
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0)
-        .map((s) => oneOf(s, RESILIENCE, "resilience", "retry"));
+        .map((s) => oneOf(s, RESILIENCE, "resilience", "retry", RESILIENCE_HINTS));
 
     const sample = input.sample ?? true;
     if (!sample) {

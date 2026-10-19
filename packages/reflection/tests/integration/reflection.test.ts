@@ -22,7 +22,7 @@ import { Healthcheck } from "@connectum/healthcheck";
 import { ServerReflection, type ServerReflectionResponse } from "#gen/grpc/reflection/v1/reflection_pb.js";
 import { Reflection } from "../../src/Reflection.ts";
 
-async function ask(transport: Transport, messageRequest: { case: "listServices" | "fileContainingSymbol"; value: string }): Promise<ServerReflectionResponse> {
+async function ask(transport: Transport, messageRequest: { case: "listServices" | "fileContainingSymbol" | "fileByFilename"; value: string }): Promise<ServerReflectionResponse> {
     const client = createClient(ServerReflection, transport);
     async function* requests() {
         yield { messageRequest };
@@ -89,5 +89,42 @@ describe("Reflection Integration", () => {
         const inProcess = await listServices(createLocalTransport(server));
 
         assert.deepStrictEqual(inProcess, overHttp);
+    });
+});
+
+describe("Reflection Integration: server with nothing mounted before reflection", () => {
+    let server: Server;
+    let serverUrl: string;
+
+    before(async () => {
+        server = createServer({ services: [], port: 0, protocols: [Reflection()], interceptors: [], allowHTTP1: false });
+        await server.start();
+        const port = server.address?.port;
+        assert.ok(port, "Server should have an assigned port");
+        serverUrl = `http://localhost:${port}`;
+    });
+
+    after(async () => {
+        if (server?.isRunning) {
+            await server.stop();
+        }
+    });
+
+    // Protocol: list_services returns the mounted services, which here is none;
+    // the stream still answers, with an empty list rather than an error.
+    it("answers list_services with an empty list", async () => {
+        const response = await ask(createGrpcTransport({ baseUrl: serverUrl }), { case: "listServices", value: "" });
+
+        assert.strictEqual(response.messageResponse.case, "listServicesResponse");
+        assert.deepStrictEqual(response.messageResponse.value.service, []);
+    });
+
+    // Protocol: an unknown file is NOT_FOUND (5) naming the file, not a failed stream.
+    it("answers an unknown file with NOT_FOUND naming it", async () => {
+        const response = await ask(createGrpcTransport({ baseUrl: serverUrl }), { case: "fileByFilename", value: "nope.proto" });
+
+        assert.strictEqual(response.messageResponse.case, "errorResponse");
+        assert.strictEqual(response.messageResponse.value.errorCode, 5);
+        assert.match(response.messageResponse.value.errorMessage, /nope\.proto/);
     });
 });

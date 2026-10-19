@@ -51,8 +51,18 @@ describe('Security Integration', () => {
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).username, 'testuser');
-        assert(loggedMessages.length > 0);
         assert.strictEqual(next.mock.calls.length, 1);
+
+        // Every line of the call goes to the custom logger (not to the console), and with bodies
+        // off none carries an argument: request, response, completion, in this order.
+        const entries = loggedMessages as Array<{ message: string; args: unknown[] }>;
+        assert.deepStrictEqual(
+            entries.map((entry) => entry.args),
+            [[], [], []],
+        );
+        assert.strictEqual(entries[0]!.message, 'RPC /test.Service/Method request');
+        assert.strictEqual(entries[1]!.message, 'RPC /test.Service/Method response');
+        assert.match(entries[2]!.message, /^RPC \/test\.Service\/Method completed in \d+(\.\d+)?ms$/);
     });
 
     it('should log requests without sensitive data exposure', async () => {

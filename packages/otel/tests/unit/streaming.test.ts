@@ -17,7 +17,7 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import type { Interceptor } from "@connectrpc/connect";
 import { createMockRequest, type NormalizedSpan } from "@connectum/testing";
-import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { SpanKind } from "@opentelemetry/api";
 import * as semconv from "@opentelemetry/semantic-conventions/incubating";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
@@ -385,7 +385,7 @@ describe("wrapAsyncIterable", () => {
 	// endSpanOnComplete
 	// -----------------------------------------------------------------------
 
-	it("should end span with OK status when stream completes normally with endSpanOnComplete=true", async () => {
+	it("should leave the span status unset when the stream completes normally", async () => {
 		const mock = createMockSpan();
 		const items = ["msg1", "msg2"];
 
@@ -394,7 +394,8 @@ describe("wrapAsyncIterable", () => {
 
 		assert.strictEqual(mock.endCount, 1);
 		assert.strictEqual(mock.recordedExceptions.length, 0);
-		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR), "a normally completed stream is not a failure");
+		// Neither ERROR nor OK: instrumentation never reports OK, so no status is set at all.
+		assert.deepStrictEqual(mock.statuses, []);
 	});
 
 	it("should record exception and set ERROR status when stream errors with endSpanOnComplete=true", async () => {
@@ -450,10 +451,10 @@ describe("wrapAsyncIterable", () => {
 		}
 
 		// A consumer that stops reading is not an operation error: the span ends once,
-		// records no exception and is not marked failed.
+		// records no exception and leaves the status unset (neither ERROR nor OK).
 		assert.strictEqual(mock.endCount, 1);
 		assert.strictEqual(mock.recordedExceptions.length, 0);
-		assert.ok(mock.statuses.every((s) => s.code !== SpanStatusCode.ERROR));
+		assert.deepStrictEqual(mock.statuses, []);
 	});
 });
 

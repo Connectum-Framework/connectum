@@ -108,15 +108,20 @@ describe("generateBufYaml with auth", () => {
 
     // Every rule the generator switches off has to be one the project would otherwise break.
     // buf lint accepts the scaffolded auth project (sample service, auth option proto) without
-    // any exception, so the RPC_* excepts added for auth alone silence rules that nothing in
-    // the project violates, and they also switch those rules off for every service the user adds.
-    it("excepts no lint rule that the scaffolded auth project does not break", { skip: "known defect, fails against buf lint: the generator adds three RPC_* excepts for auth alone; buf lint passes without them" }, () => {
+    // any exception, so an except added for auth would silence a rule that nothing in the
+    // project violates, and would also switch it off for every service the user adds.
+    it("excepts no lint rule that the scaffolded auth project does not break", () => {
         const yaml = generateBufYaml(authConfig);
-        const withoutExcepts = yaml.replace(/\n {2}except:\n(?: {4}- [A-Z_]+\n?)+/, "\n");
-        assert.ok(!withoutExcepts.includes("except"), withoutExcepts);
-        // The excepts are needed only if lint fails without them; the oracle says it does not.
-        const rejected = runBuf(["lint"], authProject(withoutExcepts), { withAuthModule: true });
-        assert.notEqual(rejected.status, 0, "buf lint passes without the excepts generated for auth");
+        assert.doesNotMatch(yaml, /except|RPC_|SERVICE_SUFFIX/, yaml);
+        // With no except at all the project is judged by the full STANDARD set, and buf accepts it.
+        const accepted = runBuf(["lint"], authProject(yaml), { withAuthModule: true });
+        assert.equal(accepted.status, 0, accepted.output);
+    });
+
+    it("keeps the event-handler excepts when auth is combined with events, because of the events", () => {
+        const yaml = generateBufYaml({ ...authConfig, modules: { auth: true, events: { adapter: "nats" } } });
+        const excepts = [...yaml.matchAll(/^ {4}- ((?:RPC|SERVICE)_[A-Z_]+)$/gm)].map((m) => m[1]);
+        assert.deepEqual(excepts, ["SERVICE_SUFFIX", "RPC_REQUEST_STANDARD_NAME", "RPC_RESPONSE_STANDARD_NAME", "RPC_REQUEST_RESPONSE_UNIQUE"]);
     });
     it("has no auth module when auth is disabled", () => {
         assert.doesNotMatch(generateBufYaml({ ...authConfig, modules: {} }), /node_modules/);

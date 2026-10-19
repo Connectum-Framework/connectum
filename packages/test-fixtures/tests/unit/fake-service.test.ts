@@ -1,6 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { createFakeMethod, createFakeService } from "../../src/fake-service.ts";
+import { REAL_METHODS, realMethod, realService } from "./support/real-protobuf.ts";
+
+// Expected values come from descriptors compiled by the real @bufbuild/protobuf
+// registry (tests/unit/support/real-protobuf.ts), not from the factory itself.
 
 describe("createFakeService", () => {
   it("creates service with default typeName", () => {
@@ -9,11 +13,18 @@ describe("createFakeService", () => {
     assert.strictEqual(svc.typeName, "test.v1.TestService");
   });
 
-  it("creates service with custom typeName", () => {
-    const svc = createFakeService({ typeName: "acme.v1.UserService" });
+  for (const typeName of ["acme.v1.UserService", "Standalone"]) {
+    it(`creates service with custom typeName that matches the real descriptor of ${typeName}`, () => {
+      const real = realService(typeName);
 
-    assert.strictEqual(svc.typeName, "acme.v1.UserService");
-  });
+      const svc = createFakeService({ typeName: real.typeName });
+
+      assert.strictEqual(svc.kind, real.kind);
+      assert.strictEqual(svc.typeName, real.typeName);
+      assert.strictEqual(svc.name, real.name);
+      assert.strictEqual(svc.deprecated, real.deprecated);
+    });
+  }
 
   it("derives name from typeName (last segment)", () => {
     const svc = createFakeService({ typeName: "acme.v1.UserService" });
@@ -28,6 +39,13 @@ describe("createFakeService", () => {
     });
 
     assert.strictEqual(svc.name, "CustomName");
+  });
+
+  it("custom name does not change typeName", () => {
+    // typeName keeps its documented default when only the short name is given,
+    // and an explicit typeName is never rewritten by the name option.
+    assert.strictEqual(createFakeService({ name: "CustomName" }).typeName, "test.v1.TestService");
+    assert.strictEqual(createFakeService({ typeName: "acme.v1.UserService", name: "CustomName" }).typeName, "acme.v1.UserService");
   });
 
   it("has empty methods array", () => {
@@ -50,19 +68,40 @@ describe("createFakeService", () => {
 });
 
 describe("createFakeMethod", () => {
-  it("creates method with correct name", () => {
-    const svc = createFakeService();
-    const method = createFakeMethod(svc, "GetUser");
+  for (const { name } of REAL_METHODS) {
+    it(`creates method with correct name: ${name}`, () => {
+      const real = realMethod(name);
+      const svc = createFakeService();
 
-    assert.strictEqual(method.name, "GetUser");
-  });
+      const method = createFakeMethod(svc, real.name);
 
-  it("localName is camelCase (first char lowered)", () => {
-    const svc = createFakeService();
-    const method = createFakeMethod(svc, "GetUser");
+      assert.strictEqual(method.name, real.name);
+      assert.strictEqual(method.kind, real.kind);
+      assert.strictEqual(method.deprecated, real.deprecated);
+    });
+  }
 
-    assert.strictEqual(method.localName, "getUser");
-  });
+  // protobuf-es lowers only the first character of an RPC name; it does not
+  // re-case word boundaries (`URLFetch` -> `uRLFetch`) and leaves a name that
+  // already starts in lower case unchanged.
+  for (const { name } of REAL_METHODS.filter((m) => m.name !== "ToString")) {
+    it(`localName is camelCase (first char lowered): ${name}`, () => {
+      const method = createFakeMethod(createFakeService(), name);
+
+      assert.strictEqual(method.localName, realMethod(name).localName);
+    });
+  }
+
+  // protobuf-es escapes localNames that collide with built-in object properties
+  // (constructor, toString, toJSON, valueOf) by appending "$"; the factory does not.
+  it(
+    "localName escapes names that collide with built-in object properties",
+    () => {
+      const method = createFakeMethod(createFakeService(), "ToString");
+
+      assert.strictEqual(method.localName, realMethod("ToString").localName);
+    },
+  );
 
   it("parent references the service", () => {
     const svc = createFakeService();
@@ -78,14 +117,17 @@ describe("createFakeMethod", () => {
     assert.strictEqual(method.methodKind, "unary");
   });
 
-  it("custom methodKind works", () => {
-    const svc = createFakeService();
-    const method = createFakeMethod(svc, "StreamEvents", {
-      methodKind: "server_streaming",
-    });
+  for (const kind of ["unary", "server_streaming", "client_streaming", "bidi_streaming"] as const) {
+    it(`custom methodKind works: ${kind}`, () => {
+      const real = REAL_METHODS.find((m) => m.kind === kind);
+      assert.ok(real, `no reference RPC of kind ${kind}`);
+      assert.strictEqual(realMethod(real.name).methodKind, kind, "reference descriptor must report the same kind");
 
-    assert.strictEqual(method.methodKind, "server_streaming");
-  });
+      const method = createFakeMethod(createFakeService(), real.name, { methodKind: kind });
+
+      assert.strictEqual(method.methodKind, realMethod(real.name).methodKind);
+    });
+  }
 
   it("register: true pushes method into service.methods array", () => {
     const svc = createFakeService();
@@ -102,12 +144,26 @@ describe("createFakeMethod", () => {
     assert.strictEqual(svc.method.getUser, method);
   });
 
+  // The generated API reference states that the `methods` array and the `method`
+  // lookup start empty and are populated only by `register: true`.
   it("register: false (default) does NOT modify service", () => {
     const svc = createFakeService();
     createFakeMethod(svc, "GetUser");
+    createFakeMethod(svc, "ListUsers", { register: false });
 
     assert.strictEqual(svc.methods.length, 0);
     assert.deepStrictEqual(svc.method, {});
+  });
+
+  it("an unregistered method stays out of a service that already has registered methods", () => {
+    const svc = createFakeService();
+    const registered = createFakeMethod(svc, "GetUser", { register: true });
+
+    createFakeMethod(svc, "ListUsers");
+    createFakeMethod(svc, "DeleteUser", { register: false });
+
+    assert.deepStrictEqual(svc.methods, [registered]);
+    assert.deepStrictEqual(Object.keys(svc.method), ["getUser"]);
   });
 
   it("multiple methods can be registered to same service", () => {

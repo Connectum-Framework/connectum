@@ -147,7 +147,7 @@ export interface RetryOptions {
     /**
      * Maximum number of retries after the initial attempt.
      * Non-negative finite fractional values retain the retry-count comparison:
-     * for example, 0.5 allows one retry.
+     * for example, 0.5 allows one retry. NaN, Infinity and negative values are refused.
      * @default 3
      */
     maxRetries?: number;
@@ -155,12 +155,14 @@ export interface RetryOptions {
     /**
      * Initial scale in milliseconds for exponential decorrelated jitter.
      * Actual retry delays are randomized rather than a fixed sequence.
+     * Integer from 0 to 2147483647 (the platform timer ceiling).
      * @default 200
      */
     initialDelay?: number;
 
     /**
-     * Maximum delay in milliseconds for exponential backoff
+     * Maximum delay in milliseconds for exponential backoff.
+     * Integer from 0 to 2147483647 (the platform timer ceiling).
      * @default 5000
      */
     maxDelay?: number;
@@ -184,13 +186,14 @@ export interface RetryOptions {
  */
 export interface CircuitBreakerOptions {
     /**
-     * Number of consecutive failures before opening circuit
+     * Number of consecutive failures before opening circuit. Integer of at least 1.
      * @default 5
      */
     threshold?: number;
 
     /**
-     * Time in milliseconds to wait before attempting to close circuit
+     * Time in milliseconds to wait before attempting to close circuit.
+     * Integer from 0 to 2147483647 (the platform timer ceiling).
      * @default 30000 (30 seconds)
      */
     halfOpenAfter?: number;
@@ -239,6 +242,8 @@ export interface TimeoutOptions {
     /**
      * Timeout in milliseconds for waiting on the downstream response.
      * Expiration cancels downstream work cooperatively and returns DeadlineExceeded.
+     * Integer from 1 to 2147483647 (the platform timer ceiling); a larger value
+     * would fire after 1 ms, so it is refused at construction.
      * @default 30000 (30 seconds)
      */
     duration?: number;
@@ -257,13 +262,14 @@ export interface TimeoutOptions {
  */
 export interface BulkheadOptions {
     /**
-     * Maximum number of concurrent requests
+     * Maximum number of concurrent requests. Integer of at least 1.
      * @default 10
      */
     capacity?: number;
 
     /**
-     * Maximum queue size for pending requests
+     * Maximum queue size for pending requests. Integer of at least 0 (0 rejects
+     * every request that arrives while all slots are busy).
      * @default 10
      */
     queueSize?: number;

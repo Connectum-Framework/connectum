@@ -12,20 +12,33 @@
 
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const parityJs = fileURLToPath(new URL("../../dist/parity.js", import.meta.url));
 
+/** Module specifiers of every static `import ... from "x"` / `import "x"` in a built file, quote style aside. */
+function importedSpecifiers(source: string): string[] {
+    const specifiers: string[] = [];
+    for (const match of source.matchAll(/(?:\bfrom|\bimport)\s*(["'])([^"']+)\1/g)) {
+        specifiers.push(match[2] as string);
+    }
+    return specifiers;
+}
+
 describe("parity build output — node: protocol preserved", () => {
     const src = readFileSync(parityJs, "utf8");
+    const specifiers = importedSpecifiers(src);
 
     it("imports node:test with its prefix (never bare 'test')", () => {
-        assert.match(src, /from\s*"node:test"/, "expected `from \"node:test\"` in dist/parity.js");
-        assert.doesNotMatch(src, /from\s*"test"/, "bare `from \"test\"` would be unresolvable for consumers");
+        assert.ok(specifiers.includes("node:test"), `expected an import of "node:test" in dist/parity.js, found: ${specifiers.join(", ")}`);
+        assert.ok(!specifiers.includes("test"), 'bare import of "test" would be unresolvable for consumers');
     });
 
     it("keeps the node: prefix on other builtins (e.g. node:assert)", () => {
-        assert.doesNotMatch(src, /from\s*"assert"/, "bare `from \"assert\"` indicates node: stripping is back on");
+        assert.ok(specifiers.includes("node:assert"), `expected an import of "node:assert" in dist/parity.js, found: ${specifiers.join(", ")}`);
+        const bareBuiltins = specifiers.filter((specifier) => !specifier.startsWith("node:") && builtinModules.includes(specifier));
+        assert.deepStrictEqual(bareBuiltins, [], "a bare builtin specifier indicates node: stripping is back on");
     });
 });

@@ -48,13 +48,19 @@ export interface MockNextOptions {
 
 /** Options for {@link index.createMockDescMessage | createMockDescMessage}. */
 export interface MockDescMessageOptions {
-    /** Field definitions. Default: `[]` */
+    /**
+     * Field definitions. Default: `[]`
+     *
+     * `name` is the field name as written in the `.proto` file; `localName` is
+     * derived from it (`user_id` gives `userId`). `fieldNumber` defaults to the
+     * highest number used so far plus one; a repeated number throws.
+     */
     fields?: Array<{
         name: string;
         type?: string;
         fieldNumber?: number;
     }>;
-    /** Oneof group names. Default: `[]` */
+    /** Oneof group names. A mock oneof group has no fields. Default: `[]` */
     oneofs?: string[];
 }
 
