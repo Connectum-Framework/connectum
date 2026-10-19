@@ -92,6 +92,15 @@ function buildFiles(): FileDescriptorProto[] {
                 ],
                 oneofDecl: [{ name: "credentials" }],
             },
+            {
+                // Field names whose localName collides with a built-in object property.
+                name: "Reserved",
+                field: [
+                    field("constructor", 1, FieldDescriptorProto_Type.STRING, "constructor"),
+                    field("to_string", 2, FieldDescriptorProto_Type.STRING, "toString"),
+                    field("value_of", 3, FieldDescriptorProto_Type.STRING, "valueOf"),
+                ],
+            },
         ],
         service: [
             {

@@ -201,7 +201,6 @@ describe("createMockNextSlow", () => {
 
   it(
     "every call gets its own response message, as with a real client",
-    { skip: "createMockNextSlow returns the supplied message object itself on every call, while createMockNext and a real client hand out a fresh one; whether the two factories must behave alike is an owner decision" },
     async () => {
       const supplied: Payload = { id: 7 };
       const next = createMockNextSlow(1, { message: supplied });

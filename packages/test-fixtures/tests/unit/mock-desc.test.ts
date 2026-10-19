@@ -57,7 +57,6 @@ describe("createMockDescMessage", () => {
   // this message, ordered by their appearance in the protobuf source".
   it(
     "members lists standalone fields and oneof groups like a real descriptor",
-    { skip: "the factory always returns members: [], so members does not list the declared fields and oneofs; deciding whether the fixture must mirror this is an owner decision" },
     () => {
       const realFields = realMessage(USER).fields.slice(0, 3);
       const mock = createMockDescMessage(USER, {
@@ -78,7 +77,6 @@ describe("createMockDescMessage", () => {
 
   it(
     "create() zero-initialises the declared fields like it does for a real descriptor",
-    { skip: "with members: [] create() returns only $typeName for a mock message that declares fields; same owner decision as the members test" },
     () => {
       const mock = create(createMockDescMessage(USER, { fields: [{ name: "id", type: "int32" }, { name: "email" }] }));
       const real = create(realMessage(USER));
@@ -155,7 +153,6 @@ describe("createMockDescMessage", () => {
 
   it(
     "field map is keyed by the camelCase localName of a snake_case field name",
-    { skip: "the factory uses the given name verbatim as localName, while a real descriptor derives userId from user_id; whether `name` means the proto name is an owner decision" },
     () => {
       const real = realMessage("acme.v1.Snake");
 
@@ -253,7 +250,6 @@ describe("createMockDescMessage", () => {
 
   it(
     "an explicit field number never collides with an automatic one",
-    { skip: "[{ fieldNumber: 2 }, { name: 'b' }] yields two fields numbered 2 because automatic numbers are the 1-based position; choosing the numbering rule is an owner decision" },
     () => {
       const msg = createMockDescMessage("test.Mixed", {
         fields: [{ name: "a", fieldNumber: 2 }, { name: "b" }],
@@ -263,6 +259,114 @@ describe("createMockDescMessage", () => {
       assert.strictEqual(new Set(numbers).size, numbers.length);
     },
   );
+
+  it("an automatic number continues from the highest number used so far", () => {
+    const msg = createMockDescMessage("test.Continue", {
+      fields: [{ name: "a", fieldNumber: 10 }, { name: "b" }, { name: "c", fieldNumber: 3 }, { name: "d" }],
+    });
+
+    assert.deepStrictEqual(
+      msg.fields.map((f) => f.number),
+      [10, 11, 3, 12],
+    );
+  });
+
+  // protoc rejects a message in which two fields share a number.
+  it("throws when two fields carry the same explicit number", () => {
+    assert.throws(
+      () => createMockDescMessage("test.Dup", { fields: [{ name: "a", fieldNumber: 4 }, { name: "b", fieldNumber: 4 }] }),
+      /field number 4/,
+    );
+  });
+
+  it("throws when an explicit number repeats a number that was assigned automatically", () => {
+    assert.throws(
+      () => createMockDescMessage("test.DupAuto", { fields: [{ name: "a" }, { name: "b", fieldNumber: 1 }] }),
+      /field number 1/,
+    );
+  });
+
+  it("field name is the proto name; localName and jsonName follow the real descriptor rules", () => {
+    const real = realMessage("acme.v1.Snake").fields[0]!;
+
+    const field = createMockDescField("user_id");
+
+    assert.strictEqual(field.name, real.name);
+    assert.strictEqual(field.localName, real.localName);
+    assert.strictEqual(field.jsonName, real.jsonName);
+  });
+
+  it("a camelCase field name keeps name, localName and jsonName unchanged", () => {
+    const real = realMessage(USER).fields[2]!;
+
+    const field = createMockDescField("userName");
+
+    assert.deepStrictEqual([field.name, field.localName, field.jsonName], [real.name, real.localName, real.jsonName]);
+  });
+
+  it("field names that collide with built-in object properties get a $ suffix in localName only", () => {
+    const real = realMessage("acme.v1.Reserved");
+
+    const msg = createMockDescMessage("acme.v1.Reserved", {
+      fields: real.fields.map((f) => ({ name: f.name })),
+    });
+
+    assert.deepStrictEqual(
+      msg.fields.map((f) => [f.name, f.localName, f.jsonName]),
+      real.fields.map((f) => [f.name, f.localName, f.jsonName]),
+    );
+    assert.deepStrictEqual(Object.keys(msg.field), Object.keys(real.field));
+  });
+
+  it("a field reports implicit presence and no declared default, like a proto3 field", () => {
+    const real = realMessage(USER).fields[0]!;
+    const field = createMockDescField("id", { type: "int32" });
+    assert.ok(real.fieldKind === "scalar" && field.fieldKind === "scalar", "both fields are singular scalars");
+
+    assert.strictEqual(field.presence, real.presence);
+    assert.strictEqual(field.longAsString, real.longAsString);
+    assert.strictEqual(field.getDefaultValue(), real.getDefaultValue());
+  });
+
+  it("create() zero-initialises every scalar type like the real descriptor", () => {
+    const real = create(realMessage("acme.v1.Scalars"));
+
+    const mock = create(
+      createMockDescMessage("acme.v1.Scalars", {
+        fields: SCALAR_FIELD_TYPES.map(([name]) => ({ name, type: name })),
+      }),
+    );
+
+    assert.deepStrictEqual({ ...mock }, { ...real, $typeName: "acme.v1.Scalars" });
+  });
+
+  it("create() keeps the values passed in and zeroes the rest, keyed by localName", () => {
+    const mock = createMockDescMessage("acme.v1.Snake", { fields: [{ name: "user_id" }, { name: "age", type: "int32" }] });
+
+    const message = create(mock, { userId: "u-1" } as never) as unknown as Record<string, unknown>;
+
+    assert.strictEqual(message.userId, "u-1");
+    assert.strictEqual(message.age, 0);
+  });
+
+  it("create() initialises a oneof group as an unset case, like the real descriptor", () => {
+    const real = create(realMessage("acme.v1.Login")) as unknown as Record<string, unknown>;
+
+    const mock = create(createMockDescMessage("acme.v1.Login", { oneofs: ["credentials"] })) as unknown as Record<string, unknown>;
+
+    assert.deepStrictEqual(real.credentials, { case: undefined });
+    assert.deepStrictEqual(mock.credentials, real.credentials);
+  });
+
+  it("members lists standalone fields in declaration order followed by the oneof groups", () => {
+    const msg = createMockDescMessage("test.Order", { fields: [{ name: "b" }, { name: "a" }], oneofs: ["choice"] });
+
+    assert.deepStrictEqual(
+      msg.members.map((m) => m.localName),
+      ["b", "a", "choice"],
+    );
+    assert.strictEqual(msg.members[2], msg.oneofs[0], "the oneof in members is the same object as in oneofs");
+  });
 
   it("uses explicit fieldNumber when specified", () => {
     const msg = createMockDescMessage("test.ExplicitNum", {
@@ -424,7 +528,6 @@ describe("createMockDescMethod", () => {
 
   it(
     "localName escapes names that collide with built-in object properties",
-    { skip: "createMockDescMethod does not append '$' to reserved localNames the way protobuf-es does; whether a mock must reproduce this is an owner decision" },
     () => {
       const method = createMockDescMethod("ToString");
 
