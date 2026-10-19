@@ -404,7 +404,7 @@ own contract, then run \`buf generate\`.
 A service added with \`connectum generate service <name>\` starts as a stub: its handler throws
 \`Unimplemented\` until you replace the \`throw\` with your logic.`
         : `This project has no service yet. Run \`connectum generate service <name>\` to create
-the proto contract, the handler and a test, then register the service in
+the proto contract and the handler module, then register the service in
 \`src/server.ts\` as the command prints.
 
 The generated handler is a stub: it throws \`Unimplemented\` until you replace the \`throw\`

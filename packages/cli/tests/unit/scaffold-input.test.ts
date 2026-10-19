@@ -122,7 +122,7 @@ describe("executeInit: a refused name leaves nothing on disk", () => {
 describe("resolveConfig: --resilience accepts exactly the documented interceptors", () => {
     // The documented value list of the flag, spelled out here rather than imported from
     // the implementation so that dropping or renaming a value is caught.
-    const documented = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"];
+    const documented = ["timeout", "bulkhead", "circuitBreaker", "retry"];
 
     it("accepts every documented interceptor, in the order given", () => {
         assert.deepEqual(resolveConfig({ name: "x", resilience: documented.join(",") }, "/work").modules.resilience, documented);
@@ -136,6 +136,24 @@ describe("resolveConfig: --resilience accepts exactly the documented interceptor
         assert.throws(
             () => resolveConfig({ name: "x", resilience: "retry,foo" }, "/work"),
             (err: Error) => err.message.includes('invalid --resilience "foo"') && documented.every((value) => err.message.includes(value)),
+        );
+    });
+
+    // `fallback` needs an application-specific handler, and createDefaultInterceptors refuses
+    // `fallback: true`, so scaffolding it would produce a server that fails at startup.
+    it("rejects fallback with the allowed list and the hint about adding a handler by hand", () => {
+        assert.throws(
+            () => resolveConfig({ name: "x", resilience: "retry,fallback" }, "/work"),
+            (err: Error) =>
+                err.message ===
+                'connectum init: invalid --resilience "fallback" (expected one of: timeout, bulkhead, circuitBreaker, retry); a fallback needs an application-specific handler; add createFallbackInterceptor({ handler }) to src/server.ts',
+        );
+    });
+
+    it("gives no fallback hint for an unknown value", () => {
+        assert.throws(
+            () => resolveConfig({ name: "x", resilience: "foo" }, "/work"),
+            (err: Error) => err.message === 'connectum init: invalid --resilience "foo" (expected one of: timeout, bulkhead, circuitBreaker, retry)',
         );
     });
 

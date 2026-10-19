@@ -51,6 +51,12 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - The default chain enables only error handling and validation.
   Timeout, bulkhead, circuit breaker, and retry behavior are opt-in.
 - The circuit breaker is intended for outbound calls to an upstream service.
+- Numeric options are checked when the factory is called: `timeout.duration` 1 to 2147483647 ms,
+  `bulkhead.capacity` >= 1, `bulkhead.queueSize` >= 0, `circuitBreaker.threshold` >= 1,
+  `circuitBreaker.halfOpenAfter`, `retry.initialDelay` and `retry.maxDelay` 0 to 2147483647 ms, all integers
+  (`retry.maxRetries` is a finite number >= 0). A non-number throws `TypeError`, any other violation
+  `RangeError`. `createDefaultInterceptors` accepts `true`, `false` or an options object per key (`fallback`:
+  `false` or an options object with a handler; `validation`: a boolean) and throws `TypeError` otherwise.
 - Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 

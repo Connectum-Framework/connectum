@@ -98,7 +98,7 @@ describe("resilience + protocol toggles", () => {
     // Every value the --resilience flag accepts has to name a flag createDefaultInterceptors has;
     // a value mapped to a misspelled flag would enable nothing and report no error.
     it("maps every documented --resilience value to a flag createDefaultInterceptors has", () => {
-        const documented = ["timeout", "bulkhead", "circuitBreaker", "retry", "fallback"] as const;
+        const documented = ["timeout", "bulkhead", "circuitBreaker", "retry"] as const;
         const { options } = serverOf({ ...base, modules: { resilience: [...documented] } });
         const flags = defaultInterceptorFlags(propertyValue(options, "interceptors")?.getText() ?? "");
         assert.deepEqual(Object.keys(flags).sort(), [...documented].sort());

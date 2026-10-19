@@ -17,6 +17,7 @@ import {
     generateEventsProto,
     generateEventsTest,
 } from "../../src/scaffold/eventsFragment.ts";
+import { buildServiceFiles } from "../../src/scaffold/generateService.ts";
 import { generateServer } from "../../src/scaffold/serverGen.ts";
 import { transformBase } from "../../src/scaffold/transform.ts";
 import type { ScaffoldConfig } from "../../src/scaffold/types.ts";
@@ -257,6 +258,29 @@ service GreeterAuditEventHandlers {
             const rejected = runBuf(["lint", "--error-format=json"], eventsFiles(without));
             assert.notEqual(rejected.status, 0, `${rule} is excepted but buf lint passes without it`);
             // The failure is the rule that was taken out, not some other defect of the fixture.
+            assert.ok(rejected.output.includes(`"type":"${rule}"`), rejected.output);
+        }
+    });
+
+    // The same question asked of what the generators really write: the sample's event-handler
+    // service plus the one `generate service inventory --with-events` adds afterwards. Both answer
+    // with `google.protobuf.Empty`, so the uniqueness rule only becomes necessary with the second
+    // one, and a project that dropped it would fail `buf lint` right after the first
+    // `generate service --with-events`.
+    it("needs every one of the four excepts for the sample plus a service added with --with-events", () => {
+        const yaml = generateBufYaml(natsConfig);
+        const generatedProtos = new Map([...buildServiceFiles("inventory", true)].filter(([path]) => path.endsWith(".proto")));
+        const project = (buf: string): Map<string, string> =>
+            new Map([...baseProto, ["buf.yaml", buf], ["proto/greeter/v1/events.proto", generateEventsProto()], ...generatedProtos]);
+
+        const accepted = runBuf(["lint"], project(yaml));
+        assert.equal(accepted.status, 0, accepted.output);
+
+        const rules = ["SERVICE_SUFFIX", "RPC_REQUEST_STANDARD_NAME", "RPC_RESPONSE_STANDARD_NAME", "RPC_REQUEST_RESPONSE_UNIQUE"];
+        for (const rule of rules) {
+            assert.ok(yaml.includes(`    - ${rule}\n`), `${rule} is not excepted`);
+            const rejected = runBuf(["lint", "--error-format=json"], project(yaml.replace(`    - ${rule}\n`, "")));
+            assert.notEqual(rejected.status, 0, `${rule} is excepted but buf lint passes without it`);
             assert.ok(rejected.output.includes(`"type":"${rule}"`), rejected.output);
         }
     });
