@@ -202,7 +202,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                     });
                 }
 
-                span.setStatus({ code: SpanStatusCode.OK });
+                // The span status stays unset on success; only a failure sets ERROR.
                 span.setAttributes(buildSuccessAttributes());
                 span.end();
                 recordMetrics(duration, responseSize, buildSuccessAttributes());
