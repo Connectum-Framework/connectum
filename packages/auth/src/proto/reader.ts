@@ -28,7 +28,12 @@ export interface ResolvedMethodAuth {
     readonly internal: boolean;
     /** Authorization policy: "allow", "deny", or undefined (use interceptor default). */
     readonly policy: "allow" | "deny" | undefined;
-    /** Required roles and scopes, or undefined if none specified. */
+    /**
+     * Required roles and scopes, or undefined if none specified.
+     *
+     * An empty `roles` or `scopes` list places no restriction on that dimension;
+     * `requires {}` (both empty) admits any authenticated caller.
+     */
     readonly requires:
         | {
               readonly roles: readonly string[];
@@ -69,6 +74,8 @@ const DEFAULT_RESOLVED: ResolvedMethodAuth = {
  *
  * @param method - The protobuf method descriptor
  * @returns Resolved authorization configuration
+ * @throws {Error} When the effective `policy` / `default_policy` is neither empty, `"allow"` nor `"deny"`,
+ *   or when the method resolves to both `public` and `internal`. A failed resolution is not cached.
  */
 export function resolveMethodAuth(method: DescMethod): ResolvedMethodAuth {
     const cached = resolvedCache.get(method);
@@ -112,8 +119,23 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     const serviceInternalSet = svcAuth !== undefined && isFieldSet(svcAuth, ServiceAuthSchema.field.internal);
     const isInternal = methodInternalSet ? mtdAuth?.internal === true : serviceInternalSet ? svcAuth?.internal === true : false;
 
+    // A method is either reachable without an end-user identity because anyone
+    // may call it (`public`) or because only a trusted peer service may call it
+    // (`internal`). Both at once has no coherent reading — `public` would win and
+    // silently open an internal method to everyone — so the contract is refused.
+    if (isPublic && isInternal) {
+        throw new Error(
+            `@connectum/auth: ${service.typeName}/${method.name} is marked both public and internal, which contradicts itself ` +
+                `(public skips every check, internal requires a trusted peer). ` +
+                `To make the method public set "public: true, internal: false" on it; to make it internal set "internal: true, public: false" ` +
+                `(a method-level "public: false" also overrides a "public: true" inherited from the service).`,
+        );
+    }
+
     // Resolve `requires` field.
     // Method-level requires overrides service-level default_requires.
+    // An empty `roles` or `scopes` list places no restriction on that dimension
+    // and `requires {}` means "authenticated callers only" (see satisfiesRequirements).
     // A submessage field is undefined when not set in proto2.
     let requires: ResolvedMethodAuth["requires"];
     if (mtdAuth !== undefined && mtdAuth.requires !== undefined) {
@@ -131,23 +153,29 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     // Resolve `policy` field.
     // Method-level policy overrides service-level default_policy.
     // For proto2 optional string: default is "", so non-empty means explicitly set.
-    let policy: ResolvedMethodAuth["policy"];
-    if (mtdAuth !== undefined && mtdAuth.policy !== "") {
-        policy = normalizePolicy(mtdAuth.policy);
-    } else if (svcAuth !== undefined && svcAuth.defaultPolicy !== "") {
-        policy = normalizePolicy(svcAuth.defaultPolicy);
-    }
+    // Both values are validated even when the method policy wins: a typo in the service
+    // default must not stay hidden just because every method happens to set its own policy.
+    const servicePolicy = svcAuth !== undefined && svcAuth.defaultPolicy !== "" ? normalizePolicy(svcAuth.defaultPolicy, method, "service_auth.default_policy") : undefined;
+    const policy: ResolvedMethodAuth["policy"] = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : servicePolicy;
 
     return { public: isPublic, internal: isInternal, policy, requires };
 }
 
 /**
- * Normalize a policy string to "allow" | "deny" | undefined.
+ * Validate a non-empty policy string and narrow it to "allow" | "deny".
+ *
+ * Anything else (`"Allow"`, `"dney"`, `"permit"`) is a typo in the contract. Treating it
+ * as "not set" would hand the decision to the interceptor default without a trace, so it
+ * is an error that names the value, the method and the option. The comparison is
+ * case-sensitive on purpose: the accepted spellings are exactly the two documented ones.
  */
-function normalizePolicy(value: string): "allow" | "deny" | undefined {
+function normalizePolicy(value: string, method: DescMethod, option: "method_auth.policy" | "service_auth.default_policy"): "allow" | "deny" {
     if (value === "allow") return "allow";
     if (value === "deny") return "deny";
-    return undefined;
+    throw new Error(
+        `@connectum/auth: invalid ${option} ${JSON.stringify(value)} on ${method.parent.typeName}/${method.name}; ` +
+            `expected "allow" or "deny" (case-sensitive), or leave it unset to use the interceptor default.`,
+    );
 }
 
 /**

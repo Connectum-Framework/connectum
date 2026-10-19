@@ -280,8 +280,8 @@ describe("headers", () => {
     });
 
     // Guide (context.md, "Propagated Headers"): control characters are removed from the
-    // subject, type and name when written and when read, except tab, line feed and
-    // carriage return.
+    // subject, type and name when written and when read, except tab; NUL, CR and LF are
+    // not removed but refused on write (see the next block).
     describe("sanitized output", () => {
         const emptyContext = { roles: [], scopes: [], claims: {}, type: "jwt" } as const;
 
@@ -290,7 +290,7 @@ describe("headers", () => {
 
             setAuthHeaders(headers, {
                 ...emptyContext,
-                subject: "user\x00-\x1F-\x7F-clean",
+                subject: "user\x01-\x1F-\x7F-clean",
                 name: "Jo\x01hn\x08 Doe",
                 type: "jwt\x07-type",
             });
@@ -325,20 +325,95 @@ describe("headers", () => {
             assert.strictEqual(parseAuthHeaders(headers)?.subject, "user\tone");
         });
 
-        it("should not let a subject with a line break inject another header", () => {
+        it("should keep scopes exactly as granted, control characters other than NUL/CR/LF included", () => {
             const headers = new Headers();
 
-            // The platform rejects a value holding CR or LF with a TypeError, and the guide
-            // keeps those two characters in a value. Either outcome is safe; what must never
-            // happen is a smuggled header or a stored value that still contains a line break.
-            try {
-                setAuthHeaders(headers, { ...emptyContext, subject: "mallory\r\nx-auth-roles: [\"admin\"]" });
-            } catch (error) {
-                assert.ok(error instanceof TypeError);
-            }
+            setAuthHeaders(headers, { ...emptyContext, subject: "u", scopes: ["a\tb", "c\x01d"] });
 
-            assert.strictEqual(headers.get("x-auth-roles"), null);
-            assert.ok(!/[\r\n]/.test(headers.get("x-auth-subject") ?? ""));
+            // A cleaned scope string could match a privilege nobody granted, so nothing is removed.
+            assert.strictEqual(headers.get("x-auth-scopes"), "a\tb c\x01d");
+        });
+    });
+
+    // An identity holding NUL, CR or LF cannot be written into a header. It is refused with a
+    // TypeError that names the field and leaves the headers untouched; removing a line break
+    // instead would turn two different subjects ("al\nice" and "alice") into one.
+    describe("identity fields that cannot be a header value", () => {
+        const base = { subject: "user", name: "Name", roles: ["r"], scopes: ["s"], claims: { k: "v" }, type: "jwt" } as const;
+
+        const cases: Array<[string, string, Partial<AuthContext>]> = [
+            ["subject with LF", "subject", { subject: "al\nice" }],
+            ["subject with CR", "subject", { subject: "al\rice" }],
+            ["subject with NUL", "subject", { subject: "al\0ice" }],
+            ["subject with a header-injection attempt", "subject", { subject: 'mallory\r\nx-auth-roles: ["admin"]' }],
+            ["type with LF", "type", { type: "j\nwt" }],
+            ["type with NUL", "type", { type: "j\0wt" }],
+            ["name with CR", "name", { name: "a\rb" }],
+            ["name with LF", "name", { name: "a\nb" }],
+            ["a scope with LF", "scopes", { scopes: ["ok", "re\nad"] }],
+            ["a scope with CR", "scopes", { scopes: ["re\rad"] }],
+            ["a scope with NUL", "scopes", { scopes: ["re\0ad"] }],
+            // A header value is a byte string: the platform refuses a character above U+00FF.
+            ["a Cyrillic subject", "subject", { subject: "Иван" }],
+            ["a subject with an emoji", "subject", { subject: "user-\u{1F600}" }],
+            ["a type above U+00FF", "type", { type: "тип" }],
+            ["a name with a line separator", "name", { name: "a b" }],
+            ["a scope above U+00FF", "scopes", { scopes: ["ok", "чтение"] }],
+        ];
+
+        for (const [label, field, override] of cases) {
+            it(`should throw a TypeError naming ${field} for ${label} and set no header`, () => {
+                const headers = new Headers();
+
+                assert.throws(
+                    () => setAuthHeaders(headers, { ...base, ...override }),
+                    (err: unknown) => {
+                        assert.ok(err instanceof TypeError);
+                        assert.ok(err.message.includes(`AuthContext.${field}`), err.message);
+                        assert.ok(err.message.includes("NUL, CR or LF"), err.message);
+                        return true;
+                    },
+                );
+
+                assert.deepStrictEqual([...headers.keys()], [], "validation happens before any header is written");
+            });
+        }
+
+        it("should still write an identity without NUL, CR or LF", () => {
+            const headers = new Headers();
+            setAuthHeaders(headers, { ...base, name: "Jo Doe\tJr" });
+            assert.strictEqual(headers.get("x-auth-subject"), "user");
+            assert.strictEqual(headers.get("x-auth-name"), "Jo Doe\tJr");
+        });
+
+        it("should still write Latin-1 text, which is a valid byte string", () => {
+            const headers = new Headers();
+            setAuthHeaders(headers, { ...base, subject: "café", name: "Zoë", scopes: ["lecture-é"] });
+            assert.strictEqual(headers.get("x-auth-subject"), "café");
+            assert.strictEqual(headers.get("x-auth-name"), "Zoë");
+            assert.strictEqual(headers.get("x-auth-scopes"), "lecture-é");
+        });
+
+        it("should write roles and claims above U+00FF as JSON escapes and give them back unchanged", () => {
+            const headers = new Headers();
+            const roles = ["админ", "o\u{1F600}"];
+            const claims = { city: "Москва", note: "ok" };
+            setAuthHeaders(headers, { ...base, roles, claims });
+
+            // The wire value is plain ASCII/Latin-1 JSON ...
+            assert.ok(/^[\x00-\xFF]*$/.test(headers.get("x-auth-roles") ?? ""), "roles header holds bytes only");
+            assert.ok(/^[\x00-\xFF]*$/.test(headers.get("x-auth-claims") ?? ""), "claims header holds bytes only");
+            // ... and the reader restores the original values.
+            const parsed = parseAuthHeaders(headers);
+            assert.deepStrictEqual(parsed?.roles, roles);
+            assert.deepStrictEqual(parsed?.claims, claims);
+        });
+
+        it("should not look at claims or roles, which are JSON-encoded and cannot contain a raw line break", () => {
+            const headers = new Headers();
+            setAuthHeaders(headers, { ...base, roles: ["a\nb"], claims: { note: "x\ny" } });
+            assert.strictEqual(headers.get("x-auth-roles"), '["a\\nb"]');
+            assert.strictEqual(headers.get("x-auth-claims"), '{"note":"x\\ny"}');
         });
     });
 
