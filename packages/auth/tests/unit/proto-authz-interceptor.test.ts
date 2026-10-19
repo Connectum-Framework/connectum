@@ -471,6 +471,86 @@ describe("proto-authz-interceptor", () => {
         });
     });
 
+    // An empty list places no restriction on its dimension, and `requires {}` asks only
+    // for an authenticated caller. An unauthenticated caller is turned away either way.
+    describe("empty requires lists", () => {
+        const noRoles: AuthContext = { subject: "plain", roles: [], scopes: [], claims: {}, type: "test" };
+
+        async function call(requires: { roles?: string[]; scopes?: string[] }, context: AuthContext | undefined) {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "Gated", createMethodOptions({ requires }));
+            const next = createMockNext();
+            const handler = createProtoAuthzInterceptor({ defaultPolicy: "deny" })(next);
+            const req = createProtoMockRequest(service, method);
+            const run = () => handler(req);
+            try {
+                await (context ? authContextStorage.run(context, run) : run());
+                return { admitted: next.mock.calls.length === 1, error: undefined as unknown };
+            } catch (error) {
+                return { admitted: false, error };
+            }
+        }
+
+        it("requires { roles: [] } admits an authenticated caller who has no roles", async () => {
+            assert.strictEqual((await call({ roles: [] }, noRoles)).admitted, true);
+        });
+
+        it("requires {} admits an authenticated caller", async () => {
+            assert.strictEqual((await call({}, noRoles)).admitted, true);
+        });
+
+        it("requires {} rejects a caller without an identity as Unauthenticated", async () => {
+            const result = await call({}, undefined);
+            assert.strictEqual(result.admitted, false);
+            assertConnectError(result.error, Code.Unauthenticated);
+        });
+
+        it("requires { roles: [] } rejects a caller without an identity as Unauthenticated", async () => {
+            const result = await call({ roles: [] }, undefined);
+            assert.strictEqual(result.admitted, false);
+            assertConnectError(result.error, Code.Unauthenticated);
+        });
+
+        it("requires { roles: [admin], scopes: [] } still denies a caller without the role", async () => {
+            const result = await call({ roles: ["admin"], scopes: [] }, noRoles);
+            assert.strictEqual(result.admitted, false);
+            assert.ok(result.error instanceof Error);
+            assert.strictEqual(result.error.name, "AuthzDeniedError");
+            assert.strictEqual((result.error as { code?: Code }).code, Code.PermissionDenied);
+        });
+
+        it("requires { roles: [], scopes: [read] } still denies a caller without the scope", async () => {
+            const result = await call({ roles: [], scopes: ["read"] }, noRoles);
+            assert.strictEqual(result.admitted, false);
+            assert.ok(result.error instanceof Error);
+            assert.strictEqual(result.error.name, "AuthzDeniedError");
+            assert.strictEqual((result.error as { code?: Code }).code, Code.PermissionDenied);
+        });
+    });
+
+    // A contract that cannot be resolved must stop the call, not fall through to a default.
+    describe("invalid proto configuration", () => {
+        it("refuses a method whose policy is misspelled, even under defaultPolicy allow", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "Typo", createMethodOptions({ policy: "dney" }));
+            const next = createMockNext();
+            const handler = createProtoAuthzInterceptor({ defaultPolicy: "allow" })(next);
+
+            await assert.rejects(() => authContextStorage.run(defaultContext, () => handler(createProtoMockRequest(service, method))), /"dney"/);
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
+        it("refuses a method marked both public and internal instead of letting public win", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "Both", createMethodOptions({ public: true, internal: true }));
+            const next = createMockNext();
+            const handler = createProtoAuthzInterceptor({ defaultPolicy: "deny" })(next);
+
+            await assert.rejects(() => handler(createProtoMockRequest(service, method)), /public: true, internal: false/);
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+    });
+
     // ADR-029: internal (service-to-service) methods compose inclusively with
     // the existing authz model. The internal identity is populated upstream by
     // createInternalAuthInterceptor; here we simulate it via authContextStorage.run.

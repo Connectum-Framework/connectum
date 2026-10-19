@@ -254,6 +254,43 @@ describe("authz-interceptor", () => {
             }
         });
 
+        // An empty list places no restriction on its dimension; `requires: {}` is "any authenticated caller".
+        for (const [label, requires] of [
+            ["roles: []", { roles: [] }],
+            ["scopes: []", { scopes: [] }],
+            ["roles: [] and scopes: []", { roles: [], scopes: [] }],
+            ["{}", {}],
+        ] as const) {
+            it(`should let a rule with requires ${label} match an authenticated caller who has no roles and no scopes`, async () => {
+                const interceptor = createAuthzInterceptor({
+                    defaultPolicy: AuthzEffect.DENY,
+                    rules: [{ name: "authenticated", methods: ["*"], effect: AuthzEffect.ALLOW, requires }],
+                });
+                const next = createMockNext();
+
+                await authContextStorage.run({ ...defaultContext, roles: [], scopes: [] }, () => interceptor(next)(createMockRequest(MOCK_REQUEST_DEFAULTS)));
+
+                assert.strictEqual(next.mock.calls.length, 1);
+            });
+        }
+
+        it("should still reject a caller without any auth context under a rule with requires {}", async () => {
+            const interceptor = createAuthzInterceptor({
+                defaultPolicy: AuthzEffect.ALLOW,
+                rules: [{ name: "authenticated", methods: ["*"], effect: AuthzEffect.ALLOW, requires: {} }],
+            });
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => interceptor(next)(createMockRequest(MOCK_REQUEST_DEFAULTS)),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
+
         it("should skip authz only for the methods listed in skipMethods", async () => {
             const interceptor = createAuthzInterceptor({
                 defaultPolicy: AuthzEffect.DENY,

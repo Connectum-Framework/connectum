@@ -13,7 +13,7 @@ import { satisfiesRequirements } from "./authz-utils.ts";
 import { getAuthContext } from "./context.ts";
 import type { AuthzDeniedDetails } from "./errors.ts";
 import { AuthzDeniedError } from "./errors.ts";
-import { matchesMethodPattern } from "./method-match.ts";
+import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import type { AuthzInterceptorOptions, AuthzRule } from "./types.ts";
 import { AuthzEffect } from "./types.ts";
 
@@ -68,6 +68,7 @@ function evaluateRules(
  *
  * @param options - Authorization options
  * @returns ConnectRPC interceptor
+ * @throws {Error} When `skipMethods` contains `"*"` (the pattern `"*"` stays valid in rule `methods`)
  *
  * @example RBAC with declarative rules
  * ```typescript
@@ -84,6 +85,8 @@ function evaluateRules(
  */
 export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): Interceptor {
     const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize, skipMethods = [] } = options;
+
+    assertNoCatchAllSkip(skipMethods);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;

@@ -8,6 +8,24 @@
  */
 
 /**
+ * Refuse the catch-all pattern `"*"` in a `skipMethods` list.
+ *
+ * `skipMethods: ["*"]` switches the interceptor off for every method without saying
+ * so, and it is almost always a leftover from debugging. Switching an interceptor off
+ * is done by not registering it; skipping a whole service is done with `Service/*`.
+ * (`"*"` stays valid in authorization rule `methods` and in `internalMethods`,
+ * where "every method" is the point of the rule.)
+ *
+ * @param skipMethods - The `skipMethods` option as given by the caller
+ * @throws {Error} When the list contains `"*"`
+ */
+export function assertNoCatchAllSkip(skipMethods: readonly string[] | undefined): void {
+    if (skipMethods?.includes("*")) {
+        throw new Error('@connectum/auth: skipMethods must not contain the catch-all pattern "*"; to disable this interceptor, do not register it, or list Service/* patterns');
+    }
+}
+
+/**
  * Check if a method matches any of the given patterns.
  *
  * Patterns:

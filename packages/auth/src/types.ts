@@ -90,6 +90,8 @@ export interface AuthzRule {
      *
      * - `roles` uses "any-of" semantics: user needs at least one of the listed roles.
      * - `scopes` uses "all-of" semantics: user needs every listed scope.
+     * - An empty or omitted list places no restriction on that dimension; `requires: {}`
+     *   therefore matches any authenticated caller.
      */
     readonly requires?:
         | {
@@ -103,9 +105,16 @@ export interface AuthzRule {
  * LRU cache configuration for credentials verification
  */
 export interface CacheOptions {
-    /** Cache entry time-to-live in milliseconds */
+    /**
+     * Cache entry time-to-live in milliseconds. Must be finite and greater than 0;
+     * anything else (0, negative, `NaN`, `Infinity`) throws `RangeError` when the interceptor is created.
+     */
     readonly ttl: number;
-    /** Maximum number of cached entries */
+    /**
+     * Maximum number of cached entries. Must be an integer of at least 1;
+     * anything else throws `RangeError` when the interceptor is created.
+     * @default 1000
+     */
     readonly maxSize?: number | undefined;
 }
 
@@ -126,6 +135,10 @@ export interface AuthInterceptorOptions {
      * Verify credentials and return auth context.
      * REQUIRED. Must throw on invalid credentials.
      *
+     * Error contract: a thrown `ConnectError` reaches the client unchanged (its code and
+     * message are sent verbatim, so keep the text public); any other thrown value becomes
+     * `Unauthenticated: Authentication failed` and its text is not sent.
+     *
      * @param credentials - Extracted credential string
      * @returns AuthContext for valid credentials
      */
@@ -133,7 +146,9 @@ export interface AuthInterceptorOptions {
 
     /**
      * Methods to skip authentication for.
-     * Patterns: "Service/Method" or "Service/*"
+     * Patterns: "Service/Method" or "Service/*". The catch-all `"*"` is refused: creating the
+     * interceptor throws, because it would switch authentication off for every method
+     * (to disable the interceptor, do not register it).
      * @default [] (health and reflection methods are NOT auto-skipped)
      */
     skipMethods?: string[] | undefined;
@@ -235,12 +250,14 @@ export interface JwtAuthInterceptorOptions {
      */
     requireExpiration?: boolean | undefined;
     /**
-     * Methods to skip authentication for.
+     * Methods to skip authentication for. The catch-all `"*"` is refused (creation throws).
      * @default []
      */
     skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
+     * A subject, type, name or scope containing NUL, CR or LF is rejected with
+     * `Unauthenticated` (and never cached) while this is on.
      * @default false
      */
     propagateHeaders?: boolean | undefined;
@@ -274,7 +291,8 @@ export interface AuthzInterceptorOptions {
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 
     /**
-     * Methods to skip authorization for.
+     * Methods to skip authorization for. The catch-all `"*"` is refused (creation throws);
+     * `"*"` remains valid in the `methods` of a rule.
      * @default []
      */
     skipMethods?: string[] | undefined;
@@ -318,11 +336,18 @@ export interface GatewayAuthInterceptorOptions {
     };
     /** Headers to strip from the request after extraction (prevent spoofing) */
     readonly stripHeaders?: string[] | undefined;
-    /** Methods to skip authentication for */
+    /** Methods to skip authentication for. The catch-all `"*"` is refused (creation throws). */
     readonly skipMethods?: string[] | undefined;
-    /** Propagate auth context as headers for downstream services */
+    /**
+     * Propagate auth context as headers for downstream services.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on.
+     */
     readonly propagateHeaders?: boolean | undefined;
-    /** Default credential type when not provided by gateway */
+    /**
+     * Credential type used when the gateway sends no type header.
+     * A value containing NUL, CR or LF throws when the interceptor is created.
+     * @default "gateway"
+     */
     readonly defaultType?: string | undefined;
 }
 
@@ -429,7 +454,11 @@ export interface SignedTokenIssuer {
     readonly requireExpiration?: boolean | undefined;
     /**
      * Mapping from token claims to AuthContext fields (dot-notation paths).
-     * `subject` defaults to `sub ?? iss`; `roles`/`scopes` to none unless mapped.
+     *
+     * Only a claim named here is read. `subject` is the verified `iss` unless
+     * `claimsMapping.subject` names another claim (then a missing or non-string value
+     * rejects the call); `roles` and `scopes` are empty unless mapped, and the standard
+     * `scope` claim grants nothing until `claimsMapping.scopes` points at it.
      */
     readonly claimsMapping?:
         | {
@@ -499,6 +528,11 @@ export interface SessionAuthInterceptorOptions {
      * Verify session token and return raw session data.
      * Must throw on invalid/expired sessions.
      *
+     * Error contract: a thrown `ConnectError` reaches the client unchanged (code and message
+     * verbatim, so keep the text public); any other thrown value becomes
+     * `Unauthenticated: Session verification failed`. The same holds for `mapSession`
+     * (fixed text `Session mapping failed`).
+     *
      * @param token - Session token string
      * @param headers - Request headers (for additional context)
      * @returns Raw session data
@@ -518,9 +552,12 @@ export interface SessionAuthInterceptorOptions {
     readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
     /** LRU cache for session verification results */
     readonly cache?: CacheOptions | undefined;
-    /** Methods to skip authentication for */
+    /** Methods to skip authentication for. The catch-all `"*"` is refused (creation throws). */
     readonly skipMethods?: string[] | undefined;
-    /** Propagate auth context as headers for downstream services */
+    /**
+     * Propagate auth context as headers for downstream services.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on.
+     */
     readonly propagateHeaders?: boolean | undefined;
     /**
      * Filter which claims are propagated in headers.

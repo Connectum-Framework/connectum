@@ -305,6 +305,87 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(cap.getSeen()?.subject, ISS_B);
         });
 
+        // The caller is the service whose own key signed the token. `sub` is a free-form claim the
+        // issuer fills, so a token from B saying `sub: service-a` must not make B look like A.
+        it("keeps the verified issuer as subject when the token's sub names another service", async () => {
+            const token = await createTestJwtRS256(kpB.privateKey, { sub: ISS_A, roles: ["worker"] }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+            const cap = capturingNext();
+            await buildInterceptor()(cap.next as never)(internalReq(new Headers({ "x-internal-token": token })));
+
+            assert.strictEqual(cap.calls(), 1);
+            assert.strictEqual(cap.getSeen()?.subject, ISS_B);
+            assert.strictEqual(cap.getSeen()?.claims.sub, ISS_A, "the raw claim stays available in claims, only the identity ignores it");
+        });
+
+        it("grants no scopes from the standard scope claim without a claimsMapping", async () => {
+            const token = await createTestJwtRS256(kpB.privateKey, { scope: "trip:write admin" }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+            const cap = capturingNext();
+            // An issuer entry with no claimsMapping at all.
+            const handler = createInternalAuthInterceptor({
+                internalMethods: [INTERNAL_PATTERN],
+                trustSource: signedTokenTrust({ issuers: { [ISS_B]: { jwksUri: jwksB.url, audience: AUDIENCE } } }),
+            })(cap.next as never);
+            await handler(internalReq(new Headers({ "x-internal-token": token })));
+
+            assert.strictEqual(cap.calls(), 1);
+            assert.deepStrictEqual([...(cap.getSeen()?.scopes ?? ["unset"])], []);
+        });
+
+        it("grants no scopes from the scope claim when the claimsMapping does not map scopes", async () => {
+            const token = await createTestJwtRS256(kpB.privateKey, { scope: "trip:write", roles: ["worker"] }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+            const cap = capturingNext();
+            await buildInterceptor()(cap.next as never)(internalReq(new Headers({ "x-internal-token": token })));
+
+            assert.strictEqual(cap.calls(), 1);
+            assert.deepStrictEqual([...(cap.getSeen()?.scopes ?? ["unset"])], []);
+            assert.deepStrictEqual([...(cap.getSeen()?.roles ?? [])], ["worker"]);
+        });
+
+        it("reads scopes and the subject from the claims an issuer entry maps explicitly", async () => {
+            const token = await createTestJwtRS256(kpB.privateKey, { sub: "worker-7", scope: "trip:write trip:read" }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+            const cap = capturingNext();
+            const handler = createInternalAuthInterceptor({
+                internalMethods: [INTERNAL_PATTERN],
+                trustSource: signedTokenTrust({
+                    issuers: { [ISS_B]: { jwksUri: jwksB.url, audience: AUDIENCE, claimsMapping: { subject: "sub", scopes: "scope" } } },
+                }),
+            })(cap.next as never);
+            await handler(internalReq(new Headers({ "x-internal-token": token })));
+
+            assert.strictEqual(cap.calls(), 1);
+            assert.strictEqual(cap.getSeen()?.subject, "worker-7");
+            assert.deepStrictEqual([...(cap.getSeen()?.scopes ?? [])], ["trip:write", "trip:read"]);
+        });
+
+        for (const [label, claims] of [
+            ["is absent", {}],
+            ["is not a string", { sub: 42 }],
+            ["is an empty string", { sub: "" }],
+        ] as const) {
+            it(`rejects the call when the explicitly mapped subject claim ${label}`, async () => {
+                const token = await createTestJwtRS256(kpB.privateKey, { ...claims }, { kid: kpB.kid, issuer: ISS_B, audience: AUDIENCE });
+
+                const next = createMockNext();
+                const handler = createInternalAuthInterceptor({
+                    internalMethods: [INTERNAL_PATTERN],
+                    trustSource: signedTokenTrust({ issuers: { [ISS_B]: { jwksUri: jwksB.url, audience: AUDIENCE, claimsMapping: { subject: "sub" } } } }),
+                })(next);
+
+                await assert.rejects(
+                    () => handler(internalReq(new Headers({ "x-internal-token": token }))),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        }
+
         it("rejects a token that is validly signed by the issuer's key but meant for another audience", async () => {
             const token = await createTestJwtRS256(kpB.privateKey, { sub: ISS_B }, { kid: kpB.kid, issuer: ISS_B, audience: "someone-else" });
 

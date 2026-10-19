@@ -10,9 +10,13 @@ import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockRequest } from "@connectum/testing";
+import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { createAuthzInterceptor } from "../../src/authz-interceptor.ts";
 import { requireAuthContext } from "../../src/context.ts";
+import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
+import { createInternalAuthInterceptor } from "../../src/internal-auth-interceptor.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
+import { createSessionAuthInterceptor } from "../../src/session-auth-interceptor.ts";
 import { createMockAuthContext } from "../../src/testing/mock-context.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
 import { withAuthContext } from "../../src/testing/with-context.ts";
@@ -391,20 +395,69 @@ describe("Authz Edge Cases — Integration", () => {
         }
     });
 
-    describe("global wildcard '*' in skipMethods", () => {
-        it("should skip authz for all methods with '*' wildcard", async () => {
-            const authzInterceptor = createAuthzInterceptor({
-                defaultPolicy: "deny",
-                skipMethods: ["*"],
+    describe("catch-all '*' pattern", () => {
+        // `skipMethods: ["*"]` switches an interceptor off for every method without saying so,
+        // so every factory with a skipMethods option refuses it at creation. The message names
+        // the way out: do not register the interceptor, or list Service/* patterns.
+        const factories: Array<[string, (skipMethods: string[]) => unknown]> = [
+            ["createAuthInterceptor", (skipMethods) => createAuthInterceptor({ verifyCredentials: async () => createMockAuthContext(), skipMethods })],
+            ["createJwtAuthInterceptor", (skipMethods) => createJwtAuthInterceptor({ secret: TEST_JWT_SECRET, skipMethods })],
+            ["createSessionAuthInterceptor", (skipMethods) => createSessionAuthInterceptor({ verifySession: async () => ({}), mapSession: async () => createMockAuthContext(), skipMethods })],
+            [
+                "createGatewayAuthInterceptor",
+                (skipMethods) => createGatewayAuthInterceptor({ headerMapping: { subject: "x-user" }, trustSource: { header: "x-gateway", expectedValues: ["secret"] }, skipMethods }),
+            ],
+            ["createAuthzInterceptor", (skipMethods) => createAuthzInterceptor({ defaultPolicy: "deny", skipMethods })],
+        ];
+
+        for (const [name, create] of factories) {
+            it(`${name} should refuse skipMethods ["*"] with a message naming the way out`, () => {
+                assert.throws(
+                    () => create(["*"]),
+                    (err: unknown) => {
+                        assert.ok(err instanceof Error);
+                        assert.ok(err.message.includes('skipMethods must not contain the catch-all pattern "*"'), err.message);
+                        assert.ok(err.message.includes("do not register it"), err.message);
+                        assert.ok(err.message.includes("Service/*"), err.message);
+                        return true;
+                    },
+                );
             });
 
-            // No auth context at all — should still pass because skipped
-            const req = createMockRequest();
-            const next = mock.fn(async () => ({ message: {} }));
-            const handler = authzInterceptor(next as any);
+            it(`${name} should refuse "*" even next to other patterns`, () => {
+                assert.throws(() => create(["pkg.v1.Svc/Method", "*"]), /catch-all pattern "\*"/);
+            });
 
-            await handler(req);
+            it(`${name} should accept a Service/* pattern and an exact method`, () => {
+                assert.doesNotThrow(() => create(["pkg.v1.Svc/*", "pkg.v1.Other/Method"]));
+            });
+        }
+
+        it("should still skip the whole service for a Service/* pattern in skipMethods", async () => {
+            const authzInterceptor = createAuthzInterceptor({
+                defaultPolicy: "deny",
+                skipMethods: ["test.v1.TestService/*"],
+            });
+
+            // No auth context at all — passes only because the service is skipped
+            const next = mock.fn(async () => ({ message: {} }));
+            await authzInterceptor(next as any)(createMockRequest({ service: "test.v1.TestService", method: "AnyMethod" }));
             assert.strictEqual(next.mock.calls.length, 1);
+
+            // A method of another service is not skipped
+            const other = mock.fn(async () => ({ message: {} }));
+            await assert.rejects(() => authzInterceptor(other as any)(createMockRequest({ service: "other.v1.OtherService", method: "TestMethod" })));
+            assert.strictEqual(other.mock.calls.length, 0);
+        });
+
+        it("should keep '*' valid in internalMethods of the internal interceptor", async () => {
+            const interceptor = createInternalAuthInterceptor({ internalMethods: ["*"], trustSource: () => null });
+            const next = mock.fn(async () => ({ message: {} }));
+            await assert.rejects(() => interceptor(next as any)(createMockRequest()), (err: unknown) => {
+                assertConnectError(err, Code.Unauthenticated);
+                return true;
+            });
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         // Guide, "Method Patterns": '*' matches all services and methods, and a rule without
