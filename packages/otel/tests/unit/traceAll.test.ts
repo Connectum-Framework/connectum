@@ -4,6 +4,7 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { shutdownProvider } from "../../src/provider.ts";
 import { traceAll } from "../../src/traceAll.ts";
 import { observe } from "./observe.ts";
@@ -69,6 +70,76 @@ describe("traceAll", () => {
             });
             assert.strictEqual(obj.count, 0);
             assert.strictEqual(obj.increment(), 1);
+        });
+    });
+
+    describe("span status", () => {
+        // Instrumentation never reports OK: success keeps the default UNSET status and
+        // only a failure sets ERROR with the error message.
+        it("should leave the status unset when a sync method returns", async () => {
+            const obj = traceAll({ one: () => 1 });
+
+            const spans = (await observe(async () => void obj.one())).spans;
+
+            assert.strictEqual(spans.length, 1);
+            assert.strictEqual(spans[0]?.status.code, SpanStatusCode.UNSET);
+        });
+
+        it("should leave the status unset when an async method resolves", async () => {
+            const obj = traceAll({ one: async () => 1 });
+
+            const spans = (await observe(async () => void (await obj.one()))).spans;
+
+            assert.strictEqual(spans.length, 1);
+            assert.strictEqual(spans[0]?.status.code, SpanStatusCode.UNSET);
+        });
+
+        it("should set ERROR with the message when a sync method throws", async () => {
+            const obj = traceAll({
+                fail(): number {
+                    throw new Error("sync boom");
+                },
+            });
+
+            const spans = (await observe(async () => assert.throws(() => obj.fail(), { message: "sync boom" }))).spans;
+
+            assert.strictEqual(spans.length, 1);
+            assert.strictEqual(spans[0]?.status.code, SpanStatusCode.ERROR);
+            assert.strictEqual(spans[0]?.status.message, "sync boom");
+        });
+
+        it("should set ERROR with the message when an async method rejects", async () => {
+            const obj = traceAll({
+                async fail(): Promise<number> {
+                    throw new Error("async boom");
+                },
+            });
+
+            const spans = (await observe(() => assert.rejects(() => obj.fail(), { message: "async boom" }))).spans;
+
+            assert.strictEqual(spans.length, 1);
+            assert.strictEqual(spans[0]?.status.code, SpanStatusCode.ERROR);
+            assert.strictEqual(spans[0]?.status.message, "async boom");
+        });
+
+        it("should leave the status unset when the consumer stops reading a returned stream early", async () => {
+            const obj = traceAll({
+                async *numbers() {
+                    yield 1;
+                    yield 2;
+                },
+            });
+
+            const spans = (
+                await observe(async () => {
+                    for await (const _value of obj.numbers()) {
+                        break;
+                    }
+                })
+            ).spans;
+
+            assert.strictEqual(spans.length, 1);
+            assert.strictEqual(spans[0]?.status.code, SpanStatusCode.UNSET);
         });
     });
 
