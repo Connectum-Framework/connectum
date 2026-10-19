@@ -915,6 +915,33 @@ describe("createServer", () => {
                 assert.strictEqual(listeningAtAbort, true, "the shutdown signal must be aborted while the transport still listens");
             });
 
+            // The signal is aborted right AFTER the `stopping` event: a `stopping`
+            // listener still sees it un-aborted, and reacts to the abort through an
+            // `abort` listener, which runs once the `stopping` listeners are done.
+            it("should abort only after the stopping listeners have run", async () => {
+                const server = createServer({
+                    services: [createMockService()],
+                    port: 0,
+                });
+                servers.push(server);
+                await server.start();
+
+                const order: string[] = [];
+                let abortedInStopping: boolean | undefined;
+                server.on("stopping", () => {
+                    abortedInStopping = server.shutdownSignal.aborted;
+                    order.push("stopping-listener");
+                });
+                server.shutdownSignal.addEventListener("abort", () => {
+                    order.push("abort");
+                });
+
+                await server.stop();
+
+                assert.strictEqual(abortedInStopping, false, "inside a stopping listener the signal is not yet aborted");
+                assert.deepStrictEqual(order, ["stopping-listener", "abort"]);
+            });
+
             it("should stay the same signal object for the whole life of the server", async () => {
                 const server = createServer({
                     services: [createMockService()],
