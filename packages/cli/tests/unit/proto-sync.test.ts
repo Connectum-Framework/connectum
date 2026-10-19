@@ -63,7 +63,7 @@ mock.module("node:os", {
 });
 
 // Import AFTER mock registration
-const { executeProtoSync, parseTimeoutOption, protoSyncCommand } = await import("../../src/commands/proto-sync.ts");
+const { executeProtoSync, normalizeServerUrl, parseTimeoutOption, protoSyncCommand } = await import("../../src/commands/proto-sync.ts");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,24 +124,52 @@ describe("proto-sync unit tests", () => {
 		}
 
 		// A host name that merely begins with the letters "http" is still a bare address.
-		it(
-			"should prepend http:// to a bare address whose host name starts with http",
-			{ skip: "known defect, fails against the documented behaviour: the scheme check is a prefix test on the letters 'http', so 'httpbin.local:5000' is passed on without a scheme" },
-			async () => {
-				await captureConsoleLog(async () => {
-					await executeProtoSync({
-						from: "httpbin.local:5000",
-						out: "./gen",
-						dryRun: true,
-					});
+		it("should prepend http:// to a bare address whose host name starts with http", async () => {
+			await captureConsoleLog(async () => {
+				await executeProtoSync({
+					from: "httpbin.local:5000",
+					out: "./gen",
+					dryRun: true,
 				});
+			});
 
-				assert.strictEqual(
-					mockFetchReflectionData.mock.calls[0]!.arguments[0],
-					"http://httpbin.local:5000",
-				);
-			},
-		);
+			assert.strictEqual(
+				mockFetchReflectionData.mock.calls[0]!.arguments[0],
+				"http://httpbin.local:5000",
+			);
+		});
+
+		// A scheme the command cannot speak is refused before anything happens: no reflection
+		// request, no buf, no temporary directory, no output.
+		for (const dryRun of [true, false]) {
+			it(`refuses ftp://h:5 without calling reflection or buf and without creating a temporary directory (dryRun: ${dryRun})`, async () => {
+				const logs: string[] = [];
+				const originalLog = console.log;
+				console.log = (...args: unknown[]) => {
+					logs.push(args.map(String).join(" "));
+				};
+				try {
+					await assert.rejects(executeProtoSync({ from: "ftp://h:5", out: "./gen", dryRun }), /"ftp"/);
+				} finally {
+					console.log = originalLog;
+				}
+
+				assert.strictEqual(mockFetchReflectionData.mock.calls.length, 0, "reflection must not be called");
+				assert.strictEqual(mockFetchFileDescriptorSetBinary.mock.calls.length, 0, "descriptor fetch must not be called");
+				assert.strictEqual(mockExecFileSync.mock.calls.length, 0, "buf must not be run");
+				assert.strictEqual(mockMkdtempSync.mock.calls.length, 0, "no temporary directory may be created");
+				assert.strictEqual(mockWriteFileSync.mock.calls.length, 0, "nothing may be written");
+				assert.deepStrictEqual(logs, [], "nothing may be printed");
+			});
+		}
+
+		it("passes an upper-case scheme on as typed: not refused, not prefixed", async () => {
+			await captureConsoleLog(async () => {
+				await executeProtoSync({ from: "HTTP://h:5", out: "./gen", dryRun: true });
+			});
+
+			assert.strictEqual(mockFetchReflectionData.mock.calls[0]!.arguments[0], "HTTP://h:5");
+		});
 
 		it("should preserve existing http:// prefix", async () => {
 			await captureConsoleLog(async () => {
@@ -734,6 +762,64 @@ describe("proto-sync unit tests", () => {
 				"Should call fetchFileDescriptorSetBinary when dryRun is undefined",
 			);
 		});
+	});
+});
+
+describe("normalizeServerUrl", () => {
+	// A bare address gets http:// in front of it, whatever letters its host name starts with.
+	for (const [from, expected] of [
+		["localhost:5000", "http://localhost:5000"],
+		["httpbin.local:5000", "http://httpbin.local:5000"],
+		["https-proxy.internal:443", "http://https-proxy.internal:443"],
+		["[::1]:5000", "http://[::1]:5000"],
+		["host:5000/path", "http://host:5000/path"],
+	] as const) {
+		it(`prefixes the bare address ${from}`, () => {
+			assert.strictEqual(normalizeServerUrl(from), expected);
+		});
+	}
+
+	// An http(s) URL is used exactly as typed, in any letter case of the scheme.
+	for (const from of ["http://h:5", "https://h:5", "HTTP://h:5", "Https://h:5"]) {
+		it(`leaves the URL ${from} unchanged`, () => {
+			assert.strictEqual(normalizeServerUrl(from), from);
+		});
+	}
+
+	it("refuses ftp://h:5 with a message that names the scheme and the accepted forms", () => {
+		assert.throws(() => normalizeServerUrl("ftp://h:5"), (err: unknown) => {
+			assert.ok(err instanceof Error);
+			assert.ok(err.message.includes('"ftp"'), `the scheme must be named, got: ${err.message}`);
+			for (const form of ["host:port", "http://", "https://"]) {
+				assert.ok(err.message.includes(form), `"${form}" must be listed, got: ${err.message}`);
+			}
+			return true;
+		});
+	});
+
+	// The scheme-shaped prefix allows letters, digits, "+", "." and "-" after the first letter.
+	for (const [from, scheme] of [["grpc://h:5", "grpc"], ["my-host://x", "my-host"], ["svn+ssh://h", "svn+ssh"], ["FTP://h:5", "FTP"]] as const) {
+		it(`refuses ${from} and names ${scheme}`, () => {
+			assert.throws(() => normalizeServerUrl(from), (err: unknown) => err instanceof Error && err.message.includes(`"${scheme}"`));
+		});
+	}
+
+	// Only "<scheme>://" at the very start marks a URL; a colon alone does not.
+	it("does not mistake an address with a colon, or a later \"://\", for a foreign scheme", () => {
+		assert.strictEqual(normalizeServerUrl("host:5000"), "http://host:5000");
+		assert.strictEqual(normalizeServerUrl("host:5000/a://b"), "http://host:5000/a://b");
+		assert.strictEqual(normalizeServerUrl("1ftp://h"), "http://1ftp://h");
+	});
+
+	it("gives an empty address the prefix like any other, leaving the refusal to the transport", () => {
+		assert.strictEqual(normalizeServerUrl(""), "http://");
+	});
+
+	it("handles a long hostile input in linear time", () => {
+		const hostile = `${"a".repeat(200_000)}!`;
+		const started = performance.now();
+		assert.strictEqual(normalizeServerUrl(hostile), `http://${hostile}`);
+		assert.ok(performance.now() - started < 500, "must not backtrack catastrophically");
 	});
 });
 
