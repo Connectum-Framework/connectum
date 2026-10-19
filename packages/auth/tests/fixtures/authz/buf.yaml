@@ -1,0 +1,9 @@
+# Test-only module: the proto fixture of the authorization parity tests. It is
+# not a published contract and is never linted for style or pushed to the BSR.
+# `connectum/auth/v1/options.proto` (method_auth / service_auth) comes from the
+# pinned dependency in buf.lock.
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/connectum-framework/connectum

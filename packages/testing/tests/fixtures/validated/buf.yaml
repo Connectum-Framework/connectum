@@ -1,0 +1,8 @@
+# Test-only module: the proto fixture of the validation parity tests. It is not
+# a published contract and is never linted for style or pushed to the BSR.
+# The `buf.validate` annotations come from the pinned dependency in buf.lock.
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/bufbuild/protovalidate
