@@ -117,10 +117,36 @@ describe("timeout interceptor", () => {
         assert.strictEqual((result.message as any).result, "fast");
     });
 
-    it("should reject invalid duration", () => {
-        assert.throws(() => createTimeoutInterceptor({ duration: 0 }), /duration must be a positive finite number/);
-        assert.throws(() => createTimeoutInterceptor({ duration: -1 }), /duration must be a positive finite number/);
-        assert.throws(() => createTimeoutInterceptor({ duration: Number.POSITIVE_INFINITY }), /duration must be a positive finite number/);
+    for (const [label, duration, got] of [
+        ["zero", 0, "0"],
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["NaN", Number.NaN, "NaN"],
+        ["fractional below the minimum", 0.5, "0.5"],
+        // A fraction inside the range: only the integer rule can refuse it.
+        ["fractional inside the range", 1.5, "1.5"],
+        // One above the platform timer ceiling: the timer would fire after 1 ms instead of waiting.
+        ["above the timer ceiling", 2_147_483_648, "2147483648"],
+    ] as const) {
+        it(`should refuse a ${label} duration with a RangeError naming the factory, the rule and the value`, () => {
+            assert.throws(
+                () => createTimeoutInterceptor({ duration }),
+                (err: unknown) =>
+                    err instanceof RangeError && err.message === `createTimeoutInterceptor: duration must be an integer from 1 to 2147483647 milliseconds, got ${got}`,
+            );
+        });
+    }
+
+    it("should refuse a non-number duration with a TypeError", () => {
+        assert.throws(
+            () => createTimeoutInterceptor({ duration: "30s" as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createTimeoutInterceptor: duration must be an integer from 1 to 2147483647 milliseconds, got "30s"',
+        );
+    });
+
+    it("should accept the boundary durations 1 and 2147483647", () => {
+        assert.strictEqual(typeof createTimeoutInterceptor({ duration: 1 }), "function");
+        assert.strictEqual(typeof createTimeoutInterceptor({ duration: 2_147_483_647 }), "function");
     });
 
     it("should use default duration", async () => {

@@ -20,8 +20,12 @@ export type NodeExec = "raw" | "tsx";
 /** EventBus transport adapter. */
 export type EventAdapter = "nats" | "kafka" | "redpanda" | "redis" | "amqp";
 
-/** Opt-in resilience interceptors (off by default in `createDefaultInterceptors`). */
-export type ResilienceInterceptor = "timeout" | "bulkhead" | "circuitBreaker" | "retry" | "fallback";
+/**
+ * Opt-in resilience interceptors (off by default in `createDefaultInterceptors`) that work
+ * with their default options. `fallback` is absent on purpose: it needs an
+ * application-specific handler, so it cannot be enabled by a flag.
+ */
+export type ResilienceInterceptor = "timeout" | "bulkhead" | "circuitBreaker" | "retry";
 
 /**
  * Optional modules the user can enable. Each maps to an additive {@link ScaffoldConfig}

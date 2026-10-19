@@ -268,18 +268,53 @@ describe("circuit breaker interceptor", () => {
         assert.strictEqual((result.message as any).result, "recovered");
     });
 
-    it("should reject invalid threshold", () => {
-        assert.throws(() => createCircuitBreakerInterceptor({ threshold: 0 }), /threshold must be a positive finite number/);
-        assert.throws(() => createCircuitBreakerInterceptor({ threshold: -1 }), /threshold must be a positive finite number/);
-        assert.throws(() => createCircuitBreakerInterceptor({ threshold: Number.POSITIVE_INFINITY }), /threshold must be a positive finite number/);
+    for (const [label, threshold, got] of [
+        ["zero", 0, "0"],
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["NaN", Number.NaN, "NaN"],
+        ["fractional", 2.5, "2.5"],
+    ] as const) {
+        it(`should refuse a ${label} threshold with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createCircuitBreakerInterceptor({ threshold }),
+                (err: unknown) => err instanceof RangeError && err.message === `createCircuitBreakerInterceptor: threshold must be an integer of at least 1, got ${got}`,
+            );
+        });
+    }
+
+    for (const [label, halfOpenAfter, got] of [
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["fractional", 0.5, "0.5"],
+        ["NaN", Number.NaN, "NaN"],
+        ["above the timer ceiling", 2_147_483_648, "2147483648"],
+    ] as const) {
+        it(`should refuse a ${label} halfOpenAfter with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createCircuitBreakerInterceptor({ halfOpenAfter }),
+                (err: unknown) =>
+                    err instanceof RangeError &&
+                    err.message === `createCircuitBreakerInterceptor: halfOpenAfter must be an integer from 0 to 2147483647 milliseconds, got ${got}`,
+            );
+        });
+    }
+
+    it("should refuse non-number threshold and halfOpenAfter with a TypeError", () => {
+        assert.throws(
+            () => createCircuitBreakerInterceptor({ threshold: "5" as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createCircuitBreakerInterceptor: threshold must be an integer of at least 1, got "5"',
+        );
+        assert.throws(
+            () => createCircuitBreakerInterceptor({ halfOpenAfter: null as unknown as number }),
+            (err: unknown) =>
+                err instanceof TypeError && err.message === "createCircuitBreakerInterceptor: halfOpenAfter must be an integer from 0 to 2147483647 milliseconds, got null",
+        );
     });
 
-    it("should reject invalid halfOpenAfter", () => {
-        assert.throws(() => createCircuitBreakerInterceptor({ halfOpenAfter: -1 }), /halfOpenAfter must be a non-negative finite number/);
-        assert.throws(
-            () => createCircuitBreakerInterceptor({ halfOpenAfter: Number.POSITIVE_INFINITY }),
-            /halfOpenAfter must be a non-negative finite number/,
-        );
+    it("should accept the boundary values threshold 1, halfOpenAfter 0 and halfOpenAfter 2147483647", () => {
+        assert.strictEqual(typeof createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 0 }), "function");
+        assert.strictEqual(typeof createCircuitBreakerInterceptor({ halfOpenAfter: 2_147_483_647 }), "function");
     });
 
     describe("failure classification", () => {
