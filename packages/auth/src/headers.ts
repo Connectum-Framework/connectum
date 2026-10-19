@@ -7,6 +7,7 @@
  * @module headers
  */
 
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { AuthContext } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -15,6 +16,10 @@ export const MAX_HEADER_BYTES = 8192;
 
 /**
  * Sanitize a header value by removing control characters and enforcing length limits.
+ *
+ * Tab, LF and CR are kept by this function itself; on the write path
+ * ({@link setAuthHeaders}) LF, CR and NUL never get here because an identity holding
+ * one of them is refused first.
  */
 export function sanitizeHeaderValue(value: string, maxLength: number): string {
     // Remove control characters (except tab/LF/CR which are valid in headers)
@@ -24,16 +29,98 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 }
 
 /**
+ * Thrown by {@link setAuthHeaders} when an identity field holds a character that cannot be
+ * written into a header: NUL, CR, LF, or any character above U+00FF (a header value is a
+ * byte string, so the platform refuses such a value). `field` names the offending
+ * `AuthContext` field.
+ */
+export class UnsafeHeaderValueError extends TypeError {
+    readonly field: "subject" | "type" | "name" | "scopes";
+
+    constructor(field: UnsafeHeaderValueError["field"]) {
+        super(`AuthContext.${field} must not contain NUL, CR or LF characters, or characters above U+00FF, when auth headers are propagated`);
+        this.name = "UnsafeHeaderValueError";
+        this.field = field;
+    }
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: NUL, CR and LF are exactly the characters being detected
+export const HEADER_BREAKING_CHARS = /[\x00\r\nĀ-￿]/;
+
+/**
+ * Find the first identity field that cannot be written into a header.
+ *
+ * NUL, CR, LF and every character above U+00FF are rejected rather than stripped:
+ * removing a line break would turn two different subjects (`al\nice` and `alice`) into
+ * the same header value, merging their identities downstream, and the platform refuses
+ * a header value that is not a byte string (a Cyrillic name, for example). Scopes are
+ * checked one by one and are otherwise left exactly as granted, because an edited scope
+ * could match a privilege nobody granted. Whitespace at the edges of a value keeps the
+ * behavior of the platform.
+ */
+function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] | undefined {
+    if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
+    if (HEADER_BREAKING_CHARS.test(context.type)) return "type";
+    if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
+    if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope))) return "scopes";
+    return undefined;
+}
+
+/**
+ * Serialize roles or claims for a header. JSON may hold any text, a header value only bytes,
+ * so each character above U+00FF is written as a `\uXXXX` escape; the reader's `JSON.parse`
+ * restores the original value, nothing is lost and the other characters stay as they are.
+ */
+function jsonForHeader(value: unknown): string {
+    return JSON.stringify(value).replace(/[Ā-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/**
+ * Write an identity into request headers for downstream services, or reject the call.
+ *
+ * Interceptors use this instead of {@link setAuthHeaders} so that an identity which cannot
+ * be propagated ends the request with `Code.Unauthenticated` (and is never cached) instead
+ * of surfacing as an internal error. Every other failure of {@link setAuthHeaders} is rethrown as is.
+ *
+ * @param headers - Headers object to set auth headers on
+ * @param context - Auth context to serialize
+ * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR, LF or a character above U+00FF
+ */
+export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
+    try {
+        setAuthHeaders(headers, context, propagatedClaims);
+    } catch (err) {
+        if (err instanceof UnsafeHeaderValueError) {
+            throw new ConnectError("Authentication failed", Code.Unauthenticated, undefined, undefined, err);
+        }
+        throw err;
+    }
+}
+
+/**
  * Serialize AuthContext to request headers.
  *
  * Sets standard auth headers on the provided Headers object.
  * Used by auth interceptors when propagateHeaders is enabled.
  *
+ * `subject`, `type`, `name` are stripped of control characters (tab is kept) and truncated;
+ * roles and claims are JSON (characters above U+00FF are written as `\uXXXX` escapes, which
+ * the reader restores); scopes are written as granted. A `subject`, `type`, `name` or
+ * scope containing NUL, CR, LF or a character above U+00FF is not sanitised but refused.
+ *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
+ * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR, LF or a character above U+00FF; the message
+ *   names the field and no header has been set
  */
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
+    const unsafeField = findUnsafeField(context);
+    if (unsafeField) {
+        throw new UnsafeHeaderValueError(unsafeField);
+    }
+
     headers.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(context.subject, 512));
     headers.set(AUTH_HEADERS.TYPE, sanitizeHeaderValue(context.type, 128));
 
@@ -42,7 +129,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     }
 
     if (context.roles.length > 0) {
-        const rolesValue = JSON.stringify(context.roles);
+        const rolesValue = jsonForHeader(context.roles);
         if (rolesValue.length <= MAX_HEADER_BYTES) {
             headers.set(AUTH_HEADERS.ROLES, rolesValue);
         }
@@ -59,7 +146,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     if (claimKeys.length > 0) {
         const filteredClaims = propagatedClaims ? Object.fromEntries(Object.entries(context.claims).filter(([key]) => propagatedClaims.includes(key))) : context.claims;
         if (Object.keys(filteredClaims).length > 0) {
-            const claimsValue = JSON.stringify(filteredClaims);
+            const claimsValue = jsonForHeader(filteredClaims);
             if (claimsValue.length <= MAX_HEADER_BYTES) {
                 headers.set(AUTH_HEADERS.CLAIMS, claimsValue);
             }

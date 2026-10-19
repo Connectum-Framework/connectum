@@ -1,0 +1,16 @@
+# Regenerate with `pnpm --filter @connectum/auth fixtures:generate`
+# (run from the package directory, which is what `out` is relative to).
+# include_imports: the generated service file references the schema of
+# `connectum/auth/v1/options.proto`, so a local copy is generated next to it.
+# erasable_syntax: the tests run the generated code natively (type stripping),
+# which rejects TypeScript `enum`.
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: tests/fixtures/authz/pb
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.ts
+      - erasable_syntax=true

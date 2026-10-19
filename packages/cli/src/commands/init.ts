@@ -47,7 +47,7 @@ export interface InitOptions {
     events?: string | undefined;
     /** Enable the auth module (JWT + proto authorization). */
     auth?: boolean | undefined;
-    /** Comma-separated resilience interceptors (timeout,bulkhead,circuitBreaker,retry,fallback). */
+    /** Comma-separated resilience interceptors (timeout,bulkhead,circuitBreaker,retry). */
     resilience?: string | undefined;
     /** Include the gRPC health protocol (default true; pass --no-healthcheck to omit). */
     healthcheck?: boolean | undefined;
@@ -171,7 +171,7 @@ export const initCommand = defineCommand({
         },
         resilience: {
             type: "string",
-            description: "Enable resilience interceptors (comma list: timeout,bulkhead,circuitBreaker,retry,fallback)",
+            description: "Enable resilience interceptors (comma list: timeout,bulkhead,circuitBreaker,retry)",
         },
         healthcheck: {
             type: "boolean",

@@ -50,8 +50,14 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
  *
  * Configured paths return JSON with the service name, status, and timestamp.
  * A `service` query parameter checks one service or component; without it,
- * the handler reports overall health. Unknown named services return 404,
+ * the handler reports overall health (an empty `service=` counts as absent).
+ * Unknown named services return 404 with the requested name in the body,
  * unhealthy overall status returns 503, and unconfigured paths are not handled.
+ *
+ * Matching rules: the request path is compared with the configured paths by
+ * exact, case-sensitive equality without normalization (`/healthz/` does not
+ * match `/healthz`); the query string is ignored when matching; the request
+ * method is not checked; the `Host` header is not consulted.
  *
  * @param manager - Healthcheck manager instance
  * @param healthPaths - HTTP health endpoint paths
@@ -69,7 +75,7 @@ export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths
             return false;
         }
 
-        const service = parseServiceFromUrl(url, req.headers.host as string | undefined);
+        const service = parseServiceFromUrl(url);
 
         // Get status from the same manager used by gRPC healthcheck
         const serviceStatus = service ? manager.getStatus(service) : undefined;
@@ -102,22 +108,35 @@ export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths
 }
 
 /**
+ * Base used to resolve a relative request target. Only the query string is
+ * read, so any valid origin works; a constant keeps the result independent of
+ * the client-controlled `Host` header, which can be empty or malformed over
+ * HTTP/1.1.
+ */
+const URL_BASE = "http://localhost";
+
+/**
  * Read the optional `service` query parameter from a request URL.
  *
  * Returns `undefined` when the URL is absent, malformed, or has no `service`
- * parameter. The host is used only to resolve relative URLs.
+ * parameter. An empty value (`?service=`) is returned as the empty string.
+ * The result depends on the URL alone: the `Host` header never changes it.
+ *
+ * @param url - Request target, usually `req.url`
+ * @param _host - Accepted for backward compatibility only; it has no effect
+ *   on the result and is removed in the next major version
  *
  * @example
  * ```typescript
- * parseServiceFromUrl('/healthz?service=my.service.v1.MyService', req.headers.host)
+ * parseServiceFromUrl('/healthz?service=my.service.v1.MyService')
  * // returns 'my.service.v1.MyService'
  * ```
  */
-export function parseServiceFromUrl(url: string | undefined, host: string | undefined): string | undefined {
+export function parseServiceFromUrl(url: string | undefined, _host?: string): string | undefined {
     if (!url) return undefined;
 
     try {
-        const parsed = new URL(url, `http://${host ?? "localhost"}`);
+        const parsed = new URL(url, URL_BASE);
         return parsed.searchParams.get("service") ?? undefined;
     } catch {
         return undefined;

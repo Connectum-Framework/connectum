@@ -28,9 +28,15 @@ describe('logger interceptor', () => {
 
         await handler(mockReq);
 
-        // Verify logger was called 3 times (request, response, timing)
-        assert.strictEqual(loggerFn.mock.calls.length, 3);
+        // A unary call writes exactly three lines, in this order: request, response, completion.
+        // With bodies off (the default) no line carries an argument.
         assert.strictEqual(next.mock.calls.length, 1);
+        const lines = loggerFn.mock.calls.map((call) => call.arguments);
+        assert.strictEqual(lines.length, 3);
+        assert.deepStrictEqual(lines[0], ['RPC /test.Service/Method request']);
+        assert.deepStrictEqual(lines[1], ['RPC /test.Service/Method response']);
+        assert.strictEqual(lines[2]!.length, 1);
+        assert.match(lines[2]![0] as string, /^RPC \/test\.Service\/Method completed in \d+(\.\d+)?ms$/);
     });
 
     it('should log timing even on error', async () => {
@@ -161,60 +167,48 @@ describe('logger interceptor', () => {
         assert.strictEqual(next.mock.calls.length, 1);
     });
 
-    it('should handle streaming responses', async () => {
+    it('should log every message of a streaming call and write the completion line last', async () => {
         const loggerFn = mock.fn();
         const interceptor = createLoggerInterceptor({ logger: loggerFn });
 
-        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
+        async function* requestStream() {
+            yield { field: 'request1' };
+            yield { field: 'request2' };
+        }
 
-        async function* mockResStream() {
+        async function* responseStream() {
             yield { result: 'value1' };
             yield { result: 'value2' };
         }
 
-        // CRITICAL: Must have complete DescMessage schema for toJson() in logResStream
-        const mockRes = {
-            stream: true,
-            message: mockResStream(),
-            method: {
-                output: {
-                    kind: 'message',
-                    typeName: 'test.OutputMessage',
-                    name: 'OutputMessage',
-                    fields: [],
-                    field: {},
-                    oneofs: [],
-                    members: [],
-                    nestedEnums: [],
-                    nestedMessages: [],
-                    nestedExtensions: [],
-                    parent: undefined,
-                    proto: { options: undefined },
-                    file: {
-                        name: 'test.proto',
-                        proto: { edition: 'EDITION_PROTO3' },
-                    },
-                },
-            },
-        };
+        // Connect hands an interceptor a streaming request and a streaming response together:
+        // a streaming method never produces a unary request with a streamed response.
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'StreamMethod', stream: true, message: requestStream() });
 
-        const next = mock.fn(async () => mockRes);
+        const next = mock.fn(async (req: { message: AsyncIterable<unknown> }) => {
+            for await (const _ of req.message) {
+                // the handler reads its whole request stream
+            }
+            return { stream: true, message: responseStream(), method: { output: {} } };
+        });
         const handler = interceptor(next as any);
 
         const result = await handler(mockReq);
 
-        // CRITICAL: Must iterate through stream to trigger logger calls
-        // The logResStream generator only logs when consuming items
-        const items = [];
+        // The response messages reach the reader untouched
+        const items: unknown[] = [];
         for await (const item of result.message as AsyncIterable<unknown>) {
             items.push(item);
         }
+        assert.deepStrictEqual(items, [{ result: 'value1' }, { result: 'value2' }]);
 
-        // Verify request was logged once (unary request)
-        // NOTE: Response stream items are logged via toJson() which may fail silently
-        // At minimum, the request should be logged
-        assert.strictEqual(items.length, 2);
-        assert.ok(loggerFn.mock.calls.length >= 1, 'Logger should be called at least once for request');
+        // One line per streamed message, no body arguments by default, and the call is
+        // closed out only after the stream has ended.
+        const lines = loggerFn.mock.calls.map((call) => call.arguments);
+        assert.strictEqual(lines.length, 5);
+        assert.deepStrictEqual(lines.slice(0, 2), [['STREAM /test.Service/StreamMethod request'], ['STREAM /test.Service/StreamMethod request']]);
+        assert.deepStrictEqual(lines.slice(2, 4), [['STREAM /test.Service/StreamMethod response'], ['STREAM /test.Service/StreamMethod response']]);
+        assert.match(lines[4]![0] as string, /^RPC \/test\.Service\/StreamMethod completed in \d+(\.\d+)?ms$/);
     });
 
     it('should use custom logger function', async () => {

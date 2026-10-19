@@ -137,10 +137,11 @@ describe("logger interceptor isolation", () => {
         );
     });
 
-    it("keeps streaming a response when a message cannot be converted to JSON", async () => {
-        const lines: string[] = [];
-        const interceptor = createLoggerInterceptor({ logger: (message) => lines.push(message) });
-        // An empty object is not a message schema: converting with it throws.
+    it("does not convert streamed response messages to JSON when bodies are off, whatever their schema", async () => {
+        const entries: { message: string; args: unknown[] }[] = [];
+        const interceptor = createLoggerInterceptor({ logger: (message, ...args) => entries.push({ message, args }) });
+        // An empty object is not a message schema: converting with it would throw (and, with
+        // bodies on, put a placeholder in the log). With bodies off, conversion must not even be attempted.
         const response = { stream: true, message: two({ result: "1" }, { result: "2" }), method: { output: {} } };
         const handler = interceptor((async () => response) as never);
 
@@ -149,7 +150,11 @@ describe("logger interceptor isolation", () => {
         for await (const item of result.message as AsyncIterable<unknown>) received.push(item);
 
         assert.deepStrictEqual(received, [{ result: "1" }, { result: "2" }]);
-        assert.strictEqual(lines.filter((line) => line === "STREAM /test.Service/Method response").length, 2, "every message is still logged");
+        const responseLines = entries.filter((entry) => entry.message === "STREAM /test.Service/Method response");
+        assert.strictEqual(responseLines.length, 2, "every message is still logged");
+        for (const line of responseLines) {
+            assert.deepStrictEqual(line.args, [], "no body, and no placeholder for a body, reaches the sink");
+        }
     });
 
     it("logs a placeholder string for a message that cannot be converted when bodies are on, and still delivers every message", async () => {

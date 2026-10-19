@@ -26,6 +26,26 @@ function makeCtx(signal?: AbortSignal) {
     });
 }
 
+/**
+ * Run `run` while recording the delay of every `setTimeout` the retry sleep
+ * schedules, firing each timer immediately so the backoff schedule can be
+ * observed without waiting for it.
+ */
+async function recordBackoffDelays(run: () => Promise<unknown>): Promise<number[]> {
+    const delays: number[] = [];
+    const original = globalThis.setTimeout;
+    globalThis.setTimeout = ((callback: () => void, delay?: number) => {
+        delays.push(delay ?? 0);
+        return original(callback, 0);
+    }) as unknown as typeof globalThis.setTimeout;
+    try {
+        await run();
+    } finally {
+        globalThis.setTimeout = original;
+    }
+    return delays;
+}
+
 describe("retryMiddleware", () => {
     it("retries on failure up to maxRetries", async () => {
         let callCount = 0;
@@ -85,14 +105,22 @@ describe("retryMiddleware", () => {
         // Abort after 50ms
         const timer = globalThis.setTimeout(() => ac.abort(), 50);
 
+        let calls = 0;
         const startTime = Date.now();
-        await assert.rejects(() => mw(makeRawEvent(), makeCtx(ac.signal), async () => {
-            throw new Error("fail");
-        }));
+        await assert.rejects(() =>
+            mw(makeRawEvent(), makeCtx(ac.signal), async () => {
+                calls++;
+                throw new Error("fail");
+            }),
+        );
 
         const elapsed = Date.now() - startTime;
         // Should abort quickly, NOT wait 5000ms for retry delay
         assert.ok(elapsed < 2000, `Expected abort within 2s, got ${elapsed}ms`);
+        // The abort ends processing: the handler is not re-entered afterwards. An
+        // abort that only woke the sleep and kept the retry loop running would
+        // call the handler again.
+        assert.equal(calls, 1, "no further attempts after the signal aborted");
         globalThis.clearTimeout(timer);
     });
 
@@ -152,16 +180,37 @@ describe("retryMiddleware", () => {
         assert.equal(callCount, 1);
     });
 
-    it("uses default options when none provided", async () => {
+    it("uses the documented defaults when none provided: 3 retries, exponential backoff from 1000ms, multiplier 2", async () => {
         let callCount = 0;
         const mw = retryMiddleware();
 
-        // Handler succeeds on first try -- defaults should not interfere
-        await mw(makeRawEvent(), makeCtx(), async () => {
-            callCount++;
-        });
+        const delays = await recordBackoffDelays(() =>
+            assert.rejects(() =>
+                mw(makeRawEvent(), makeCtx(), async () => {
+                    callCount++;
+                    throw new Error("always fails");
+                }),
+            ),
+        );
 
-        assert.equal(callCount, 1);
+        // maxRetries 3 = 1 initial + 3 retries; delays 1000 * 2^(n-1)
+        assert.equal(callCount, 4);
+        assert.deepEqual(delays, [1000, 2000, 4000]);
+    });
+
+    it("caps the default exponential backoff at the documented maxDelay of 30000ms", async () => {
+        const mw = retryMiddleware({ maxRetries: 6 });
+
+        const delays = await recordBackoffDelays(() =>
+            assert.rejects(() =>
+                mw(makeRawEvent(), makeCtx(), async () => {
+                    throw new Error("always fails");
+                }),
+            ),
+        );
+
+        // 1000, 2000, 4000, 8000, 16000, then 32000 capped to 30000
+        assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000]);
     });
 
     it("skips retry for NonRetryableError", async () => {

@@ -1,0 +1,16 @@
+# Regenerate with `pnpm --filter @connectum/testing fixtures:generate`
+# (run from the package directory, which is what `out` is relative to).
+# include_imports: the `buf.validate` annotations are not shipped as generated
+# code by any package, so their schema is generated next to the fixture.
+# erasable_syntax: the tests run the generated code natively (type stripping),
+# which rejects TypeScript `enum`.
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: tests/fixtures/validated/pb
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.ts
+      - erasable_syntax=true

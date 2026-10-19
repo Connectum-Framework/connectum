@@ -17,9 +17,9 @@ import { defaultCompare, type ParityScenarioResult, transportParityTest } from "
 import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 /**
- * Build an explicit error-oracle `compare` callback (see authorization.parity
- * for rationale). Prevents the false-positive where BOTH transports
- * unexpectedly succeed and the placeholder payload is silently compared equal.
+ * Build an explicit error-oracle `compare` callback. Prevents the false-positive
+ * where BOTH transports unexpectedly succeed and the placeholder payload is
+ * silently compared equal.
  */
 function expectErrorOnBothTransports(expectedCode: Code) {
     return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
@@ -113,7 +113,19 @@ transportParityTest("parity 5.1: ConnectError(NotFound) maps identically with me
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.NotFound),
+    // A handler-thrown ConnectError reaches the client with its own message and
+    // its metadata headers on both transports; the expected values are the ones
+    // the handler throws, not whatever the two transports happen to agree on.
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.NotFound)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "missing record", `${name} transport must deliver the handler's message`);
+            assert.strictEqual(result.error?.metadata?.["x-error-tag"], "user-42", `${name} transport must deliver the handler's metadata header`);
+        }
+    },
 });
 
 // A failure that is not a ConnectError: code `internal`, the same message on both
@@ -159,7 +171,13 @@ transportParityTest("parity 5.3: server interceptor error maps identically", {
             return { error: describeError(err) };
         }
     },
-    compare: expectErrorOnBothTransports(Code.PermissionDenied),
+    // The interceptor's own code and message reach the client unchanged on both
+    // transports (the handler is never reached).
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.PermissionDenied)(http, local);
+        assert.strictEqual(http.error?.message, "interceptor reject", "HTTP transport must deliver the interceptor's message");
+        assert.strictEqual(local.error?.message, "interceptor reject", "local transport must deliver the interceptor's message");
+    },
 });
 
 /** Runs the plain-error handler through the client of whichever transport the harness provides. */

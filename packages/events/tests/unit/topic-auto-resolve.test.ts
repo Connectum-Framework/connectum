@@ -231,6 +231,7 @@ describe("EventBus topic auto-resolve", () => {
     it("round-trip consistency: publish topic matches subscribe topic", async () => {
         const customTopic = "meshai.task.created";
         let capturedHandler: RawEventHandler | null = null;
+        let subscribedPatterns: string[] = [];
         const publishedEvents: Array<{ eventType: string; payload: Uint8Array }> = [];
         const receivedEvents: Array<{ eventType: string }> = [];
 
@@ -241,8 +242,10 @@ describe("EventBus topic auto-resolve", () => {
             async disconnect(): Promise<void> {},
             async publish(eventType: string, payload: Uint8Array): Promise<void> {
                 publishedEvents.push({ eventType, payload });
-                // Deliver to subscriber if topic matches
-                if (capturedHandler) {
+                // Deliver only when the bus subscribed this adapter to the topic, as a
+                // real broker does. A loopback that delivered everything would hide a
+                // bus that subscribed to the wrong topic.
+                if (capturedHandler && subscribedPatterns.includes(eventType)) {
                     await capturedHandler(
                         {
                             eventId: `evt-${publishedEvents.length}`,
@@ -257,8 +260,9 @@ describe("EventBus topic auto-resolve", () => {
                     );
                 }
             },
-            async subscribe(_patterns: string[], handler: RawEventHandler): Promise<EventSubscription> {
+            async subscribe(patterns: string[], handler: RawEventHandler): Promise<EventSubscription> {
                 capturedHandler = handler;
+                subscribedPatterns = patterns;
                 return { async unsubscribe(): Promise<void> {} };
             },
         };
@@ -285,6 +289,8 @@ describe("EventBus topic auto-resolve", () => {
         });
 
         await bus.start();
+
+        assert.deepEqual(subscribedPatterns, [customTopic], "the adapter must be subscribed to the declared topic, not to the message typeName");
 
         // Publish without explicit topic -- should auto-resolve to proto annotation topic
         await bus.publish(EventOptionsSchema, {} as any);

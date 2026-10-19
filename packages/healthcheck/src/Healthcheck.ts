@@ -54,14 +54,51 @@ function resolveServiceStatus(manager: HealthcheckManager, service: string): Ser
 }
 
 /**
+ * Reject an `httpPaths` value that could never match a request or would
+ * silently turn the HTTP endpoint into a no-op.
+ *
+ * A request path always starts with "/" and never contains the query or
+ * fragment delimiters, so an element lacking the slash or containing them can
+ * never be matched. An empty array would leave `httpEnabled: true` with no
+ * reachable endpoint.
+ */
+function validateHttpPaths(httpPaths: unknown): void {
+    if (!Array.isArray(httpPaths)) {
+        throw new TypeError(`Healthcheck(): option 'httpPaths' must be an array of paths, got ${typeof httpPaths}`);
+    }
+    if (httpPaths.length === 0) {
+        throw new RangeError("Healthcheck(): option 'httpPaths' must not be empty; to disable the HTTP endpoint set 'httpEnabled: false'");
+    }
+    for (const path of httpPaths as unknown[]) {
+        if (typeof path !== "string") {
+            throw new TypeError(`Healthcheck(): option 'httpPaths' must contain only strings, got ${typeof path}`);
+        }
+        if (!path.startsWith("/")) {
+            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must start with '/'`);
+        }
+        if (path.includes("?") || path.includes("#")) {
+            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must not contain '?' or '#'`);
+        }
+    }
+}
+
+/**
  * Create healthcheck protocol registration
  *
  * Returns a ProtocolRegistration directly (not `{ protocol, manager }`).
  * Pass to createServer({ protocols: [...] }).
  * Use the singleton `healthcheckManager` export to control health status.
  *
+ * `httpPaths`, when passed, is validated even if `httpEnabled` is false.
+ * HTTP request paths are matched exactly and case-sensitively (`/healthz/`
+ * does not match `/healthz`); the query string is ignored and the method is
+ * not checked.
+ *
  * @param options - Healthcheck configuration options
  * @returns ProtocolRegistration for createServer
+ * @throws {RangeError} when `httpPaths` is an empty array
+ * @throws {TypeError} when `httpPaths` is not an array, or an entry is not a
+ *   string, does not start with `/`, or contains `?` or `#`
  *
  * @example
  * ```typescript
@@ -83,6 +120,10 @@ function resolveServiceStatus(manager: HealthcheckManager, service: string): Ser
 export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistration {
     const { httpEnabled = false, httpPaths, watchInterval = DEFAULT_WATCH_INTERVAL } = options;
     const manager = options.manager ?? healthcheckManager;
+
+    if (httpPaths !== undefined) {
+        validateHttpPaths(httpPaths);
+    }
 
     const protocol: ProtocolRegistration = {
         name: "healthcheck",

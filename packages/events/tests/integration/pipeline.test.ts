@@ -301,7 +301,12 @@ describe("Custom middleware ordering", () => {
 
         const customMiddleware: EventMiddleware = async (_event, _ctx, next) => {
             executionOrder.push("custom:before");
-            await next();
+            try {
+                await next();
+            } catch (error) {
+                executionOrder.push("custom:threw");
+                throw error;
+            }
             executionOrder.push("custom:after");
         };
 
@@ -324,8 +329,12 @@ describe("Custom middleware ordering", () => {
             routes: [
                 (router) => {
                     router.service(service, {
-                        trackEvent: async () => {
+                        trackEvent: async (_msg: unknown, ctx: EventContext) => {
                             executionOrder.push("handler");
+                            // The failing event never succeeds, so retry and DLQ both engage.
+                            if (ctx.eventId === "evt-ordering-fail") {
+                                throw new Error("always fails");
+                            }
                         },
                     } as any);
                 },
@@ -342,6 +351,23 @@ describe("Custom middleware ordering", () => {
         assert.equal(executionOrder[0], "custom:before", "custom middleware should run first (outermost)");
         assert.equal(executionOrder[1], "handler", "handler runs innermost");
         assert.equal(executionOrder[2], "custom:after", "custom middleware post-handler runs last");
+
+        // Failure path is where DLQ and retry are no longer transparent, so it is
+        // what pins their relative order. maxRetries 1 = 2 handler runs.
+        //  - DLQ outside retry: both runs happen BEFORE the one DLQ publish, and
+        //    the error never reaches custom (DLQ swallows it).
+        //  - DLQ inside retry: the first failure would be dead-lettered at once,
+        //    retry would then see success, and the handler would run only once.
+        //  - custom inside DLQ: custom would see the error ("custom:threw").
+        executionOrder.length = 0;
+        const failing = tracker.deliver(makeRawEvent(EventOptionsSchema.typeName, "evt-ordering-fail"));
+        await failing.promise;
+
+        assert.deepEqual(executionOrder, ["custom:before", "handler", "handler", "custom:after"]);
+        const dlqPublishes = tracker.published.filter((p) => p.eventType === "ordering.dlq");
+        assert.equal(dlqPublishes.length, 1, "exactly one dead letter, after retries are exhausted");
+        assert.equal(dlqPublishes[0]?.options?.metadata?.["dlq.original-id"], "evt-ordering-fail");
+        assert.deepEqual(failing.calls, ["ack"], "DLQ acks the original after dead-lettering it");
     });
 
     it("custom middleware sees error from DLQ on handler failure", async () => {

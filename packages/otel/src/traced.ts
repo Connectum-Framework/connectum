@@ -64,7 +64,7 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                 if (result instanceof Promise) {
                     return result.then(
                         (value) => {
-                            span.setStatus({ code: SpanStatusCode.OK });
+                            // Success leaves the status unset; only a failure sets ERROR.
                             span.end();
                             return value;
                         },
@@ -80,8 +80,7 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                     );
                 }
 
-                // Sync result
-                span.setStatus({ code: SpanStatusCode.OK });
+                // Sync result: success leaves the status unset.
                 span.end();
                 return result;
             } catch (error) {

@@ -95,17 +95,35 @@ describe("EventBus lifecycle", () => {
     });
 
     it("resets shutdown signal between start-stop cycles", async () => {
+        const adapter = MemoryAdapter();
+        const seen: boolean[] = [];
+        const method = fakeDescMethod("onEvent", EventOptionsSchema.typeName, EventOptionsSchema);
         const bus = createEventBus({
-            adapter: MemoryAdapter(),
+            adapter,
+            routes: [
+                (router) => {
+                    router.service(fakeDescService("test.v1.ResetService", [method]), {
+                        onEvent: async (_msg: unknown, ctx: { signal: AbortSignal }) => {
+                            seen.push(ctx.signal.aborted);
+                        },
+                    } as any);
+                },
+            ],
         });
 
-        // Start with a signal
-        await bus.start({ signal: AbortSignal.timeout(5000) });
+        // First cycle runs under a shutdown signal that is aborted afterwards.
+        const firstCycle = new AbortController();
+        await bus.start({ signal: firstCycle.signal });
+        await bus.stop();
+        firstCycle.abort();
+
+        // Second cycle starts without a signal. Its handlers must not inherit the
+        // first cycle's (now aborted) signal.
+        await bus.start();
+        await adapter.publish(EventOptionsSchema.typeName, new Uint8Array());
         await bus.stop();
 
-        // Start again without signal -- should not fail due to stale signal
-        await bus.start();
-        await bus.stop();
+        assert.deepEqual(seen, [false], "a handler in the second cycle must see a live signal");
     });
 });
 
@@ -292,15 +310,20 @@ describe("EventBus handler error propagation", () => {
         await bus.stop();
     });
 
-    it("unmatched event type is auto-acked (skip)", async () => {
+    it("a delivery that matches no route is acknowledged without a handler and never nacked", async () => {
         let capturedHandler: RawEventHandler | null = null;
         const ackCalls: string[] = [];
+        let handlerCalls = 0;
+        let middlewareCalls = 0;
+        let publishCalls = 0;
 
         const trackingAdapter: EventAdapter = {
             name: "tracking",
             async connect(_context?: AdapterContext) {},
             async disconnect() {},
-            async publish() {},
+            async publish() {
+                publishCalls++;
+            },
             async subscribe(_patterns, handler): Promise<EventSubscription> {
                 capturedHandler = handler;
                 return { async unsubscribe() {} };
@@ -315,10 +338,21 @@ describe("EventBus handler error propagation", () => {
             routes: [
                 (router) => {
                     router.service(service, {
-                        myEvent: async () => {},
+                        myEvent: async () => {
+                            handlerCalls++;
+                        },
                     } as any);
                 },
             ],
+            middleware: {
+                custom: [
+                    async (_event, _ctx, next) => {
+                        middlewareCalls++;
+                        await next();
+                    },
+                ],
+                dlq: { topic: "unmatched.dlq" },
+            },
         });
 
         await bus.start();
@@ -345,8 +379,11 @@ describe("EventBus handler error propagation", () => {
             },
         );
 
-        // Unmatched events are acked to prevent redelivery
+        // Exactly one ack and no nack: the delivery ends here, it is not redelivered or dead-lettered.
         assert.deepEqual(ackCalls, ["ack"]);
+        assert.equal(handlerCalls, 0, "the route handler must not run");
+        assert.equal(middlewareCalls, 0, "no middleware may run for an unrouted delivery");
+        assert.equal(publishCalls, 0, "nothing may be copied to the DLQ topic");
 
         await bus.stop();
     });

@@ -127,84 +127,146 @@ describe("bulkhead interceptor", () => {
     });
 
     it("should skip streaming when skipStreaming=true", async () => {
-        const interceptor = createBulkheadInterceptor({ capacity: 1, skipStreaming: true });
+        // The only slot is held by a unary call and there is no queue: a streaming call that
+        // went through the bulkhead would be rejected with ResourceExhausted. Skipped, it is not.
+        const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0, skipStreaming: true });
 
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
-
-        const next = createMockNext({ message: { result: "streaming" } });
-
+        const gate = Promise.withResolvers<void>();
+        const next = mock.fn(async (req: any) => {
+            if (!req.stream) await gate.promise;
+            return { stream: req.stream, message: { result: req.stream ? "streaming" : "unary" } };
+        });
         const handler = interceptor(next as any);
-        const result = await handler(mockReq);
 
+        const unary = handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+        const result = await handler(createMockRequest({ service: "test.Service", method: "StreamMethod", message: { field: "value" }, stream: true }));
         assert.strictEqual((result.message as any).result, "streaming");
-        assert.strictEqual(next.mock.calls.length, 1);
+
+        gate.resolve();
+        assert.strictEqual(((await unary).message as any).result, "unary");
+        assert.strictEqual(next.mock.calls.length, 2);
     });
 
     it("should handle custom capacity", async () => {
-        const interceptor = createBulkheadInterceptor({ capacity: 5, queueSize: 0 });
+        // 12 is above the default capacity of 10, so ignoring the option would reject calls 11 and 12.
+        const capacity = 12;
+        const interceptor = createBulkheadInterceptor({ capacity, queueSize: 0 });
 
-        const next = createMockNextSlow(50);
+        let active = 0;
+        let maxActive = 0;
+        const next = mock.fn(async () => {
+            active++;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            active--;
+            return { message: { result: "success" } };
+        });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
-        // 5 concurrent requests should succeed
-        const promises = Array.from({ length: 5 }, () => handler(mockReq));
-        const results = await Promise.all(promises);
-        assert.strictEqual(results.length, 5);
+        // capacity + 1 concurrent calls and no queue: exactly `capacity` run, the extra one is refused
+        const results = await Promise.allSettled(Array.from({ length: capacity + 1 }, () => handler(mockReq)));
+        const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+        assert.strictEqual(results.filter((r) => r.status === "fulfilled").length, capacity);
+        assert.strictEqual(rejected.length, 1);
+        assertConnectError(rejected[0]!.reason, Code.ResourceExhausted);
+        assert.strictEqual(maxActive, capacity);
     });
 
     it("should handle custom queueSize", async () => {
+        // capacity 1 runs one call at a time; queueSize 3 holds three more; the fifth is refused.
+        // Ignoring queueSize (default 10) would queue the fifth call, ignoring capacity (default 10)
+        // would run calls in parallel.
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 3 });
 
-        const next = createMockNextSlow(100);
+        let active = 0;
+        let maxActive = 0;
+        const next = mock.fn(async () => {
+            active++;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            active--;
+            return { message: { result: "success" } };
+        });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
         const handler = interceptor(next as any);
 
-        // 4 requests should succeed (1 active, 3 queued)
-        const promises = Array.from({ length: 4 }, () => handler(mockReq));
-        const results = await Promise.all(promises);
-        assert.strictEqual(results.length, 4);
+        const results = await Promise.allSettled(Array.from({ length: 5 }, () => handler(mockReq)));
+        const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+        assert.strictEqual(results.filter((r) => r.status === "fulfilled").length, 4);
+        assert.strictEqual(rejected.length, 1);
+        assertConnectError(rejected[0]!.reason, Code.ResourceExhausted);
+        assert.strictEqual(maxActive, 1);
     });
 
-    it("should process queued requests in order", async () => {
+    it("should run queued requests one at a time after the active one finishes", async () => {
         const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 2 });
 
-        const order: number[] = [];
+        const events: string[] = [];
         const next = mock.fn(async (req: any) => {
-            order.push(req.id || 0);
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            events.push(`start ${req.id}`);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            events.push(`end ${req.id}`);
             return { message: { result: req.id } };
         });
 
-        const mockReq1 = {
-            ...createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }),
-            id: 1,
-        } as any;
-
-        const mockReq2 = { ...mockReq1, id: 2 };
-        const mockReq3 = { ...mockReq1, id: 3 };
-
+        const base = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
         const handler = interceptor(next as any);
 
-        const promises = [handler(mockReq1), handler(mockReq2), handler(mockReq3)];
+        await Promise.all([1, 2, 3].map((id) => handler({ ...base, id })));
 
-        await Promise.all(promises);
-        assert.deepStrictEqual(order, [1, 2, 3]);
+        // A queued request starts only after the one holding the single slot has finished.
+        // Which queued request goes first is deliberately not asserted: no document promises an order.
+        const startsAndEnds = events.map((e) => e.split(" ")[0]);
+        assert.deepStrictEqual(startsAndEnds, ["start", "end", "start", "end", "start", "end"]);
+        assert.deepStrictEqual(events.filter((e) => e.startsWith("start")).sort(), ["start 1", "start 2", "start 3"]);
     });
 
-    it("should reject invalid capacity", () => {
-        assert.throws(() => createBulkheadInterceptor({ capacity: 0 }), /capacity must be a positive finite number/);
-        assert.throws(() => createBulkheadInterceptor({ capacity: -1 }), /capacity must be a positive finite number/);
-        assert.throws(() => createBulkheadInterceptor({ capacity: Number.POSITIVE_INFINITY }), /capacity must be a positive finite number/);
+    for (const [label, capacity, got] of [
+        ["zero", 0, "0"],
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["NaN", Number.NaN, "NaN"],
+        ["fractional", 1.5, "1.5"],
+    ] as const) {
+        it(`should refuse a ${label} capacity with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createBulkheadInterceptor({ capacity }),
+                (err: unknown) => err instanceof RangeError && err.message === `createBulkheadInterceptor: capacity must be an integer of at least 1, got ${got}`,
+            );
+        });
+    }
+
+    for (const [label, queueSize, got] of [
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["fractional", 0.5, "0.5"],
+    ] as const) {
+        it(`should refuse a ${label} queueSize with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createBulkheadInterceptor({ queueSize }),
+                (err: unknown) => err instanceof RangeError && err.message === `createBulkheadInterceptor: queueSize must be an integer of at least 0, got ${got}`,
+            );
+        });
+    }
+
+    it("should refuse a non-number capacity and queueSize with a TypeError", () => {
+        assert.throws(
+            () => createBulkheadInterceptor({ capacity: "5" as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createBulkheadInterceptor: capacity must be an integer of at least 1, got "5"',
+        );
+        assert.throws(
+            () => createBulkheadInterceptor({ queueSize: null as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === "createBulkheadInterceptor: queueSize must be an integer of at least 0, got null",
+        );
     });
 
-    it("should reject invalid queueSize", () => {
-        assert.throws(() => createBulkheadInterceptor({ queueSize: -1 }), /queueSize must be a non-negative finite number/);
-        assert.throws(() => createBulkheadInterceptor({ queueSize: Number.POSITIVE_INFINITY }), /queueSize must be a non-negative finite number/);
+    it("should accept the boundary values capacity 1 and queueSize 0", () => {
+        assert.strictEqual(typeof createBulkheadInterceptor({ capacity: 1, queueSize: 0 }), "function");
     });
 
     describe("capacity and queue overflow scenarios", () => {
@@ -234,7 +296,7 @@ describe("bulkhead interceptor", () => {
             assertConnectError(err, Code.ResourceExhausted, "Bulkhead capacity exceeded");
         });
 
-        it("should include slot info in ResourceExhausted message when exceeding capacity + queue", async () => {
+        it("should state the configured limits in the ResourceExhausted message when exceeding capacity + queue", async () => {
             const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 1 });
 
             const next = createMockNextSlow(200);
@@ -257,8 +319,20 @@ describe("bulkhead interceptor", () => {
             const err = (rejected[0] as PromiseRejectedResult).reason;
             assertConnectError(err, Code.ResourceExhausted);
             assert.ok(err instanceof ConnectError, "should be ConnectError");
-            assert.ok(err.message.includes("active:"), "error message should contain active slot info");
-            assert.ok(err.message.includes("queued:"), "error message should contain queued slot info");
+            // The text carries the configured limits only: capacity 2, queue 1. Live counters of the
+            // policy are free slots, which would read as an idle bulkhead at the moment it refuses.
+            assert.strictEqual(err.rawMessage, "Bulkhead capacity exceeded (capacity: 2, queueSize: 1)");
+        });
+
+        it("should print the configured limits, not the occupancy, for a different configuration", async () => {
+            const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
+            const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+            const handler = interceptor(createMockNextSlow(100) as any);
+
+            const results = await Promise.allSettled([handler(mockReq), handler(mockReq)]);
+            const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+            assert.strictEqual(rejected.length, 1);
+            assert.strictEqual((rejected[0]!.reason as ConnectError).rawMessage, "Bulkhead capacity exceeded (capacity: 1, queueSize: 0)");
         });
     });
 });
