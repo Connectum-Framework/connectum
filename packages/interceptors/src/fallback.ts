@@ -62,7 +62,7 @@ export function createFallbackInterceptor<T = unknown>(options: FallbackOptions<
 
     // Validate options
     if (typeof handler !== "function") {
-        throw new Error("handler must be a function");
+        throw new TypeError("createFallbackInterceptor: handler must be a function");
     }
 
     return (next) => async (req) => {

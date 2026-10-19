@@ -19,12 +19,12 @@ describe('retry interceptor', () => {
         ['positive infinite', Number.POSITIVE_INFINITY],
         ['NaN', Number.NaN],
     ] as const) {
-        it(`should throw error for ${label} maxRetries`, () => {
+        it(`should throw a RangeError for ${label} maxRetries`, () => {
             assert.throws(
                 () => createRetryInterceptor({ maxRetries: value }),
                 {
-                    name: 'Error',
-                    message: /maxRetries/,
+                    name: 'RangeError',
+                    message: new RegExp(`^createRetryInterceptor: maxRetries must be a finite number of at least 0, got ${String(value)}$`),
                 }
             );
         });
@@ -53,23 +53,39 @@ describe('retry interceptor', () => {
         });
     }
 
-    it('should throw error for negative initialDelay', () => {
-        assert.throws(
-            () => createRetryInterceptor({ initialDelay: -100 }),
-            {
-                name: 'Error',
-                message: 'initialDelay must be a non-negative finite number',
-            }
-        );
-    });
+    for (const option of ['initialDelay', 'maxDelay'] as const) {
+        for (const [label, value, got] of [
+            ['negative', -100, '-100'],
+            ['infinite', Number.POSITIVE_INFINITY, 'Infinity'],
+            ['NaN', Number.NaN, 'NaN'],
+            ['fractional', 0.5, '0.5'],
+            ['above the timer ceiling', 2_147_483_648, '2147483648'],
+        ] as const) {
+            it(`should refuse a ${label} ${option} with a RangeError naming the option and the value`, () => {
+                assert.throws(
+                    () => createRetryInterceptor({ [option]: value }),
+                    (err: unknown) =>
+                        err instanceof RangeError &&
+                        err.message === `createRetryInterceptor: ${option} must be an integer from 0 to 2147483647 milliseconds, got ${got}`,
+                );
+            });
+        }
 
-    it('should throw error for negative maxDelay', () => {
+        it(`should accept the boundary ${option} values 0 and 2147483647`, () => {
+            assert.strictEqual(typeof createRetryInterceptor({ [option]: 0 }), 'function');
+            assert.strictEqual(typeof createRetryInterceptor({ [option]: 2_147_483_647 }), 'function');
+        });
+    }
+
+    it('should refuse non-number options with a TypeError', () => {
         assert.throws(
-            () => createRetryInterceptor({ maxDelay: -100 }),
-            {
-                name: 'Error',
-                message: 'maxDelay must be a non-negative finite number',
-            }
+            () => createRetryInterceptor({ maxRetries: '3' as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createRetryInterceptor: maxRetries must be a finite number of at least 0, got "3"',
+        );
+        assert.throws(
+            () => createRetryInterceptor({ initialDelay: null as unknown as number }),
+            (err: unknown) =>
+                err instanceof TypeError && err.message === 'createRetryInterceptor: initialDelay must be an integer from 0 to 2147483647 milliseconds, got null',
         );
     });
 

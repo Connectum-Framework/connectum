@@ -173,13 +173,13 @@ describe("fallback interceptor", () => {
         ["an object", { fallback: "value" }],
         ["a number", 42],
     ] as const) {
-        it(`should reject ${label} as the handler`, () => {
+        it(`should reject ${label} as the handler with a TypeError`, () => {
             assert.throws(
                 () =>
                     createFallbackInterceptor({
                         handler: value as unknown as () => unknown,
                     }),
-                { name: "Error", message: /handler/ },
+                (err: unknown) => err instanceof TypeError && err.message === "createFallbackInterceptor: handler must be a function",
             );
         });
     }
