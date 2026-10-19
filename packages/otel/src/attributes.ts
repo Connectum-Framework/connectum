@@ -92,6 +92,11 @@ export type ConnectErrorCode = (typeof ConnectErrorCode)[keyof typeof ConnectErr
 
 /**
  * Reverse map: numeric code -> string name for span attributes
+ *
+ * Code 1 is spelled `CANCELED` (one L), as the Connect protocol, Connect-ES,
+ * connect-go and otelconnect-go spell it. `CANCELLED` (two Ls) is the gRPC
+ * spelling and is never produced. Queries that must match data written by
+ * both stacks can use the pattern `CANCEL+ED`.
  */
 export const ConnectErrorCodeName: Record<number, string> = {
     1: "CANCELED",
