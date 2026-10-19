@@ -310,15 +310,20 @@ describe("EventBus handler error propagation", () => {
         await bus.stop();
     });
 
-    it("unmatched event type is auto-acked (skip)", async () => {
+    it("a delivery that matches no route is acknowledged without a handler and never nacked", async () => {
         let capturedHandler: RawEventHandler | null = null;
         const ackCalls: string[] = [];
+        let handlerCalls = 0;
+        let middlewareCalls = 0;
+        let publishCalls = 0;
 
         const trackingAdapter: EventAdapter = {
             name: "tracking",
             async connect(_context?: AdapterContext) {},
             async disconnect() {},
-            async publish() {},
+            async publish() {
+                publishCalls++;
+            },
             async subscribe(_patterns, handler): Promise<EventSubscription> {
                 capturedHandler = handler;
                 return { async unsubscribe() {} };
@@ -333,10 +338,21 @@ describe("EventBus handler error propagation", () => {
             routes: [
                 (router) => {
                     router.service(service, {
-                        myEvent: async () => {},
+                        myEvent: async () => {
+                            handlerCalls++;
+                        },
                     } as any);
                 },
             ],
+            middleware: {
+                custom: [
+                    async (_event, _ctx, next) => {
+                        middlewareCalls++;
+                        await next();
+                    },
+                ],
+                dlq: { topic: "unmatched.dlq" },
+            },
         });
 
         await bus.start();
@@ -363,8 +379,11 @@ describe("EventBus handler error propagation", () => {
             },
         );
 
-        // Unmatched events are acked to prevent redelivery
+        // Exactly one ack and no nack: the delivery ends here, it is not redelivered or dead-lettered.
         assert.deepEqual(ackCalls, ["ack"]);
+        assert.equal(handlerCalls, 0, "the route handler must not run");
+        assert.equal(middlewareCalls, 0, "no middleware may run for an unrouted delivery");
+        assert.equal(publishCalls, 0, "nothing may be copied to the DLQ topic");
 
         await bus.stop();
     });
