@@ -32,6 +32,7 @@
     "test:integration": "exodus-test --typescript tests/integration/**/*.test.ts",
     "test:bun": "exodus-test --engine bun:pure tests/**/*.test.ts",
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
+    "fixtures:generate": "buf generate tests/fixtures/validated --template tests/fixtures/validated/buf.gen.yaml && biome check --write tests/fixtures/validated",
     "lint": "biome check src",
     "format": "biome check --write src",
     "build": "tsup",
@@ -65,7 +66,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@bufbuild/buf": "catalog:",
     "@bufbuild/protobuf": "catalog:",
+    "@bufbuild/protoc-gen-es": "catalog:",
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "@connectum/healthcheck": "workspace:^",

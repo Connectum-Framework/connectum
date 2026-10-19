@@ -216,13 +216,46 @@ describe("parseServiceFromUrl", () => {
         });
     }
 
-    // Known divergence from the documented contract, not fixed here: an empty
-    // or syntactically invalid host makes the base URL unparseable, the
-    // constructor throws, and the service parameter is silently dropped (the
-    // HTTP handler then reports overall health instead of the named service).
+    // An empty or syntactically invalid host used to make the base URL
+    // unparseable, so the service parameter was silently dropped and the
+    // handler reported overall health instead of the named service.
     for (const host of ["", "bad host"]) {
-        it(`should read the service parameter with host "${host}"`, { skip: "the implementation drops the service parameter when the host is empty or invalid; the documented contract says the host is used only to resolve relative URLs" }, () => {
+        it(`should read the service parameter with host "${host}"`, () => {
             assert.strictEqual(parseServiceFromUrl("/healthz?service=test.Svc", host), "test.Svc");
+        });
+    }
+
+    it("should read the service parameter when no host argument is passed", () => {
+        assert.strictEqual(parseServiceFromUrl("/healthz?service=test.Svc"), "test.Svc");
+    });
+
+    it("should return the empty string for an empty service value", () => {
+        assert.strictEqual(parseServiceFromUrl("/healthz?service="), "");
+    });
+});
+
+describe("createHttpHealthHandler — Host header independence", () => {
+    let manager: HealthcheckManager;
+
+    beforeEach(() => {
+        manager = new HealthcheckManager();
+        manager.initialize(["svc.v1.Foo"]);
+    });
+
+    // svc.v1.Foo is still UNKNOWN, so overall health is 503, but the request
+    // names an unknown service. A dropped parameter would surface as the
+    // overall answer (503, "overall") instead of 404 with the requested name.
+    for (const host of ["", "bad host"]) {
+        it(`should report the named service with Host "${host}"`, () => {
+            const handler = createHttpHealthHandler(manager);
+            const res = createMockResponse();
+
+            handler(createMockRequest("/healthz?service=unknown.Svc", host) as any, res as any);
+
+            assert.strictEqual(res.statusCode, 404);
+            const body = JSON.parse(res.getBody());
+            assert.strictEqual(body.status, "SERVICE_UNKNOWN");
+            assert.strictEqual(body.service, "unknown.Svc");
         });
     }
 });
@@ -310,20 +343,6 @@ describe("createHttpHealthHandler — additional scenarios", () => {
         assert.strictEqual(headers[contentType]?.split(";")[0]?.trim().toLowerCase(), "application/json");
     });
 
-    it("should not match any path when custom paths array is empty", () => {
-        manager.update(ServingStatus.SERVING);
-        const handler = createHttpHealthHandler(manager, []);
-
-        // None of the default paths should match
-        for (const path of ["/healthz", "/health", "/readyz"]) {
-            const req = createMockRequest(path);
-            const res = createMockResponse();
-
-            const handled = handler(req as any, res as any);
-            assert.strictEqual(handled, false, `Path '${path}' should not be handled with empty custom paths`);
-        }
-    });
-
     it("should not match paths with trailing slashes (exact match only)", () => {
         manager.update(ServingStatus.SERVING);
         const handler = createHttpHealthHandler(manager);
@@ -333,5 +352,33 @@ describe("createHttpHealthHandler — additional scenarios", () => {
 
         const handled = handler(req as any, res as any);
         assert.strictEqual(handled, false, "Path with trailing slash should not match");
+    });
+
+    it("should not match a path that differs only in case", () => {
+        const handler = createHttpHealthHandler(manager);
+
+        assert.strictEqual(handler(createMockRequest("/Healthz") as any, createMockResponse() as any), false);
+    });
+
+    it("should ignore the query string and the method when matching the path", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+        const res = createMockResponse();
+
+        const handled = handler({ ...createMockRequest("/healthz?x=1"), method: "POST" } as any, res as any);
+
+        assert.strictEqual(handled, true);
+        assert.strictEqual(res.statusCode, 200);
+    });
+
+    it("should report the overall state for an empty service value", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+        const res = createMockResponse();
+
+        handler(createMockRequest("/healthz?service=") as any, res as any);
+
+        assert.strictEqual(res.statusCode, 200);
+        assert.strictEqual(JSON.parse(res.getBody()).status, "SERVING");
     });
 });

@@ -17,9 +17,9 @@ import { defaultCompare, type ParityScenarioResult, transportParityTest } from "
 import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 /**
- * Build an explicit error-oracle `compare` callback (see authorization.parity
- * for rationale). Prevents the false-positive where BOTH transports
- * unexpectedly succeed and the placeholder payload is silently compared equal.
+ * Build an explicit error-oracle `compare` callback. Prevents the false-positive
+ * where BOTH transports unexpectedly succeed and the placeholder payload is
+ * silently compared equal.
  */
 function expectErrorOnBothTransports(expectedCode: Code) {
     return (http: ParityScenarioResult, local: ParityScenarioResult): void => {

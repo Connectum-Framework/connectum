@@ -20,6 +20,8 @@ import { createRetryInterceptor } from "./retry.ts";
 import { createSerializerInterceptor } from "./serializer.ts";
 import { createTimeoutInterceptor } from "./timeout.ts";
 import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, FallbackOptions, RetryOptions, SerializerOptions, TimeoutOptions } from "./types.ts";
+import type { DefaultOptionKind } from "./validate.ts";
+import { requireDefaultOption } from "./validate.ts";
 
 /**
  * Configuration options for the default interceptor chain.
@@ -29,8 +31,14 @@ import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, Fallb
  * - `true` to enable with default options
  * - An options object to enable with custom configuration
  *
- * Fallback requires an options object with a handler; boolean values leave it
- * disabled. Validation accepts only a boolean and is enabled unless `false`.
+ * Fallback requires an options object with a handler: `false` (or omitting it)
+ * leaves it disabled and `true` is refused, because there is no default handler.
+ * Validation accepts only a boolean and is enabled unless `false`.
+ *
+ * Any other value for a key (`null`, a number, a string, an array, a function) is
+ * refused with a `TypeError` naming the key: a value that is not understood must
+ * not silently disable an interceptor. The numeric options inside an options
+ * object are validated by their factories; see each options type for its range.
  *
  * Only structural interceptors (errorHandler, validation) are enabled by
  * default. Behavioral resilience interceptors (timeout, bulkhead,
@@ -84,10 +92,12 @@ export interface DefaultInterceptorOptions {
      * Fallback interceptor.
      * Provides graceful degradation when service fails.
      * Disabled by default — requires a handler function.
-     * Pass an options object with a handler to enable it; `true` leaves it disabled.
+     * Pass an options object with a handler to enable it. `true` is refused
+     * with a `TypeError`: a fallback without an application-specific handler
+     * would silently do nothing.
      * @default false
      */
-    fallback?: boolean | FallbackOptions;
+    fallback?: false | FallbackOptions;
 
     /**
      * Validation interceptor.
@@ -106,14 +116,28 @@ export interface DefaultInterceptorOptions {
 }
 
 /**
- * Narrow an interceptor option to an options object.
- *
- * `typeof value === "object"` alone also matches `null`, so e.g. `{ timeout: null }`
- * would forward `null` to a factory and crash during options destructuring.
- * This guard excludes `null` (and `boolean`).
+ * Which shape each key accepts. Checked for every key before any interceptor is
+ * built, so a bad value fails the whole call instead of silently disabling one
+ * interceptor.
  */
-function isOptionsObject<T>(value: boolean | T | undefined): value is T {
-    return typeof value === "object" && value !== null;
+const OPTION_KINDS: ReadonlyArray<readonly [keyof DefaultInterceptorOptions, DefaultOptionKind]> = [
+    ["errorHandler", "toggle"],
+    ["timeout", "toggle"],
+    ["bulkhead", "toggle"],
+    ["circuitBreaker", "toggle"],
+    ["retry", "toggle"],
+    ["fallback", "fallback"],
+    ["validation", "boolean"],
+    ["serializer", "toggle"],
+];
+
+/**
+ * Pick the options object out of a value already accepted by
+ * {@link requireDefaultOption}: an object is the options, `true` and
+ * `undefined` mean "defaults". `null` and arrays cannot reach this point.
+ */
+function optionsOf<T extends object>(value: boolean | T | undefined): T | undefined {
+    return typeof value === "object" ? value : undefined;
 }
 
 /**
@@ -135,6 +159,8 @@ function isOptionsObject<T>(value: boolean | T | undefined): value is T {
  *
  * @param options - Configuration for each interceptor
  * @returns Array of configured interceptors in the correct order
+ * @throws TypeError if a key holds a value its shape does not allow (see {@link DefaultInterceptorOptions})
+ * @throws RangeError if a numeric option inside an options object is out of range
  *
  * @example
  * ```typescript
@@ -160,40 +186,39 @@ function isOptionsObject<T>(value: boolean | T | undefined): value is T {
  * ```
  */
 export function createDefaultInterceptors(options: DefaultInterceptorOptions = {}): Interceptor[] {
+    for (const [option, kind] of OPTION_KINDS) {
+        requireDefaultOption({ option, value: options[option], kind });
+    }
+
     const interceptors: Interceptor[] = [];
 
     // 1. Error handler (must be first!)
     if (options.errorHandler !== false) {
-        const opts = isOptionsObject(options.errorHandler) ? options.errorHandler : {};
-        interceptors.push(createErrorHandlerInterceptor(opts));
+        interceptors.push(createErrorHandlerInterceptor(optionsOf(options.errorHandler) ?? {}));
     }
 
     // 2. Timeout (opt-in: no hidden behavioral logic)
-    if (options.timeout === true || isOptionsObject(options.timeout)) {
-        const opts = isOptionsObject(options.timeout) ? options.timeout : {};
-        interceptors.push(createTimeoutInterceptor(opts));
+    if (options.timeout !== undefined && options.timeout !== false) {
+        interceptors.push(createTimeoutInterceptor(optionsOf(options.timeout) ?? {}));
     }
 
     // 3. Bulkhead (opt-in: no hidden behavioral logic)
-    if (options.bulkhead === true || isOptionsObject(options.bulkhead)) {
-        const opts = isOptionsObject(options.bulkhead) ? options.bulkhead : {};
-        interceptors.push(createBulkheadInterceptor(opts));
+    if (options.bulkhead !== undefined && options.bulkhead !== false) {
+        interceptors.push(createBulkheadInterceptor(optionsOf(options.bulkhead) ?? {}));
     }
 
     // 4. Circuit breaker (opt-in: no hidden behavioral logic)
-    if (options.circuitBreaker === true || isOptionsObject(options.circuitBreaker)) {
-        const opts = isOptionsObject(options.circuitBreaker) ? options.circuitBreaker : {};
-        interceptors.push(createCircuitBreakerInterceptor(opts));
+    if (options.circuitBreaker !== undefined && options.circuitBreaker !== false) {
+        interceptors.push(createCircuitBreakerInterceptor(optionsOf(options.circuitBreaker) ?? {}));
     }
 
     // 5. Retry (opt-in: no hidden behavioral logic)
-    if (options.retry === true || isOptionsObject(options.retry)) {
-        const opts = isOptionsObject(options.retry) ? options.retry : {};
-        interceptors.push(createRetryInterceptor(opts));
+    if (options.retry !== undefined && options.retry !== false) {
+        interceptors.push(createRetryInterceptor(optionsOf(options.retry) ?? {}));
     }
 
     // 6. Fallback (opt-in, disabled by default — requires handler)
-    if (isOptionsObject(options.fallback)) {
+    if (options.fallback !== undefined && options.fallback !== false) {
         interceptors.push(createFallbackInterceptor(options.fallback));
     }
 
@@ -203,9 +228,8 @@ export function createDefaultInterceptors(options: DefaultInterceptorOptions = {
     }
 
     // 8. Serializer (opt-in, disabled by default)
-    if (options.serializer === true || isOptionsObject(options.serializer)) {
-        const opts = isOptionsObject(options.serializer) ? options.serializer : {};
-        interceptors.push(createSerializerInterceptor(opts));
+    if (options.serializer !== undefined && options.serializer !== false) {
+        interceptors.push(createSerializerInterceptor(optionsOf(options.serializer) ?? {}));
     }
 
     return interceptors;

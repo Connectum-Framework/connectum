@@ -229,6 +229,9 @@ importers:
       '@connectum/core':
         specifier: workspace:^
         version: link:../core
+      '@connectum/interceptors':
+        specifier: workspace:^
+        version: link:../interceptors
       '@connectum/testing':
         specifier: workspace:^
         version: link:../testing
@@ -731,9 +734,15 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.5.0
+      '@bufbuild/buf':
+        specifier: 'catalog:'
+        version: 1.72.0
       '@bufbuild/protobuf':
         specifier: ^2.16.0
         version: 2.16.0
+      '@bufbuild/protoc-gen-es':
+        specifier: 'catalog:'
+        version: 2.16.0(@bufbuild/protobuf@2.16.0)
       '@connectrpc/connect':
         specifier: 'catalog:'
         version: 2.2.0(@bufbuild/protobuf@2.16.0)

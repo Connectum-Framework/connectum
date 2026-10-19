@@ -13,6 +13,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import type { IBackoff, IBackoffFactory, IRetryBackoffContext } from "cockatiel";
 import { ExponentialBackoff } from "cockatiel";
 import type { RetryOptions } from "./types.ts";
+import { MAX_TIMER_MS, requireFiniteNumber, requireInteger } from "./validate.ts";
 
 /**
  * Create retry interceptor
@@ -26,6 +27,11 @@ import type { RetryOptions } from "./types.ts";
  *
  * Use retries only for idempotent operations. Streaming is skipped by default;
  * opting in retries opening failures, not errors while consuming an opened stream.
+ *
+ * `maxRetries` must be a finite number of at least 0 (fractions allowed);
+ * `initialDelay` and `maxDelay` must be integers from 0 to 2147483647
+ * milliseconds. Anything else throws at construction (`TypeError` for a
+ * non-number, `RangeError` otherwise).
  *
  * @param options - Retry options
  * @returns ConnectRPC interceptor
@@ -56,17 +62,10 @@ export function createRetryInterceptor(options: RetryOptions = {}): Interceptor 
     const { maxRetries = 3, initialDelay = 200, maxDelay = 5000, skipStreaming = true, retryableCodes = [Code.Unavailable, Code.ResourceExhausted] } = options;
 
     // Validate options
-    if (maxRetries < 0 || !Number.isFinite(maxRetries)) {
-        throw new Error("maxRetries must be a non-negative finite number");
-    }
-
-    if (initialDelay < 0 || !Number.isFinite(initialDelay)) {
-        throw new Error("initialDelay must be a non-negative finite number");
-    }
-
-    if (maxDelay < 0 || !Number.isFinite(maxDelay)) {
-        throw new Error("maxDelay must be a non-negative finite number");
-    }
+    // A fractional budget stays valid: it is compared with the number of retries made.
+    requireFiniteNumber({ caller: "createRetryInterceptor", option: "maxRetries", value: maxRetries, min: 0 });
+    requireInteger({ caller: "createRetryInterceptor", option: "initialDelay", value: initialDelay, min: 0, max: MAX_TIMER_MS, unit: "milliseconds" });
+    requireInteger({ caller: "createRetryInterceptor", option: "maxDelay", value: maxDelay, min: 0, max: MAX_TIMER_MS, unit: "milliseconds" });
 
     const factory: IBackoffFactory<IRetryBackoffContext<unknown>> = new ExponentialBackoff({ initialDelay, maxDelay });
 
