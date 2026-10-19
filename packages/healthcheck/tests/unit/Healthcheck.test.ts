@@ -78,6 +78,54 @@ describe("Healthcheck", () => {
 		}
 	});
 
+	// An empty list used to leave httpEnabled: true with an endpoint that
+	// matches nothing, silently. It is a configuration error naming the option
+	// and the way to switch the endpoint off.
+	for (const httpEnabled of [true, false]) {
+		it(`should throw RangeError for an empty httpPaths (httpEnabled: ${httpEnabled})`, () => {
+			assert.throws(
+				() => Healthcheck({ httpEnabled, httpPaths: [] }),
+				(err: unknown) => err instanceof RangeError && /Healthcheck\(\)/.test(err.message) && /httpPaths/.test(err.message) && /httpEnabled: false/.test(err.message),
+			);
+		});
+	}
+
+	// Each of these could never match a request path, so each is rejected at
+	// configuration time instead of silently serving nothing.
+	const invalidPaths: Array<{ desc: string; paths: unknown; expected: RegExp }> = [
+		{ desc: "no leading slash", paths: ["healthz"], expected: /must start with '\/'/ },
+		{ desc: "a non-string entry", paths: [1], expected: /only strings/ },
+		{ desc: "a null entry", paths: [null], expected: /only strings/ },
+		{ desc: "a query delimiter", paths: ["/healthz?x=1"], expected: /'\?' or '#'/ },
+		{ desc: "a fragment delimiter", paths: ["/healthz#top"], expected: /'\?' or '#'/ },
+		{ desc: "an invalid entry after a valid one", paths: ["/healthz", "ready"], expected: /must start with '\/'/ },
+		{ desc: "a string instead of an array", paths: "/healthz", expected: /must be an array/ },
+	];
+
+	for (const { desc, paths, expected } of invalidPaths) {
+		it(`should throw TypeError for httpPaths with ${desc}`, () => {
+			assert.throws(
+				() => Healthcheck({ httpEnabled: true, httpPaths: paths as string[] }),
+				(err: unknown) => err instanceof TypeError && /Healthcheck\(\)/.test(err.message) && /httpPaths/.test(err.message) && expected.test(err.message),
+			);
+		});
+	}
+
+	it("should accept a valid httpPaths when httpEnabled is false and install no handler", () => {
+		assert.strictEqual(Healthcheck({ httpEnabled: false, httpPaths: ["/status"] }).httpHandler, undefined);
+	});
+
+	it("should treat an undefined httpPaths as the default paths", () => {
+		const manager = createHealthcheckManager();
+		manager.set("process", ServingStatus.SERVING);
+		// An explicit undefined is not allowed by the option type, but plain
+		// JavaScript callers and spread option objects do pass it.
+		const handler = Healthcheck({ httpEnabled: true, httpPaths: undefined as unknown as string[], manager }).httpHandler;
+		assert.ok(handler);
+
+		assert.deepStrictEqual(askHttpHandler(handler, "/healthz"), { handled: true, statusCode: 200 });
+	});
+
 	it("should use custom manager when provided in options", () => {
 		const customManager = createHealthcheckManager();
 		const protocol = Healthcheck({ manager: customManager });
