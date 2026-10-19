@@ -192,7 +192,13 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
     return current;
 }
 
-/** Map verified token claims to roles/scopes/name per the issuer's claimsMapping. */
+/**
+ * Map verified token claims to roles/scopes/name per the issuer's claimsMapping.
+ *
+ * Nothing is read from a claim the issuer entry does not name: without a mapping the
+ * token contributes no roles, no scopes and no name (the standard `scope` claim included),
+ * so a service cannot widen its own grants by adding claims to a token it signs.
+ */
 function mapTokenClaims(
     payload: JWTPayload,
     mapping: NonNullable<SignedTokenIssuer["claimsMapping"]> | undefined,
@@ -200,10 +206,6 @@ function mapTokenClaims(
     const claims = payload as Record<string, unknown>;
     const result: { name?: string; roles: string[]; scopes: string[]; subjectClaim?: string } = { roles: [], scopes: [] };
     if (!mapping) {
-        // Default: scope claim (space-separated) if present.
-        if (typeof payload.scope === "string") {
-            result.scopes = payload.scope.split(" ").filter(Boolean);
-        }
         return result;
     }
 
@@ -223,8 +225,6 @@ function mapTokenClaims(
         const val = getNestedValue(claims, mapping.scopes);
         if (typeof val === "string") result.scopes = val.split(" ").filter(Boolean);
         else if (Array.isArray(val)) result.scopes = val.filter((s): s is string => typeof s === "string");
-    } else if (typeof payload.scope === "string") {
-        result.scopes = payload.scope.split(" ").filter(Boolean);
     }
 
     return result;
@@ -256,6 +256,10 @@ function stripBearer(value: string): string {
  * resolves the signing key by `kid` independently of the `iss` claim, so a token
  * claiming `iss: "B"` signed with A's key (header `kid: kid_A`) would be accepted
  * against a shared keyset. This per-issuer binding prevents that forge.
+ *
+ * **Identity.** The resulting `subject` is the verified `iss`. `sub` and `scope` are read
+ * only through an explicit `claimsMapping` (`subject`, `scopes`); a mapped subject that is
+ * absent or not a string rejects the call. Roles come from `claimsMapping.roles` only.
  *
  * The framework ships only the verification primitive; key issuance/rotation/
  * JWKS publication belong to the deployment (SPIRE / the IdP / the mesh).
@@ -330,8 +334,18 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
         }
 
         const mapped = mapTokenClaims(payload, cfg.claimsMapping);
-        // Subject from the VERIFIED payload: explicit subject claim, else sub, else iss.
-        const subject = mapped.subjectClaim ?? payload.sub ?? claimedIssuer;
+        // The caller is identified by the issuer whose own key signed the token: `iss` was
+        // pinned in jwtVerify above, so it is proof of WHO signed. `sub` is a free-form claim
+        // that the issuer chooses, so it never becomes the subject unless the issuer entry
+        // maps a claim to the subject explicitly — and then a missing or non-string value
+        // rejects the call instead of falling back to a different identity.
+        let subject = claimedIssuer;
+        if (cfg.claimsMapping?.subject) {
+            if (!mapped.subjectClaim) {
+                return null;
+            }
+            subject = mapped.subjectClaim;
+        }
 
         const context: AuthContext = {
             subject,

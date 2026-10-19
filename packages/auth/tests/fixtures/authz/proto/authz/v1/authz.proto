@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+// Fixture for the cross-transport authorization parity tests. The access rules
+// are real `connectum.auth.v1` options, read by the shipped authorization
+// interceptor, not a test-local table.
+package authz.v1;
+
+import "connectum/auth/v1/options.proto";
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+  // Subject of the verified caller as the handler saw it; empty when the call
+  // carried no authentication.
+  string subject = 2;
+}
+
+service AuthzService {
+  // Requires the `echo:read` scope.
+  rpc SecureEcho(EchoRequest) returns (EchoResponse) {
+    option (connectum.auth.v1.method_auth) = {
+      requires: {scopes: ["echo:read"]}
+    };
+  }
+
+  // Open to callers without credentials.
+  rpc PublicEcho(EchoRequest) returns (EchoResponse) {
+    option (connectum.auth.v1.method_auth) = {public: true};
+  }
+}

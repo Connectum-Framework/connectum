@@ -156,7 +156,7 @@ describe("generateServer / generateReadme: --no-sample", () => {
     // `generate service` writes a proto and a handler module (plus the vendored option proto with
     // events) and nothing else, so a README that promises a test describes a command that does
     // not exist.
-    it("promises only what `generate service` creates", { skip: "known defect, fails against the generator: the README says the command creates a test, but it creates only a proto and a handler module" }, () => {
+    it("promises only what `generate service` creates", () => {
         const created = [...buildServiceFiles("billing", false).keys()];
         const sentence = /Run `connectum generate service <name>` to create\s+(.*?), then register/.exec(generateReadme(configOnly).replace(/\n/g, " "))?.[1] ?? "";
         assert.ok(sentence.length > 0);

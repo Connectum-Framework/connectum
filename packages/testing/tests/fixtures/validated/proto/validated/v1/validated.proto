@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+// Fixture for the cross-transport validation parity tests. The rules below are
+// real `buf.validate` annotations enforced by the shipped validation
+// interceptor, not a test-local imitation of it.
+package validated.v1;
+
+import "buf/validate/validate.proto";
+
+message EchoRequest {
+  // Three independent rules on one field, so a single bad value can break
+  // more than one of them at once.
+  string message = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 50
+    not_contains: "bad"
+  }];
+
+  // A second field, so a violation list can name more than one field path.
+  int32 count = 2 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+message EchoResponse {
+  string message = 1;
+}
+
+message Item {
+  string value = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message Count {
+  int32 total = 1;
+}
+
+service ValidatedService {
+  // Unary call validated on its request message.
+  rpc Echo(EchoRequest) returns (EchoResponse);
+
+  // Client-streaming call: every inbound message is validated as it is read.
+  rpc Collect(stream Item) returns (Count);
+}

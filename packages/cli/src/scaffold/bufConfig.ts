@@ -3,8 +3,8 @@
  *
  * `buf.yaml` composes the module list (the project's `proto`, plus the auth option proto
  * from `node_modules` when auth is enabled) and the lint `except` list. Event-handler
- * services and the auth/events option protos intentionally violate STANDARD lint
- * (SERVICE_SUFFIX / RPC_*), so the relevant excepts are added to keep `buf lint` green.
+ * services intentionally violate STANDARD lint (SERVICE_SUFFIX / RPC_*), so the excepts
+ * are added only when events are enabled; the auth project needs none.
  *
  * `buf.gen.yaml` makes the generated code import Connectum's own option descriptors
  * from `@connectum/auth` / `@connectum/events` instead of generating local copies.
@@ -24,10 +24,13 @@ export function generateBufYaml(config: ScaffoldConfig): string {
     }
 
     const excepts = new Set<string>();
+    // An except applies to the whole `proto` module, so it also switches the rule off for every
+    // service the user adds later. Only event-handler services break these rules: they are not
+    // named `*Service`, take the event message as the request, and answer with a shared
+    // `google.protobuf.Empty` (the uniqueness rule fires once a second handler service does so).
+    // The auth option proto and the annotated sample service pass STANDARD lint untouched.
     if (config.modules.events) {
         excepts.add("SERVICE_SUFFIX");
-    }
-    if (config.modules.events || config.modules.auth) {
         excepts.add("RPC_REQUEST_STANDARD_NAME");
         excepts.add("RPC_RESPONSE_STANDARD_NAME");
         excepts.add("RPC_REQUEST_RESPONSE_UNIQUE");

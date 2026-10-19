@@ -12,6 +12,9 @@ dist/
 **.key
 **.pem
 **.lock
+# The pinned dependencies of the test-fixture buf modules must be committed:
+# without them `fixtures:generate` resolves whatever the registry serves today.
+!**/tests/fixtures/**/buf.lock
 **.db
 **.db-shm
 **.db-wal
