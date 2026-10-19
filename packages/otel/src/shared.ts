@@ -111,9 +111,10 @@ export async function* wrapAsyncIterable<T>(
                 span.recordException(streamError as Error);
                 const message = streamError instanceof Error ? streamError.message : String(streamError);
                 span.setStatus({ code: SpanStatusCode.ERROR, message });
-            } else {
-                span.setStatus({ code: SpanStatusCode.OK });
             }
+            // Normal completion and an early exit of the consumer both leave the
+            // status unset: the instrumentation never reports OK, and a consumer
+            // that stops reading is not a failure.
             span.end();
         }
     }
