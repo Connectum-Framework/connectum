@@ -93,11 +93,13 @@ export function createMockNextError(code: Code, message?: string): any {
  */
 // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextSlow(delay: number, options?: MockNextOptions): any {
+    const baseMessage = options?.message ?? { result: "success" };
+
     return createMockFn(async (_req: unknown) => {
         await setTimeout(delay);
         return {
             stream: options?.stream ?? false,
-            message: options?.message ?? { result: "success" },
+            message: { ...baseMessage },
         };
     });
 }

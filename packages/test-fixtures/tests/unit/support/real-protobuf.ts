@@ -92,6 +92,21 @@ function buildFiles(): FileDescriptorProto[] {
                 ],
                 oneofDecl: [{ name: "credentials" }],
             },
+            {
+                // A oneof group declared in snake_case.
+                name: "SnakeOneof",
+                field: [{ ...field("api_key", 1, FieldDescriptorProto_Type.STRING, "apiKey"), oneofIndex: 0 }],
+                oneofDecl: [{ name: "login_method" }],
+            },
+            {
+                // Field names whose localName collides with a built-in object property.
+                name: "Reserved",
+                field: [
+                    field("constructor", 1, FieldDescriptorProto_Type.STRING, "constructor"),
+                    field("to_string", 2, FieldDescriptorProto_Type.STRING, "toString"),
+                    field("value_of", 3, FieldDescriptorProto_Type.STRING, "valueOf"),
+                ],
+            },
         ],
         service: [
             {

@@ -9,6 +9,7 @@
  */
 
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
+import { safeObjectProperty } from "@bufbuild/protobuf/reflect";
 import type { FakeMethodOptions, FakeServiceOptions } from "./types.ts";
 
 /**
@@ -73,7 +74,7 @@ export function createFakeMethod(service: DescService, name: string, options?: F
     const method = {
         kind: "rpc",
         name,
-        localName: name.charAt(0).toLowerCase() + name.slice(1),
+        localName: safeObjectProperty(name.charAt(0).toLowerCase() + name.slice(1)),
         parent: service,
         methodKind: options?.methodKind ?? "unary",
         deprecated: false,

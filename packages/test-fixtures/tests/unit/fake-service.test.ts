@@ -96,7 +96,6 @@ describe("createFakeMethod", () => {
   // (constructor, toString, toJSON, valueOf) by appending "$"; the factory does not.
   it(
     "localName escapes names that collide with built-in object properties",
-    { skip: "createFakeMethod does not append '$' to reserved localNames the way protobuf-es does; whether a fake must reproduce this is an owner decision" },
     () => {
       const method = createFakeMethod(createFakeService(), "ToString");
 

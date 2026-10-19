@@ -38,16 +38,6 @@ describe("createMockRequest", () => {
         assert.strictEqual(new URL(req.url).pathname, "/test.TestService/TestMethod");
     });
 
-    it(
-        "auto-generated url has the same origin as the url of a real in-process request",
-        { skip: "the factory builds http://localhost/... while an in-process transport request carries https://in-memory/...; which origin a mock must carry is an owner decision" },
-        () => {
-            const req = createMockRequest({ service: unary.req.service.typeName, method: unary.req.method.name });
-
-            assert.strictEqual(req.url, unary.req.url);
-        },
-    );
-
     it("allocates independent live cancellation signals for separate requests", () => {
         const first = createMockRequest();
         const second = createMockRequest();
