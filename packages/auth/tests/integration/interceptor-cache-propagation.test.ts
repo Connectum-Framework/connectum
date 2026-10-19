@@ -165,14 +165,18 @@ describe("Interceptor Cache & Propagation — Integration", () => {
             assert.strictEqual(verifyCount, 4, "b was the least recently used entry and must have been evicted");
         });
 
-        // A cache lifetime must be a positive number of milliseconds: zero and negative values
-        // would make every entry already expired, and a non-number is a configuration mistake.
-        // The error type and the "positive number" wording are what a caller sees.
+        // A cache lifetime must be a finite positive number of milliseconds: zero and negative
+        // values would make every entry already expired, Infinity would keep an identity for
+        // ever and NaN makes every expiry comparison false, and a non-number is a configuration
+        // mistake. The error type and the "positive number" wording are what a caller sees.
         for (const [label, ttl] of [
             ["zero", 0],
             ["a negative number", -1],
             ["a numeric string", "1000"],
             ["undefined", undefined],
+            ["NaN", Number.NaN],
+            ["Infinity", Number.POSITIVE_INFINITY],
+            ["negative Infinity", Number.NEGATIVE_INFINITY],
         ] as const) {
             it(`should throw RangeError for ttl ${label}`, () => {
                 assert.throws(
@@ -188,6 +192,48 @@ describe("Interceptor Cache & Propagation — Integration", () => {
 
         it("should accept the smallest positive ttl", () => {
             assert.doesNotThrow(() => new LruCache({ ttl: 1 }));
+        });
+
+        // maxSize bounds memory: below 1 or non-integer values would leave the cache
+        // unbounded or meaningless, so they are refused with a RangeError naming the option.
+        for (const [label, maxSize] of [
+            ["zero", 0],
+            ["a negative number", -1],
+            ["a fraction", 1.5],
+            ["NaN", Number.NaN],
+            ["Infinity", Number.POSITIVE_INFINITY],
+            ["a numeric string", "10"],
+        ] as const) {
+            it(`should throw RangeError for maxSize ${label}`, () => {
+                assert.throws(
+                    () => new LruCache({ ttl: 1000, maxSize: maxSize as unknown as number }),
+                    (err: unknown) => {
+                        assert.ok(err instanceof RangeError);
+                        assert.match((err as RangeError).message, /maxSize must be an integer greater than or equal to 1/);
+                        return true;
+                    },
+                );
+            });
+        }
+
+        it("should accept the smallest legal maxSize and evict on the second entry", () => {
+            const cache = new LruCache<string>({ ttl: 60_000, maxSize: 1 });
+            cache.set("a", "A");
+            cache.set("b", "B");
+            assert.strictEqual(cache.size, 1);
+            assert.strictEqual(cache.get("a"), undefined);
+            assert.strictEqual(cache.get("b"), "B");
+        });
+
+        it("should apply the same bounds when the cache is configured through an interceptor", () => {
+            assert.throws(
+                () => createAuthInterceptor({ verifyCredentials: async () => ({ subject: "u", roles: [], scopes: [], claims: {}, type: "t" }), cache: { ttl: Number.POSITIVE_INFINITY } }),
+                RangeError,
+            );
+            assert.throws(
+                () => createSessionAuthInterceptor({ verifySession: async () => ({}), mapSession: async () => ({ subject: "u", roles: [], scopes: [], claims: {}, type: "t" }), cache: { ttl: 1000, maxSize: 0 } }),
+                RangeError,
+            );
         });
     });
 
