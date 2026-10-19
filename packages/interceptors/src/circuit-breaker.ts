@@ -10,6 +10,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { BrokenCircuitError, ConsecutiveBreaker, circuitBreaker, handleWhen } from "cockatiel";
 import type { CircuitBreakerOptions } from "./types.ts";
+import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
 
 /**
  * Connect codes that count as circuit failures by default.
@@ -61,6 +62,10 @@ export function defaultFailurePredicate(error: unknown): boolean {
  * server's inbound stack it degenerates into error-rate load shedding —
  * prefer timeout + bulkhead for inbound protection.
  *
+ * `threshold` must be an integer of at least 1 and `halfOpenAfter` an integer from
+ * 0 to 2147483647 milliseconds; anything else throws at construction (`TypeError`
+ * for a non-number, `RangeError` otherwise).
+ *
  * @param options - Circuit breaker options
  * @returns ConnectRPC interceptor
  *
@@ -96,13 +101,8 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
     const { threshold = 5, halfOpenAfter = 30000, skipStreaming = true, failurePredicate } = options;
 
     // Validate options
-    if (threshold < 1 || !Number.isFinite(threshold)) {
-        throw new Error("threshold must be a positive finite number");
-    }
-
-    if (halfOpenAfter < 0 || !Number.isFinite(halfOpenAfter)) {
-        throw new Error("halfOpenAfter must be a non-negative finite number");
-    }
+    requireInteger({ caller: "createCircuitBreakerInterceptor", option: "threshold", value: threshold, min: 1 });
+    requireInteger({ caller: "createCircuitBreakerInterceptor", option: "halfOpenAfter", value: halfOpenAfter, min: 0, max: MAX_TIMER_MS, unit: "milliseconds" });
 
     // Classification wrapper. The try/catch is mandatory, not defensive:
     // cockatiel invokes the error filter without guarding it (verified in the

@@ -63,29 +63,79 @@ describe('createDefaultInterceptors', () => {
         assert.strictEqual(interceptors.length, 3);
     });
 
-    it('should not enable fallback when set to true without handler', () => {
-        // fallback: true is not a valid FallbackOptions object
-        // It has no handler, so it won't be included
-        const interceptors = createDefaultInterceptors({
-            fallback: true,
-        });
-
-        // fallback: true is not typeof "object", so it's skipped
-        assert.strictEqual(interceptors.length, 2);
+    it('should refuse fallback: true instead of silently ignoring it', () => {
+        // There is no default handler, so `true` could only ever be a no-op that
+        // looks like enabled graceful degradation.
+        assert.throws(
+            () => createDefaultInterceptors({ fallback: true as never }),
+            (err: unknown) => err instanceof TypeError && err.message === 'fallback must be false or an options object with a handler, got true',
+        );
     });
 
-    it('should treat null option as "use defaults", not crash (typeof null === object)', () => {
-        // { timeout: null } must not forward null to the factory and crash.
-        const interceptors = createDefaultInterceptors({
-            timeout: null as never,
-            bulkhead: null as never,
-            circuitBreaker: null as never,
-            retry: null as never,
-            fallback: null as never,
-            serializer: null as never,
+    it('should leave fallback disabled for fallback: false', () => {
+        assert.strictEqual(createDefaultInterceptors({ fallback: false }).length, 2);
+    });
+
+    it('should refuse a fallback options object without a handler', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ fallback: {} as never }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createFallbackInterceptor: handler must be a function',
+        );
+    });
+
+    // A value the helper does not understand must not silently disable an interceptor:
+    // `{ timeout: null }`, `{ timeout: 5000 }` or `{ timeout: "30s" }` look configured and do nothing.
+    const invalidValues: ReadonlyArray<readonly [string, unknown, string]> = [
+        ['null', null, 'null'],
+        ['zero', 0, '0'],
+        ['a number', 5000, '5000'],
+        ['a string', '30s', '"30s"'],
+        ['an array', [], 'an array'],
+        ['a function', () => ({}), 'a function'],
+    ];
+
+    for (const key of ['errorHandler', 'timeout', 'bulkhead', 'circuitBreaker', 'retry', 'serializer']) {
+        for (const [label, value, got] of invalidValues) {
+            it(`should refuse ${label} for ${key} with a TypeError naming the key`, () => {
+                assert.throws(
+                    () => createDefaultInterceptors({ [key]: value } as never),
+                    (err: unknown) => err instanceof TypeError && err.message === `${key} must be true, false or an options object, got ${got}`,
+                );
+            });
+        }
+    }
+
+    for (const [label, value, got] of [...invalidValues, ['an object', {}, 'an object'] as const]) {
+        it(`should refuse ${label} for validation, which takes only a boolean`, () => {
+            assert.throws(
+                () => createDefaultInterceptors({ validation: value } as never),
+                (err: unknown) => err instanceof TypeError && err.message === `validation must be true or false, got ${got}`,
+            );
         });
-        // Opt-in resilience with null stays disabled; errorHandler + validation remain
-        assert.strictEqual(interceptors.length, 2);
+    }
+
+    for (const [label, value, got] of invalidValues) {
+        it(`should refuse ${label} for fallback with a TypeError naming the key`, () => {
+            assert.throws(
+                () => createDefaultInterceptors({ fallback: value } as never),
+                (err: unknown) => err instanceof TypeError && err.message === `fallback must be false or an options object with a handler, got ${got}`,
+            );
+        });
+    }
+
+    it('should validate every key before building anything, wherever the bad key sits', () => {
+        // The bad key comes after valid ones; the call still fails as a whole.
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: true, serializer: null as never }),
+            (err: unknown) => err instanceof TypeError && err.message === 'serializer must be true, false or an options object, got null',
+        );
+    });
+
+    it('should surface a numeric range error from an options object', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: { duration: 0.5 } }),
+            (err: unknown) => err instanceof RangeError && err.message.startsWith('createTimeoutInterceptor: duration must be an integer'),
+        );
     });
 
     it('should support explicit false for every interceptor', () => {

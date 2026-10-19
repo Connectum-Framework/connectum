@@ -10,6 +10,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { TimeoutStrategy, timeout } from "cockatiel";
 import type { TimeoutOptions } from "./types.ts";
+import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
 
 /**
  * Create timeout interceptor
@@ -24,6 +25,10 @@ import type { TimeoutOptions } from "./types.ts";
  * Streaming is skipped by default. With skipStreaming=false, the timeout covers
  * opening the response, not subsequent iteration. Caller cancellation continues
  * to reach an opened stream after the opening timer has been cleared.
+ *
+ * `duration` must be an integer from 1 to 2147483647 milliseconds (the ceiling of
+ * the platform timer, above which it would fire after 1 ms); anything else throws
+ * at construction (`TypeError` for a non-number, `RangeError` otherwise).
  *
  * @param options - Timeout options
  * @returns ConnectRPC interceptor
@@ -65,9 +70,7 @@ export function createTimeoutInterceptor(options: TimeoutOptions = {}): Intercep
     const { duration = 30000, skipStreaming = true } = options;
 
     // Validate options
-    if (duration <= 0 || !Number.isFinite(duration)) {
-        throw new Error("duration must be a positive finite number");
-    }
+    requireInteger({ caller: "createTimeoutInterceptor", option: "duration", value: duration, min: 1, max: MAX_TIMER_MS, unit: "milliseconds" });
 
     // A successfully opened stream must keep running after the policy returns.
     const policy = timeout(duration, { strategy: TimeoutStrategy.Aggressive, abortOnReturn: false });

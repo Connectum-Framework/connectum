@@ -237,12 +237,12 @@ describe("retry cancellation contract", () => {
         assert.equal(result, recovered);
     });
 
-    it("preserves public Cockatiel jitter durations, fractional delays and independent concurrent state", async () => {
+    it("preserves public Cockatiel jitter durations and independent concurrent state", async () => {
         const random = mock.method(Math, "random", () => 0.5);
         const original = ExponentialBackoff.prototype.next;
         const durations: number[][] = [];
         const contexts: number[][] = [];
-        const options = { initialDelay: 0.5, maxDelay: 1.5 };
+        const options = { initialDelay: 1, maxDelay: 3 };
         const expected: number[] = [];
         const factory: IBackoffFactory<IRetryBackoffContext<unknown>> = new ExponentialBackoff(options);
         const context: IRetryBackoffContext<unknown> = { attempt: 1, signal: new AbortController().signal, result: { error: new ConnectError("unavailable", Code.Unavailable) } };

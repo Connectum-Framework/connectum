@@ -226,15 +226,47 @@ describe("bulkhead interceptor", () => {
         assert.deepStrictEqual(events.filter((e) => e.startsWith("start")).sort(), ["start 1", "start 2", "start 3"]);
     });
 
-    it("should reject invalid capacity", () => {
-        assert.throws(() => createBulkheadInterceptor({ capacity: 0 }), /capacity must be a positive finite number/);
-        assert.throws(() => createBulkheadInterceptor({ capacity: -1 }), /capacity must be a positive finite number/);
-        assert.throws(() => createBulkheadInterceptor({ capacity: Number.POSITIVE_INFINITY }), /capacity must be a positive finite number/);
+    for (const [label, capacity, got] of [
+        ["zero", 0, "0"],
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["NaN", Number.NaN, "NaN"],
+        ["fractional", 1.5, "1.5"],
+    ] as const) {
+        it(`should refuse a ${label} capacity with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createBulkheadInterceptor({ capacity }),
+                (err: unknown) => err instanceof RangeError && err.message === `createBulkheadInterceptor: capacity must be an integer of at least 1, got ${got}`,
+            );
+        });
+    }
+
+    for (const [label, queueSize, got] of [
+        ["negative", -1, "-1"],
+        ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
+        ["fractional", 0.5, "0.5"],
+    ] as const) {
+        it(`should refuse a ${label} queueSize with a RangeError naming the option and the value`, () => {
+            assert.throws(
+                () => createBulkheadInterceptor({ queueSize }),
+                (err: unknown) => err instanceof RangeError && err.message === `createBulkheadInterceptor: queueSize must be an integer of at least 0, got ${got}`,
+            );
+        });
+    }
+
+    it("should refuse a non-number capacity and queueSize with a TypeError", () => {
+        assert.throws(
+            () => createBulkheadInterceptor({ capacity: "5" as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === 'createBulkheadInterceptor: capacity must be an integer of at least 1, got "5"',
+        );
+        assert.throws(
+            () => createBulkheadInterceptor({ queueSize: null as unknown as number }),
+            (err: unknown) => err instanceof TypeError && err.message === "createBulkheadInterceptor: queueSize must be an integer of at least 0, got null",
+        );
     });
 
-    it("should reject invalid queueSize", () => {
-        assert.throws(() => createBulkheadInterceptor({ queueSize: -1 }), /queueSize must be a non-negative finite number/);
-        assert.throws(() => createBulkheadInterceptor({ queueSize: Number.POSITIVE_INFINITY }), /queueSize must be a non-negative finite number/);
+    it("should accept the boundary values capacity 1 and queueSize 0", () => {
+        assert.strictEqual(typeof createBulkheadInterceptor({ capacity: 1, queueSize: 0 }), "function");
     });
 
     describe("capacity and queue overflow scenarios", () => {
@@ -264,7 +296,7 @@ describe("bulkhead interceptor", () => {
             assertConnectError(err, Code.ResourceExhausted, "Bulkhead capacity exceeded");
         });
 
-        it("should include slot info in ResourceExhausted message when exceeding capacity + queue", async () => {
+        it("should state the configured limits in the ResourceExhausted message when exceeding capacity + queue", async () => {
             const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 1 });
 
             const next = createMockNextSlow(200);
@@ -287,23 +319,20 @@ describe("bulkhead interceptor", () => {
             const err = (rejected[0] as PromiseRejectedResult).reason;
             assertConnectError(err, Code.ResourceExhausted);
             assert.ok(err instanceof ConnectError, "should be ConnectError");
-            // The limits in the message are the configured ones: capacity 2, queue 1.
-            assert.match(err.rawMessage, /^Bulkhead capacity exceeded \(active: \d+\/2, queued: \d+\/1\)$/);
+            // The text carries the configured limits only: capacity 2, queue 1. Live counters of the
+            // policy are free slots, which would read as an idle bulkhead at the moment it refuses.
+            assert.strictEqual(err.rawMessage, "Bulkhead capacity exceeded (capacity: 2, queueSize: 1)");
         });
 
-        // The message shows how loaded the bulkhead is when it refuses a call, so with every slot
-        // taken ("active" 2 of 2, queue 1 of 1) it must say so. The implementation prints the
-        // number of FREE slots of the policy (0/2, 0/1), which reads as an idle bulkhead.
-        it("should report the occupied slots in the ResourceExhausted message", { skip: "the message prints the free slots of the policy (0/2, 0/1) instead of the occupied ones" }, async () => {
-            const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 1 });
-            const next = createMockNextSlow(200);
+        it("should print the configured limits, not the occupancy, for a different configuration", async () => {
+            const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
             const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
-            const handler = interceptor(next as any);
+            const handler = interceptor(createMockNextSlow(100) as any);
 
-            const results = await Promise.allSettled([handler(mockReq), handler(mockReq), handler(mockReq), handler(mockReq)]);
+            const results = await Promise.allSettled([handler(mockReq), handler(mockReq)]);
             const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
             assert.strictEqual(rejected.length, 1);
-            assert.strictEqual((rejected[0]!.reason as ConnectError).rawMessage, "Bulkhead capacity exceeded (active: 2/2, queued: 1/1)");
+            assert.strictEqual((rejected[0]!.reason as ConnectError).rawMessage, "Bulkhead capacity exceeded (capacity: 1, queueSize: 0)");
         });
     });
 });
