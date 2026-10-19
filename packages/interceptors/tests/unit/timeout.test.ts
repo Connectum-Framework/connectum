@@ -122,7 +122,9 @@ describe("timeout interceptor", () => {
         ["negative", -1, "-1"],
         ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
         ["NaN", Number.NaN, "NaN"],
-        ["fractional", 0.5, "0.5"],
+        ["fractional below the minimum", 0.5, "0.5"],
+        // A fraction inside the range: only the integer rule can refuse it.
+        ["fractional inside the range", 1.5, "1.5"],
         // One above the platform timer ceiling: the timer would fire after 1 ms instead of waiting.
         ["above the timer ceiling", 2_147_483_648, "2147483648"],
     ] as const) {

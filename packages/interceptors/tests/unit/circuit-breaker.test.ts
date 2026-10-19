@@ -287,6 +287,7 @@ describe("circuit breaker interceptor", () => {
         ["negative", -1, "-1"],
         ["infinite", Number.POSITIVE_INFINITY, "Infinity"],
         ["fractional", 0.5, "0.5"],
+        ["NaN", Number.NaN, "NaN"],
         ["above the timer ceiling", 2_147_483_648, "2147483648"],
     ] as const) {
         it(`should refuse a ${label} halfOpenAfter with a RangeError naming the option and the value`, () => {
