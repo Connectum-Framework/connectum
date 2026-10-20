@@ -391,19 +391,33 @@ describe("createBackoffGuard", () => {
         });
     }
 
-    it("a Promise return gives up with 'must be synchronous' and is not awaited", () => {
-        let rejectLater: ((err: Error) => void) | undefined;
-        const pending = new Promise<number>((_resolve, reject) => {
-            rejectLater = reject;
-        });
-        const guard = createBackoffGuard(() => pending as unknown as number);
-        assert.throws(() => guard.calculateDelay(1));
-        const giveUp = guard.giveUpError();
-        assert.ok(giveUp instanceof AmqpConnectionError);
-        assert.ok(giveUp.cause instanceof Error);
-        assert.match(giveUp.cause.message, /must be synchronous/);
-        // The guard attached a rejection handler: a later rejection is not unhandled.
-        rejectLater?.(new Error("late"));
+    it("a Promise return gives up with 'must be synchronous', is not awaited, and its later rejection is not unhandled", async () => {
+        // The listener belongs to this test: a late rejection that escaped the guard is seen here and
+        // fails this test, instead of surfacing after it has ended or in whichever test runs next.
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            let rejectLater: ((err: Error) => void) | undefined;
+            const pending = new Promise<number>((_resolve, reject) => {
+                rejectLater = reject;
+            });
+            const guard = createBackoffGuard(() => pending as unknown as number);
+            assert.throws(() => guard.calculateDelay(1));
+            const giveUp = guard.giveUpError();
+            assert.ok(giveUp instanceof AmqpConnectionError);
+            assert.ok(giveUp.cause instanceof Error);
+            assert.match(giveUp.cause.message, /must be synchronous/);
+            // The guard attached a rejection handler: a later rejection is not unhandled.
+            rejectLater?.(new Error("late"));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.deepEqual(unhandled, [], "the Promise the hook returned must not raise an unhandledRejection when it rejects");
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
     });
 
     it("without a noted connection error the message says none was observed", () => {

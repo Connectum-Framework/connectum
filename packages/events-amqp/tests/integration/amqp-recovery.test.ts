@@ -1918,16 +1918,15 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
-    it("node restart: rabbitmqctl stop_app/start_app (broker app restart in place) → a transient exchange is re-declared, the consumer replayed, publishing resumes", async () => {
+    it("node restart: rabbitmqctl stop_app/start_app (broker app restart in place) → a broker that comes back without the exchange and the queue gets them declared again, the consumer replayed, publishing resumes", { timeout: 90_000 }, async () => {
         const lifecycle: string[] = [];
         const adapter = AmqpAdapter({
             url,
             exchange: "rec.nodekill",
             exchangeType: "topic",
-            // A non-durable exchange does not survive the restart of the broker app: the publish and the
-            // delivery after it can only work if the adapter declared the exchange (and the binding) again.
-            exchangeOptions: { durable: false },
-            recovery: { initialDelay: 200, maxDelay: 1000 },
+            // The first reconnect waits long enough for this test to remove the exchange and the queue
+            // while the adapter is away, which is what a broker that lost its state looks like.
+            recovery: { initialDelay: 12_000, maxDelay: 12_000, jitter: 0 },
             lifecycle: {
                 onConnected: () => lifecycle.push("connected"),
                 onDisconnected: () => lifecycle.push("disconnected"),
@@ -1956,13 +1955,20 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             const stop = await container.exec(["rabbitmqctl", "stop_app"]);
             assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
             await waitFor(() => lifecycle.includes("disconnected"), 30_000);
-            const start = await container.exec(["rabbitmqctl", "start_app"]);
-            assert.equal(start.exitCode, 0, `start_app failed (${start.exitCode}): ${start.output}`);
+            await restoreBrokerApp();
+            const admin = await connect(url);
+            try {
+                const adminChannel = await admin.createChannel();
+                await adminChannel.deleteQueue("rec.nodekill.g");
+                await adminChannel.deleteExchange("rec.nodekill");
+            } finally {
+                await admin.close().catch(() => undefined);
+            }
+            assert.equal(lifecycle.filter((e) => e === "connected").length, 1, "the adapter must still be away while the exchange and the queue are removed");
             await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 2, 60_000);
 
-            // After the app restart, topology was re-asserted and the consumer
-            // replayed → publish + consume resume. Retry publish until the app is
-            // fully back.
+            // After the reconnect the exchange, the queue and the binding exist only because the
+            // adapter declared them again and replayed the consumer: publish and consume resume.
             let publishedAfter = false;
             for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
                 try {
