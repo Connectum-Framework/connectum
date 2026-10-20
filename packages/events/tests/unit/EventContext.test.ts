@@ -89,4 +89,45 @@ describe("createEventContext", () => {
         assert.equal(acked, true);
         assert.equal(nacked, false);
     });
+
+    it("nack prevents subsequent ack", async () => {
+        let acked = false;
+        const nackArgs: boolean[] = [];
+        const ctx = createEventContext({
+            raw: makeRawEvent(),
+            signal: AbortSignal.timeout(1000),
+            onAck: async () => {
+                acked = true;
+            },
+            onNack: async (requeue) => {
+                nackArgs.push(requeue);
+            },
+        });
+
+        await ctx.nack(false);
+        await ctx.ack();
+        assert.equal(acked, false, "the first settlement wins; the later ack has no effect");
+        assert.deepEqual(nackArgs, [false]);
+    });
+
+    it("nack requests redelivery by default and passes an explicit requeue choice through", async () => {
+        // `nack(requeue?)` requests redelivery: omitting the argument and `nack(true)` requeue,
+        // `nack(false)` does not.
+        const requeueByCall: Record<string, boolean[]> = { omitted: [], explicitTrue: [], explicitFalse: [] };
+        const contextFor = (key: string) =>
+            createEventContext({
+                raw: makeRawEvent(),
+                signal: AbortSignal.timeout(1000),
+                onAck: async () => {},
+                onNack: async (requeue) => {
+                    requeueByCall[key]?.push(requeue);
+                },
+            });
+
+        await contextFor("omitted").nack();
+        await contextFor("explicitTrue").nack(true);
+        await contextFor("explicitFalse").nack(false);
+
+        assert.deepEqual(requeueByCall, { omitted: [true], explicitTrue: [true], explicitFalse: [false] });
+    });
 });
