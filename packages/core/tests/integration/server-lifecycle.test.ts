@@ -177,7 +177,8 @@ describe("Server lifecycle integration", () => {
             const server = createServer({ services: [createMockService()], port: 0, eventBus });
             servers.push(server);
             eventBus.stop = async () => {
-                atBusStop = { aborted: server.shutdownSignal.aborted, listening: server.transport?.listening };
+                // The first call is the one that matters: a bus stopped earlier must not be hidden by a later call.
+                atBusStop ??= { aborted: server.shutdownSignal.aborted, listening: server.transport?.listening };
             };
 
             await server.start();
