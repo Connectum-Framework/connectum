@@ -402,6 +402,21 @@ describe("parseEnvConfig() PORT validation errors", () => {
         );
     });
 
+    // A port is a whole number: a fractional value would otherwise pass the schema and fail
+    // later inside the network layer with an error that does not name PORT.
+    for (const port of ["80.5", "1.5", "65534.5", "1000.000001"]) {
+        it(`should reject the fractional PORT=${port}, naming PORT and the integer requirement`, () => {
+            assert.throws(
+                () => parseEnvConfig({ PORT: port }),
+                (err) =>
+                    err instanceof ZodError &&
+                    err.issues.length === 1 &&
+                    err.issues[0]?.path.join(".") === "PORT" &&
+                    /int/i.test(err.issues[0]?.message ?? ""),
+            );
+        });
+    }
+
     it("should reject PORT='not-a-number'", () => {
         assert.throws(
             () => parseEnvConfig({ PORT: "not-a-number" }),

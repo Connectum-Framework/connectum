@@ -52,10 +52,11 @@ export const BooleanFromStringSchema = z
  */
 export const ConnectumEnvSchema = z.object({
     /**
-     * Server port
+     * Server port: a whole number from 1 to 65535 (a fraction is rejected here
+     * instead of failing later inside the network layer)
      * @default 5000
      */
-    PORT: z.coerce.number().min(1).max(65535).default(5000),
+    PORT: z.coerce.number().int().min(1).max(65535).default(5000),
 
     /**
      * Listen address
