@@ -1,6 +1,6 @@
 /**
- * Unit tests for the auth module fragment (task 2.4): auth.ts generation, the
- * interceptor-ordering auth branch (D-3), the second buf module, and composition.
+ * Unit tests for the auth module fragment: auth.ts generation, the
+ * interceptor-ordering auth branch, the second buf module, and composition.
  */
 
 import assert from "node:assert/strict";
@@ -64,7 +64,7 @@ describe("generateAuthFile", () => {
     });
 });
 
-describe("generateServer with auth (D-3 ordering)", () => {
+describe("generateServer with auth: interceptor ordering", () => {
     it("places errorHandler then auth then default chain without a duplicate errorHandler", () => {
         const s = generateServer(authConfig);
         assert.match(s, /import \{ buildAuthInterceptors \} from "#auth\.ts"/);
