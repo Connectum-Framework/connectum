@@ -12,7 +12,7 @@ import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockNext } from "@connectum/testing";
 import { authContextStorage } from "../../src/context.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
-import type { AuthContext, AuthzRule } from "../../src/types.ts";
+import type { AuthContext, AuthzRule, ProtoAuthzInterceptorOptions } from "../../src/types.ts";
 import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest, createServiceOptions } from "../helpers/proto-test-helpers.ts";
 
 const defaultContext: AuthContext = {
@@ -548,6 +548,103 @@ describe("proto-authz-interceptor", () => {
 
             await assert.rejects(() => handler(createProtoMockRequest(service, method)), /public: true, internal: false/);
             assert.strictEqual(next.mock.calls.length, 0);
+        });
+    });
+
+    // The guide's decision flow fixes the order of the stages: a defined `requires` decides before
+    // the proto policy, the proto policy decides before programmatic rules, rules before the
+    // `authorize` callback, and the callback before `defaultPolicy`. Each case below puts two
+    // stages in conflict, so an interceptor that checks them in another order gives another answer.
+    describe("order of the decision stages (decision flow)", () => {
+        const allowEverything: AuthzRule[] = [{ name: "allow-all", methods: ["*"], effect: "allow" }];
+        const denyEverything: AuthzRule[] = [{ name: "deny-all", methods: ["*"], effect: "deny" }];
+
+        interface Scenario {
+            readonly method?: Parameters<typeof createMethodOptions>[0];
+            readonly service?: Parameters<typeof createServiceOptions>[0];
+            readonly interceptor?: ProtoAuthzInterceptorOptions;
+            readonly context?: AuthContext | undefined;
+        }
+
+        /** Run one call and report whether the handler was reached or how the call was refused. */
+        async function run(scenario: Scenario): Promise<{ admitted: boolean; error: unknown }> {
+            const service = createFakeService(scenario.service ? { serviceOptions: createServiceOptions(scenario.service) } : undefined);
+            const method = createFakeMethod(service, "Method", scenario.method ? createMethodOptions(scenario.method) : undefined);
+            const next = createMockNext();
+            const handler = createProtoAuthzInterceptor(scenario.interceptor)(next);
+            const call = () => handler(createProtoMockRequest(service, method));
+            try {
+                await (scenario.context ? authContextStorage.run(scenario.context, call) : call());
+            } catch (error) {
+                return { admitted: false, error };
+            }
+            return { admitted: next.mock.calls.length === 1, error: undefined };
+        }
+
+        /** The call ended with `AuthzDeniedError` (a rule or proto option refused it). */
+        function assertDenied(result: { admitted: boolean; error: unknown }): void {
+            assert.strictEqual(result.admitted, false);
+            assert.ok(result.error instanceof Error);
+            assert.strictEqual(result.error.name, "AuthzDeniedError");
+            assert.strictEqual((result.error as { code?: unknown }).code, Code.PermissionDenied);
+        }
+
+        it("admits a caller who satisfies requires even when the resolved policy is deny", async () => {
+            const result = await run({ method: { requires: { roles: ["admin"] }, policy: "deny" }, context: defaultContext });
+
+            assert.strictEqual(result.admitted, true);
+        });
+
+        it("refuses a caller who fails requires even when the policy, a rule and the callback would all allow", async () => {
+            const authorize = mock.fn(async () => true);
+
+            const result = await run({
+                method: { requires: { roles: ["superadmin"] }, policy: "allow" },
+                interceptor: { defaultPolicy: "allow", rules: allowEverything, authorize },
+                context: defaultContext,
+            });
+
+            assertDenied(result);
+            assert.strictEqual(authorize.mock.calls.length, 0, "a failed requirement is final: the callback is not consulted");
+        });
+
+        it("lets a proto policy of deny override an allowing rule", async () => {
+            assertDenied(await run({ method: { policy: "deny" }, interceptor: { defaultPolicy: "allow", rules: allowEverything }, context: defaultContext }));
+        });
+
+        it("lets a proto policy of allow override a denying rule and the callback", async () => {
+            const authorize = mock.fn(async () => false);
+
+            const result = await run({ method: { policy: "allow" }, interceptor: { defaultPolicy: "deny", rules: denyEverything, authorize }, context: defaultContext });
+
+            assert.strictEqual(result.admitted, true);
+            assert.strictEqual(authorize.mock.calls.length, 0);
+        });
+
+        it("treats a policy inherited from the service as a proto decision that precedes rules", async () => {
+            // The method has no annotation of its own; the guide counts the inherited policy as a proto decision.
+            assertDenied(await run({ service: { defaultPolicy: "deny" }, interceptor: { defaultPolicy: "allow", rules: allowEverything }, context: defaultContext }));
+            assert.strictEqual((await run({ service: { defaultPolicy: "allow" }, interceptor: { defaultPolicy: "deny", rules: denyEverything }, context: defaultContext })).admitted, true);
+        });
+
+        it("applies a proto policy without looking at the auth context", async () => {
+            // Only a defined requires, the callback and the deny default ask for an identity.
+            assert.strictEqual((await run({ method: { policy: "allow" }, interceptor: { defaultPolicy: "deny" } })).admitted, true);
+            assertDenied(await run({ method: { policy: "deny" }, interceptor: { defaultPolicy: "allow" } }));
+        });
+
+        it("lets defaultPolicy allow admit a caller without an auth context", async () => {
+            assert.strictEqual((await run({ interceptor: { defaultPolicy: "allow" } })).admitted, true);
+        });
+
+        it("answers defaultPolicy deny with Unauthenticated when there is no auth context and PermissionDenied when there is one", async () => {
+            const anonymous = await run({ interceptor: { defaultPolicy: "deny" } });
+            assert.strictEqual(anonymous.admitted, false);
+            assertConnectError(anonymous.error, Code.Unauthenticated);
+
+            const identified = await run({ interceptor: { defaultPolicy: "deny" }, context: defaultContext });
+            assert.strictEqual(identified.admitted, false);
+            assertConnectError(identified.error, Code.PermissionDenied);
         });
     });
 
