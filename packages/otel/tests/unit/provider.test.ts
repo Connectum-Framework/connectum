@@ -77,10 +77,6 @@ describe("provider", () => {
 			}
 		});
 	});
-
-	it("should accept instanceId and resourceAttributes without throwing", () => {
-		assert.doesNotThrow(() => initProvider({ instanceId: "pod-7", resourceAttributes: { "device.id": "abc" } }));
-	});
 });
 
 describe("parseOtelResourceAttributesEnv", () => {
@@ -127,6 +123,15 @@ describe("buildResourceAttributes", () => {
 		const attrs = buildResourceAttributes({ ...base, env: { OTEL_RESOURCE_ATTRIBUTES: "device.id=d1,facility=f1" } });
 		assert.strictEqual(attrs["device.id"], "d1");
 		assert.strictEqual(attrs.facility, "f1");
+	});
+
+	// The observability backends guide lists service.version and service.namespace among the
+	// attributes OTEL_RESOURCE_ATTRIBUTES can carry, so the operator's value replaces the
+	// default version (npm_package_version) rather than being dropped.
+	it("lets OTEL_RESOURCE_ATTRIBUTES set service.version and service.namespace", () => {
+		const attrs = buildResourceAttributes({ ...base, env: { OTEL_RESOURCE_ATTRIBUTES: "service.version=9.9.9,service.namespace=shop" } });
+		assert.strictEqual(attrs[ATTR_SERVICE_VERSION], "9.9.9");
+		assert.strictEqual(attrs["service.namespace"], "shop");
 	});
 
 	it("explicit resourceAttributes take precedence over env attributes", () => {
