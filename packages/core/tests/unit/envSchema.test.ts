@@ -213,6 +213,49 @@ describe("parseEnvConfig() GRACEFUL_SHUTDOWN_TIMEOUT_MS", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Positive: pass-through of string settings and HTTP health flag
+// ---------------------------------------------------------------------------
+
+describe("parseEnvConfig() LISTEN and HTTP health settings", () => {
+    it("should take LISTEN and HTTP_HEALTH_PATH from the input instead of the defaults", () => {
+        const config = parseEnvConfig({ LISTEN: "127.0.0.1", HTTP_HEALTH_PATH: "/ping" });
+        assert.equal(config.LISTEN, "127.0.0.1");
+        assert.equal(config.HTTP_HEALTH_PATH, "/ping");
+    });
+
+    it("should treat a variable that is present but undefined as unset", () => {
+        const config = parseEnvConfig({ PORT: undefined, LISTEN: undefined, HTTP_HEALTH_ENABLED: undefined });
+        assert.equal(config.PORT, 5000);
+        assert.equal(config.LISTEN, "0.0.0.0");
+        assert.equal(config.HTTP_HEALTH_ENABLED, false);
+    });
+
+    // Configuration guide: boolean variables accept "true", "false", "1", "0", "yes" and "no".
+    for (const [value, expected] of [
+        ["true", true],
+        ["1", true],
+        ["yes", true],
+        ["false", false],
+        ["0", false],
+        ["no", false],
+    ] as const) {
+        it(`should parse HTTP_HEALTH_ENABLED="${value}" to ${expected}`, () => {
+            assert.equal(parseEnvConfig({ HTTP_HEALTH_ENABLED: value }).HTTP_HEALTH_ENABLED, expected);
+        });
+    }
+
+    it("should reject a boolean variable that is not one of the documented spellings, naming the variable", () => {
+        for (const name of ["HTTP_HEALTH_ENABLED", "GRACEFUL_SHUTDOWN_ENABLED"]) {
+            assert.throws(
+                () => parseEnvConfig({ [name]: "maybe" }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === name,
+                name,
+            );
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Positive: optional fields
 // ---------------------------------------------------------------------------
 
@@ -351,6 +394,13 @@ describe("parseEnvConfig() PORT validation errors", () => {
             );
         });
     }
+
+    it("should reject an empty PORT (it would otherwise coerce to 0), naming PORT", () => {
+        assert.throws(
+            () => parseEnvConfig({ PORT: "" }),
+            (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "PORT",
+        );
+    });
 
     it("should reject PORT='not-a-number'", () => {
         assert.throws(

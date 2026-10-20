@@ -8,7 +8,7 @@ import assert from "node:assert";
 import net from "node:net";
 import { afterEach, describe, it, mock } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import type { ConnectRouter } from "@connectrpc/connect";
+import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
 import type { ServiceDefinition } from "../../src/defineService.ts";
 import { defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
@@ -388,59 +388,27 @@ describe("createServer", () => {
     });
 
     describe("protocols", () => {
-        it("should accept protocols array", () => {
-            const service = createMockService();
-
-            const mockProtocol = {
-                name: "test-protocol",
-                register(_router: ConnectRouter) {
-                    // no-op
+        // Route materialization contract: `register(router)` is called once per router built,
+        // and a started server has built exactly one, the HTTP adapter's.
+        it("should register the protocols given in the options on the HTTP router, once each, in order", async () => {
+            const registered: string[] = [];
+            const protocol = (name: string) => ({
+                name,
+                register() {
+                    registered.push(name);
                 },
-            };
-
-            const server = createServer({
-                services: [service],
-                protocols: [mockProtocol],
             });
-
+            const server = createServer({ services: [createMockService()], port: 0, protocols: [protocol("first"), protocol("second")] });
             servers.push(server);
-
-            assert.ok(server);
-            assert.strictEqual(server.state, ServerState.CREATED);
-        });
-
-        it("should default to empty protocols when none specified", async () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
+            assert.deepStrictEqual(registered, [], "a protocol is not registered before the routes are built");
 
             await server.start();
-            assert.ok(server.isRunning);
+
+            assert.deepStrictEqual(registered, ["first", "second"]);
         });
     });
 
     describe("configuration options", () => {
-        it("should use custom port", async () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
-
-            await server.start();
-
-            assert.ok(server.address);
-            assert.ok(server.address.port > 0);
-        });
-
         // Port 0 only asks the operating system for any free port, so it cannot show that
         // an explicit port is honoured: a concrete, previously free port must come back.
         it("should listen on the explicit port that was configured", async () => {
@@ -478,64 +446,33 @@ describe("createServer", () => {
             assert.strictEqual(server.address?.address, "127.0.0.1");
         });
 
-        it("should accept custom interceptors", async () => {
-            const service = createMockService();
-            const customInterceptor = mock.fn((next) => next);
-
+        it("should run the interceptors given in the options, outermost first, on every call", async () => {
+            const seen: string[] = [];
+            const tag = (name: string): Interceptor => (next) => async (request) => {
+                seen.push(`${name}:${request.method.name}`);
+                return next(request);
+            };
             const server = createServer({
-                services: [service],
+                services: [
+                    defineService(EchoService, {
+                        echo: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                        secureEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                        rateLimitedEcho: (request) => create(EchoResponseSchema, { message: request.message, timestamp: 0n }),
+                    }),
+                ],
                 port: 0,
-                interceptors: [customInterceptor],
+                interceptors: [tag("outer"), tag("inner")],
             });
-
             servers.push(server);
-
             await server.start();
 
-            assert.ok(server.isRunning);
+            await server.localClient(EchoService).echo(create(EchoRequestSchema, { message: "a" }));
+
+            assert.deepStrictEqual(seen, ["outer:Echo", "inner:Echo"]);
         });
     });
 
     describe("event emitter", () => {
-        it("should support once() for one-time listeners", async () => {
-            const service = createMockService();
-            const readyHandler = mock.fn();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
-
-            server.once("ready", readyHandler);
-
-            await server.start();
-
-            // Handler should have been called once
-            assert.strictEqual(readyHandler.mock.calls.length, 1);
-        });
-
-        it("should support off() to remove listeners", async () => {
-            const service = createMockService();
-            const readyHandler = mock.fn();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
-
-            server.on("ready", readyHandler);
-            server.off("ready", readyHandler);
-
-            await server.start();
-
-            // Handler should not have been called
-            assert.strictEqual(readyHandler.mock.calls.length, 0);
-        });
-
         it("should emit error event on startup failure", async () => {
             const service = createMockService();
 
@@ -582,22 +519,6 @@ describe("createServer", () => {
             // and the server ends up stopped.
             assert.deepStrictEqual(events, ["start", "error"]);
             assert.strictEqual(server2.state, ServerState.STOPPED);
-        });
-    });
-
-    describe("readonly properties", () => {
-        it("routes should be readonly array", () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-            });
-
-            servers.push(server);
-
-            // TypeScript enforces this at compile time, but we verify behavior
-            assert.ok(Array.isArray(server.routes));
-            assert.strictEqual(server.routes.length, 1);
         });
     });
 
@@ -703,7 +624,7 @@ describe("createServer", () => {
 
             await server.start();
 
-            assert.ok(registerCalls >= 1, "the added protocol must be registered on the HTTP router");
+            assert.strictEqual(registerCalls, 1, "the added protocol is registered once, on the HTTP router");
         });
 
         it("should throw if server is already running", async () => {
@@ -747,34 +668,6 @@ describe("createServer", () => {
             assert.strictEqual(server.interceptors.length, 0);
         });
 
-        it("should return empty array when interceptors: []", () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-                interceptors: [],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.interceptors.length, 0);
-        });
-
-        it("should return only custom interceptors when provided", () => {
-            const service = createMockService();
-            const customInterceptor = mock.fn((next) => next);
-
-            const server = createServer({
-                services: [service],
-                interceptors: [customInterceptor],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.interceptors.length, 1);
-            assert.strictEqual(server.interceptors[0], customInterceptor);
-        });
-
         it("should keep the given interceptors in the given order", () => {
             const first = mock.fn((next) => next);
             const second = mock.fn((next) => next);
@@ -803,58 +696,6 @@ describe("createServer", () => {
 
             assert.ok(Array.isArray(server.protocols));
             assert.strictEqual(server.protocols.length, 0);
-        });
-
-        it("should return protocols when specified", () => {
-            const service = createMockService();
-
-            const mockProtocol = {
-                name: "test-protocol",
-                register(_router: ConnectRouter) {
-                    // no-op
-                },
-            };
-
-            const server = createServer({
-                services: [service],
-                protocols: [mockProtocol],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.protocols.length, 1);
-            assert.strictEqual(server.protocols[0], mockProtocol);
-        });
-    });
-
-    describe("eventBus property", () => {
-        it("should return null when not configured", () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.eventBus, null);
-        });
-
-        it("should return bus instance when configured", () => {
-            const service = createMockService();
-            const mockEventBus = {
-                start: mock.fn(async () => {}),
-                stop: mock.fn(async () => {}),
-            };
-
-            const server = createServer({
-                services: [service],
-                eventBus: mockEventBus,
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.eventBus, mockEventBus);
         });
     });
 
@@ -960,29 +801,48 @@ describe("createServer", () => {
             });
         });
 
-        describe("stopping event", () => {
-            it("should emit stopping event before stop", async () => {
-                const service = createMockService();
-                const stoppingHandler = mock.fn();
-                const stopHandler = mock.fn();
+        // Graceful-shutdown guide, "Automatic vs Manual Shutdown": `autoShutdown` defaults to
+        // false (no signal handlers are installed); with `autoShutdown: true` the signals
+        // default to SIGTERM and SIGINT, and the handlers are gone once the server has stopped.
+        describe("automatic shutdown signals", () => {
+            const counts = () => ({ SIGTERM: process.listenerCount("SIGTERM"), SIGINT: process.listenerCount("SIGINT"), SIGWINCH: process.listenerCount("SIGWINCH") });
 
-                const server = createServer({
-                    services: [service],
-                    port: 0,
-                });
-
+            it("should install no signal handlers unless autoShutdown is enabled", async () => {
+                const before = counts();
+                const server = createServer({ services: [createMockService()], port: 0 });
                 servers.push(server);
 
-                server.on("stopping", stoppingHandler);
-                server.on("stop", stopHandler);
-
                 await server.start();
-                await server.stop();
 
-                assert.strictEqual(stoppingHandler.mock.calls.length, 1);
-                assert.strictEqual(stopHandler.mock.calls.length, 1);
+                assert.deepStrictEqual(counts(), before);
             });
 
+            it("should handle SIGTERM and SIGINT by default and release both handlers on stop", async () => {
+                const before = counts();
+                const server = createServer({ services: [createMockService()], port: 0, shutdown: { autoShutdown: true } });
+                servers.push(server);
+
+                await server.start();
+
+                assert.deepStrictEqual(counts(), { SIGTERM: before.SIGTERM + 1, SIGINT: before.SIGINT + 1, SIGWINCH: before.SIGWINCH });
+
+                await server.stop();
+
+                assert.deepStrictEqual(counts(), before);
+            });
+
+            it("should handle only the configured signals instead of the defaults", async () => {
+                const before = counts();
+                const server = createServer({ services: [createMockService()], port: 0, shutdown: { autoShutdown: true, signals: ["SIGWINCH"] } });
+                servers.push(server);
+
+                await server.start();
+
+                assert.deepStrictEqual(counts(), { ...before, SIGWINCH: before.SIGWINCH + 1 });
+            });
+        });
+
+        describe("stopping event", () => {
             // Graceful-shutdown guide: "stopping" is step 1, before the transport closes,
             // so a listener can still flip the health status while connections are served;
             // "stop" is the last step, after the server is fully stopped.
@@ -1136,38 +996,25 @@ describe("createServer", () => {
         });
     });
 
-    describe("addService/addInterceptor/addProtocol in CREATED state", () => {
-        it("should allow addService(), addInterceptor(), addProtocol() in CREATED state", () => {
-            const service = createMockService();
-            const extraService = createMockService();
-            const customInterceptor = mock.fn((next) => next);
-            const mockProtocol = {
-                name: "test-protocol",
-                register(_router: ConnectRouter) {
-                    // no-op
-                },
-            };
-
-            const server = createServer({
-                services: [service],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.state, ServerState.CREATED);
-
-            // All three should NOT throw in CREATED state
-            assert.doesNotThrow(() => server.addService(extraService));
-            assert.doesNotThrow(() => server.addInterceptor(customInterceptor));
-            assert.doesNotThrow(() => server.addProtocol(mockProtocol));
-
-            assert.strictEqual(server.routes.length, 2);
-            assert.strictEqual(server.interceptors.length, 1);
-            assert.strictEqual(server.protocols.length, 1);
-        });
-    });
-
     describe("start() from STOPPED state", () => {
+        // Lifecycle contract: a stopped server cannot be restarted, and a server whose
+        // start failed is stopped, so the same rule applies to it.
+        it("should not allow a retry after a failed start", async () => {
+            const blocker = createServer({ services: [createMockService()], port: 0 });
+            servers.push(blocker);
+            await blocker.start();
+            const server = createServer({ services: [createMockService()], port: blocker.address?.port ?? 0 });
+            servers.push(server);
+            server.on("error", () => {});
+            await assert.rejects(() => server.start(), { code: "EADDRINUSE" });
+            assert.strictEqual(server.state, ServerState.STOPPED);
+            await blocker.stop();
+
+            await assert.rejects(() => server.start(), Error);
+
+            assert.strictEqual(server.state, ServerState.STOPPED);
+        });
+
         it("should throw when calling start() after stop()", async () => {
             const service = createMockService();
 

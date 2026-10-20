@@ -1,7 +1,7 @@
 /**
  * ctx.stream — declarative streaming catalog calls from inside a handler.
  *
- * Covers section 5: server-streaming (AsyncIterable), client-streaming
+ * Covers server-streaming (AsyncIterable), client-streaming
  * (send/close → response), bidi-streaming (send/close/responses), consumer
  * early-break, and the default mid-stream-failure behaviour (deliver received
  * messages, then throw the terminal error).
@@ -251,7 +251,7 @@ describe("ctx.stream — validation", () => {
 });
 
 describe("ctx.stream — open items (escalated, not yet locked)", () => {
-    // Q3 / task 5.6: default is deliver-then-error (covered above). An opt-in
+    // The default is deliver-then-error (covered above). An opt-in
     // `failFast` mode (discard partial, throw immediately) is pending a precise
     // semantics confirmation for pull-based streams.
     it.todo("failFast mode (discard partial results) — pending semantics confirmation");

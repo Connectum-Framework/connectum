@@ -169,6 +169,44 @@ describe("Server lifecycle integration", () => {
             );
         });
 
+        // Graceful-shutdown guide, "EventBus": the bus is stopped by a shutdown hook named
+        // `eventbus`, which is step 6 — after the abort signal and the transport close.
+        it("should stop the event bus after the shutdown signal is aborted and the transport is closed", async () => {
+            let atBusStop: { aborted: boolean; listening: boolean | undefined } | undefined;
+            const eventBus = createMockEventBus();
+            const server = createServer({ services: [createMockService()], port: 0, eventBus });
+            servers.push(server);
+            eventBus.stop = async () => {
+                // The first call is the one that matters: a bus stopped earlier must not be hidden by a later call.
+                atBusStop ??= { aborted: server.shutdownSignal.aborted, listening: server.transport?.listening };
+            };
+
+            await server.start();
+            await server.stop();
+
+            assert.deepStrictEqual(atBusStop, { aborted: true, listening: false });
+        });
+
+        it("should expose the event bus shutdown hook under the name `eventbus`, so that a hook can depend on it", async () => {
+            const order: string[] = [];
+            const eventBus = createMockEventBus();
+            eventBus.stop = async () => {
+                await setImmediate();
+                order.push("bus-stopped");
+            };
+            const server = createServer({ services: [createMockService()], port: 0, eventBus });
+            servers.push(server);
+            // Registered first, so only the dependency edge can put it after the bus.
+            server.onShutdown("after-bus", ["eventbus"], () => {
+                order.push("after-bus");
+            });
+
+            await server.start();
+            await server.stop();
+
+            assert.deepStrictEqual(order, ["bus-stopped", "after-bus"]);
+        });
+
         it("should fire events in correct order: start -> ready -> stopping -> stop", async () => {
             const service = createMockService();
             const eventBus = createMockEventBus();
@@ -653,9 +691,8 @@ describe("Server lifecycle integration", () => {
             assert.strictEqual(order[0], "stopping", "stopping event must fire first");
             assert.strictEqual(order[order.length - 1], "stop", "stop event must fire last");
 
-            // Both hooks should have executed between stopping and stop
-            assert.ok(order.includes("cache-cleanup"), "cache-cleanup hook should execute");
-            assert.ok(order.includes("connections-cleanup"), "connections-cleanup hook should execute");
+            // Both hooks ran, each once, between stopping and stop
+            assert.deepStrictEqual(order.slice(1, -1).sort(), ["cache-cleanup", "connections-cleanup"]);
         });
 
         it("should execute shutdown hooks with dependency ordering between events", async () => {

@@ -1,23 +1,29 @@
 /**
  * buildRoutes() unit tests
  *
- * Tests for route/protocol composition: service registration,
- * DescFile registry collection, protocol integration, and HTTP fallback.
+ * Route/protocol composition: service registration and the `enabledServices`
+ * filter, DescFile registry collection, protocol setup and registration, and
+ * the HTTP handler that is built around them (interceptors, shutdown signal,
+ * protocol HTTP handlers, the 404 fallback).
  */
 
 import assert from "node:assert";
-import { describe, it, mock } from "node:test";
-import type { DescFile } from "@bufbuild/protobuf";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, it, mock } from "node:test";
+import { create, type DescFile } from "@bufbuild/protobuf";
 import type { ConnectRouter, Interceptor } from "@connectrpc/connect";
-import { createConnectRouter } from "@connectrpc/connect";
-import { MountedService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
+import { createClient, createConnectRouter } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-node";
+import { MountedService, UnmountedPeerService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
 import type { BuildRoutesOptions } from "../../src/buildRoutes.ts";
 import { buildRoutes } from "../../src/buildRoutes.ts";
-import type { RegisterContext } from "../../src/defineService.ts";
-import type { ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
-import { EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import type { RegisterContext, ServiceDefinition } from "../../src/defineService.ts";
+import { defineService } from "../../src/defineService.ts";
+import type { NodeRequest, NodeResponse, ProtocolContext, ProtocolRegistration } from "../../src/types.ts";
+import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
-/** Minimal RegisterContext: identity wrapper (these tests never invoke handlers). */
+/** Minimal RegisterContext: identity wrapper, so handlers receive Connect's own HandlerContext. */
 const stubRegisterContext: RegisterContext = {
     wrapHandlers: ((_descriptor: unknown, handlers: unknown) => handlers) as RegisterContext["wrapHandlers"],
 };
@@ -36,25 +42,27 @@ function createOptions(overrides: Partial<BuildRoutesOptions> = {}): BuildRoutes
     };
 }
 
+/** A service that mounts `descriptor` with no handlers (enough to appear in the registry). */
+function mountOnly(descriptor: ServiceDefinition["descriptor"]): ServiceDefinition & { register: ReturnType<typeof mock.fn> } {
+    const register = mock.fn((router: ConnectRouter) => {
+        router.service(descriptor, {});
+    });
+    return { descriptor, register: register as never } as ServiceDefinition & { register: ReturnType<typeof mock.fn> };
+}
+
 describe("buildRoutes()", () => {
     // -----------------------------------------------------------------
     // Basic behavior
     // -----------------------------------------------------------------
 
     describe("basic behavior", () => {
-        it("should return handler and empty registry when no services", () => {
-            const result = buildRoutes(createOptions());
-
-            assert.ok(result.handler, "handler should be returned");
-            assert.strictEqual(typeof result.handler, "function");
-            assert.ok(Array.isArray(result.registry));
-            assert.strictEqual(result.registry.length, 0);
-        });
-
-        it("should return handler as a function", () => {
+        it("should mount nothing when there are no services and no protocols", () => {
             const result = buildRoutes(createOptions());
 
             assert.strictEqual(typeof result.handler, "function");
+            assert.deepStrictEqual(result.registry, []);
+            assert.deepStrictEqual([...result.registeredServiceTypeNames], []);
+            assert.deepStrictEqual(result.userServices, []);
         });
     });
 
@@ -63,19 +71,97 @@ describe("buildRoutes()", () => {
     // -----------------------------------------------------------------
 
     describe("service registration", () => {
-        it("should call service route functions with the router", () => {
-            const serviceRoute = mock.fn((_router: ConnectRouter) => {
-                // No-op: just verifying it gets called
-            });
+        it("should register each service on the router together with the register context, in order", () => {
+            const order: string[] = [];
+            const received: unknown[] = [];
+            const first: ServiceDefinition = {
+                descriptor: EchoService,
+                register: (router, context) => {
+                    order.push("first");
+                    received.push(router, context);
+                },
+            };
+            const second: ServiceDefinition = {
+                descriptor: MountedService,
+                register: () => {
+                    order.push("second");
+                },
+            };
 
-            buildRoutes(createOptions({ services: [{ descriptor: {} as never, register: serviceRoute }] }));
+            const result = buildRoutes(createOptions({ services: [first, second] }));
+            // connectNodeAdapter has already materialized one router; a further one gets the same registrations.
+            const router = createConnectRouter();
+            result.routes(router);
 
-            // The routes function is deferred -- it's called by connectNodeAdapter internally.
-            // buildRoutes creates a closure `routes` that gets passed to connectNodeAdapter.
-            // The service route is called when connectNodeAdapter invokes the routes callback.
-            // So we can't directly assert the mock call count here without invoking the handler.
-            // Instead, verify the structure is correct.
-            assert.ok(true, "service route was provided without error");
+            assert.deepStrictEqual(order, ["first", "second", "first", "second"]);
+            assert.strictEqual(received[1], stubRegisterContext, "the register context is handed to the service as given");
+            assert.strictEqual(received[2], router);
+            assert.strictEqual(received[3], stubRegisterContext);
+        });
+
+        it("should list the files and typeNames of mounted services once, however many routers are built", () => {
+            const result = buildRoutes(createOptions({ services: [mountOnly(EchoService), mountOnly(MountedService)] }));
+            result.routes(createConnectRouter());
+            result.routes(createConnectRouter());
+
+            assert.deepStrictEqual(result.registry, [EchoService.file, MountedService.file]);
+            assert.deepStrictEqual([...result.registeredServiceTypeNames].sort(), [EchoService.typeName, MountedService.typeName].sort());
+            assert.deepStrictEqual(
+                result.userServices.map((s) => s.typeName),
+                [EchoService.typeName, MountedService.typeName],
+            );
+        });
+
+        // Two services declared in one .proto file share one DescFile.
+        it("should list a file once when two mounted services come from the same file", () => {
+            const result = buildRoutes(createOptions({ services: [mountOnly(MountedService), mountOnly(UnmountedPeerService)] }));
+
+            assert.deepStrictEqual(result.registry, [MountedService.file]);
+            assert.deepStrictEqual(
+                result.userServices.map((s) => s.typeName),
+                [MountedService.typeName, UnmountedPeerService.typeName],
+            );
+        });
+
+        // Only the services the application mounted are "user services"; whatever a protocol
+        // mounts is registered, but is not the application's.
+        it("should keep protocol-mounted services out of the user services", () => {
+            const protocol: ProtocolRegistration = {
+                name: "mounting",
+                register: (router) => {
+                    router.service(UnmountedPeerService, {});
+                },
+            };
+
+            const result = buildRoutes(createOptions({ services: [mountOnly(EchoService)], protocols: [protocol] }));
+
+            assert.deepStrictEqual(
+                result.userServices.map((s) => s.typeName),
+                [EchoService.typeName],
+            );
+            assert.deepStrictEqual([...result.registeredServiceTypeNames].sort(), [EchoService.typeName, UnmountedPeerService.typeName].sort());
+        });
+
+        // Service catalog guide: a service outside `enabledServices` is remote and is never
+        // registered locally, so its register closure does not run.
+        it("should mount only the services named in enabledServices", () => {
+            const echo = mountOnly(EchoService);
+            const mounted = mountOnly(MountedService);
+
+            const result = buildRoutes(createOptions({ services: [echo, mounted], enabledServices: [MountedService.typeName] }));
+
+            assert.strictEqual(echo.register.mock.callCount(), 0, "a service that is not enabled must not be registered");
+            assert.strictEqual(mounted.register.mock.callCount(), 1);
+            assert.deepStrictEqual([...result.registeredServiceTypeNames], [MountedService.typeName]);
+            assert.deepStrictEqual(result.registry, [MountedService.file]);
+        });
+
+        it("should mount nothing when enabledServices is empty, and every service when it is not given", () => {
+            const none = buildRoutes(createOptions({ services: [mountOnly(EchoService)], enabledServices: [] }));
+            const all = buildRoutes(createOptions({ services: [mountOnly(EchoService), mountOnly(MountedService)] }));
+
+            assert.deepStrictEqual([...none.registeredServiceTypeNames], []);
+            assert.deepStrictEqual([...all.registeredServiceTypeNames].sort(), [EchoService.typeName, MountedService.typeName].sort());
         });
     });
 
@@ -84,16 +170,27 @@ describe("buildRoutes()", () => {
     // -----------------------------------------------------------------
 
     describe("protocol registration", () => {
-        it("should accept protocols in options", () => {
-            const protocol: ProtocolRegistration = {
-                name: "test-protocol",
-                register: mock.fn((_router: ConnectRouter) => {}),
+        it("should register the protocols in order after the application services", () => {
+            const order: string[] = [];
+            const service: ServiceDefinition = {
+                descriptor: EchoService,
+                register: () => {
+                    order.push("service");
+                },
             };
+            const protocol = (name: string): ProtocolRegistration => ({
+                name,
+                setup: () => {
+                    order.push(`${name}:setup`);
+                },
+                register: () => {
+                    order.push(`${name}:register`);
+                },
+            });
 
-            const result = buildRoutes(createOptions({ protocols: [protocol] }));
+            buildRoutes(createOptions({ services: [service], protocols: [protocol("a"), protocol("b")] }));
 
-            assert.ok(result.handler);
-            assert.ok(Array.isArray(result.registry));
+            assert.deepStrictEqual(order, ["service", "a:setup", "a:register", "b:setup", "b:register"]);
         });
 
         // `routes` is replayed on every router the server builds (HTTP adapter,
@@ -180,116 +277,137 @@ describe("buildRoutes()", () => {
             ]);
         });
 
-        it("should accept multiple protocols", () => {
-            const protocol1: ProtocolRegistration = {
-                name: "protocol-1",
-                register: mock.fn(),
-            };
-            const protocol2: ProtocolRegistration = {
-                name: "protocol-2",
-                register: mock.fn(),
-            };
+        it("should register a protocol that has no setup", () => {
+            const register = mock.fn((_router: ConnectRouter) => {});
 
-            const result = buildRoutes(createOptions({ protocols: [protocol1, protocol2] }));
+            buildRoutes(createOptions({ protocols: [{ name: "register-only", register }] }));
 
-            assert.ok(result.handler);
+            assert.strictEqual(register.mock.callCount(), 1);
         });
     });
 
     // -----------------------------------------------------------------
-    // Interceptors
+    // The HTTP handler
     // -----------------------------------------------------------------
 
-    describe("interceptors", () => {
-        it("should accept interceptors array", () => {
-            const interceptor: Interceptor = (next) => next;
+    describe("HTTP handler", () => {
+        const servers: HttpServer[] = [];
 
-            const result = buildRoutes(createOptions({ interceptors: [interceptor] }));
-
-            assert.ok(result.handler);
+        afterEach(async () => {
+            for (const server of servers.splice(0)) {
+                server.closeAllConnections();
+                await new Promise<void>((resolve) => server.close(() => resolve()));
+            }
         });
 
-        it("should accept empty interceptors array", () => {
-            const result = buildRoutes(createOptions({ interceptors: [] }));
+        /** Serve the handler of `options` over plaintext HTTP/1.1 and return its base URL. */
+        async function serve(options: Partial<BuildRoutesOptions>): Promise<string> {
+            const { handler } = buildRoutes(createOptions(options));
+            const server = createHttpServer((req, res) => handler(req, res));
+            servers.push(server);
+            await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+            return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        }
 
-            assert.ok(result.handler);
-        });
-    });
+        const echoService = (handler: (message: string, signal: AbortSignal) => Promise<string> | string = (m) => m): ServiceDefinition =>
+            defineService(EchoService, {
+                echo: async (req, ctx) => create(EchoResponseSchema, { message: await handler(req.message, ctx.signal), timestamp: 0n }),
+                secureEcho: () => create(EchoResponseSchema, {}),
+                rateLimitedEcho: () => create(EchoResponseSchema, {}),
+            });
 
-    // -----------------------------------------------------------------
-    // shutdownSignal
-    // -----------------------------------------------------------------
+        const client = (baseUrl: string) => createClient(EchoService, createConnectTransport({ baseUrl, httpVersion: "1.1" }));
 
-    describe("shutdownSignal", () => {
-        it("should accept AbortSignal", () => {
-            const controller = new AbortController();
+        it("should serve a registered RPC", async () => {
+            const baseUrl = await serve({ services: [echoService((m) => `echo:${m}`)] });
 
-            const result = buildRoutes(createOptions({ shutdownSignal: controller.signal }));
+            const response = await client(baseUrl).echo(create(EchoRequestSchema, { message: "hi" }));
 
-            assert.ok(result.handler);
-        });
-
-        it("should accept already-aborted signal", () => {
-            const controller = new AbortController();
-            controller.abort();
-
-            const result = buildRoutes(createOptions({ shutdownSignal: controller.signal }));
-
-            assert.ok(result.handler);
-        });
-    });
-
-    // -----------------------------------------------------------------
-    // HTTP handler fallback
-    // -----------------------------------------------------------------
-
-    describe("HTTP handler fallback", () => {
-        it("should handle protocols with httpHandler", () => {
-            const httpHandler = mock.fn(() => true);
-
-            const protocol: ProtocolRegistration = {
-                name: "http-protocol",
-                register: mock.fn(),
-                httpHandler,
-            };
-
-            const result = buildRoutes(createOptions({ protocols: [protocol] }));
-
-            assert.ok(result.handler);
+            assert.strictEqual(response.message, "echo:hi");
         });
 
-        it("should filter out protocols without httpHandler", () => {
-            const protocolWithHandler: ProtocolRegistration = {
-                name: "with-handler",
-                register: mock.fn(),
-                httpHandler: mock.fn(() => true),
-            };
+        it("should run the interceptors of the options, outermost first", async () => {
+            const seen: string[] = [];
+            const tag =
+                (name: string): Interceptor =>
+                (next) =>
+                async (req) => {
+                    seen.push(`${name}:${req.method.name}`);
+                    return next(req);
+                };
+            const baseUrl = await serve({ services: [echoService()], interceptors: [tag("outer"), tag("inner")] });
 
-            const protocolWithoutHandler: ProtocolRegistration = {
-                name: "without-handler",
-                register: mock.fn(),
-            };
+            await client(baseUrl).echo(create(EchoRequestSchema, { message: "x" }));
 
-            const result = buildRoutes(
-                createOptions({ protocols: [protocolWithHandler, protocolWithoutHandler] }),
-            );
-
-            assert.ok(result.handler);
+            assert.deepStrictEqual(seen, ["outer:Echo", "inner:Echo"]);
         });
-    });
 
-    // -----------------------------------------------------------------
-    // Result structure
-    // -----------------------------------------------------------------
+        it("should abort the signal of an in-flight call when the shutdown signal aborts", async () => {
+            const shutdown = new AbortController();
+            let started!: () => void;
+            const handlerStarted = new Promise<void>((resolve) => {
+                started = resolve;
+            });
+            let abortedInHandler = false;
+            const baseUrl = await serve({
+                shutdownSignal: shutdown.signal,
+                services: [
+                    echoService(async (_message, signal) => {
+                        started();
+                        // Give up after a second so that a signal that never aborts fails the assertion below instead of hanging.
+                        await new Promise<void>((resolve) => {
+                            signal.addEventListener("abort", () => resolve(), { once: true });
+                            setTimeout(resolve, 1000).unref();
+                        });
+                        abortedInHandler = signal.aborted;
+                        return "late";
+                    }),
+                ],
+            });
 
-    describe("result structure", () => {
-        it("should return { handler, registry } shape", () => {
-            const result = buildRoutes(createOptions());
+            const call = client(baseUrl).echo(create(EchoRequestSchema, { message: "slow" }));
+            call.catch(() => {});
+            await handlerStarted;
+            shutdown.abort();
+            await call.catch(() => {});
 
-            assert.ok("handler" in result);
-            assert.ok("registry" in result);
-            assert.strictEqual(typeof result.handler, "function");
-            assert.ok(Array.isArray(result.registry));
+            assert.strictEqual(abortedInHandler, true, "the handler's signal must follow the shutdown signal");
+        });
+
+        it("should hand a request that is not an RPC to the protocol HTTP handlers in order, stopping at the first that claims it", async () => {
+            const asked: string[] = [];
+            const handlerThat =
+                (name: string, claims: (url: string) => boolean): NonNullable<ProtocolRegistration["httpHandler"]> =>
+                (req: NodeRequest, res: NodeResponse) => {
+                    asked.push(`${name}:${req.url}`);
+                    if (!claims(req.url ?? "")) return false;
+                    res.statusCode = 200;
+                    res.end(`from ${name}`);
+                    return true;
+                };
+            const baseUrl = await serve({
+                protocols: [
+                    { name: "no-http", register: () => {} },
+                    { name: "one", register: () => {}, httpHandler: handlerThat("one", (url) => url === "/one") },
+                    { name: "two", register: () => {}, httpHandler: handlerThat("two", (url) => url === "/one" || url === "/two") },
+                ],
+            });
+
+            const one = await fetch(`${baseUrl}/one`);
+            const two = await fetch(`${baseUrl}/two`);
+
+            assert.strictEqual(await one.text(), "from one");
+            assert.strictEqual(await two.text(), "from two");
+            assert.deepStrictEqual(asked, ["one:/one", "one:/two", "two:/two"], "the second handler is not asked once the first has claimed the request");
+        });
+
+        it("should answer 404 Not Found to a request that no protocol HTTP handler claims", async () => {
+            const baseUrl = await serve({ protocols: [{ name: "declines", register: () => {}, httpHandler: () => false }] });
+
+            const response = await fetch(`${baseUrl}/nowhere`);
+
+            assert.strictEqual(response.status, 404);
+            assert.strictEqual(await response.text(), "Not Found");
         });
     });
 });

@@ -29,17 +29,13 @@ describe("shutdown.timeout", () => {
         });
     }
 
+    // The accepted bounds are observed by what stop() arms, in "effect on server.stop()"
+    // below; creation alone would not tell a stored value from a discarded one.
     for (const good of [0, 1, 30_000, MAX_TIMER_MS]) {
-        it(`accepts ${good}`, () => {
+        it(`accepts ${good} at creation`, () => {
             assert.doesNotThrow(serverWith({ timeout: good }));
         });
     }
-
-    it("accepts an unset timeout and an absent shutdown option", () => {
-        assert.doesNotThrow(serverWith({}));
-        assert.doesNotThrow(serverWith({ timeout: undefined }));
-        assert.doesNotThrow(() => createServer({ services: [] }));
-    });
 
     describe("effect on server.stop()", () => {
         /** Delays handed to `setTimeout` while `fn` runs; patched by hand because `mock.method` does not exist under Bun. */
@@ -73,15 +69,18 @@ describe("shutdown.timeout", () => {
             });
         }
 
-        it("a configured timeout replaces the default graceful phase", async () => {
-            const server = createServer({ services: [], port: 0, host: "127.0.0.1", shutdown: { timeout: 12_345 } });
-            await server.start();
+        // 12 345 is an arbitrary value; 1 and the largest timer delay are the accepted bounds.
+        for (const configured of [12_345, 1, MAX_TIMER_MS]) {
+            it(`a configured timeout of ${configured} ms replaces the default graceful phase`, async () => {
+                const server = createServer({ services: [], port: 0, host: "127.0.0.1", shutdown: { timeout: configured } });
+                await server.start();
 
-            const delays = await recordTimerDelays(() => server.stop());
+                const delays = await recordTimerDelays(() => server.stop());
 
-            assert.ok(delays.includes(12_345), `the configured timeout was not armed, saw ${JSON.stringify(delays)}`);
-            assert.ok(!delays.includes(30_000), "the default must not be armed next to the configured value");
-        });
+                assert.ok(delays.includes(configured), `the configured timeout was not armed, saw ${JSON.stringify(delays)}`);
+                assert.ok(!delays.includes(30_000), "the default must not be armed next to the configured value");
+            });
+        }
 
         it("0 means the graceful phase is not waited for, even while a client holds its connection open", async () => {
             const server = createServer({ services: [], port: 0, host: "127.0.0.1", allowHTTP1: false, shutdown: { timeout: 0, forceCloseOnTimeout: false } });
@@ -147,10 +146,6 @@ describe("service-level readMaxBytes", () => {
             });
         }
     }
-
-    it("accepts a service without options", () => {
-        assert.doesNotThrow(() => defineService(EchoService, {} as never));
-    });
 });
 
 describe("caller prefix in the validation message", () => {

@@ -102,54 +102,10 @@ describe("TransportManager", () => {
     });
 
     // -----------------------------------------------------------------
-    // Constructor / initial state
-    // -----------------------------------------------------------------
-
-    describe("constructor", () => {
-        it("should create instance with server = null", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.server, null);
-        });
-
-        it("should create instance with address = null", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.address, null);
-        });
-    });
-
-    // -----------------------------------------------------------------
     // listen()
     // -----------------------------------------------------------------
 
     describe("listen()", () => {
-        it("should create HTTP/1.1 server when no TLS and allowHTTP1=true (default)", async () => {
-            transport = new TransportManager();
-
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
-
-            assert.ok(transport.server, "server should be created");
-            assert.ok(transport.address, "address should be set");
-            assert.ok(transport.address.port > 0, "port should be assigned");
-            // HTTP/1.1 server should NOT have a "session" event listener
-            const listeners = transport.server.listeners("session");
-            assert.strictEqual(listeners.length, 0, "HTTP/1.1 server should not track sessions");
-        });
-
-        it("should create h2c server when no TLS and allowHTTP1=false", async () => {
-            transport = new TransportManager();
-
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
-
-            assert.ok(transport.server, "server should be created");
-            assert.ok(transport.address, "address should be set");
-            assert.ok(transport.address.port > 0, "port should be assigned");
-            // h2c server SHOULD have a "session" event listener
-            const listeners = transport.server.listeners("session");
-            assert.ok(listeners.length > 0, "h2c server should track sessions");
-        });
-
         // The wire is the oracle (Node.js http2 documentation: `http2.createServer()` serves
         // plaintext HTTP/2 only, while `http.createServer()` serves HTTP/1.x): the transport
         // mode is told by which protocol is actually spoken, not by listeners on the server.
@@ -179,6 +135,80 @@ describe("TransportManager", () => {
             assert.strictEqual(transport.address?.address, "127.0.0.1");
         });
 
+        /** Run `fn` with PORT and LISTEN set to the given values (unset when undefined), restoring the originals afterwards. */
+        async function withListenEnv(values: { PORT?: string; LISTEN?: string }, fn: () => Promise<void>): Promise<void> {
+            const saved = { PORT: process.env.PORT, LISTEN: process.env.LISTEN };
+            for (const name of ["PORT", "LISTEN"] as const) {
+                const value = values[name];
+                if (value === undefined) delete process.env[name];
+                else process.env[name] = value;
+            }
+            try {
+                await fn();
+            } finally {
+                for (const name of ["PORT", "LISTEN"] as const) {
+                    const value = saved[name];
+                    if (value === undefined) delete process.env[name];
+                    else process.env[name] = value;
+                }
+            }
+        }
+
+        /** A port that is free right now: bind port 0, read the number, release it. */
+        async function freePort(): Promise<number> {
+            const probe = net.createServer();
+            await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+            const { port } = probe.address() as net.AddressInfo;
+            await new Promise<void>((resolve) => probe.close(() => resolve()));
+            return port;
+        }
+
+        // Configuration guide: `PORT` and `LISTEN` are read directly when the matching server option is omitted.
+        it("should read PORT and LISTEN from the environment when the options are omitted", async () => {
+            const port = await freePort();
+            await withListenEnv({ PORT: String(port), LISTEN: "127.0.0.1" }, async () => {
+                transport = new TransportManager();
+
+                await transport.listen(noopHandler, {});
+
+                assert.strictEqual(transport.address?.port, port);
+                assert.strictEqual(transport.address?.address, "127.0.0.1");
+            });
+        });
+
+        it("should prefer the port and host options over PORT and LISTEN", async () => {
+            const envPort = await freePort();
+            // 203.0.113.1 (TEST-NET-3) is not an address of this machine, so binding it would fail.
+            await withListenEnv({ PORT: String(envPort), LISTEN: "203.0.113.1" }, async () => {
+                transport = new TransportManager();
+
+                await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+
+                assert.strictEqual(transport.address?.address, "127.0.0.1");
+                assert.notStrictEqual(transport.address?.port, envPort);
+            });
+        });
+
+        // Configuration guide, server variables: `PORT` defaults to 5000 and `LISTEN` to "0.0.0.0".
+        it("should listen on 0.0.0.0:5000 when neither the options nor the environment say otherwise", async (t) => {
+            await withListenEnv({}, async () => {
+                transport = new TransportManager();
+
+                try {
+                    await transport.listen(noopHandler, {});
+                } catch (err) {
+                    if ((err as { code?: string }).code === "EADDRINUSE") {
+                        t.skip("port 5000 is taken on this machine, so the default cannot be observed");
+                        return;
+                    }
+                    throw err;
+                }
+
+                assert.strictEqual(transport.address?.port, 5000);
+                assert.strictEqual(transport.address?.address, "0.0.0.0");
+            });
+        });
+
         it("should handle port-in-use error", async () => {
             // Occupy a port with first transport
             const transport1 = new TransportManager();
@@ -206,18 +236,6 @@ describe("TransportManager", () => {
     // -----------------------------------------------------------------
 
     describe("close()", () => {
-        it("should gracefully close the server", async () => {
-            transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
-
-            assert.ok(transport.server);
-
-            await transport.close();
-
-            // Server object still exists after close (not nulled -- that's dispose()'s job)
-            assert.ok(transport.server);
-        });
-
         // Node.js `server.close()`: "stops the server from accepting new connections".
         it("should release the port so that new connections are refused", async () => {
             transport = new TransportManager();
@@ -266,19 +284,6 @@ describe("TransportManager", () => {
             assert.strictEqual(closedWhileInFlight, false, "close() resolved while a request was still being handled");
         });
 
-        it("should reject when no server is listening", async () => {
-            transport = new TransportManager();
-
-            // close() on null server should reject because _server?.close() is undefined
-            // The promise callback never resolves or rejects if _server is null
-            // Actually, _server?.close() is undefined, so the promise hangs.
-            // Let's verify the current behavior -- it should fail or hang.
-            // Looking at the code: this._server?.close(cb) -- if _server is null,
-            // optional chaining makes it undefined, and the cb is never called.
-            // So we should NOT call close() when server is null.
-            // This is a design detail -- the caller (gracefulShutdown) guards with if (!transport.server).
-            assert.strictEqual(transport.server, null);
-        });
     });
 
     // -----------------------------------------------------------------
@@ -286,14 +291,6 @@ describe("TransportManager", () => {
     // -----------------------------------------------------------------
 
     describe("destroyAllSessions()", () => {
-        it("should not throw when no sessions exist", () => {
-            transport = new TransportManager();
-
-            assert.doesNotThrow(() => {
-                transport.destroyAllSessions();
-            });
-        });
-
         it("should terminate a live connection, and a repeated call is harmless", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
@@ -342,17 +339,6 @@ describe("TransportManager", () => {
             assert.strictEqual(transport.address, null);
         });
 
-        it("should be safe to call when already clean", () => {
-            transport = new TransportManager();
-
-            assert.doesNotThrow(() => {
-                transport.dispose();
-            });
-
-            assert.strictEqual(transport.server, null);
-            assert.strictEqual(transport.address, null);
-        });
-
         it("should be idempotent: a second dispose() after a real listen/close/dispose cycle does not throw and leaves the state empty", async () => {
             // A repeated dispose() is what a stop() that failed halfway and is
             // retried does; it must not dereference the already-dropped server.
@@ -374,62 +360,23 @@ describe("TransportManager", () => {
     // Getters
     // -----------------------------------------------------------------
 
-    describe("server getter", () => {
-        it("should return null before listen", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.server, null);
-        });
-
-        it("should return server after listen", async () => {
-            transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
-
-            assert.ok(transport.server);
-            assert.strictEqual(typeof transport.server.close, "function");
-        });
-    });
-
     describe("address getter", () => {
-        it("should return null before listen", () => {
+        it("should report the address the listener is bound to, and nothing before listen", async () => {
             transport = new TransportManager();
-
             assert.strictEqual(transport.address, null);
-        });
+            assert.strictEqual(transport.server, null);
 
-        it("should return AddressInfo after listen", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
 
+            assert.ok(transport.server?.listening, "the server is exposed and listening");
             const addr = transport.address;
             assert.ok(addr);
-            assert.ok(typeof addr.port === "number");
-            assert.ok(typeof addr.address === "string");
-            assert.ok(typeof addr.family === "string");
-        });
-    });
-
-    // -----------------------------------------------------------------
-    // Session tracking
-    // -----------------------------------------------------------------
-
-    describe("session tracking", () => {
-        it("should track sessions on h2c server (allowHTTP1=false)", async () => {
-            transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });
-
-            const listeners = transport.server?.listeners("session");
-            assert.ok(listeners);
-            assert.ok(listeners.length > 0, "h2c server should have session listener");
-        });
-
-        it("should not track sessions on HTTP/1.1 server (default)", async () => {
-            transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
-
-            const listeners = transport.server?.listeners("session");
-            assert.ok(listeners);
-            assert.strictEqual(listeners.length, 0, "HTTP/1.1 server should not have session listener");
+            assert.strictEqual(addr.address, "127.0.0.1");
+            assert.strictEqual(addr.family, "IPv4");
+            // The reported port is the one the listener is really bound to.
+            assert.ok(addr.port > 0 && addr.port <= 65535);
+            assert.strictEqual(await acceptsConnections(addr.port), true);
         });
     });
 

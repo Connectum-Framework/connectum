@@ -110,6 +110,22 @@ describe("finishStreamOnAbort", () => {
         assert.strictEqual(source.recorder.returnCalls, 1);
     });
 
+    // When whoever pumps the stream stops reading (a failed write, a completed
+    // response) it calls return(), and by the async iterator protocol the source must be
+    // finished then, abort or no abort; a later abort must not finish it again.
+    it("finishes the iterator when the consumer calls return() without any abort, and a later abort does not repeat it", async () => {
+        const source = makeSource();
+        const abort = new AbortController();
+        const iterator = await wrap(source.iterable, abort.signal);
+
+        await iterator.return?.();
+        assert.strictEqual(source.recorder.returnCalls, 1);
+
+        abort.abort();
+        await settle();
+        assert.strictEqual(source.recorder.returnCalls, 1);
+    });
+
     it("does not finish a second time when the consumer calls return() after the abort", async () => {
         const source = makeSource();
         const abort = new AbortController();

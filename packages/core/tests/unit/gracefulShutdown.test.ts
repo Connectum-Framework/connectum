@@ -91,15 +91,6 @@ describe("performGracefulShutdown()", () => {
     // -----------------------------------------------------------------
 
     describe("when close completes before timeout", () => {
-        it("should call transport.close()", async () => {
-            const transport = createMockTransport();
-            const shutdownManager = createMockShutdownManager();
-
-            await performGracefulShutdown(transport, shutdownManager, defaultOptions);
-
-            assert.strictEqual(mockCallCount(transport.close), 1);
-        });
-
         // Graceful-shutdown guide, steps 3-6: the hooks run once the connections have
         // closed, not while the transport is still draining. A close that finishes inside
         // the timeout must therefore be waited for.
