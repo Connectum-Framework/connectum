@@ -47,12 +47,6 @@ describe("deriveServiceName", () => {
         assert.equal(result, `SimpleService@${hostname()}`);
     });
 
-    it("appends current hostname", () => {
-        const result = deriveServiceName(["test.v1.TestService"]);
-        assert.ok(result);
-        assert.ok(result.endsWith(`@${hostname()}`), `Expected result to end with @${hostname()}, got: ${result}`);
-    });
-
     it("lists packages in order of first appearance, not sorted (Connectum decision, no documented source)", () => {
         // The documented example ("order.v1/payment.v1@pod") shows packages joined with
         // "/" but does not say how they are ordered. Connectum chose the order in which

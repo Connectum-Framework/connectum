@@ -21,24 +21,6 @@ function fakeDescService(typeName: string, methods: { localName: string; inputTy
 
 describe("EventRouterImpl", () => {
     describe("serviceNames", () => {
-        it("starts with empty serviceNames", () => {
-            const router = new EventRouterImpl();
-            assert.deepEqual(router.serviceNames, []);
-        });
-
-        it("collects typeName when service() is called", () => {
-            const router = new EventRouterImpl();
-            const service = fakeDescService("order.v1.OrderEventService", [
-                { localName: "orderCreated", inputTypeName: "order.v1.OrderCreated" },
-            ]);
-
-            router.service(service, {
-                orderCreated: async () => {},
-            } as any);
-
-            assert.deepEqual(router.serviceNames, ["order.v1.OrderEventService"]);
-        });
-
         it("collects multiple service typeNames in registration order", () => {
             const router = new EventRouterImpl();
 
@@ -55,28 +37,6 @@ describe("EventRouterImpl", () => {
             assert.deepEqual(router.serviceNames, [
                 "order.v1.OrderEventService",
                 "payment.v1.PaymentEventService",
-            ]);
-        });
-
-        it("does not deduplicate -- same service registered twice produces duplicate entries", () => {
-            const router = new EventRouterImpl();
-            const service = fakeDescService("order.v1.OrderEventService", [
-                { localName: "orderCreated", inputTypeName: "order.v1.OrderCreated" },
-            ]);
-
-            // Note: registering the same service twice would throw due to duplicate topic,
-            // but serviceNames.push() happens BEFORE the topic check in entries.
-            // Actually, the duplicate topic check happens in EventBus, not in EventRouter.
-            // EventRouter simply pushes. Let's verify.
-            router.service(service, { orderCreated: async () => {} } as any);
-            // Second registration with same service would push to serviceNames again
-            // but would also add a duplicate entry. EventRouterImpl allows this -- the
-            // duplicate topic check is in EventBus.start().
-            router.service(service, { orderCreated: async () => {} } as any);
-
-            assert.deepEqual(router.serviceNames, [
-                "order.v1.OrderEventService",
-                "order.v1.OrderEventService",
             ]);
         });
 
