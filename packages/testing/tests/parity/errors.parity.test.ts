@@ -14,7 +14,7 @@ import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/
 import { defineService } from "@connectum/core";
 import { createDefaultInterceptors, createErrorHandlerInterceptor } from "@connectum/interceptors";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
-import { EchoRequestSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
 /**
  * Build an explicit error-oracle `compare` callback. Prevents the false-positive
@@ -155,6 +155,58 @@ transportParityTest("parity: a failure that is not a ConnectError maps to intern
         ] as const) {
             assert.ok(!JSON.stringify(result.error).includes(PLAIN_ERROR_TEXT), `${transport} error must not contain the original text`);
         }
+    },
+});
+
+// Error details: a ConnectError thrown with outgoing details delivers those details, in order,
+// on both transports. `describeError` above does not collect them, so this scenario does.
+transportParityTest("parity: ConnectError details reach the client in order on both transports", {
+    services: [
+        defineService(EchoService, {
+            echo: () => {
+                throw new ConnectError("rejected with details", Code.FailedPrecondition, undefined, [
+                    { desc: EchoResponseSchema, value: create(EchoResponseSchema, { message: "detail-one", timestamp: 1n }) },
+                    { desc: EchoResponseSchema, value: create(EchoResponseSchema, { message: "detail-two", timestamp: 2n }) },
+                ]);
+            },
+            secureEcho: () => {
+                throw new Error("should not be reached");
+            },
+            rateLimitedEcho: () => {
+                throw new Error("should not be reached");
+            },
+        }),
+    ],
+    scenario: async ({ transport }) => {
+        const client = createClient(EchoService, transport);
+        try {
+            await client.echo(create(EchoRequestSchema, { message: "x" }));
+            return { response: { unreachable: true } };
+        } catch (err) {
+            const connectErr = ConnectError.from(err);
+            return {
+                error: {
+                    code: connectErr.code,
+                    message: connectErr.rawMessage,
+                    details: connectErr.findDetails(EchoResponseSchema).map((detail) => ({ message: detail.message, timestamp: detail.timestamp.toString() })),
+                },
+            };
+        }
+    },
+    compare: (http, local) => {
+        const expected = [
+            { message: "detail-one", timestamp: "1" },
+            { message: "detail-two", timestamp: "2" },
+        ];
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.code, Code.FailedPrecondition, `${name} transport error code`);
+            assert.strictEqual(result.error?.message, "rejected with details", `${name} transport error message`);
+            assert.deepStrictEqual(result.error?.details, expected, `${name} transport must deliver both details, in order`);
+        }
+        defaultCompare(http, local);
     },
 });
 
