@@ -20,6 +20,7 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
@@ -82,23 +83,6 @@ describe("createOtelClientInterceptor", () => {
 	// -----------------------------------------------------------------------
 
 	describe("basic functionality", () => {
-		it("should return a function (Interceptor)", () => {
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "localhost",
-			});
-
-			assert.strictEqual(typeof interceptor, "function");
-		});
-
-		it("should return a handler function when called with next", () => {
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "localhost",
-			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
-
-			assert.strictEqual(typeof handler, "function");
-		});
-
 		// Oracle: the otel-rpc-semconv specification (span named by the fully qualified
 		// method, rpc.system.name=connectrpc, rpc.method, a successful unary call carries
 		// rpc.response.status_code=OK and no error.type) and the OpenTelemetry span kind
@@ -359,6 +343,24 @@ describe("createOtelClientInterceptor", () => {
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 		});
 
+		// The Connect spelling of code 1 has one L (as the Connect protocol, Connect-ES and
+		// otelconnect-go write it); the gRPC spelling with two Ls is never produced.
+		it("should report a canceled call as CANCELED with one L and an ERROR span status", async () => {
+			const next: any = async (_req: unknown) => { throw new ConnectError("stopped", Code.Canceled); };
+			const handler = createOtelClientInterceptor(clientOptions())(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			const span = onlySpan(observed);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
+			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "CANCELED");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "CANCELED");
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+		});
+
 		// One test per code so a failure names the code. Names are the Connect protocol's
 		// error-code names in upper case, spelled out here rather than read from the package.
 		const CODE_NAMES: ReadonlyArray<readonly [number, string]> = [
@@ -436,6 +438,59 @@ describe("createOtelClientInterceptor", () => {
 			assert.strictEqual(observed.durationPoints.length, 1);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "UNAVAILABLE");
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "UNAVAILABLE");
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Call duration unit
+	// -----------------------------------------------------------------------
+
+	describe("call duration", () => {
+		// Oracle: the OpenTelemetry RPC metrics conventions: rpc.client.call.duration is
+		// measured in seconds (unit "s"). A call that takes about 50 ms must record about
+		// 0.05, not 50 (milliseconds under a seconds unit). The bounds only need to tell
+		// 0.05 from 50, so they are wide enough to survive a loaded machine.
+		const HANDLER_DELAY_MS = 50;
+		const MIN_SECONDS = 0.04;
+		const MAX_SECONDS = 10;
+
+		function assertSeconds(observed: ClientObserved) {
+			const { sum, count } = histogramTotals(observed, semconv.METRIC_RPC_CLIENT_CALL_DURATION);
+			assert.strictEqual(count, 1);
+			assert.ok(sum >= MIN_SECONDS && sum < MAX_SECONDS, `a ${HANDLER_DELAY_MS} ms call must record seconds, recorded ${sum}`);
+		}
+
+		const slowSuccess: any = async (_req: unknown) => {
+			await delay(HANDLER_DELAY_MS);
+			return { stream: false, message: OTEL_RESPONSE_MESSAGE };
+		};
+		const slowFailure: any = async (_req: unknown) => {
+			await delay(HANDLER_DELAY_MS);
+			throw new ConnectError("too slow", Code.DeadlineExceeded);
+		};
+
+		it("should record the duration of a successful call in seconds", async () => {
+			const handler = createOtelClientInterceptor(clientOptions())(slowSuccess);
+
+			assertSeconds(await observe(async () => { await handler(greeterRequest()); }));
+		});
+
+		it("should record the duration of a successful call in seconds when tracing is off", async () => {
+			const handler = createOtelClientInterceptor(clientOptions({ withoutTracing: true }))(slowSuccess);
+
+			assertSeconds(await observe(async () => { await handler(greeterRequest()); }));
+		});
+
+		it("should record the duration of a failed call in seconds", async () => {
+			const handler = createOtelClientInterceptor(clientOptions())(slowFailure);
+
+			assertSeconds(await observe(async () => { await assert.rejects(() => handler(greeterRequest())); }));
+		});
+
+		it("should record the duration of a failed call in seconds when tracing is off", async () => {
+			const handler = createOtelClientInterceptor(clientOptions({ withoutTracing: true }))(slowFailure);
+
+			assertSeconds(await observe(async () => { await assert.rejects(() => handler(greeterRequest())); }));
 		});
 	});
 
@@ -611,53 +666,40 @@ describe("createOtelClientInterceptor", () => {
 	// -----------------------------------------------------------------------
 
 	describe("serverAddress and serverPort", () => {
-		it("should include serverAddress in attributes", async () => {
-			const receivedValues: Record<string, string | number | boolean> = {};
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "api.example.com",
-				attributeFilter: (key, value) => {
-					receivedValues[key] = value;
-					return true;
-				},
+		// Oracle: the option documentation (serverAddress is the required server.address,
+		// serverPort is the opt-in server.port) and the metrics guide (both attributes
+		// appear on spans and on RPC metrics).
+		it("should report serverAddress as server.address on the span and the metric", async () => {
+			const handler = createOtelClientInterceptor({ serverAddress: "api.example.com" })(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
+
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
 			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-
-			assert.strictEqual(receivedValues["server.address"], "api.example.com");
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_SERVER_ADDRESS], "api.example.com");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_SERVER_ADDRESS], "api.example.com");
 		});
 
-		it("should include serverPort when provided", async () => {
-			const receivedValues: Record<string, string | number | boolean> = {};
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "localhost",
-				serverPort: 5000,
-				attributeFilter: (key, value) => {
-					receivedValues[key] = value;
-					return true;
-				},
+		it("should report serverPort as the numeric server.port on the span and the metric", async () => {
+			const handler = createOtelClientInterceptor(clientOptions({ serverPort: 5000 }))(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
+
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
 			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-
-			assert.strictEqual(receivedValues["server.port"], 5000);
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_SERVER_PORT], 5000);
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_SERVER_PORT], 5000);
 		});
 
-		it("should not include server.port when serverPort is undefined", async () => {
-			const filteredKeys: string[] = [];
-			const interceptor = createOtelClientInterceptor({
-				serverAddress: "localhost",
-				attributeFilter: (key, _value) => {
-					filteredKeys.push(key);
-					return true;
-				},
+		it("should leave server.port off the span and the metric when serverPort is not given", async () => {
+			const handler = createOtelClientInterceptor(clientOptions())(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
+
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
 			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-
-			assert.ok(!filteredKeys.includes("server.port"));
+			assert.ok(!(semconv.ATTR_SERVER_PORT in onlySpan(observed).attributes), "server.port is opt-in");
+			assert.ok(!(semconv.ATTR_SERVER_PORT in (observed.durationPoints[0] ?? {})), "server.port is opt-in");
 		});
 	});
 

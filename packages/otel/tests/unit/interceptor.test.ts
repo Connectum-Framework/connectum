@@ -21,6 +21,7 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 import assert from "node:assert";
 import { hostname } from "node:os";
 import { afterEach, describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
@@ -74,19 +75,6 @@ describe("createOtelInterceptor", () => {
 	// -----------------------------------------------------------------------
 
 	describe("basic functionality", () => {
-		it("should return a function (Interceptor)", () => {
-			const interceptor = createOtelInterceptor();
-
-			assert.strictEqual(typeof interceptor, "function");
-		});
-
-		it("should return a handler function when called with next", () => {
-			const interceptor = createOtelInterceptor();
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
-
-			assert.strictEqual(typeof handler, "function");
-		});
-
 		it("should hand the response through and record one server span and one duration point for a unary call", async () => {
 			const expectedResponse = { stream: false, message: OTEL_RESPONSE_MESSAGE };
 			const handler = createOtelInterceptor()((async () => expectedResponse) as never);
@@ -97,9 +85,9 @@ describe("createOtelInterceptor", () => {
 			});
 
 			assert.strictEqual(response, expectedResponse);
-			// openspec otel-rpc-semconv: span named by the fully qualified method, carrying
-			// rpc.system.name=connectrpc and rpc.method, a successful unary call carries
-			// rpc.response.status_code=OK and no error.type.
+			// Oracle: the OpenTelemetry RPC conventions for Connect: the span is named by the
+			// fully qualified method and carries rpc.system.name=connectrpc and rpc.method; a
+			// successful unary call carries rpc.response.status_code=OK and no error.type.
 			const span = onlySpan(observed);
 			assert.strictEqual(span.name, FULL_METHOD);
 			assert.strictEqual(span.kind, SpanKind.SERVER);
@@ -356,8 +344,8 @@ describe("createOtelInterceptor", () => {
 				}
 			});
 
-			// openspec otel-rpc-semconv: a failed call carries the Connect error-code name as
-			// rpc.response.status_code and error.type, on the span and on the duration metric.
+			// A failed call carries the Connect error-code name as rpc.response.status_code
+			// and error.type, on the span and on the duration metric.
 			const span = onlySpan(observed);
 			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
@@ -587,22 +575,6 @@ describe("createOtelInterceptor", () => {
 			assert.deepStrictEqual(histogramTotals(observed, semconv.METRIC_RPC_SERVER_RESPONSE_SIZE), { sum: 0, count: 1 });
 		});
 
-		it("should handle streaming with filter", async () => {
-			let receivedStream: boolean | undefined;
-			const interceptor = createOtelInterceptor({
-				filter: (ctx) => {
-					receivedStream = ctx.stream;
-					return true;
-				},
-			});
-			const next: any = async (_req: unknown) => ({ stream: true, message: null });
-
-			const handler = interceptor(next);
-			await handler(createMockRequest({ stream: true, message: OTEL_REQUEST_MESSAGE }));
-
-			assert.strictEqual(receivedStream, true);
-		});
-
 		// Counterpart of the streaming case: a unary call has its final status when the
 		// response returns, so it carries rpc.response.status_code=OK, and its request
 		// and response sizes are measured.
@@ -718,35 +690,15 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_SERVER_PORT], 5000);
 		});
 
-		it("should include serverPort in attributeFilter calls", async () => {
-			const filteredKeys: string[] = [];
-			const interceptor = createOtelInterceptor({
-				serverPort: 8080,
-				attributeFilter: (key, _value) => {
-					filteredKeys.push(key);
-					return true;
-				},
+		it("should leave server.port off the span and the metric when serverPort is not given", async () => {
+			const handler = createOtelInterceptor({ serverAddress: "my-host.example.com" })(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
+
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
 			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
-			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-
-			assert.ok(filteredKeys.includes("server.port"));
-		});
-
-		it("should not include server.port when serverPort is undefined", async () => {
-			const filteredKeys: string[] = [];
-			const interceptor = createOtelInterceptor({
-				attributeFilter: (key, _value) => {
-					filteredKeys.push(key);
-					return true;
-				},
-			});
-			const handler = interceptor(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
-
-			await handler(createMockRequest({ message: OTEL_REQUEST_MESSAGE }));
-
-			assert.ok(!filteredKeys.includes("server.port"));
+			assert.ok(!(semconv.ATTR_SERVER_PORT in onlySpan(observed).attributes), "server.port is opt-in");
+			assert.ok(!(semconv.ATTR_SERVER_PORT in (observed.durationPoints[0] ?? {})), "server.port is opt-in");
 		});
 	});
 
@@ -866,6 +818,59 @@ describe("createOtelInterceptor", () => {
 
 		it("should record zero as the request size of an empty binary message", async () => {
 			assert.deepStrictEqual(await requestSizeOf({ toBinary: () => new Uint8Array(0) }), { sum: 0, count: 1 });
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Call duration unit
+	// -----------------------------------------------------------------------
+
+	describe("call duration", () => {
+		// Oracle: the OpenTelemetry RPC metrics conventions: rpc.server.call.duration is
+		// measured in seconds (unit "s"). A handler that takes about 50 ms must record
+		// about 0.05, not 50 (milliseconds under a seconds unit). The bounds only need to
+		// tell 0.05 from 50, so they are wide enough to survive a loaded machine.
+		const HANDLER_DELAY_MS = 50;
+		const MIN_SECONDS = 0.04;
+		const MAX_SECONDS = 10;
+
+		function assertSeconds(observed: ServerObserved) {
+			const { sum, count } = histogramTotals(observed, semconv.METRIC_RPC_SERVER_CALL_DURATION);
+			assert.strictEqual(count, 1);
+			assert.ok(sum >= MIN_SECONDS && sum < MAX_SECONDS, `a ${HANDLER_DELAY_MS} ms handler must record seconds, recorded ${sum}`);
+		}
+
+		const slowSuccess: any = async (_req: unknown) => {
+			await delay(HANDLER_DELAY_MS);
+			return { stream: false, message: OTEL_RESPONSE_MESSAGE };
+		};
+		const slowFailure: any = async (_req: unknown) => {
+			await delay(HANDLER_DELAY_MS);
+			throw new ConnectError("too slow", Code.DeadlineExceeded);
+		};
+
+		it("should record the duration of a successful call in seconds", async () => {
+			const handler = createOtelInterceptor()(slowSuccess);
+
+			assertSeconds(await observe(async () => { await handler(greeterRequest()); }));
+		});
+
+		it("should record the duration of a successful call in seconds when tracing is off", async () => {
+			const handler = createOtelInterceptor({ withoutTracing: true })(slowSuccess);
+
+			assertSeconds(await observe(async () => { await handler(greeterRequest()); }));
+		});
+
+		it("should record the duration of a failed call in seconds", async () => {
+			const handler = createOtelInterceptor()(slowFailure);
+
+			assertSeconds(await observe(async () => { await assert.rejects(() => handler(greeterRequest())); }));
+		});
+
+		it("should record the duration of a failed call in seconds when tracing is off", async () => {
+			const handler = createOtelInterceptor({ withoutTracing: true })(slowFailure);
+
+			assertSeconds(await observe(async () => { await assert.rejects(() => handler(greeterRequest())); }));
 		});
 	});
 
