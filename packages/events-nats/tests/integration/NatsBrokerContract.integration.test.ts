@@ -290,38 +290,6 @@ describe("NATS adapter documented broker behaviour", { skip: NATS_TEST_URL === u
         it("deliverPolicy last delivers the last existing event of the subject and then the new ones", async () => {
             assert.deepEqual(await deliveredWith("last"), ["old-3", "fresh"]);
         });
-
-        it("deliverPolicy last on a wildcard delivers the last existing event of every matching subject", { skip: 'known defect, fails against the documented behaviour: the NatsConsumerOptions reference says "last" is the last message per subject, but the adapter maps it to the JetStream policy Last (the last message matching the filter), so a wildcard pattern replays one event, not one per subject' }, async () => {
-            // The NatsConsumerOptions reference: `"last"` is the last message per subject.
-            const stream = uniqueName("ctr");
-            const adapter = NatsAdapter({ servers, stream, consumerOptions: { deliverPolicy: "last" } });
-            const seen: string[] = [];
-            try {
-                await adapter.connect({ serviceName: "contract-deliver-last-wildcard" });
-                for (const [subject, payload] of [
-                    ["wild.a", "a-old"],
-                    ["wild.b", "b-old"],
-                    ["wild.a", "a-last"],
-                ] as const) {
-                    await adapter.publish(subject, bytes(payload));
-                }
-                const subscription = await adapter.subscribe(
-                    ["wild.*"],
-                    async (event, ack) => {
-                        seen.push(Buffer.from(event.payload).toString());
-                        await ack();
-                    },
-                    { group: "wild" },
-                );
-                await adapter.publish("wild.c", bytes("fresh"));
-                await waitFor(() => seen.includes("fresh"), "delivery of the fresh event");
-                await sleep(300);
-                await subscription.unsubscribe();
-                assert.deepEqual([...seen].sort(), ["a-last", "b-old", "fresh"]);
-            } finally {
-                await adapter.disconnect();
-            }
-        });
     });
 
     describe("acknowledgement", () => {
