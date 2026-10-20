@@ -71,6 +71,45 @@ describe("auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 0);
         });
 
+        // The default extractor reads only `Authorization: Bearer <token>`. The authentication
+        // scheme name is case-insensitive (RFC 9110 section 11.1) and is separated from the token
+        // by whitespace (RFC 6750 section 2.1); any other scheme, or no token, means no credentials.
+        const extractionCases: Array<{ header: string; token: string | null }> = [
+            { header: "Bearer abc.def.ghi", token: "abc.def.ghi" },
+            { header: "bearer abc.def.ghi", token: "abc.def.ghi" },
+            { header: "BEARER abc.def.ghi", token: "abc.def.ghi" },
+            { header: "Basic dXNlcjpwYXNz", token: null },
+            { header: "Bearer", token: null },
+            { header: "Bearerabc.def.ghi", token: null },
+        ];
+        for (const { header, token } of extractionCases) {
+            it(`should ${token === null ? "treat as missing credentials" : `extract the token from`} the header "${header}"`, async () => {
+                const seen: string[] = [];
+                const handler = createAuthInterceptor({
+                    verifyCredentials: async (credentials: string) => {
+                        seen.push(credentials);
+                        return { subject: "user", roles: [], scopes: [], claims: {}, type: "test" };
+                    },
+                })(createMockNext());
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("authorization", header);
+
+                if (token === null) {
+                    await assert.rejects(
+                        () => handler(req),
+                        (err: unknown) => {
+                            assertConnectError(err, Code.Unauthenticated);
+                            return true;
+                        },
+                    );
+                    assert.deepStrictEqual(seen, [], "nothing must be verified when there is no bearer token");
+                } else {
+                    await handler(req);
+                    assert.deepStrictEqual(seen, [token]);
+                }
+            });
+        }
+
         it("should throw Unauthenticated when verifyCredentials throws", async () => {
             const verifyCredentials = mock.fn(async () => {
                 throw new Error("Invalid token");
