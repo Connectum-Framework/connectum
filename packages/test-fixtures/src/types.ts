@@ -66,7 +66,11 @@ export interface MockDescMessageOptions {
 
 /** Options for {@link index.createMockDescField | createMockDescField}. */
 export interface MockDescFieldOptions {
-    /** Mark field as sensitive (for redact interceptor). Default: `false` */
+    /**
+     * Mark the field as sensitive: `proto.options` becomes a `google.protobuf.FieldOptions`
+     * message with `debugRedact` set to `true`, as in a compiled descriptor.
+     * Default: `false`
+     */
     isSensitive?: boolean;
     /** Proto field number. Default: auto-incremented */
     fieldNumber?: number;
@@ -82,7 +86,14 @@ export interface MockDescMethodOptions {
     output?: DescMessage;
     /** Method kind. Default: `'unary'` */
     kind?: "unary" | "server_streaming" | "client_streaming" | "bidi_streaming";
-    /** Enable sensitive field redaction for this method. Default: `false` */
+    /**
+     * Put the fixture-only marker `{ debug_redact: true }` into `proto.options`. Default: `false`
+     *
+     * @deprecated `google.protobuf.MethodOptions` has no `debug_redact` field: the marker
+     *   exists only in this fixture, nothing in Connectum reads it, and it does not conform
+     *   to a compiled descriptor. It keeps its behaviour for existing tests. Mark a field
+     *   with `isSensitive` instead.
+     */
     useSensitiveRedaction?: boolean;
 }
 
