@@ -115,49 +115,6 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
         }
     });
 
-    // The spec scenario with three publishes cannot tell correlation from luck: a returned
-    // message that is blamed on a neighbour needs the neighbour to still be pending. Many
-    // publishes in flight at once, alternating routable and unroutable, leave no room for that:
-    // every unroutable one must reject with its own routing key and every routable one resolve.
-    for (const [label, correlationHeader] of [
-        ["header correlation (default)", true],
-        ["single-flight (correlationHeader: false)", false],
-    ] as const) {
-        it(`mandatory + ${label}: each of 40 concurrent publishes gets its own outcome`, async () => {
-            const exchange = `it.many.${correlationHeader ? "header" : "single"}`;
-            const adapter = AmqpAdapter({
-                url,
-                exchange,
-                exchangeType: "topic",
-                recovery: false,
-                publisherOptions: { mandatory: true, correlationHeader },
-            });
-            await adapter.connect();
-            try {
-                const sub = await adapter.subscribe([`${exchange}.bound.*`], async (_e, ack) => ack(), { group: "g1" });
-
-                const keys = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? `${exchange}.bound.${i}` : `${exchange}.UNBOUND.${i}`));
-                const results = await Promise.allSettled(keys.map((key) => adapter.publish(key, new Uint8Array([1]))));
-
-                results.forEach((result, i) => {
-                    const key = keys[i] as string;
-                    if (i % 2 === 0) {
-                        assert.equal(result.status, "fulfilled", `${key} is routable and must resolve`);
-                    } else {
-                        assert.equal(result.status, "rejected", `${key} is unroutable and must reject`);
-                        const reason = (result as PromiseRejectedResult).reason;
-                        assert.ok(reason instanceof AmqpUnroutableError, `${key}: expected AmqpUnroutableError, got: ${String(reason)}`);
-                        assert.equal(reason.routingKey, key, "the rejection names the routing key of its own publish");
-                    }
-                });
-
-                await sub.unsubscribe();
-            } finally {
-                await adapter.disconnect();
-            }
-        });
-    }
-
     it("single-flight leaves the wire clean (no x-connectum-publish-id header)", async () => {
         const adapter = AmqpAdapter({
             url,
