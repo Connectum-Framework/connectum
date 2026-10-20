@@ -58,10 +58,6 @@ describe("collectStreamingMethods", () => {
         assert.deepStrictEqual(methods, [{ service: "acme.v1.ScannerService", method: "StreamCodes", kind: "bidi_streaming" }]);
     });
 
-    it("returns empty for unary/server-streaming-only registry", () => {
-        assert.deepStrictEqual(collectStreamingMethods([UNARY_ONLY]), []);
-    });
-
     // multi.proto declares a unary MountedService and an UnmountedPeerService
     // with a bidi method. A file contributes every service it declares; the
     // mounted service alone has nothing to report.

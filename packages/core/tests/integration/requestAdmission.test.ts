@@ -27,7 +27,7 @@ import { createLocalTransport, LOCAL_TRANSPORT_HEADER, LOCAL_TRANSPORT_VALUE } f
 import { createServer } from "../../src/Server.ts";
 import type { CreateServerOptions, NodeRequest, NodeResponse, ProtocolRegistration, Server } from "../../src/types.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
-import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
+import { CountSchema, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 /** Counts handler invocations so a test can prove the handler never ran. */
 function makeEchoRoutes(calls: { count: number }, options?: ServiceOptions) {
@@ -474,6 +474,39 @@ describe("service options override the server defaults", () => {
 });
 
 describe("gate coverage boundary", () => {
+    // Every RPC registered on the router passes the server-level gate, RPCs contributed by
+    // protocols (gRPC Health, Reflection) included.
+    it("rejects an RPC contributed by a protocol, over HTTP and in-process, without running its handler", async () => {
+        let protocolHandlerCalls = 0;
+        const rpcProtocol: ProtocolRegistration = {
+            name: "rpc-protocol",
+            register(router) {
+                router.service(StreamingService, {
+                    echo: (req) => {
+                        protocolHandlerCalls++;
+                        return create(ItemSchema, { value: req.value, sequence: req.sequence });
+                    },
+                    async *server() {},
+                    client: async () => create(CountSchema, { total: 0 }),
+                    async *bidi() {},
+                });
+            },
+        };
+        const { server, transport } = await startH2c({ services: [makeEchoRoutes({ count: 0 })], protocols: [rpcProtocol], requestGate: rejectAll });
+        try {
+            const httpErr = await captureError(() => createClient(StreamingService, transport).echo(create(ItemSchema, { value: "a" })));
+            const localErr = await captureError(() => server.localClient(StreamingService).echo(create(ItemSchema, { value: "a" })));
+
+            for (const err of [httpErr, localErr]) {
+                assert.strictEqual(err.code, Code.Unauthenticated);
+                assert.strictEqual(err.rawMessage, "unauthenticated");
+            }
+            assert.strictEqual(protocolHandlerCalls, 0);
+        } finally {
+            await server.stop();
+        }
+    });
+
     it("serves a protocol HTTP handler endpoint without invoking the gate", async () => {
         const gateCalls = { count: 0 };
         const plainHttp: ProtocolRegistration = {

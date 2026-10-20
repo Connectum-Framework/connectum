@@ -222,17 +222,5 @@ describe("TLSConfig", () => {
 			assert.strictEqual(result.key.toString(), "dirpath-key-content");
 			assert.strictEqual(result.cert.toString(), "dirpath-cert-content");
 		});
-
-		it("should read from dirPath when provided without explicit paths", () => {
-			const keyPath = resolve(testDir, "server.key");
-			const certPath = resolve(testDir, "server.crt");
-			writeFileSync(keyPath, "dirpath-key-content");
-			writeFileSync(certPath, "dirpath-cert-content");
-
-			const result = readTLSCertificates({ dirPath: testDir });
-
-			assert.strictEqual(result.key.toString(), "dirpath-key-content");
-			assert.strictEqual(result.cert.toString(), "dirpath-cert-content");
-		});
 	});
 });

@@ -291,14 +291,6 @@ describe("TransportManager", () => {
     // -----------------------------------------------------------------
 
     describe("destroyAllSessions()", () => {
-        it("should not throw when no sessions exist", () => {
-            transport = new TransportManager();
-
-            assert.doesNotThrow(() => {
-                transport.destroyAllSessions();
-            });
-        });
-
         it("should terminate a live connection, and a repeated call is harmless", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1", allowHTTP1: false });

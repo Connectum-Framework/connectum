@@ -311,6 +311,26 @@ describe("ctx.call — deadline cascade", () => {
         assert.ok(observed > 0 && observed <= 2_000, `override must be clamped to <=2000ms, saw ${observed}`);
     });
 
+    it("uses the override as the deadline when the inbound call has none", async () => {
+        const server = makeServer(async (req, ctx) => {
+            const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: req.message, sequence: 0 }), { timeoutMs: 500 });
+            return create(EchoResponseSchema, { message: inner.value, timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        const observed = Number(res.message);
+        assert.ok(observed > 0 && observed <= 500, `the override must reach the downstream call as its deadline, saw ${observed}`);
+    });
+
+    it("sets no deadline downstream when neither the inbound call nor the override has one", async () => {
+        const server = makeServer(async (req, ctx) => {
+            const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: req.message, sequence: 0 }));
+            return create(EchoResponseSchema, { message: inner.value, timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        // The remote reports -1 when `ctx.timeoutMs()` is undefined.
+        assert.strictEqual(res.message, "-1");
+    });
+
     it("honours a shorter override", async () => {
         const server = makeServer(async (req, ctx) => {
             const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: req.message, sequence: 0 }), { timeoutMs: 500 });

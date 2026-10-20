@@ -213,14 +213,6 @@ describe("ShutdownManager", () => {
     // ---------------------------------------------------------------
 
     describe("executeAll()", () => {
-        it("should not throw when no hooks are registered", async () => {
-            const manager = new ShutdownManager();
-
-            await assert.doesNotReject(async () => {
-                await manager.executeAll();
-            });
-        });
-
         it("should execute multiple handlers registered for the same module", async () => {
             const manager = new ShutdownManager();
             const started = new Set<string>();

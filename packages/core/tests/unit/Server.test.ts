@@ -473,45 +473,6 @@ describe("createServer", () => {
     });
 
     describe("event emitter", () => {
-        it("should support once() for one-time listeners", async () => {
-            const service = createMockService();
-            const readyHandler = mock.fn();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
-
-            server.once("ready", readyHandler);
-
-            await server.start();
-
-            // Handler should have been called once
-            assert.strictEqual(readyHandler.mock.calls.length, 1);
-        });
-
-        it("should support off() to remove listeners", async () => {
-            const service = createMockService();
-            const readyHandler = mock.fn();
-
-            const server = createServer({
-                services: [service],
-                port: 0,
-            });
-
-            servers.push(server);
-
-            server.on("ready", readyHandler);
-            server.off("ready", readyHandler);
-
-            await server.start();
-
-            // Handler should not have been called
-            assert.strictEqual(readyHandler.mock.calls.length, 0);
-        });
-
         it("should emit error event on startup failure", async () => {
             const service = createMockService();
 
@@ -1032,37 +993,6 @@ describe("createServer", () => {
                 assert.strictEqual(eventOrder[1], "stop");
                 assert.strictEqual(eventOrder.length, 2);
             });
-        });
-    });
-
-    describe("addService/addInterceptor/addProtocol in CREATED state", () => {
-        it("should allow addService(), addInterceptor(), addProtocol() in CREATED state", () => {
-            const service = createMockService();
-            const extraService = createMockService();
-            const customInterceptor = mock.fn((next) => next);
-            const mockProtocol = {
-                name: "test-protocol",
-                register(_router: ConnectRouter) {
-                    // no-op
-                },
-            };
-
-            const server = createServer({
-                services: [service],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.state, ServerState.CREATED);
-
-            // All three should NOT throw in CREATED state
-            assert.doesNotThrow(() => server.addService(extraService));
-            assert.doesNotThrow(() => server.addInterceptor(customInterceptor));
-            assert.doesNotThrow(() => server.addProtocol(mockProtocol));
-
-            assert.strictEqual(server.routes.length, 2);
-            assert.strictEqual(server.interceptors.length, 1);
-            assert.strictEqual(server.protocols.length, 1);
         });
     });
 

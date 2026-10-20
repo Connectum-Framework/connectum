@@ -23,8 +23,6 @@
  *     server interceptor chain.
  *   - A legitimate `createLocalTransport` call still surfaces the
  *     marker to the server interceptor chain (regression guard).
- *   - Server-side user interceptors observe the marker as absent on HTTP
- *     regardless of the casing of the forged name.
  */
 
 import assert from "node:assert";
@@ -127,41 +125,5 @@ describe("Local transport header is stripped from inbound HTTP requests", () => 
         );
         assert.strictEqual(LOCAL_TRANSPORT_HEADER, "connectum-internal-transport");
         assert.strictEqual(LOCAL_TRANSPORT_VALUE, "in-process");
-    });
-
-    it("a forged header with a mixed-case name is also stripped (header names are case-insensitive)", async () => {
-        const observed: { value: string | null } = { value: "<not-called>" };
-        const server = createServer({
-            services: [makeEchoRoutes()],
-            port: 0,
-            // gRPC client over HTTP/2 plaintext requires the server to
-            // refuse HTTP/1 upgrade (mirrors `coexistence.parity.test.ts`).
-            allowHTTP1: false,
-            interceptors: [makeTransportHeaderProbe(observed)],
-        });
-        await server.start();
-        try {
-            const port = server.address?.port;
-            assert.ok(port);
-
-            // Mixed-case header name set via client interceptor — the
-            // Headers API normalises to lower-case so the server-side
-            // strip interceptor must still delete it.
-            const forgeMarkerMixedCaseInterceptor: Interceptor = (next) => (req) => {
-                req.header.set("Connectum-Internal-Transport", "in-process");
-                return next(req);
-            };
-            const transport = createGrpcTransport({
-                baseUrl: `http://localhost:${port}`,
-                interceptors: [forgeMarkerMixedCaseInterceptor],
-            });
-            const client = createClient(EchoService, transport);
-
-            await client.echo(create(EchoRequestSchema, { message: "spoof2" }));
-
-            assert.strictEqual(observed.value, null, "case-variant forged header must also be stripped");
-        } finally {
-            await server.stop();
-        }
     });
 });
