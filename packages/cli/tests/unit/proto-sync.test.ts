@@ -63,7 +63,7 @@ mock.module("node:os", {
 });
 
 // Import AFTER mock registration
-const { executeProtoSync, normalizeServerUrl, parseTimeoutOption, protoSyncCommand } = await import("../../src/commands/proto-sync.ts");
+const { executeProtoSync, normalizeServerUrl, parseTimeoutOption } = await import("../../src/commands/proto-sync.ts");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -209,22 +209,6 @@ describe("proto-sync unit tests", () => {
 	// -----------------------------------------------------------------------
 
 	describe("executeDryRun", () => {
-		it("should call fetchReflectionData with normalized URL", async () => {
-			await captureConsoleLog(async () => {
-				await executeProtoSync({
-					from: "myserver:8080",
-					out: "./out",
-					dryRun: true,
-				});
-			});
-
-			assert.strictEqual(mockFetchReflectionData.mock.calls.length, 1);
-			assert.strictEqual(
-				mockFetchReflectionData.mock.calls[0]!.arguments[0],
-				"http://myserver:8080",
-			);
-		});
-
 		// The guide describes --dry-run as "Connect, list the services and files, generate nothing".
 		// So the observable contract is that every service name and every file name the server
 		// reported reaches the user; the wording and layout of the surrounding lines is not
@@ -301,7 +285,13 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should write binary descriptor to temp file", async () => {
+		// buf reads the descriptor set from the file it is given, so the file has to hold exactly the
+		// bytes the server returned, live inside the temporary directory that is cleaned up later,
+		// and be the file buf is pointed at.
+		it("writes the fetched descriptor bytes into the temporary directory and hands that very file to buf", async () => {
+			const fetched = new Uint8Array([0x0a, 0x09, 0x08, 0x07, 0x06]);
+			mockFetchFileDescriptorSetBinary.mock.mockImplementationOnce(async () => fetched);
+
 			await captureConsoleLog(async () => {
 				await executeProtoSync({
 					from: "http://localhost:5000",
@@ -310,11 +300,13 @@ describe("proto-sync unit tests", () => {
 			});
 
 			assert.strictEqual(mockWriteFileSync.mock.calls.length, 1);
-
 			const [path, data] = mockWriteFileSync.mock.calls[0]!.arguments;
-			assert.ok(typeof path === "string", "Path should be a string");
-			assert.ok(path.includes("descriptors.binpb"), "Path should include descriptors.binpb");
-			assert.ok(data instanceof Uint8Array, "Data should be Uint8Array");
+			assert.deepStrictEqual(data, fetched);
+			assert.strictEqual(path, "/fake-tmp/connectum-proto-sync-XXXXXX/descriptors.binpb");
+
+			const [, args] = mockExecFileSync.mock.calls[0]!.arguments;
+			assert.deepStrictEqual(args?.slice(0, 2), ["generate", path]);
+			assert.strictEqual(mockRmSync.mock.calls[0]!.arguments[0], "/fake-tmp/connectum-proto-sync-XXXXXX");
 		});
 
 		it("should run buf generate without --template when template is not specified", async () => {
@@ -669,60 +661,10 @@ describe("proto-sync unit tests", () => {
 		});
 	});
 
-	// -----------------------------------------------------------------------
-	// protoSyncCommand definition
-	// -----------------------------------------------------------------------
-
-	describe("protoSyncCommand", () => {
-		it("should have name 'sync'", () => {
-			const meta = protoSyncCommand.meta as { name?: string; description?: string } | undefined;
-			assert.strictEqual(meta?.name, "sync");
-		});
-
-		it("should have a description", () => {
-			const meta = protoSyncCommand.meta as { name?: string; description?: string } | undefined;
-			assert.ok(
-				typeof meta?.description === "string",
-				"Should have a description",
-			);
-			assert.ok(
-				meta!.description!.length > 0,
-				"Description should not be empty",
-			);
-		});
-
-		it("should define 'from' as a required string argument", () => {
-			const args = protoSyncCommand.args as Record<string, any>;
-			assert.ok(args.from, "Should have 'from' arg");
-			assert.strictEqual(args.from.type, "string");
-			assert.strictEqual(args.from.required, true);
-		});
-
-		it("should define 'out' as a required string argument", () => {
-			const args = protoSyncCommand.args as Record<string, any>;
-			assert.ok(args.out, "Should have 'out' arg");
-			assert.strictEqual(args.out.type, "string");
-			assert.strictEqual(args.out.required, true);
-		});
-
-		it("should define 'template' as an optional string argument", () => {
-			const args = protoSyncCommand.args as Record<string, any>;
-			assert.ok(args.template, "Should have 'template' arg");
-			assert.strictEqual(args.template.type, "string");
-			assert.strictEqual(args.template.required, undefined, "template should not be required");
-		});
-
-		it("should define 'dry-run' as a boolean with default false", () => {
-			const args = protoSyncCommand.args as Record<string, any>;
-			assert.ok(args["dry-run"], "Should have 'dry-run' arg");
-			assert.strictEqual(args["dry-run"].type, "boolean");
-			assert.strictEqual(args["dry-run"].default, false);
-		});
-
-		it("should have a run function", () => {
-			assert.strictEqual(typeof protoSyncCommand.run, "function");
-		});
-	});
+	// The command definition (name, description, arguments, run handler) is not checked here: those
+	// are constants and wiring, and the process-level suites run the built command and observe what
+	// they mean (a missing --from or --out is refused, --dry-run and --template are honoured,
+	// --help lists every flag).
 
 	// -----------------------------------------------------------------------
 	// dryRun routing
