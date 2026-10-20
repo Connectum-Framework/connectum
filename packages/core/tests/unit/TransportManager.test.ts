@@ -229,6 +229,30 @@ describe("TransportManager", () => {
             await transport1.close();
             transport1.dispose();
         });
+
+        // Node.js `net` documentation: a port must be an integer in 0..65535, anything else is
+        // ERR_SOCKET_BAD_PORT. The server must not start on a rounded or truncated port.
+        for (const port of [80.5, 1.5, 65535.5, 0.5]) {
+            it(`should refuse the fractional port option ${port} and stay not listening`, async () => {
+                transport = new TransportManager();
+
+                await assert.rejects(() => transport.listen(noopHandler, { port, host: "127.0.0.1" }), { code: "ERR_SOCKET_BAD_PORT" });
+
+                assert.strictEqual(transport.address, null);
+            });
+        }
+
+        for (const port of ["80.5", "1.5", "65535.5", "0.5"]) {
+            it(`should refuse the fractional PORT environment value ${port} and stay not listening`, async () => {
+                await withListenEnv({ PORT: port, LISTEN: "127.0.0.1" }, async () => {
+                    transport = new TransportManager();
+
+                    await assert.rejects(() => transport.listen(noopHandler, {}), /PORT/);
+
+                    assert.strictEqual(transport.address, null);
+                });
+            });
+        }
     });
 
     // -----------------------------------------------------------------

@@ -104,6 +104,39 @@ describe("errorHandler interceptor", () => {
         );
     });
 
+    // A number that is not a Connect failure code (1..16) counts as "no code": the client
+    // code and the code given to onError are both Internal, and onError keeps the original
+    // error, whose own `code` is untouched.
+    for (const code of [0, 17, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 404]) {
+        it(`should treat the numeric .code ${String(code)} as no code and report Code.Internal to the client and to onError`, async () => {
+            const original = Object.assign(new Error("driver failure"), { code });
+            let reported: { code: Code; error: Error } | undefined;
+            const interceptor = createErrorHandlerInterceptor({
+                logErrors: false,
+                onError: (info) => {
+                    reported = { code: info.code, error: info.error };
+                },
+            });
+            const handler = interceptor((async () => {
+                throw original;
+            }) as any);
+
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal);
+                    assert.strictEqual(err.rawMessage, "internal error");
+                    return true;
+                },
+            );
+
+            assert.ok(reported, "onError must have been called");
+            assert.strictEqual(reported.code, Code.Internal);
+            assert.strictEqual(reported.error.cause, original);
+            assert.ok(Object.is((original as { code: number }).code, code), "the original error keeps its own code");
+        });
+    }
+
     it("should log errors when logErrors is true", async () => {
         const originalError = mock.method(console, "error", () => {});
 
