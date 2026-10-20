@@ -85,7 +85,7 @@ describe("createMockNext", () => {
     await next(request);
 
     assert.strictEqual(next.mock.calls.length, 1);
-    assert.deepStrictEqual(next.mock.calls[0].arguments, [request], "the request handed to next() is what the spy records");
+    assert.strictEqual(next.mock.calls[0].arguments[0], request, "the spy records the very request object handed to next()");
   });
 
   it("has spy capabilities via mock.callCount()", async () => {

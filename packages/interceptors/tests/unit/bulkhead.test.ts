@@ -72,6 +72,8 @@ describe("bulkhead interceptor", () => {
         assert.strictEqual(results.filter((r) => r.status === "fulfilled").length, 20);
         const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
         assert.strictEqual(rejected.length, 1);
+        // The 21st call is the one refused: the first 20 fit in the 10 running slots and the queue of 10.
+        assert.strictEqual(results[20]!.status, "rejected", "the 21st call must be the refused one");
         assertConnectError(rejected[0]!.reason, Code.ResourceExhausted, "Bulkhead capacity exceeded (capacity: 10, queueSize: 10)");
     });
 

@@ -263,6 +263,7 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 	// The manager passed in the options is the one the protocol reports from
 	// and initializes; the module singleton is left alone.
 	it("reports from the manager given in options and leaves the singleton untouched", () => {
+		const singletonBefore = [...healthcheckManager.getAllStatuses().entries()];
 		const customManager = createHealthcheckManager();
 		const protocol = Healthcheck({ manager: customManager });
 		const { router, getHandlers } = createMockRouter();
@@ -272,7 +273,7 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		customManager.update(ServingStatus.SERVING, "svc.v1.Foo");
 
 		assert.strictEqual(getHandlers().check!({ service: "svc.v1.Foo" }).status, ServingStatus.SERVING);
-		assert.strictEqual(healthcheckManager.getAllStatuses().size, 0);
+		assert.deepStrictEqual([...healthcheckManager.getAllStatuses().entries()], singletonBefore);
 	});
 
 	// Without the manager option the module-level singleton is what the

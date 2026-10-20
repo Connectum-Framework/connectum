@@ -12,6 +12,7 @@
 
 import assert from "node:assert";
 import { spawnSync } from "node:child_process";
+import * as nodeModule from "node:module";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -41,8 +42,10 @@ function thrownByCreateServer(redirects: Record<string, string>): { name: string
     return JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "");
 }
 
-// The preload relies on synchronous module resolution hooks, which Bun does not have.
-const skip = "bun" in process.versions ? "module.registerHooks is not available under Bun" : false;
+// The preload relies on synchronous module resolution hooks (`module.registerHooks`), which Bun and
+// older Node.js lines do not have. A namespace import keeps the missing export from failing the file
+// before the skip condition is evaluated.
+const skip = typeof nodeModule.registerHooks !== "function" ? "module.registerHooks is not available in this runtime" : false;
 
 describe("createServer — peer version check on the loaded copies", { skip }, () => {
     it("creates the server when the check sees in-range copies", () => {

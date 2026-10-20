@@ -127,10 +127,15 @@ describe("testing/test-jwt-rs256", () => {
             return exp - iat;
         };
 
-        assert.strictEqual(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid })), 3600);
-        assert.strictEqual(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid, expiresIn: "2h" })), 7200);
-        assert.strictEqual(lifetimeOf(await createTestJwt({ sub: "u" })), 3600);
-        assert.strictEqual(lifetimeOf(await createTestJwt({ sub: "u" }, { expiresIn: "2h" })), 7200);
+        // iat and exp are read from the clock separately, so a second boundary between the two reads adds one second.
+        const assertLifetime = (actual: number, expected: number): void => {
+            assert.ok(actual === expected || actual === expected + 1, `lifetime ${actual}s, expected ${expected}s`);
+        };
+
+        assertLifetime(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid })), 3600);
+        assertLifetime(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid, expiresIn: "2h" })), 7200);
+        assertLifetime(lifetimeOf(await createTestJwt({ sub: "u" })), 3600);
+        assertLifetime(lifetimeOf(await createTestJwt({ sub: "u" }, { expiresIn: "2h" })), 7200);
     });
 
     it("rejects a token signed by an unpublished key (kid mismatch / bad signature)", async () => {
