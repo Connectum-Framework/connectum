@@ -54,6 +54,33 @@ describe("assertSubscriptionPatterns", () => {
     });
 });
 
+describe("assertSubscriptionPatterns with the kafka-topic-name rule", () => {
+    function kafkaRejection(pattern: string): (error: unknown) => boolean {
+        const message = `KafkaAdapter: subscription pattern "${pattern}" is not a valid Kafka topic name. Kafka reserves the names "", "." and "..".`;
+        return (error) => error instanceof TypeError && error.message === message;
+    }
+
+    for (const pattern of ["", ".", ".."]) {
+        it(`rejects ${JSON.stringify(pattern)}, a name Kafka reserves`, () => {
+            assert.throws(() => assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns: [pattern], rule: "kafka-topic-name" }), kafkaRejection(pattern));
+        });
+    }
+
+    it("names the first reserved name of a list", () => {
+        assert.throws(() => assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns: ["ok.one", "..", "."], rule: "kafka-topic-name" }), kafkaRejection(".."));
+    });
+
+    it("accepts topic names with an empty segment, which Kafka allows", () => {
+        for (const pattern of ["a..b", ".a", "a.", "...", "a.b", "a.*", "a.>", ">", "*", "a.*."]) {
+            assert.doesNotThrow(() => assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns: [pattern], rule: "kafka-topic-name" }), pattern);
+        }
+    });
+
+    it("keeps the empty-segment rule when no rule is given", () => {
+        assert.throws(() => assertSubscriptionPatterns({ adapter: "TestAdapter", patterns: ["a..b"] }), rejection("TestAdapter", "a..b", 'it contains ".."'));
+    });
+});
+
 describe("MemoryAdapter subscription patterns", () => {
     for (const [label, pattern, reason] of [
         ["the empty string", "", "the pattern is empty"],

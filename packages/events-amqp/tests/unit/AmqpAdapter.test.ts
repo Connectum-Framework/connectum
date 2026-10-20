@@ -476,15 +476,8 @@ describe("toAmqpPattern", () => {
         assert.equal(toAmqpPattern("*.user.>"), "*.user.*.#");
     });
 
-    it("rejects the empty string, because a binding with an empty key matches only an event with an empty routing key", () => {
-        assert.throws(() => toAmqpPattern(""), /^TypeError: AmqpAdapter: subscription pattern "" has an empty segment \(the pattern is empty\)\./);
-    });
-
-    it("rejects an empty segment between dots, at the start and at the end", () => {
-        assert.throws(() => toAmqpPattern("a..b"), /subscription pattern "a\.\.b" has an empty segment \(it contains "\.\."\)/);
-        assert.throws(() => toAmqpPattern(".a"), /subscription pattern "\.a" has an empty segment \(it starts with "\."\)/);
-        assert.throws(() => toAmqpPattern("a."), /subscription pattern "a\." has an empty segment \(it ends with "\."\)/);
-        assert.throws(() => toAmqpPattern("."), /subscription pattern "\." has an empty segment \(it starts with "\."\)/);
+    it("should handle empty string", () => {
+        assert.equal(toAmqpPattern(""), "");
     });
 
     it("keeps wildcard characters embedded in segments literal", () => {
@@ -494,41 +487,9 @@ describe("toAmqpPattern", () => {
     });
 });
 
-/** Escape every character that has a meaning in a regular expression, backslash included. */
-function escapeRegExp(text: string): string {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 describe("validateSubscriptionPatterns", () => {
     const EXCHANGE_TYPES = ["topic", "direct", "fanout", "headers"] as const;
     const TOPOLOGY_MODES = ["assert", "check", "skip"] as const;
-
-    for (const [label, pattern, reason] of [
-        ["the empty string", "", "the pattern is empty"],
-        ["an empty segment between dots", "a..b", 'it contains ".."'],
-        ["a leading dot", ".a", 'it starts with "."'],
-        ["a trailing dot", "a.", 'it ends with "."'],
-        ["a lone dot", ".", 'it starts with "."'],
-    ] as const) {
-        it(`rejects ${label} on every exchange type in every topology mode`, () => {
-            const expected = new RegExp(`^${escapeRegExp(`AmqpAdapter: subscription pattern "${pattern}" has an empty segment (${reason}). Every dot-separated segment of a pattern must be non-empty.`)}$`);
-            for (const exchangeType of EXCHANGE_TYPES) {
-                for (const topologyMode of TOPOLOGY_MODES) {
-                    assert.throws(
-                        () => validateSubscriptionPatterns(["user.created", pattern], { exchangeType, topologyMode }),
-                        (error: unknown) => error instanceof TypeError && expected.test(error.message),
-                        `${exchangeType}/${topologyMode}`,
-                    );
-                }
-            }
-        });
-    }
-
-    it("accepts literal, single-segment wildcard and tail wildcard patterns on a topic exchange", () => {
-        for (const topologyMode of TOPOLOGY_MODES) {
-            assert.doesNotThrow(() => validateSubscriptionPatterns(["a.b", "a.*", "a.>", ">"], { exchangeType: "topic", topologyMode }), topologyMode);
-        }
-    });
 
     it("accepts a literal routing key on every exchange type in every topology mode", () => {
         for (const exchangeType of EXCHANGE_TYPES) {

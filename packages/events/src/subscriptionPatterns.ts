@@ -1,8 +1,19 @@
 /**
- * Validation of subscription patterns shared by every event adapter.
+ * Validation of subscription patterns for event adapters whose broker cannot serve some of them.
  *
  * @module subscriptionPatterns
  */
+
+/**
+ * What a rule refuses:
+ *
+ * - `"no-empty-segment"` -- any pattern with an empty dot-separated segment (the empty string,
+ *   `a..b`, `.a`, `a.`, `.`). For brokers whose subject syntax has no empty token (NATS) and for
+ *   the in-memory adapter, which matches the same way.
+ * - `"kafka-topic-name"` -- only the names Kafka reserves: the empty string, `.` and `..`. Every
+ *   other name with an empty segment (`a..b`, `.a`, `a.`) is a legal Kafka topic.
+ */
+export type SubscriptionPatternRule = "no-empty-segment" | "kafka-topic-name";
 
 /**
  * Describe where the first empty segment of a pattern is, or return `undefined` when every
@@ -28,32 +39,35 @@ function emptySegmentLocation(pattern: string): string | undefined {
 }
 
 /**
- * Reject subscription patterns that contain an empty segment.
- *
- * A pattern is a dot-separated list of segments; the empty string, `a..b`, `.a`, `a.` and `.`
- * all contain a segment with no characters. Such a pattern names no event: every broker would
- * bind it to the empty key (RabbitMQ), refuse it with a transport error that does not name the
- * pattern (NATS, Kafka), or quietly create a stream for it (Redis), so a typo in a route would
- * surface as an event that never arrives. The wildcards `*` and `>` are segments with content and
- * are not affected.
+ * Reject subscription patterns that the adapter's broker cannot serve.
  *
  * Adapters call this at the start of `subscribe()`, before they touch the broker, so a rejected
- * call leaves no queue, consumer, stream or consumer group behind. It checks every pattern, so a
- * bad pattern next to good ones rejects the whole call.
+ * call leaves no consumer or consumer group behind. It checks every pattern, so a bad pattern next
+ * to good ones rejects the whole call. The wildcards `*` and `>` are segments with content and are
+ * never refused by either rule. Adapters whose broker accepts any key (Redis, RabbitMQ) do not
+ * call it.
  *
- * @param options - The adapter name used in the message and the patterns of the subscription
- * @throws {TypeError} For the first pattern with an empty segment; the message names the adapter,
- * the pattern and where the empty segment is.
+ * @param options.adapter - The adapter name used in the message
+ * @param options.patterns - The patterns of the subscription
+ * @param options.rule - What to refuse; `"no-empty-segment"` when omitted
+ * @throws {TypeError} For the first refused pattern; the message names the adapter and the pattern.
  *
  * @example
  * ```typescript
  * assertSubscriptionPatterns({ adapter: "MyAdapter", patterns: ["user.created", "order.>"] }); // returns
  * assertSubscriptionPatterns({ adapter: "MyAdapter", patterns: ["user..created"] }); // throws TypeError
+ * assertSubscriptionPatterns({ adapter: "MyAdapter", patterns: ["user..created"], rule: "kafka-topic-name" }); // returns
  * ```
  */
-export function assertSubscriptionPatterns(options: { readonly adapter: string; readonly patterns: readonly string[] }): void {
-    const { adapter, patterns } = options;
+export function assertSubscriptionPatterns(options: { readonly adapter: string; readonly patterns: readonly string[]; readonly rule?: SubscriptionPatternRule }): void {
+    const { adapter, patterns, rule = "no-empty-segment" } = options;
     for (const pattern of patterns) {
+        if (rule === "kafka-topic-name") {
+            if (pattern === "" || pattern === "." || pattern === "..") {
+                throw new TypeError(`${adapter}: subscription pattern "${pattern}" is not a valid Kafka topic name. Kafka reserves the names "", "." and "..".`);
+            }
+            continue;
+        }
         const location = emptySegmentLocation(pattern);
         if (location !== undefined) {
             throw new TypeError(`${adapter}: subscription pattern "${pattern}" has an empty segment (${location}). Every dot-separated segment of a pattern must be non-empty.`);
