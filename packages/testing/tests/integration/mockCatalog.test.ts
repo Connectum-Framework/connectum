@@ -13,9 +13,9 @@ import { Code, ConnectError, createClient } from "@connectrpc/connect";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
 import * as core from "@connectum/core";
 // biome-ignore lint/correctness/useImportExtensions: bare package specifier
-import { defineCatalog } from "@connectum/core";
+import { createServer, defineCatalog, defineService } from "@connectum/core";
 import { createMockContext } from "../../src/mockContext.ts";
-import { mockResolver, mockService } from "../../src/mockResolver.ts";
+import { type MockService, mockResolver, mockService } from "../../src/mockResolver.ts";
 import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
@@ -165,6 +165,78 @@ describe("createMockContext", () => {
         it("lets headers passed in the call options win over propagated ones", async () => {
             const seen = await seenHeaders({ propagateHeaders: ["x-tenant"], callHeaders: { "x-tenant": "override" } });
             assert.strictEqual(seen.tenant, "override");
+        });
+    });
+
+    // The mock context must not drift from production: the same call, made from a real
+    // handler on a real server with `mockResolver`, ends the same way as made through the
+    // mock context, for a success, a failure raised by the mock, and a service nobody mocks.
+    describe("agrees with a real server using the same mocks", () => {
+        type Outcome = { message: string } | { code: Code; error: string };
+        const catalog = defineCatalog({ [EchoService.typeName]: EchoService });
+
+        function outcomeOf(settle: () => Promise<{ message: string }>): Promise<Outcome> {
+            return settle().catch((err: unknown) => {
+                const connectErr = ConnectError.from(err);
+                return { code: connectErr.code, error: connectErr.rawMessage };
+            });
+        }
+
+        async function viaMockContext(mocks: MockService[]): Promise<Outcome> {
+            const ctx = createMockContext({ catalog, mocks });
+            return outcomeOf(async () => ({ message: (await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "hi" }))).message }));
+        }
+
+        async function viaRealServer(mocks: MockService[]): Promise<Outcome> {
+            const server = createServer({
+                services: [
+                    defineService(StreamingService, {
+                        echo: async (_req, ctx) => {
+                            const res = await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "hi" }));
+                            return create(ItemSchema, { value: res.message, sequence: 0 });
+                        },
+                        async *server() {},
+                        client: async () => ({ total: 0 }),
+                        async *bidi() {},
+                    }),
+                ],
+                catalog,
+                remoteResolver: mockResolver(mocks),
+            });
+            const client = server.client(StreamingService);
+            return outcomeOf(async () => ({ message: (await client.echo(create(ItemSchema, { value: "go", sequence: 0 }))).value }));
+        }
+
+        const scenarios: { name: string; mocks: MockService[]; expected: Outcome }[] = [
+            {
+                name: "a successful mock",
+                mocks: [mockService(EchoService, { echo: (req) => create(EchoResponseSchema, { message: `mocked:${req.message}`, timestamp: 0n }) })],
+                expected: { message: "mocked:hi" },
+            },
+            {
+                name: "a mock that fails with a ConnectError",
+                mocks: [
+                    mockService(EchoService, {
+                        echo: () => {
+                            throw new ConnectError("no such record", Code.NotFound);
+                        },
+                    }),
+                ],
+                expected: { code: Code.NotFound, error: "no such record" },
+            },
+        ];
+        for (const { name, mocks, expected } of scenarios) {
+            it(`ends the same way for ${name}`, async () => {
+                assert.deepStrictEqual(await viaMockContext(mocks), expected, "mock context");
+                assert.deepStrictEqual(await viaRealServer(mocks), expected, "real server");
+            });
+        }
+
+        it("ends the same way for a service that has no mock", async () => {
+            const viaContext = await viaMockContext([]);
+            const viaServer = await viaRealServer([]);
+            assert.ok("code" in viaContext && viaContext.code === Code.Unavailable, `mock context must report Unavailable, got ${JSON.stringify(viaContext)}`);
+            assert.deepStrictEqual(viaContext, viaServer, "the mock context must fail exactly like the real server");
         });
     });
 
