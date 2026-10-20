@@ -293,12 +293,21 @@ async function announcedClientId(run: (broker: string) => Promise<void>): Promis
     let clientId: string | null | undefined;
     const server = createServer((socket) => {
         socket.on("error", () => undefined);
+        // TCP may deliver the header in pieces: collect bytes until the client id is complete.
+        let received = Buffer.alloc(0);
         socket.on("data", (chunk: Buffer) => {
             if (clientId !== undefined) {
                 return;
             }
-            const length = chunk.readInt16BE(12);
-            clientId = length < 0 ? null : chunk.toString("utf-8", 14, 14 + length);
+            received = Buffer.concat([received, chunk]);
+            if (received.length < 14) {
+                return;
+            }
+            const length = received.readInt16BE(12);
+            if (length >= 0 && received.length < 14 + length) {
+                return;
+            }
+            clientId = length < 0 ? null : received.toString("utf-8", 14, 14 + length);
             socket.destroy();
         });
     });

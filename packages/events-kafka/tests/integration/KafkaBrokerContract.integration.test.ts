@@ -79,22 +79,32 @@ describe("Kafka adapter documented broker behaviour", { skip: KAFKA_TEST_URL ===
         const topic = await createTopic(uniqueName("ct.keys"), 3);
         const adapter = newAdapter();
         await adapter.connect();
+        const partitionsOf = async (): Promise<number[]> => (await admin.fetchTopicOffsets(topic)).sort((left, right) => left.partition - right.partition).map((entry) => Number(entry.offset));
+        // A topic that was just created may have no leader yet; the first read waits for one.
+        await waitFor(async () => {
+            try {
+                await partitionsOf();
+                return true;
+            } catch {
+                return false;
+            }
+        }, `a leader for every partition of ${topic}`);
         try {
-            for (let index = 0; index < 10; index += 1) {
-                await adapter.publish(topic, bytes(`a-${index}`), { key: "customer-a" });
-                await adapter.publish(topic, bytes(`b-${index}`), { key: "customer-b" });
+            // One key at a time, so the growth of each partition's end offset belongs to that key alone.
+            for (const key of ["customer-a", "customer-b"]) {
+                const before = await partitionsOf();
+                for (let index = 0; index < 10; index += 1) {
+                    await adapter.publish(topic, bytes(`${key}-${index}`), { key });
+                }
+                const grown = (await partitionsOf()).map((offset, partition) => offset - (before[partition] ?? 0));
+                assert.deepEqual(
+                    grown.filter((count) => count > 0),
+                    [10],
+                    `all ten messages of ${key} land in one partition (growth per partition: ${grown.join(", ")})`,
+                );
             }
         } finally {
             await adapter.disconnect();
-        }
-        const offsets = await admin.fetchTopicOffsets(topic);
-        const perPartition = offsets.map((entry) => Number(entry.offset)).filter((count) => count > 0);
-        assert.equal(
-            perPartition.reduce((sum, count) => sum + count, 0),
-            20,
-        );
-        for (const count of perPartition) {
-            assert.ok(count % 10 === 0, `all ten messages of a key share a partition, so every partition holds a multiple of ten (got ${perPartition.join(", ")})`);
         }
     });
 
@@ -147,17 +157,20 @@ describe("Kafka adapter documented broker behaviour", { skip: KAFKA_TEST_URL ===
 
     it("sessionTimeout reaches the broker: a value below the broker's minimum keeps the consumer out of its group", { timeout: SCENARIO_TIMEOUT_MS }, async () => {
         // The broker refuses to admit a member whose session timeout is below group.min.session.timeout.ms
-        // (6000 ms by default), so a value of 1000 ms can only keep the consumer out of the group if the
-        // adapter really hands the option to the client; the client's own default is 30000 ms.
+        // (6000 ms by default), so a value of 4000 ms can only keep the consumer out of the group if the
+        // adapter really hands the option to the client; the client's own default is 30000 ms. The value
+        // stays above the adapter's 3000 ms heartbeat interval: the client refuses a lower one locally,
+        // before it contacts the broker, which would prove nothing about the broker.
         const topic = await createTopic(uniqueName("ct.session"));
         const group = uniqueName("group");
-        const adapter = KafkaAdapter({ brokers, clientId: uniqueName("contract"), logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, sessionTimeout: 1_000 } });
+        const adapter = KafkaAdapter({ brokers, clientId: uniqueName("contract"), logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, sessionTimeout: 4_000 } });
         await adapter.connect();
         try {
             const outcome = await adapter.subscribe([topic], async () => undefined, { group }).then(
                 (subscription) => subscription,
                 (error: unknown) => error,
             );
+            assert.ok(!(outcome instanceof Error && /heartbeatInterval/.test(outcome.message)), "the client must not refuse the configuration locally");
             await sleep(5_000);
             const members = (await admin.describeGroups([group])).groups[0]?.members.length ?? 0;
             assert.equal(members, 0, "no member may be admitted with a session timeout below the broker's minimum");

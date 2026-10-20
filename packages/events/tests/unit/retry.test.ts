@@ -307,14 +307,20 @@ describe("retryMiddleware", () => {
 
         it("a non-retryable error is thrown immediately, without any backoff delay", async () => {
             const mw = retryMiddleware({ maxRetries: 3, backoff: "fixed", initialDelay: 1000 });
+            const failure = new NonRetryableError("invalid payload");
+            let calls = 0;
             const delays = await recordBackoffDelays(() =>
-                assert.rejects(() =>
-                    mw(makeRawEvent(), makeCtx(), async () => {
-                        throw new NonRetryableError("invalid payload");
-                    }),
+                assert.rejects(
+                    () =>
+                        mw(makeRawEvent(), makeCtx(), async () => {
+                            calls += 1;
+                            throw failure;
+                        }),
+                    (error: unknown) => error === failure,
                 ),
             );
             assert.deepEqual(delays, []);
+            assert.equal(calls, 1, "the handler runs once and is not retried");
         });
     });
 });
