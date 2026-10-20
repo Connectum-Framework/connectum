@@ -1,7 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { create } from "@bufbuild/protobuf";
-import { FieldOptionsSchema } from "@bufbuild/protobuf/wkt";
+import { clone, create, equals, fromBinary, isFieldSet, toBinary } from "@bufbuild/protobuf";
+import { Edition, type FieldOptions, FieldOptionsSchema, MethodOptionsSchema } from "@bufbuild/protobuf/wkt";
+import { createFakeMethod, createFakeService } from "../../src/fake-service.ts";
 import {
   createMockDescField,
   createMockDescMessage,
@@ -182,24 +183,93 @@ describe("createMockDescMessage", () => {
 
   // The edition of a proto3 file is what create() inspects to decide how field
   // presence is tracked, so a descriptor that omits it is not shaped like a real one.
-  it("the file of a message reports the edition of a real proto3 file", { skip: "known defect, fails against the documented behaviour: the mock file has no `edition` (DescFile.edition is 999 for proto3), only a string in `proto.edition`" }, () => {
+  it("the file of a message reports the edition of a real proto3 file", () => {
     const real = realMessage(USER);
     const mock = createMockDescMessage(USER);
 
     assert.strictEqual(mock.file.edition, real.file.edition);
+    assert.strictEqual(mock.file.edition, Edition.EDITION_PROTO3);
+    // The descriptor proto of a proto3 file names the syntax and leaves the numeric edition unknown.
+    assert.deepStrictEqual(
+      [mock.file.proto.syntax, mock.file.proto.edition],
+      [real.file.proto.syntax, real.file.proto.edition],
+    );
+    assert.deepStrictEqual([mock.file.proto.syntax, mock.file.proto.edition], ["proto3", Edition.EDITION_UNKNOWN]);
   });
 
   // DescField.parent is "the message this field is declared on".
-  it("every field points back at the message that declares it, like a real field", { skip: "known defect, fails against the documented behaviour: fields built by createMockDescMessage keep `parent` undefined instead of the message" }, () => {
+  it("every field points back at the message that declares it, like a real field", () => {
     const real = realMessage(USER);
     assert.ok(real.fields.every((f) => f.parent === real), "reference: a real field points at its message");
+    assert.strictEqual(real.parent, undefined, "reference: a top-level real message has no parent");
 
     const msg = createMockDescMessage(USER, { fields: [{ name: "id" }, { name: "email" }] });
 
+    assert.strictEqual(msg.fields.length, 2);
     assert.ok(
       msg.fields.every((f) => f.parent === msg),
       "each field of the mock message must point back at it",
     );
+    assert.strictEqual(msg.parent, undefined, "a top-level message has no parent");
+  });
+
+  // The protobuf-es helpers below read `field.parent`; before the link existed each of them
+  // threw a TypeError on a mock that create() accepted, so a test passed on the mock and failed
+  // on the compiled descriptor.
+  it("toBinary of a mock message round-trips through the compiled descriptor of the same fields", () => {
+    const real = realMessage(USER);
+    const mock = createMockDescMessage(USER, { fields: [{ name: "id", type: "int32" }, { name: "email", type: "string" }] });
+
+    const bytes = toBinary(mock, create(mock, { id: 7, email: "a" } as never));
+
+    const decoded = fromBinary(real, bytes) as unknown as { id: number; email: string };
+    assert.strictEqual(decoded.id, 7);
+    assert.strictEqual(decoded.email, "a");
+    assert.deepStrictEqual(bytes, toBinary(real, create(real, { id: 7, email: "a" })));
+  });
+
+  it("isFieldSet, equals and clone accept a mock message like a compiled one", () => {
+    const real = realMessage(USER);
+    const mock = createMockDescMessage(USER, { fields: [{ name: "id", type: "int32" }, { name: "email", type: "string" }] });
+    const withId = create(mock, { id: 7 } as never);
+    const realWithId = create(real, { id: 7 });
+
+    assert.strictEqual(isFieldSet(withId, mock.fields[0]!), true);
+    assert.strictEqual(isFieldSet(realWithId, real.fields[0]!), true, "reference: the compiled descriptor answers the same");
+    assert.strictEqual(isFieldSet(create(mock), mock.fields[0]!), false);
+    assert.strictEqual(isFieldSet(create(real), real.fields[0]!), false, "reference: an unset compiled field");
+
+    assert.strictEqual(equals(mock, withId, create(mock, { id: 7 } as never)), true);
+    assert.strictEqual(equals(mock, withId, create(mock, { id: 8 } as never)), false);
+    assert.strictEqual(equals(real, realWithId, create(real, { id: 7 })), true, "reference: equality of compiled messages");
+
+    const copy = clone(mock, withId);
+    assert.notStrictEqual(copy, withId);
+    assert.strictEqual(equals(mock, copy, withId), true);
+  });
+
+  // A mock message with fields is circular through `parent`, as a compiled descriptor is.
+  it("a mock message with fields is not JSON-serialisable, like a compiled descriptor", () => {
+    const real = realMessage(USER);
+    assert.throws(() => JSON.stringify(real), TypeError, "reference: a compiled descriptor is circular");
+
+    const mock = createMockDescMessage(USER, { fields: [{ name: "id" }] });
+
+    assert.throws(() => JSON.stringify(mock), TypeError);
+  });
+
+  it("a mock message without fields has no circular link and stays JSON-serialisable", () => {
+    assert.doesNotThrow(() => JSON.stringify(createMockDescMessage("test.Empty")));
+  });
+
+  // The parent link exists only for the fields a message lists: a field made alone and a mock
+  // method keep `parent` undefined (createFakeMethod is the way to get a method with its service).
+  it("a standalone field and a mock method have no parent, while createFakeMethod links the service", () => {
+    assert.strictEqual(createMockDescField("x").parent, undefined);
+    assert.strictEqual(createMockDescMethod("GetUser").parent, undefined);
+
+    const service = createFakeService();
+    assert.strictEqual(createFakeMethod(service, "GetUser").parent, service);
   });
 
   it("creates oneofs from options", () => {
@@ -493,14 +563,36 @@ describe("createMockDescField", () => {
   // FieldOptions in @bufbuild/protobuf names the property debugRedact (the
   // protobuf-es rule for the proto field debug_redact); a descriptor produced by
   // the library never carries a snake_case key.
-  it("isSensitive marks the field the way FieldOptions of the real library does", { skip: "known defect, fails against the documented behaviour: the mock sets `debug_redact` while FieldOptions names the property `debugRedact`" }, () => {
+  it("isSensitive marks the field the way FieldOptions of the real library does", () => {
     const real = create(FieldOptionsSchema, { debugRedact: true });
     assert.strictEqual(real.debugRedact, true, "reference: the real property is debugRedact");
     assert.strictEqual("debug_redact" in real, false, "reference: the real options message has no snake_case key");
 
     const field = createMockDescField("password", { isSensitive: true });
 
-    assert.strictEqual((field.proto.options as { debugRedact?: boolean } | undefined)?.debugRedact, true);
+    const options = field.proto.options as FieldOptions;
+    assert.strictEqual(options.$typeName, "google.protobuf.FieldOptions");
+    assert.strictEqual(options.debugRedact, true);
+    assert.strictEqual(isFieldSet(options, FieldOptionsSchema.field.debugRedact), true);
+    assert.strictEqual("debug_redact" in options, false, "no snake_case key next to the real property");
+  });
+
+  // A field declared inside a message is marked the same way as a field made alone, and only
+  // the fields that ask for it carry the marker.
+  it("isSensitive on a field declared in createMockDescMessage marks that field only", () => {
+    const message = createMockDescMessage("acme.v1.Login", {
+      fields: [
+        { name: "user", type: "string" },
+        { name: "password", type: "string", isSensitive: true },
+        { name: "remember", type: "bool", isSensitive: false },
+      ],
+    });
+
+    const options = message.field.password?.proto.options as FieldOptions;
+    assert.strictEqual(options.$typeName, "google.protobuf.FieldOptions");
+    assert.strictEqual(options.debugRedact, true);
+    assert.strictEqual(message.field.user?.proto.options, undefined);
+    assert.strictEqual(message.field.remember?.proto.options, undefined);
   });
 
   // A real field without annotations has no options message at all.
@@ -628,6 +720,17 @@ describe("createMockDescMethod", () => {
 
       assert.strictEqual((method as any).proto.options, real.proto.options);
     }
+  });
+
+  // The option is deprecated and documented as a fixture-only marker: MethodOptions of the
+  // real library declares no debugRedact field, so the marker does not conform to a compiled
+  // descriptor. The test pins the unchanged behaviour without presenting it as conformant.
+  it("useSensitiveRedaction keeps its fixture-only marker although MethodOptions declares no such field", () => {
+    assert.strictEqual("debugRedact" in MethodOptionsSchema.field, false, "reference: MethodOptions has no debugRedact field");
+
+    const method = createMockDescMethod("Ping", { useSensitiveRedaction: true });
+
+    assert.deepStrictEqual(method.proto.options, { debug_redact: true });
   });
 
   it("has correct structural defaults", () => {

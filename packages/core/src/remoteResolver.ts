@@ -48,11 +48,16 @@ export function singleTransportResolver(transport: Transport): RemoteResolver {
 }
 
 /**
- * A resolver backed by an explicit `{ [typeName]: Transport }` map. Unknown
- * typeNames resolve to `null` (→ `Code.Unavailable`).
+ * A resolver backed by an explicit `{ [typeName]: Transport }` map, an exact
+ * allow-list: only the keys the map owns resolve. Every other `typeName`
+ * resolves to `null` (→ `Code.Unavailable`), including names that exist on
+ * `Object.prototype` (`constructor`, `toString`, `hasOwnProperty`, `valueOf`,
+ * `__proto__`). A key the map owns resolves even when its name is also an
+ * `Object.prototype` member. The lookup stays live: entries added to the map
+ * after the resolver was created are honoured.
  */
 export function mapResolver(map: Readonly<Record<string, Transport>>): RemoteResolver {
-    return ({ typeName }) => map[typeName] ?? null;
+    return ({ typeName }) => (Object.hasOwn(map, typeName) ? (map[typeName] ?? null) : null);
 }
 
 /** Options for {@link dnsResolver}. */

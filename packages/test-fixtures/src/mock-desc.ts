@@ -10,7 +10,9 @@
  */
 
 import type { DescField, DescMessage, DescMethod } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import { protoCamelCase, safeObjectProperty } from "@bufbuild/protobuf/reflect";
+import { Edition, FieldOptionsSchema } from "@bufbuild/protobuf/wkt";
 import type { MockDescFieldOptions, MockDescMessageOptions, MockDescMethodOptions } from "./types.ts";
 
 /**
@@ -72,6 +74,16 @@ function mapTypeToScalar(type: string): number {
  * compiled descriptor, `getDefaultValue()` returns `undefined` (so `create()`
  * fills in the scalar zero value) and `longAsString` is `false`.
  *
+ * With `isSensitive: true`, `proto.options` is a real `google.protobuf.FieldOptions`
+ * message with `debugRedact` set to `true`, as in a compiled descriptor; without it
+ * `proto.options` is `undefined`.
+ *
+ * Limit: a field created here alone has `parent` `undefined`. Fields listed by
+ * {@link createMockDescMessage} are linked to their message through `parent`, which
+ * the protobuf-es helpers that read `field.parent` (`toBinary`, `isFieldSet`,
+ * `equals`, `clone`) need; declare the field through that factory when a test passes
+ * the descriptor to them.
+ *
  * @param name    - The field's name as written in the `.proto` file (for example
  *   `user_id`). `localName` and `jsonName` are derived from it by the protobuf-es
  *   rules: `user_id` gives `userId`, and a name that collides with a built-in
@@ -108,7 +120,7 @@ export function createMockDescField(name: string, options?: MockDescFieldOptions
         packed: false,
         optional: false,
         proto: {
-            options: options?.isSensitive ? { debug_redact: true } : undefined,
+            options: options?.isSensitive ? create(FieldOptionsSchema, { debugRedact: true }) : undefined,
         },
         parent: undefined,
         oneof: undefined,
@@ -127,6 +139,15 @@ export function createMockDescField(name: string, options?: MockDescFieldOptions
  * Field numbers that are not given explicitly continue from the highest number
  * used so far (`max + 1`). Two fields with the same number make the factory
  * throw, as `protoc` rejects such a message.
+ *
+ * Like a compiled descriptor, every field points back at the message through
+ * `parent`, the message itself has `parent` `undefined` (a top-level message), and
+ * its `file` reports the proto3 edition (`edition` is `Edition.EDITION_PROTO3`;
+ * `proto.syntax` is `"proto3"` and `proto.edition` is `Edition.EDITION_UNKNOWN`).
+ * That makes `toBinary`, `isFieldSet`, `equals` and `clone` of `@bufbuild/protobuf`
+ * accept the mock. The parent link is circular, so `JSON.stringify` of a mock
+ * message that has fields throws a `TypeError`, as it does for a compiled
+ * descriptor: serialise `typeName` and the field names instead of the descriptor.
  *
  * Limitations: a mock oneof group has no fields (`fields: []`) and the declared
  * fields are not attached to it, and a custom `json_name` option cannot be
@@ -169,6 +190,9 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         if (f.type !== undefined) {
             fieldOpts.type = f.type;
         }
+        if (f.isSensitive !== undefined) {
+            fieldOpts.isSensitive = f.isSensitive;
+        }
         return createMockDescField(f.name, fieldOpts);
     });
 
@@ -179,7 +203,7 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         kind: "oneof",
     }));
 
-    return {
+    const message = {
         kind: "message",
         typeName,
         name,
@@ -192,11 +216,23 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         nestedExtensions: [],
         parent: undefined,
         proto: { options: undefined },
+        // The file of a compiled `syntax = "proto3"` file: `edition` is the proto3 edition
+        // and its descriptor proto names the syntax while leaving `edition` unknown.
         file: {
             name: `${typeName.replace(/\./g, "/")}.proto`,
-            proto: { edition: "EDITION_PROTO3" },
+            edition: Edition.EDITION_PROTO3,
+            proto: { syntax: "proto3", edition: Edition.EDITION_UNKNOWN },
         },
     } as unknown as DescMessage;
+
+    // A compiled field points back at the message that declares it, and protobuf-es
+    // reads that link (`toBinary`, `isFieldSet`, `equals`, `clone`). `DescField.parent`
+    // is readonly and the message only exists now, so the link is set through a mutable view.
+    for (const field of fields) {
+        (field as { parent: DescMessage }).parent = message;
+    }
+
+    return message;
 }
 
 /**
@@ -206,8 +242,14 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
  * automatically based on the method name (e.g. `test.GetUserRequest` /
  * `test.GetUserResponse`).
  *
+ * Limit: the method has `parent` `undefined`, so code that reads the service of the
+ * method (for example `createMethodUrl`) cannot use it. Use `createFakeMethod(service, name)`
+ * for a method attached to a service.
+ *
  * @param name    - The RPC method name (PascalCase by convention).
- * @param options - Optional overrides for kind, input/output, and redaction.
+ * @param options - Optional overrides for kind, input/output, and redaction
+ *   (`useSensitiveRedaction` is deprecated: `MethodOptions` has no such property, so the
+ *   `{ debug_redact: true }` marker it produces is fixture-only and nothing in Connectum reads it).
  * @returns A mock `DescMethod` object.
  *
  * @example

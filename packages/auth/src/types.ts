@@ -308,7 +308,11 @@ export interface GatewayHeaderMapping {
     readonly subject: string;
     /** Header containing the display name */
     readonly name?: string | undefined;
-    /** Header containing JSON-encoded roles array */
+    /**
+     * Header containing the roles: a JSON array of strings (`["admin","editor"]`) or a
+     * comma-separated list (`admin, editor`). Any value that is not a JSON array, including
+     * JSON of another kind such as `123` or `true`, is read as a comma-separated list.
+     */
     readonly roles?: string | undefined;
     /** Header containing space-separated scopes */
     readonly scopes?: string | undefined;
