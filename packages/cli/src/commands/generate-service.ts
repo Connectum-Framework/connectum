@@ -9,9 +9,11 @@
  * @module commands/generate-service
  */
 
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
-import { buildServiceFiles, packageName, registrationMessage } from "../scaffold/generateService.ts";
+import { buildServiceFiles, packageName, pascalCase, registrationMessage, serviceModulePath } from "../scaffold/generateService.ts";
+import { serviceNameProblems } from "../scaffold/serviceName.ts";
 import { emitFiles } from "../utils/emit.ts";
 
 /**
@@ -29,6 +31,37 @@ export interface GenerateServiceOptions {
 }
 
 /**
+ * Refuse a name whose proto file already exists but belongs to another service.
+ *
+ * Two names can map onto one proto path (`ab` and `a-b` both give `proto/ab/v1/ab.proto`) while
+ * their services are named differently (`AbService`, `ABService`). The emission skips an existing
+ * file, so the second name would get a new module importing a service that the kept proto does
+ * not declare: a project that no longer compiles. The check applies only when the service module
+ * is about to be written; a repeated run of the same name (module already there) stays a no-op.
+ */
+function assertProtoBelongsToName(options: { targetDir: string; name: string; withEvents: boolean }): void {
+    const { targetDir, name, withEvents } = options;
+    const protoPath = `proto/${packageName(name)}/v1/${packageName(name)}.proto`;
+    if (existsSync(join(targetDir, serviceModulePath(name)))) {
+        return;
+    }
+    let proto: string;
+    try {
+        proto = readFileSync(join(targetDir, protoPath), "utf8");
+    } catch {
+        // No readable proto: either nothing to collide with, or the emission layer reports the conflict.
+        return;
+    }
+    const expected = [`${pascalCase(name)}Service`, ...(withEvents ? [`${pascalCase(name)}EventHandlers`] : [])];
+    const missing = expected.filter((service) => !new RegExp(`^\\s*service\\s+${service}\\s*\\{`, "m").test(proto));
+    if (missing.length > 0) {
+        throw new Error(
+            `connectum generate service: "${name}" maps to ${protoPath}, which already exists and does not declare ${missing.join(", ")} — it belongs to another service name that gives the same package. Nothing was written. Choose a different name, or pass --force to overwrite the proto.`,
+        );
+    }
+}
+
+/**
  * Execute the `generate service` pipeline.
  *
  * @param options - Generate-service configuration
@@ -38,22 +71,24 @@ export async function executeGenerateService(options: GenerateServiceOptions): P
     if (name === "") {
         throw new Error("connectum generate service: a service name is required (e.g. `connectum generate service billing`)");
     }
-    // The normalized name feeds three derivations: the proto package (`<pkg>.v1`), the
-    // proto service identifier (`<Pascal>Service`) and a TypeScript binding
-    // (`<camel>Service`). Proto identifiers must start with an ASCII letter, and so must
-    // a JS identifier — so a name with no alphanumerics ("!!!" -> `package .v1;`) or one
-    // starting with a digit ("123-orders" -> `package 123orders.v1;` plus a `123Orders`
-    // binding that will not parse) has to be rejected before anything is emitted.
-    if (!/^[a-z][a-z0-9]*$/.test(packageName(name))) {
-        throw new Error(
-            `connectum generate service: "${options.name}" does not yield a valid identifier — after removing non-alphanumeric characters the name must start with a letter (e.g. "billing", "billing-v2"), not be empty or start with a digit.`,
-        );
+    // The name feeds the proto package (`<pkg>.v1`), the proto service identifier
+    // (`<Pascal>Service`), a TypeScript binding (`<camel>Service`) and two file paths, all
+    // built by keeping only ASCII letters and digits. A name with anything else would be
+    // changed without notice, and one that does not start with a letter yields an identifier
+    // that neither proto nor TypeScript accepts, so both are refused before anything is emitted.
+    const problems = serviceNameProblems(name);
+    if (problems.length > 0) {
+        throw new Error(`connectum generate service: invalid service name "${name}": ${problems.join("; ")}. Use a name like "billing" or "billing-v2".`);
     }
     const withEvents = options.withEvents ?? false;
+    const force = options.force ?? false;
     const targetDir = resolve(options.cwd ?? process.cwd());
 
     const files = buildServiceFiles(name, withEvents);
-    const result = emitFiles(targetDir, files, { force: options.force ?? false });
+    if (!force) {
+        assertProtoBelongsToName({ targetDir, name, withEvents });
+    }
+    const result = emitFiles(targetDir, files, { force });
 
     console.log(`Generated ${result.written.length} file(s) for service "${name}":`);
     for (const path of result.written) {
