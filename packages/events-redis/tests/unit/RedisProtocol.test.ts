@@ -86,16 +86,19 @@ describe("Redis Streams reply normalization", () => {
         ]);
     });
 
-    for (const [command, run] of [
-        ["XREADGROUP", () => normalizeXReadGroupReply(["s1"], RESP3_LEGACY)],
-        ["XAUTOCLAIM", () => normalizeXAutoClaimReply(["0-0"], RESP3_NATIVE)],
-        ["XPENDING", () => normalizeXPendingReply({ bad: "shape" }, RESP2)],
+    // A malformed reply must name the command and the selected protocol/mapping, so an operator
+    // can tell which of the three supported configurations produced it.
+    for (const [command, context, selected, run] of [
+        ["XREADGROUP", RESP3_LEGACY, "RESP3/legacy", () => normalizeXReadGroupReply(["s1"], RESP3_LEGACY)],
+        ["XAUTOCLAIM", RESP3_NATIVE, "RESP3/resp3", () => normalizeXAutoClaimReply(["0-0"], RESP3_NATIVE)],
+        ["XPENDING", RESP2, "RESP2/legacy", () => normalizeXPendingReply({ bad: "shape" }, RESP2)],
     ] as const) {
-        it(`reports ${command} and protocol context for malformed replies`, () => {
+        it(`reports ${command} and the selected ${selected} protocol/mapping for malformed replies`, () => {
             assert.throws(run, (error: unknown) => {
                 assert.ok(error instanceof RedisReplyShapeError);
                 assert.equal(error.command, command);
-                assert.match(error.message, new RegExp(`${command} reply for RESP`));
+                assert.deepEqual(error.context, context);
+                assert.ok(error.message.includes(` ${command} reply for ${selected}`), `the message must name the command and ${selected} (got: ${error.message})`);
                 return true;
             });
         });
