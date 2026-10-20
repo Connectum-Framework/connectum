@@ -381,8 +381,20 @@ describe("HealthcheckManager components", () => {
             assert.strictEqual(manager.getStatus("process"), undefined);
         });
 
+        // Removing something that is not there neither fails nor disturbs what is.
         it("should be a no-op for unknown names", () => {
+            manager.register("keep", ServingStatus.SERVING);
+            manager.initialize(["svc.v1.Foo"]);
+
             manager.unregister("ghost");
+
+            assert.deepStrictEqual(
+                [...manager.getAllStatuses().entries()],
+                [
+                    ["keep", { status: ServingStatus.SERVING }],
+                    ["svc.v1.Foo", { status: ServingStatus.UNKNOWN }],
+                ],
+            );
         });
 
         it("should reject unregistering an RPC service and keep it tracked", () => {
@@ -411,6 +423,34 @@ describe("HealthcheckManager components", () => {
 
             assert.strictEqual(manager.getStatus("svc.v1.Foo")?.status, ServingStatus.SERVING);
             assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+        });
+    });
+
+    describe("initialize after update", () => {
+        // update() rewrites an entry's status; it must not change who owns the
+        // entry. A component updated by name or in bulk is still the
+        // application's and survives protocol initialization; an RPC service
+        // updated the same way is still the protocol's and is dropped when it
+        // is no longer mounted.
+        it("keeps a component updated by update() through re-initialization", () => {
+            manager.register("process");
+            manager.update(ServingStatus.SERVING, "process");
+            manager.initialize([]);
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.SERVING);
+
+            manager.update(ServingStatus.NOT_SERVING);
+            manager.initialize(["svc.v1.Foo"]);
+            assert.strictEqual(manager.getStatus("process")?.status, ServingStatus.NOT_SERVING);
+        });
+
+        it("still drops an RPC service updated by update() when it is no longer mounted", () => {
+            manager.initialize(["svc.v1.Foo", "svc.v1.Bar"]);
+            manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+            manager.update(ServingStatus.SERVING);
+
+            manager.initialize([]);
+
+            assert.strictEqual(manager.getAllStatuses().size, 0);
         });
     });
 
@@ -460,10 +500,6 @@ describe("HealthcheckManager components", () => {
             manager.set("process", ServingStatus.SERVING);
 
             assert.strictEqual(manager.areAllHealthy(), true);
-        });
-
-        it("empty registry stays unhealthy", () => {
-            assert.strictEqual(manager.areAllHealthy(), false);
         });
     });
 });

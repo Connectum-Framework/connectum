@@ -78,9 +78,14 @@ describe("createHttpHealthHandler", () => {
         handler(req as any, res as any);
 
         assert.strictEqual(res.statusCode, 503);
+        const body = JSON.parse(res.getBody());
+        assert.strictEqual(body.status, "NOT_SERVING");
+        assert.strictEqual(body.service, "overall");
     });
 
-    it("should return false for non-health paths", () => {
+    // An unhandled request is left entirely to the next handler: nothing is
+    // written to the response.
+    it("should return false for non-health paths and write nothing", () => {
         const handler = createHttpHealthHandler(manager);
 
         const req = createMockRequest("/api/foo");
@@ -89,6 +94,9 @@ describe("createHttpHealthHandler", () => {
         const handled = handler(req as any, res as any);
 
         assert.strictEqual(handled, false);
+        assert.strictEqual(res.statusCode, 200, "the status code must stay at its untouched default");
+        assert.strictEqual(res.getBody(), "");
+        assert.deepStrictEqual(res.getHeaders(), {});
     });
 
     it("should handle /readyz path", () => {
