@@ -13,7 +13,7 @@ import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } fr
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { validateAdmissionOptions, validateShutdownOptions } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
-import { CatalogDispatcher, type CatalogDispatchHost } from "./catalogDispatcher.ts";
+import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
@@ -427,7 +427,7 @@ class ServerImpl extends EventEmitter implements Server {
      * @internal
      */
     private _resolveRemoteTransport(typeName: string, endpoint?: string): Transport | null {
-        const key = `${typeName}\0${endpoint ?? ""}`;
+        const key = remoteTransportCacheKey(typeName, endpoint);
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };

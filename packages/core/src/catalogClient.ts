@@ -34,6 +34,7 @@ import {
     openClientStream,
     openServerStream,
     type ResolveStream,
+    remoteTransportCacheKey,
     resolveRemoteTransportOrThrow,
 } from "./catalogDispatcher.ts";
 import type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle } from "./context.ts";
@@ -132,7 +133,7 @@ export function createCatalogClient(options: CreateCatalogClientOptions): Catalo
     const transportCache = new Map<string, Transport>();
 
     function resolveTransport(typeName: string, endpoint: string | undefined, caller: string): Transport {
-        const key = `${typeName} ${endpoint ?? ""}`;
+        const key = remoteTransportCacheKey(typeName, endpoint);
         const cached = transportCache.get(key);
         if (cached !== undefined) return cached;
         const transport = withOutgoingInterceptors(resolveRemoteTransportOrThrow(resolver, typeName, endpoint, caller), outgoing);

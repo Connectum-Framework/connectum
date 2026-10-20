@@ -61,6 +61,10 @@ export function assertConnectError(error: unknown, expectedCode: Code, messagePa
     if (typeof messagePattern === "string") {
         assert.ok(haystack.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
     } else if (messagePattern instanceof RegExp) {
-        assert.ok(messagePattern.test(haystack), `ConnectError message "${error.message}" does not match ${messagePattern}`);
+        // `g` and `y` make test() read and move `lastIndex`, so the caller's pattern would answer
+        // differently on the second use. A copy without them gives a verdict that depends on the
+        // message only and leaves the caller's object untouched.
+        const stateless = new RegExp(messagePattern.source, messagePattern.flags.replace(/[gy]/g, ""));
+        assert.ok(stateless.test(haystack), `ConnectError message "${error.message}" does not match ${messagePattern}`);
     }
 }
