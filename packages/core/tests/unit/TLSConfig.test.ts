@@ -6,16 +6,18 @@ import assert from "node:assert";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path/posix";
+import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
 
 describe("TLSConfig", () => {
 	let testDir: string;
-	let originalEnv: NodeJS.ProcessEnv;
+	let originalEnv: { TLS_DIR_PATH: string | undefined; NODE_ENV: string | undefined };
 
 	beforeEach(() => {
-		// Save original env
-		originalEnv = { ...process.env };
+		// Save the variables the tests change. They are restored key by key:
+		// replacing `process.env` with a copy would leave `env-var` reading the old object.
+		originalEnv = { TLS_DIR_PATH: process.env.TLS_DIR_PATH, NODE_ENV: process.env.NODE_ENV };
 
 		// Create temp directory for test certificates
 		testDir = resolve(tmpdir(), `tls-test-${Date.now()}`);
@@ -24,7 +26,11 @@ describe("TLSConfig", () => {
 
 	afterEach(() => {
 		// Restore env
-		process.env = originalEnv;
+		for (const name of ["TLS_DIR_PATH", "NODE_ENV"] as const) {
+			const value = originalEnv[name];
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 
 		// Clean up test directory
 		try {
@@ -35,12 +41,37 @@ describe("TLSConfig", () => {
 	});
 
 	describe("getTLSPath", () => {
-		it("should return TLS path as string", () => {
-			const path = getTLSPath();
+		// Configuration guide, TLS_DIR_PATH: the variable sets the directory; without it
+		// the default is `../../../keys` relative to cwd in development and cwd in production.
+		it("should return TLS_DIR_PATH verbatim when it is set, in development and in production alike", () => {
+			process.env.TLS_DIR_PATH = "/etc/ssl/certs";
 
-			assert.ok(path);
-			assert.ok(typeof path === "string");
-			assert.ok(path.length > 0);
+			process.env.NODE_ENV = "development";
+			assert.strictEqual(getTLSPath(), "/etc/ssl/certs");
+
+			process.env.NODE_ENV = "production";
+			assert.strictEqual(getTLSPath(), "/etc/ssl/certs");
+		});
+
+		it("should default to ../../../keys relative to cwd in development", () => {
+			delete process.env.TLS_DIR_PATH;
+			process.env.NODE_ENV = "development";
+
+			assert.strictEqual(getTLSPath(), resolve(cwd(), "../../../keys"));
+		});
+
+		it("should default to ../../../keys relative to cwd when NODE_ENV is not set", () => {
+			delete process.env.TLS_DIR_PATH;
+			delete process.env.NODE_ENV;
+
+			assert.strictEqual(getTLSPath(), resolve(cwd(), "../../../keys"));
+		});
+
+		it("should default to cwd in production", () => {
+			delete process.env.TLS_DIR_PATH;
+			process.env.NODE_ENV = "production";
+
+			assert.strictEqual(getTLSPath(), cwd());
 		});
 	});
 
@@ -164,6 +195,32 @@ describe("TLSConfig", () => {
 			// Should use explicit paths, not dirPath
 			assert.strictEqual(result.key.toString(), "explicit-key-content");
 			assert.strictEqual(result.cert.toString(), "explicit-cert-content");
+		});
+
+		it("should read server.key and server.crt from TLS_DIR_PATH when no path option is given", () => {
+			writeFileSync(resolve(testDir, "server.key"), "env-key-content");
+			writeFileSync(resolve(testDir, "server.crt"), "env-cert-content");
+			process.env.TLS_DIR_PATH = testDir;
+
+			const result = readTLSCertificates();
+
+			assert.strictEqual(result.key.toString(), "env-key-content");
+			assert.strictEqual(result.cert.toString(), "env-cert-content");
+		});
+
+		it("should prefer dirPath over TLS_DIR_PATH", () => {
+			const otherDir = resolve(testDir, "other");
+			mkdirSync(otherDir);
+			writeFileSync(resolve(testDir, "server.key"), "dirpath-key-content");
+			writeFileSync(resolve(testDir, "server.crt"), "dirpath-cert-content");
+			writeFileSync(resolve(otherDir, "server.key"), "env-key-content");
+			writeFileSync(resolve(otherDir, "server.crt"), "env-cert-content");
+			process.env.TLS_DIR_PATH = otherDir;
+
+			const result = readTLSCertificates({ dirPath: testDir });
+
+			assert.strictEqual(result.key.toString(), "dirpath-key-content");
+			assert.strictEqual(result.cert.toString(), "dirpath-cert-content");
 		});
 
 		it("should read from dirPath when provided without explicit paths", () => {
