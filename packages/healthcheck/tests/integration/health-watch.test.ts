@@ -68,8 +68,8 @@ describe("Health.Watch and per-service Health.Check over gRPC", () => {
         })();
         return {
             received,
-            async until(count: number): Promise<void> {
-                const deadline = Date.now() + 3000;
+            async until(count: number, timeoutMs = 3000): Promise<void> {
+                const deadline = Date.now() + timeoutMs;
                 while (received.length < count) {
                     if (Date.now() > deadline) {
                         assert.fail(`expected ${count} Watch messages, received ${JSON.stringify(received)}`);
@@ -109,6 +109,24 @@ describe("Health.Watch and per-service Health.Check over gRPC", () => {
             await delay(100);
 
             assert.deepStrictEqual(call.received, [ServingStatus.NOT_SERVING, ServingStatus.SERVING, ServingStatus.NOT_SERVING]);
+        } finally {
+            await call.stop();
+        }
+    });
+
+    // The server is configured with a 20 ms polling interval: a change reaches the
+    // client within a few polls, long before the 500 ms default would deliver it.
+    it("delivers a change within the configured watchInterval, not the 500 ms default", async () => {
+        manager.initialize([SERVICE]);
+        manager.update(ServingStatus.NOT_SERVING, SERVICE);
+        const call = watch(SERVICE);
+        try {
+            await call.until(1);
+
+            manager.update(ServingStatus.SERVING, SERVICE);
+            await call.until(2, 400);
+
+            assert.deepStrictEqual(call.received, [ServingStatus.NOT_SERVING, ServingStatus.SERVING]);
         } finally {
             await call.stop();
         }
