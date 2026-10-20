@@ -23,14 +23,14 @@ const tB = { id: "B" } as unknown as Transport;
  * gRPC (a Connect-protocol client does not read `grpc-status`).
  */
 async function probeWire(buildTransport: (baseUrl: string) => Transport): Promise<{ contentType: string | undefined; code: Code | undefined }> {
-    const seen: { contentType?: string } = {};
+    const seen: { contentType: string | undefined } = { contentType: undefined };
     const server = http2.createServer();
     const sessions = new Set<http2.ServerHttp2Session>();
     server.on("session", (session) => {
         sessions.add(session);
         session.on("close", () => sessions.delete(session));
     });
-    server.on("stream", (stream, headers) => {
+    server.on("stream", (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => {
         seen.contentType = headers["content-type"];
         stream.respond({ ":status": 200, "content-type": "application/grpc", "grpc-status": String(Code.Unimplemented) }, { endStream: true });
     });

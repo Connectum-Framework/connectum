@@ -1,8 +1,7 @@
 /**
  * Server.hasService / Server.client — automatic local/remote routing.
  *
- * Covers the "Automatic Local/Remote Routing Via Service Registry"
- * requirement (Phase 1a).
+ * Covers automatic local/remote routing via the service registry.
  */
 
 import assert from "node:assert";
@@ -161,8 +160,56 @@ describe("Server.client (unified auto-routing)", () => {
         await server.client(EchoService).echo(create(EchoRequestSchema, { message: "b" }));
         await server.client(EchoService).echo(create(EchoRequestSchema, { message: "c" }));
 
-        assert.ok(routersAfterFirstCall >= 1);
+        // Route materialization contract: one router for the HTTP adapter plus one for the in-process transport.
+        assert.strictEqual(routersAfterFirstCall, 2, "HTTP adapter router + the in-process transport's router");
         assert.strictEqual(protocol.registers, routersAfterFirstCall);
+    });
+
+    // Remote resolvers guide, "Endpoint hints": `server.client(Desc, { endpoint })` forwards the hint
+    // to the resolver as `ctx.endpoint`, distinct hints get distinct transports, and the hint is
+    // ignored for locally mounted services.
+    it("forwards the endpoint hint to the resolver and keeps one transport per hint", async () => {
+        const asked: Array<string | undefined> = [];
+        const remotes: Record<string, ReturnType<typeof makeRemoteTransport>> = { eu: makeRemoteTransport("EU"), us: makeRemoteTransport("US") };
+        const server = createServer({
+            services: [],
+            remoteResolver: ({ endpoint }) => {
+                asked.push(endpoint);
+                return remotes[endpoint ?? ""] ?? null;
+            },
+        });
+
+        const eu1 = await server.client(EchoService, { endpoint: "eu" }).echo(create(EchoRequestSchema, { message: "1" }));
+        const us = await server.client(EchoService, { endpoint: "us" }).echo(create(EchoRequestSchema, { message: "2" }));
+        const eu2 = await server.client(EchoService, { endpoint: "eu" }).echo(create(EchoRequestSchema, { message: "3" }));
+
+        assert.deepStrictEqual([eu1.message, us.message, eu2.message], ["EU:1", "US:2", "EU:3"]);
+        assert.deepStrictEqual(asked, ["eu", "us"], "one resolution per (typeName, endpoint)");
+    });
+
+    it("names the endpoint in the Unavailable error when the resolver has no route for it", () => {
+        const server = createServer({ services: [], remoteResolver: () => null });
+
+        assert.throws(
+            () => server.client(EchoService, { endpoint: "eu-west" }),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unavailable && err.message.includes("eu-west") && err.message.includes(EchoService.typeName),
+        );
+    });
+
+    it("ignores the endpoint hint for a locally mounted service", async () => {
+        let resolverCalls = 0;
+        const server = createServer({
+            services: [makeEchoRoutes()],
+            remoteResolver: () => {
+                resolverCalls++;
+                return makeRemoteTransport("remote");
+            },
+        });
+
+        const response = await server.client(EchoService, { endpoint: "eu" }).echo(create(EchoRequestSchema, { message: "x" }));
+
+        assert.strictEqual(response.message, "echo:x");
+        assert.strictEqual(resolverCalls, 0);
     });
 
     it("repeated client() calls for a remote service consistently use the resolver (cached)", async () => {
@@ -197,15 +244,19 @@ describe("Server.client (unified auto-routing)", () => {
         }
     });
 
-    it("server.client(LocalService) is semantically equivalent to server.localClient(LocalService)", async () => {
+    it("server.client(LocalService) answers like server.localClient(LocalService), for every method", async () => {
         const server = createServer({ services: [makeEchoRoutes()] });
         const viaClient = server.client(EchoService);
         const viaLocalClient = server.localClient(EchoService);
 
-        const a = await viaClient.echo(create(EchoRequestSchema, { message: "p" }));
-        const b = await viaLocalClient.echo(create(EchoRequestSchema, { message: "p" }));
-
-        assert.strictEqual(a.message, b.message);
+        for (const method of ["echo", "secureEcho", "rateLimitedEcho"] as const) {
+            const a = await viaClient[method](create(EchoRequestSchema, { message: "p" }));
+            const b = await viaLocalClient[method](create(EchoRequestSchema, { message: "p" }));
+            assert.deepStrictEqual(a.message, b.message, method);
+        }
+        // The handlers differ per method, so equality above is not an artefact of one shared reply.
+        assert.strictEqual((await viaClient.echo(create(EchoRequestSchema, { message: "p" }))).message, "echo:p");
+        assert.strictEqual((await viaClient.secureEcho(create(EchoRequestSchema, { message: "p" }))).message, "p");
     });
 
     it("server.client(LocalService) and server.localClient(LocalService) fail the same way: same code, message and metadata", async () => {

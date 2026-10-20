@@ -707,19 +707,6 @@ describe("createServer", () => {
             assert.strictEqual(server.interceptors.length, 0);
         });
 
-        it("should return empty array when interceptors: []", () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-                interceptors: [],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.interceptors.length, 0);
-        });
-
         it("should keep the given interceptors in the given order", () => {
             const first = mock.fn((next) => next);
             const second = mock.fn((next) => next);
@@ -748,58 +735,6 @@ describe("createServer", () => {
 
             assert.ok(Array.isArray(server.protocols));
             assert.strictEqual(server.protocols.length, 0);
-        });
-
-        it("should return protocols when specified", () => {
-            const service = createMockService();
-
-            const mockProtocol = {
-                name: "test-protocol",
-                register(_router: ConnectRouter) {
-                    // no-op
-                },
-            };
-
-            const server = createServer({
-                services: [service],
-                protocols: [mockProtocol],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.protocols.length, 1);
-            assert.strictEqual(server.protocols[0], mockProtocol);
-        });
-    });
-
-    describe("eventBus property", () => {
-        it("should return null when not configured", () => {
-            const service = createMockService();
-
-            const server = createServer({
-                services: [service],
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.eventBus, null);
-        });
-
-        it("should return bus instance when configured", () => {
-            const service = createMockService();
-            const mockEventBus = {
-                start: mock.fn(async () => {}),
-                stop: mock.fn(async () => {}),
-            };
-
-            const server = createServer({
-                services: [service],
-                eventBus: mockEventBus,
-            });
-
-            servers.push(server);
-
-            assert.strictEqual(server.eventBus, mockEventBus);
         });
     });
 

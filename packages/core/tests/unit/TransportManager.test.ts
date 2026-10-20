@@ -102,24 +102,6 @@ describe("TransportManager", () => {
     });
 
     // -----------------------------------------------------------------
-    // Constructor / initial state
-    // -----------------------------------------------------------------
-
-    describe("constructor", () => {
-        it("should create instance with server = null", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.server, null);
-        });
-
-        it("should create instance with address = null", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.address, null);
-        });
-    });
-
-    // -----------------------------------------------------------------
     // listen()
     // -----------------------------------------------------------------
 
@@ -397,33 +379,16 @@ describe("TransportManager", () => {
     // Getters
     // -----------------------------------------------------------------
 
-    describe("server getter", () => {
-        it("should return null before listen", () => {
-            transport = new TransportManager();
-
-            assert.strictEqual(transport.server, null);
-        });
-
-        it("should return server after listen", async () => {
-            transport = new TransportManager();
-            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
-
-            assert.ok(transport.server);
-            assert.strictEqual(typeof transport.server.close, "function");
-        });
-    });
-
     describe("address getter", () => {
-        it("should return null before listen", () => {
+        it("should report the address the listener is bound to, and nothing before listen", async () => {
             transport = new TransportManager();
-
             assert.strictEqual(transport.address, null);
-        });
+            assert.strictEqual(transport.server, null);
 
-        it("should return AddressInfo after listen", async () => {
             transport = new TransportManager();
             await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
 
+            assert.ok(transport.server?.listening, "the server is exposed and listening");
             const addr = transport.address;
             assert.ok(addr);
             assert.strictEqual(addr.address, "127.0.0.1");
@@ -433,10 +398,6 @@ describe("TransportManager", () => {
             assert.strictEqual(await acceptsConnections(addr.port), true);
         });
     });
-
-    // -----------------------------------------------------------------
-    // Session tracking
-    // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
     // HTTP/1.1 response

@@ -1,5 +1,5 @@
 /**
- * Regression tests for security finding F1 (CWE-345) — HTTP-side stripping
+ * Regression tests for the forged-marker finding (CWE-345) — HTTP-side stripping
  * of the `connectum-internal-transport` marker header.
  *
  * Threat model: a remote HTTP caller knows the header name (it is published
@@ -19,12 +19,12 @@
  * end-to-end.
  *
  * These tests pin the invariants:
- *   F1.1 — Forged header on inbound HTTP request is invisible to the
- *          server interceptor chain.
- *   F1.2 — Legitimate `createLocalTransport` call still surfaces the
- *          marker to the server interceptor chain (regression guard).
- *   F1.3 — Server-side user interceptors observe a fresh `Headers`
- *          instance on HTTP with the marker absent regardless of casing.
+ *   - A forged header on an inbound HTTP request is invisible to the
+ *     server interceptor chain.
+ *   - A legitimate `createLocalTransport` call still surfaces the
+ *     marker to the server interceptor chain (regression guard).
+ *   - Server-side user interceptors observe the marker as absent on HTTP
+ *     regardless of the casing of the forged name.
  */
 
 import assert from "node:assert";
@@ -59,8 +59,8 @@ function makeEchoRoutes() {
     });
 }
 
-describe("F1 — Local transport header is stripped from inbound HTTP requests", () => {
-    it("F1.1 — Forged `connectum-internal-transport` header from HTTP client is invisible at server interceptor chain", async () => {
+describe("Local transport header is stripped from inbound HTTP requests", () => {
+    it("a forged `connectum-internal-transport` header from an HTTP client is invisible at the server interceptor chain", async () => {
         const observed: { value: string | null } = { value: "<not-called>" };
         const server = createServer({
             services: [makeEchoRoutes()],
@@ -77,8 +77,7 @@ describe("F1 — Local transport header is stripped from inbound HTTP requests",
 
             // Forge the marker via a client-side interceptor so it travels
             // on the HTTP/2 request headers exactly the way a malicious
-            // caller would set it (mirroring the proof-of-concept from
-            // SECURITY_REVIEW.md §4 F1).
+            // caller would set it.
             const forgeMarkerInterceptor: Interceptor = (next) => (req) => {
                 req.header.set(LOCAL_TRANSPORT_HEADER, LOCAL_TRANSPORT_VALUE);
                 return next(req);
@@ -101,7 +100,7 @@ describe("F1 — Local transport header is stripped from inbound HTTP requests",
         }
     });
 
-    it("F1.2 — Legitimate `createLocalTransport` call still carries the marker to the server interceptor chain", async () => {
+    it("a legitimate `createLocalTransport` call still carries the marker to the server interceptor chain", async () => {
         const observed: { value: string | null } = { value: "<not-called>" };
         // The marker's name and value are a contract with the telemetry package,
         // which recognises in-process calls by these literals; they are spelled
@@ -130,7 +129,7 @@ describe("F1 — Local transport header is stripped from inbound HTTP requests",
         assert.strictEqual(LOCAL_TRANSPORT_VALUE, "in-process");
     });
 
-    it("F1.3 — Forged header with mixed-case name is also stripped (Headers is case-insensitive)", async () => {
+    it("a forged header with a mixed-case name is also stripped (header names are case-insensitive)", async () => {
         const observed: { value: string | null } = { value: "<not-called>" };
         const server = createServer({
             services: [makeEchoRoutes()],

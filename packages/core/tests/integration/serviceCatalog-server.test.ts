@@ -1,16 +1,18 @@
 /**
- * createServer catalog integration — enabledServices mounting + startup
- * validation (sections 6-7 of the service-catalog change).
+ * createServer catalog integration — enabledServices mounting and startup
+ * validation.
  */
 
 import assert from "node:assert";
 import { after, describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 import { CatalogConfigError } from "../../src/catalogErrors.ts";
 import { defineService } from "../../src/defineService.ts";
+import { singleTransportResolver } from "../../src/remoteResolver.ts";
 import { createServer } from "../../src/Server.ts";
 import { defineCatalog } from "../../src/serviceCatalog.ts";
-import { EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { CountSchema, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 const echo = () =>
@@ -45,6 +47,39 @@ describe("createServer enabledServices", () => {
         // A second configured service that is not listed stays unmounted.
         assert.equal(server.hasService(StreamingService), false, "a service outside the list must not be local");
     });
+
+    // Service catalog guide: a service outside `enabledServices` is remote — it is not served
+    // locally, and `server.client()` reaches it through the resolver instead.
+    it("serves a listed service and reaches an unlisted one through the resolver", async () => {
+        const remote = createRouterTransport((router) => {
+            router.service(StreamingService, {
+                echo: (req) => create(ItemSchema, { value: `remote:${req.value}`, sequence: req.sequence }),
+                async *server() {},
+                client: async () => create(CountSchema, { total: 0 }),
+                async *bidi() {},
+            });
+        });
+        const server = createServer({
+            services: [echo(), streaming()],
+            enabledServices: [EchoService.typeName],
+            remoteResolver: singleTransportResolver(remote),
+        });
+
+        const local = await server.client(EchoService).echo(create(EchoRequestSchema, { message: "a" }));
+        const viaResolver = await server.client(StreamingService).echo(create(ItemSchema, { value: "b", sequence: 0 }));
+
+        assert.equal(local.message, "echo:a");
+        assert.equal(viaResolver.value, "remote:b", "the unlisted service must not be answered by its local implementation");
+    });
+
+    it("answers a direct in-process call to an unlisted service with Unimplemented", async () => {
+        const server = createServer({ services: [echo(), streaming()], enabledServices: [EchoService.typeName] });
+
+        await assert.rejects(
+            () => server.localClient(StreamingService).echo(create(ItemSchema, { value: "b", sequence: 0 })),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unimplemented,
+        );
+    });
 });
 
 describe("createServer startup catalog validation", () => {
@@ -58,6 +93,9 @@ describe("createServer startup catalog validation", () => {
             server.start(),
             (err: unknown) => err instanceof CatalogConfigError && err.message.includes("unknown.v1.GhostService"),
         );
+        // A refused start leaves a stopped server that never bound a port.
+        assert.equal(server.state, "stopped");
+        assert.equal(server.address, null);
     });
 
     it("starts when enabledServices is a subset of the catalog", async () => {

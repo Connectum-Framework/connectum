@@ -1,10 +1,9 @@
 /**
  * ctx.call — declarative cross-service calls from inside a handler.
  *
- * Covers section 4 of the service-catalog change: local dispatch, remote
- * dispatch via the resolver (+ per-(typeName,endpoint) caching), the
- * signal/deadline cascade, and the split error model (FailedPrecondition /
- * Unimplemented / Unavailable / Internal).
+ * Covers local dispatch, remote dispatch via the resolver (+ per-(typeName,endpoint)
+ * caching), the signal/deadline cascade, and the split error model
+ * (FailedPrecondition / Unimplemented / Unavailable / Internal).
  *
  * The fixtures give us two distinct services so a locally-mounted caller can
  * reach a *non-local* target: EchoService is the caller (mounted), and the
@@ -24,8 +23,8 @@ import { defineCatalog } from "../../src/serviceCatalog.ts";
 import { type EchoRequest, EchoRequestSchema, type EchoResponse, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 import { CountSchema, type Item, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
-// Hand-written catalog augmentation (the buf plugin — task 9 — does not exist
-// yet). Includes deliberately-bogus keys to exercise the Unimplemented guards.
+// Hand-written catalog augmentation (the same shape the buf plugin emits).
+// Includes deliberately-bogus keys to exercise the Unimplemented guards.
 declare module "../../src/serviceCatalog.ts" {
     interface ConnectumCallMap {
         "echo.v1.EchoService/Echo": { request: EchoRequest; response: EchoResponse };
@@ -117,6 +116,97 @@ describe("ctx.call — remote dispatch via resolver", () => {
         assert.strictEqual(a.message, "R:1");
         assert.strictEqual(b.message, "R:2");
         assert.strictEqual(resolverCalls, 1, "resolver must be cached after the first ctx.call");
+    });
+});
+
+// Remote resolvers guide: the framework caches a successful resolution per
+// `(typeName, endpoint)`; the endpoint hint is forwarded to the resolver and distinct hints
+// get distinct transports; a `null` result and a thrown error are not cached.
+describe("ctx.call — resolver caching and endpoint hints", () => {
+    const catalog = defineCatalog({ [EchoService.typeName]: EchoService, [StreamingService.typeName]: StreamingService });
+
+    /** A server whose caller relays `message` to the remote Echo with the given endpoint hint. */
+    function makeRelayServer(remoteResolver: NonNullable<Parameters<typeof createServer>[0]["remoteResolver"]>) {
+        return createServer({
+            services: [
+                makeCaller(async (req, ctx) => {
+                    const [message, endpoint] = req.message.split("@");
+                    const inner = await ctx.call("streaming.v1.StreamingService/Echo", create(ItemSchema, { value: message ?? "", sequence: 0 }), endpoint ? { endpoint } : undefined);
+                    return create(EchoResponseSchema, { message: inner.value, timestamp: 0n });
+                }),
+            ],
+            catalog,
+            remoteResolver,
+        });
+    }
+
+    const relay = (server: ReturnType<typeof createServer>, message: string) => server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message }));
+
+    it("forwards the endpoint hint to the resolver and resolves each distinct hint once", async () => {
+        const asked: Array<{ typeName: string; endpoint: string | undefined }> = [];
+        const remotes = new Map<string, Transport>();
+        const server = makeRelayServer(({ typeName, endpoint }) => {
+            asked.push({ typeName, endpoint });
+            const key = endpoint ?? "default";
+            if (!remotes.has(key)) remotes.set(key, makeStreamingRemote(key));
+            return remotes.get(key) ?? null;
+        });
+
+        const replies = [await relay(server, "a"), await relay(server, "b@eu"), await relay(server, "c@us"), await relay(server, "d@eu"), await relay(server, "e")];
+
+        assert.deepStrictEqual(
+            replies.map((r) => r.message),
+            ["default:a", "eu:b", "us:c", "eu:d", "default:e"],
+            "each hint reaches its own transport",
+        );
+        assert.deepStrictEqual(
+            asked,
+            [
+                { typeName: StreamingService.typeName, endpoint: undefined },
+                { typeName: StreamingService.typeName, endpoint: "eu" },
+                { typeName: StreamingService.typeName, endpoint: "us" },
+            ],
+            "the resolver is consulted once per (typeName, endpoint)",
+        );
+    });
+
+    it("does not cache a null resolution: the next call consults the resolver again", async () => {
+        let calls = 0;
+        const remote = makeStreamingRemote("R");
+        const server = makeRelayServer(() => {
+            calls++;
+            return calls === 1 ? null : remote;
+        });
+
+        await assert.rejects(
+            () => relay(server, "1"),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Unavailable,
+        );
+        const second = await relay(server, "2");
+        const third = await relay(server, "3");
+
+        assert.strictEqual(second.message, "R:2");
+        assert.strictEqual(third.message, "R:3");
+        assert.strictEqual(calls, 2, "null is retried once, then the resolved transport is cached");
+    });
+
+    it("does not cache a resolver failure: the next call consults the resolver again", async () => {
+        let calls = 0;
+        const remote = makeStreamingRemote("R");
+        const server = makeRelayServer(() => {
+            calls++;
+            if (calls === 1) throw new Error("resolver exploded");
+            return remote;
+        });
+
+        await assert.rejects(
+            () => relay(server, "1"),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.Internal,
+        );
+        const second = await relay(server, "2");
+
+        assert.strictEqual(second.message, "R:2");
+        assert.strictEqual(calls, 2);
     });
 });
 
@@ -232,7 +322,7 @@ describe("ctx.call — deadline cascade", () => {
     });
 });
 
-describe("ctx.call — error model (Q15 split: operational → ConnectError)", () => {
+describe("ctx.call — error model: operational failures surface as ConnectError", () => {
     async function captureCallError(secure: SecureImpl, configure: (base: Parameters<typeof createServer>[0]) => Parameters<typeof createServer>[0]): Promise<unknown> {
         let captured: unknown;
         const wrapped: SecureImpl = async (req, ctx) => {
