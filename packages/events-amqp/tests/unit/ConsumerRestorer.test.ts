@@ -208,8 +208,7 @@ describe("createConsumerRestorer loss reporting", () => {
 
         lose(restorer, makeRecord(channel), makeIncarnation(), channel);
 
-        assert.equal(events.length, 1);
-        assert.equal(events[0]?.type === "consumer-lost" && events[0].willRestore, false);
+        assert.deepEqual(events, [{ type: "consumer-lost", queue: "orders.workers", cause: "cancelled", willRestore: false }]);
         assert.equal(timers.all.length, 0);
     });
 
@@ -571,7 +570,7 @@ describe("createConsumerRestorer teardown and connection ownership", () => {
         );
     });
 
-    it("stop() while an attempt is in flight keeps its late result from being reported", async () => {
+    it("stop() while an attempt is in flight keeps its late result from being reported, even when the attempt did start a consumer", async () => {
         let finish: (incarnation: ConsumerIncarnation | null) => void = () => undefined;
         const { restorer, timers, events } = setup({
             start: () =>
@@ -585,7 +584,9 @@ describe("createConsumerRestorer teardown and connection ownership", () => {
         timers.fireNext();
         record.active = false;
         restorer.stop(record);
-        finish(null);
+        // A consumer that came up after the unsubscribe: reporting it as restored would announce a
+        // subscription the application already cancelled.
+        finish(makeIncarnation());
         await flush();
 
         assert.deepEqual(

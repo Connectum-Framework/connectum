@@ -11,8 +11,8 @@
  * events-amqp-external-contract change:
  * 1. connection drop → reconnect restores publishing and consuming
  * 2. publish-while-disconnected fails fast (recovery disabled)
- * 3. reconnect-during-publish (mid-confirm) → the in-flight promise settles
- *    (never hangs), rejecting with a typed connection/timeout error
+ * 3. reconnect-during-publish (mid-confirm, in the Toxiproxy suite) → the
+ *    in-flight promises reject with a typed connection error, never hang
  * 4. topology mismatch on assert → AmqpTopologyError (PRECONDITION_FAILED 406)
  * 5. reconnect-during-subscribe → consumer is replayed and resumes delivery
  * 6. publishTimeoutMs → frozen broker (docker pause, no confirm) rejects with
@@ -389,70 +389,22 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             await dropConnections();
             await sleep(1000); // let the close event propagate
 
+            // The missing connection is named; the raw error of the closed channel must not leak out.
             await assert.rejects(
                 () => adapter.publish("rec.failfast.evt", new Uint8Array([1])),
-                (err: unknown) => err instanceof AmqpConnectionError,
+                (err: unknown) => {
+                    assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                    assert.equal(err.message, "AmqpAdapter: not connected (or recovery in progress)");
+                    return true;
+                },
             );
         } finally {
             await adapter.disconnect().catch(() => undefined);
         }
     });
 
-    it("reconnect during publish (mid-confirm): in-flight promise settles, never hangs", async () => {
-        const adapter = AmqpAdapter({
-            url,
-            exchange: "rec.midconfirm",
-            recovery: { initialDelay: 100, maxDelay: 500 },
-            // Finite timeout proves "settles, never hangs" even in the worst case
-            publishTimeoutMs: 8000,
-        });
-        await adapter.connect();
-        try {
-            // Fire a batch of publishes, then drop connections underneath them.
-            // The key invariant: every in-flight publish promise SETTLES
-            // (resolve or typed reject) — none hangs forever.
-            const inflight = Array.from({ length: 20 }, (_, i) => adapter.publish("rec.midconfirm.evt", new TextEncoder().encode(`m${i}`)).then(
-                () => ({ ok: true as const }),
-                (err: unknown) => ({ ok: false as const, err }),
-            ));
-            await sleep(50);
-            await dropConnections();
-
-            const settled = await Promise.race([
-                Promise.all(inflight),
-                sleep(15_000).then(() => "TIMED_OUT" as const),
-            ]);
-
-            assert.notEqual(settled, "TIMED_OUT", "in-flight publishes must settle, not hang");
-            const results = settled as Array<{ ok: true } | { ok: false; err: unknown }>;
-            // A fast localhost broker may confirm all publishes before the drop,
-            // so this asserts the invariant that holds either way: nothing hangs,
-            // and any publish caught mid-flight rejects with AmqpConnectionError
-            // — never AmqpPublishNackError (a drop is not a broker nack). The
-            // error CLASSIFICATION itself is covered deterministically by the
-            // isConnectionLostError unit test.
-            for (const r of results) {
-                if (!r.ok) {
-                    assert.ok(r.err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${r.err}`);
-                }
-            }
-
-            // After recovery the adapter must publish again (retry until the
-            // connection is back up)
-            let publishedAfter = false;
-            for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
-                try {
-                    await adapter.publish("rec.midconfirm.evt", new TextEncoder().encode("post"));
-                    publishedAfter = true;
-                } catch {
-                    await sleep(200);
-                }
-            }
-            assert.ok(publishedAfter, "adapter must publish again after recovery");
-        } finally {
-            await adapter.disconnect().catch(() => undefined);
-        }
-    });
+    // A publish whose confirm is still outstanding when the connection is lost is observed in the
+    // Toxiproxy suite below, where the confirms can be held back so that the state is certain.
 
     it("topology mismatch on assert → AmqpTopologyError (PRECONDITION_FAILED 406)", async () => {
         // Pre-declare a durable queue with one argument set via a throwaway connection.
@@ -609,36 +561,45 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
-    it("publishRetry + single-flight: retries hold the chain — ordering preserved (#195)", { timeout: 60_000 }, async () => {
+    it("publishRetry + single-flight: a retrying publish holds the chain, so the next one makes no attempt of its own and lands after it", { timeout: 60_000 }, async () => {
         const received: string[] = [];
+        const retriedKeys: string[] = [];
+        const lifecycle: string[] = [];
         const adapter = AmqpAdapter({
             url,
-            exchange: "rec.chain195",
+            exchange: "rec.chain",
             exchangeType: "topic",
-            recovery: { initialDelay: 100, maxDelay: 500 },
+            // A reconnect delay well above the retry delay keeps the recovery window open for several retries.
+            recovery: { initialDelay: 800, maxDelay: 1_500, jitter: 0 },
             publisherOptions: { mandatory: true, correlationHeader: false },
-            publishRetry: { initialDelay: 50, maxDelay: 200, maxRetries: 30 },
+            publishRetry: { initialDelay: 50, maxDelay: 100, jitter: 0, maxRetries: 60, onRetry: (info) => retriedKeys.push(info.routingKey) },
+            lifecycle: { onLifecycle: (event) => lifecycle.push(event.type) },
         });
         await adapter.connect();
         try {
             await adapter.subscribe(
-                ["rec.chain195.evt"],
+                ["rec.chain.*"],
                 async (event, ack) => {
-                    received.push(new TextDecoder().decode(event.payload));
+                    received.push(`${event.eventType}:${new TextDecoder().decode(event.payload)}`);
                     await ack();
                 },
                 { group: "g" },
             );
 
             await dropConnections();
-            // A enters the retry loop inside its single-flight slot; B queues
-            // behind it. Hold-the-chain: B must not start (or land) before A.
-            const a = adapter.publish("rec.chain195.evt", new TextEncoder().encode("A"));
-            const b = adapter.publish("rec.chain195.evt", new TextEncoder().encode("B"));
+            await waitFor(() => lifecycle.includes("disconnected"));
+            // A enters the retry loop inside its single-flight slot; B queues behind it.
+            // Hold-the-chain: B makes no attempt, so it never retries, until A has settled.
+            const settledOrder: string[] = [];
+            const a = adapter.publish("rec.chain.a", new TextEncoder().encode("A")).then(() => settledOrder.push("A"));
+            const b = adapter.publish("rec.chain.b", new TextEncoder().encode("B")).then(() => settledOrder.push("B"));
             await Promise.all([a, b]);
 
             await waitFor(() => received.length === 2);
-            assert.deepEqual(received, ["A", "B"], "ordering across the retrying slot is preserved");
+            assert.ok(retriedKeys.length >= 1, "A was retried while the connection was down");
+            assert.deepEqual([...new Set(retriedKeys)], ["rec.chain.a"], "only A retried: B was held behind it and made no attempt of its own");
+            assert.deepEqual(settledOrder, ["A", "B"], "A settles before B");
+            assert.deepEqual(received, ["rec.chain.a:A", "rec.chain.b:B"], "ordering across the retrying slot is preserved");
         } finally {
             await adapter.disconnect();
         }
@@ -1123,7 +1084,7 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         await adapter.disconnect().catch(() => undefined);
     });
 
-    it("initialConnectMaxRetries: disconnect() during the backoff aborts the phase promptly with a typed error (#198)", { timeout: 30_000 }, async () => {
+    it("initialConnectMaxRetries: disconnect() during the backoff aborts the phase promptly with a typed error", { timeout: 30_000 }, async () => {
         const events: Array<{ type: string }> = [];
         const adapter = AmqpAdapter({
             url: "amqp://guest:guest@127.0.0.1:1",
@@ -1144,7 +1105,8 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             () => connecting,
             (err: unknown) => {
                 assert.ok(err instanceof AmqpConnectionError);
-                assert.match((err as Error).message, /closed (during the initial connect phase|while connect\(\) was in progress)/);
+                // A disconnect() during the initial connect's backoff is the phase being closed.
+                assert.equal((err as Error).message, "Adapter closed during the initial connect phase");
                 return true;
             },
         );
@@ -1693,6 +1655,44 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             }
         });
 
+        // The reported delay alone cannot tell an applied value from a clamped one, so the wait is
+        // measured: 31 s is above the 30 s default maxDelay, and the hook's value must not be cut to it.
+        it("a return value above the default maxDelay is what the retry actually waits", { timeout: 90_000 }, async () => {
+            const { onLifecycle } = recorder();
+            const stamps: { reconnectingAt?: number; reconnectedAt?: number } = {};
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "rec.hook.waited",
+                recovery: { backoff: () => 31_000 },
+                lifecycle: {
+                    onLifecycle: (event) => {
+                        onLifecycle(event);
+                        if (event.type === "reconnecting" && stamps.reconnectingAt === undefined) {
+                            stamps.reconnectingAt = Date.now();
+                        }
+                        if (event.type === "connected" && event.reconnected) {
+                            stamps.reconnectedAt = Date.now();
+                        }
+                    },
+                },
+            });
+            await adapter.connect();
+            try {
+                await dropConnections();
+                await waitFor(() => stamps.reconnectingAt !== undefined, 10_000);
+                const scheduledAt = stamps.reconnectingAt as number;
+                // A delay clamped to the 30 s default would have reconnected by now.
+                await sleep(Math.max(0, scheduledAt + 30_600 - Date.now()));
+                const reconnectedAt = (): number | undefined => stamps.reconnectedAt;
+                assert.equal(reconnectedAt(), undefined, "nothing reconnects before the hook's 31 s are over");
+                await waitFor(() => reconnectedAt() !== undefined, 15_000);
+                const waited = (reconnectedAt() as number) - scheduledAt;
+                assert.ok(waited >= 31_000, `the retry waited ${waited} ms, expected at least the hook's 31000 ms`);
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
         it("zero means an immediate retry, and recovery continues", { timeout: 30_000 }, async () => {
             const { events, onLifecycle } = recorder();
             const adapter = AmqpAdapter({
@@ -1713,25 +1713,8 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             }
         });
 
-        it("without the hook the built-in delay applies and stays within maxDelay", { timeout: 30_000 }, async () => {
-            const { events, onLifecycle } = recorder();
-            const adapter = AmqpAdapter({
-                url,
-                exchange: "rec.hook.default",
-                recovery: { initialDelay: 100, maxDelay: 500 },
-                lifecycle: { onLifecycle },
-            });
-            await adapter.connect();
-            try {
-                await dropConnections();
-                await waitFor(() => events.filter((e) => e.type === "connected").length >= 2, 10_000);
-                const delay = events.find((e) => e.type === "reconnecting")?.delay;
-                // Attempt 1 of the built-in formula: 100 ms ± 20 % jitter.
-                assert.ok(delay !== undefined && delay >= 80 && delay <= 120, `built-in delay for attempt 1, got ${delay}`);
-            } finally {
-                await adapter.disconnect().catch(() => undefined);
-            }
-        });
+        // The delays without the hook (the formula, the cap at maxDelay and the jitter window) are
+        // observed over a whole schedule in amqp-publish-retry-delays.test.ts.
     });
 
     describe("recovery give-up (retry budget exhausted)", () => {
@@ -1935,13 +1918,15 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         }
     });
 
-    it("node restart: rabbitmqctl stop_app/start_app (broker app restart in place) → reconnect + topology re-assert + resume", async () => {
+    it("node restart: rabbitmqctl stop_app/start_app (broker app restart in place) → a broker that comes back without the exchange and the queue gets them declared again, the consumer replayed, publishing resumes", { timeout: 90_000 }, async () => {
         const lifecycle: string[] = [];
         const adapter = AmqpAdapter({
             url,
             exchange: "rec.nodekill",
             exchangeType: "topic",
-            recovery: { initialDelay: 200, maxDelay: 1000 },
+            // The first reconnect waits long enough for this test to remove the exchange and the queue
+            // while the adapter is away, which is what a broker that lost its state looks like.
+            recovery: { initialDelay: 12_000, maxDelay: 12_000, jitter: 0 },
             lifecycle: {
                 onConnected: () => lifecycle.push("connected"),
                 onDisconnected: () => lifecycle.push("disconnected"),
@@ -1970,13 +1955,20 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
             const stop = await container.exec(["rabbitmqctl", "stop_app"]);
             assert.equal(stop.exitCode, 0, `stop_app failed (${stop.exitCode}): ${stop.output}`);
             await waitFor(() => lifecycle.includes("disconnected"), 30_000);
-            const start = await container.exec(["rabbitmqctl", "start_app"]);
-            assert.equal(start.exitCode, 0, `start_app failed (${start.exitCode}): ${start.output}`);
+            await restoreBrokerApp();
+            const admin = await connect(url);
+            try {
+                const adminChannel = await admin.createChannel();
+                await adminChannel.deleteQueue("rec.nodekill.g");
+                await adminChannel.deleteExchange("rec.nodekill");
+            } finally {
+                await admin.close().catch(() => undefined);
+            }
+            assert.equal(lifecycle.filter((e) => e === "connected").length, 1, "the adapter must still be away while the exchange and the queue are removed");
             await waitFor(() => lifecycle.filter((e) => e === "connected").length >= 2, 60_000);
 
-            // After the app restart, topology was re-asserted and the consumer
-            // replayed → publish + consume resume. Retry publish until the app is
-            // fully back.
+            // After the reconnect the exchange, the queue and the binding exist only because the
+            // adapter declared them again and replayed the consumer: publish and consume resume.
             let publishedAfter = false;
             for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
                 try {
@@ -2083,10 +2075,16 @@ describe("AMQP connection recovery (testcontainers)", { skip: RUN ? false : "RUN
         try {
             await execFileAsync("docker", ["pause", id]);
             try {
+                const startedAt = Date.now();
                 await assert.rejects(
                     () => adapter.publish("rec.timeout.evt", new Uint8Array([1])),
                     (err: unknown) => err instanceof AmqpPublishTimeoutError,
                 );
+                // The configured 500 ms is the deadline, not the 30 s default: the rejection comes after
+                // the timer (a timer never fires early) and long before the default would have expired.
+                const elapsed = Date.now() - startedAt;
+                assert.ok(elapsed >= 450, `rejected after ${elapsed} ms, before the configured 500 ms deadline`);
+                assert.ok(elapsed < 5_000, `rejected after ${elapsed} ms, so the 500 ms publishTimeoutMs was not applied`);
             } finally {
                 await execFileAsync("docker", ["unpause", id]);
             }
@@ -2269,6 +2267,67 @@ describe("AMQP network partition (Toxiproxy)", { skip: RUN ? false : "RUN_RECOVE
                 "a socket-level cut fires onDisconnected exactly once (no error+disconnect double-fire)",
             );
         } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    // The broker's confirms are held back on the link (a toxic that delays all server-to-client
+    // data), so every publish is certainly unconfirmed when the link is cut. The documented outcome
+    // of a confirm lost with the connection is AmqpConnectionError, never a nack and never a hang.
+    it("publishes whose confirms were still outstanding when the link was cut all reject with AmqpConnectionError, and publishing works after the link heals", { timeout: 90_000 }, async () => {
+        const events: string[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "rec.midconfirm",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            publishTimeoutMs: 20_000,
+            lifecycle: { onLifecycle: (event) => events.push(event.type) },
+        });
+        await adapter.connect();
+        let toxic: { remove(): Promise<void> } | undefined;
+        let linkCut = false;
+        try {
+            toxic = await proxy.instance.addToxic({ name: "hold-confirms", type: "timeout", stream: "downstream", toxicity: 1, attributes: { timeout: 0 } });
+            const inflight = Array.from({ length: 20 }, (_, i) =>
+                adapter.publish("rec.midconfirm.evt", new TextEncoder().encode(`m${i}`)).then(
+                    () => ({ ok: true as const }),
+                    (err: unknown) => ({ ok: false as const, err }),
+                ),
+            );
+            // Give every frame time to be written to the link; none of the confirms can come back.
+            await sleep(500);
+            await proxy.setEnabled(false);
+            linkCut = true;
+
+            const results = await settleWithin(Promise.all(inflight), 15_000);
+            for (const [index, result] of results.entries()) {
+                assert.equal(result.ok, false, `publish ${index} had no confirm, so it cannot have resolved`);
+                if (!result.ok) {
+                    assert.ok(result.err instanceof AmqpConnectionError, `publish ${index}: expected AmqpConnectionError, got: ${String(result.err)}`);
+                }
+            }
+
+            await toxic.remove();
+            toxic = undefined;
+            await proxy.setEnabled(true);
+            linkCut = false;
+            await waitFor(() => events.filter((type) => type === "connected").length >= 2, 30_000);
+            let publishedAfter = false;
+            for (let attempt = 0; attempt < 100 && !publishedAfter; attempt++) {
+                try {
+                    await adapter.publish("rec.midconfirm.evt", new TextEncoder().encode("post"));
+                    publishedAfter = true;
+                } catch {
+                    await sleep(200);
+                }
+            }
+            assert.ok(publishedAfter, "the adapter must publish again once the link is back");
+        } finally {
+            await toxic?.remove().catch(() => undefined);
+            if (linkCut) {
+                await proxy.setEnabled(true);
+            }
             await adapter.disconnect().catch(() => undefined);
         }
     });
