@@ -104,20 +104,24 @@ describe("emitFiles", () => {
         assert.strictEqual(readFileSync(join(dir, "a.txt"), "utf8"), "NEW");
     });
 
-    // Connectum decision, no documented source: neither the guide nor the specs say in what order
-    // the written paths are reported. The implementation sorts them so that the report (and the
-    // order of writes) does not depend on the order the caller built its Map in; this test pins
-    // exactly that independence from insertion order.
-    it("Connectum decision (undocumented): reports written paths in sorted order, not insertion order", () => {
+    // The scaffolding guide promises: "Files are written in ascending path order, whatever order
+    // the scaffold produced them in. The existing files that `init` skips are listed in the same
+    // order." Both lists are checked against an insertion order that is not ascending.
+    it("reports written and skipped paths in ascending path order, whatever the insertion order", () => {
+        writeFileSync(join(dir, "q.txt"), "kept");
+        writeFileSync(join(dir, "b.txt"), "kept");
         const result = emitFiles(
             dir,
             new Map([
                 ["z.txt", "z"],
+                ["q.txt", "new"],
                 ["a.txt", "a"],
+                ["b.txt", "new"],
                 ["m.txt", "m"],
             ]),
         );
         assert.deepStrictEqual(result.written, ["a.txt", "m.txt", "z.txt"]);
+        assert.deepStrictEqual(result.skipped, ["b.txt", "q.txt"]);
     });
 
     it("aborts before writing anything if any path is unsafe", () => {

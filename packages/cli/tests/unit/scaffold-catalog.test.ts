@@ -1,5 +1,5 @@
 /**
- * Unit tests for the catalog / multi-service module fragment (task 2.7).
+ * Unit tests for the catalog / multi-service module fragment.
  */
 
 import assert from "node:assert/strict";

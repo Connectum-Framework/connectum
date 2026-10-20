@@ -153,13 +153,29 @@ describe("CLI proto sync", () => {
 		});
 	});
 
-	describe("URL normalization", () => {
-		it("should handle URL without protocol prefix", async () => {
+	describe("the server address", () => {
+		// The guide's usage is `--from localhost:5000`: an address without a scheme must reach the
+		// live server, not fail as an invalid URL.
+		it("reaches a live server through a bare host:port address", async () => {
 			const port = server.address?.port;
 			assert.ok(port);
 
-			const result = await fetchReflectionData(`http://localhost:${port}`);
-			assert.ok(result.services.length > 0, "Should work with full URL");
+			const logs: string[] = [];
+			const originalLog = console.log;
+			console.log = (...args: unknown[]) => {
+				logs.push(args.map(String).join(" "));
+			};
+			try {
+				await executeProtoSync({ from: `localhost:${port}`, out: "./gen", dryRun: true });
+			} finally {
+				console.log = originalLog;
+			}
+
+			const output = logs.join("\n");
+			assert.ok(output.includes(`Connected to http://localhost:${port}`), output);
+			for (const service of ["fixture.v1.FixtureService", "fixture.v1.MountedService", "grpc.health.v1.Health"]) {
+				assert.ok(output.includes(service), `${service} must be listed:\n${output}`);
+			}
 		});
 	});
 });

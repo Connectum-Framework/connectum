@@ -113,6 +113,18 @@ describe("proto sync process exit code", () => {
         assert.ok(!run.output.includes("Connecting to"), `the value must be refused before any connection:\n${run.output}`);
     });
 
+    // The guide documents these five flags of `proto sync`; --help is how the built command shows
+    // which ones it really defines.
+    it("lists every documented flag in --help", async () => {
+        const run = await runCli(["proto", "sync", "--help"], 30_000);
+
+        assert.equal(run.code, 0);
+        for (const flag of ["--from", "--out", "--template", "--timeout", "--dry-run"]) {
+            // The flag must end there: `--dry-runs` does not list `--dry-run`.
+            assert.match(run.output, new RegExp(`${flag}(?![\\w-])`), `--help does not list ${flag}:\n${run.output}`);
+        }
+    });
+
     it("documents the 10000 ms default in the --timeout help text", async () => {
         const run = await runCli(["proto", "sync", "--help"], 30_000);
 
