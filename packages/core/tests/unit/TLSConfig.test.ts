@@ -9,6 +9,7 @@ import { relative } from "node:path";
 import { resolve } from "node:path/posix";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createServer } from "../../src/Server.ts";
 import { getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
 
 describe("TLSConfig", () => {
@@ -317,6 +318,17 @@ describe("TLSConfig", () => {
 					() => readTLSCertificates({ keyPath: "", certPath: resolve(testDir, "only.crt"), dirPath: testDir }),
 					(error) => assertConfigurationError(error, "certPath", "keyPath"),
 				);
+			});
+
+			it("should make server.start() reject with the configuration error and leave no listener", async () => {
+				writeDirectoryPair();
+				const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { certPath: resolve(testDir, "only.crt"), dirPath: testDir } });
+
+				await assert.rejects(
+					() => server.start(),
+					(error) => assertConfigurationError(error, "certPath", "keyPath"),
+				);
+				assert.strictEqual(server.address, null);
 			});
 
 			it("should read the directory when both explicit paths are empty strings", () => {
