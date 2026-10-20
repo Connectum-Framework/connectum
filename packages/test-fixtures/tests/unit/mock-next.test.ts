@@ -37,12 +37,6 @@ describe("createMockNext", () => {
     ({ unary, serverStreaming } = await observeRealCalls());
   });
 
-  it("returns a function", () => {
-    const next = createMockNext();
-
-    assert.strictEqual(typeof next, "function");
-  });
-
   it("resolves with default response", async () => {
     const next = createMockNext();
     const res = await next({});
@@ -87,9 +81,11 @@ describe("createMockNext", () => {
 
   it("has spy capabilities via mock.calls", async () => {
     const next = createMockNext();
-    await next({ payload: "test" });
+    const request = { payload: "test" };
+    await next(request);
 
     assert.strictEqual(next.mock.calls.length, 1);
+    assert.deepStrictEqual(next.mock.calls[0].arguments, [request], "the request handed to next() is what the spy records");
   });
 
   it("has spy capabilities via mock.callCount()", async () => {
@@ -139,7 +135,8 @@ describe("createMockNextError", () => {
       () => next({}),
       (err: any) => {
         assert.ok(err instanceof ConnectError);
-        assert.ok(err.message.includes("Mock error"));
+        assert.strictEqual(err.code, Code.Internal);
+        assert.strictEqual(err.rawMessage, "Mock error");
         return true;
       },
     );

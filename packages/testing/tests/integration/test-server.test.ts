@@ -10,11 +10,12 @@ import assert from "node:assert";
 import { connect } from "node:net";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { defineService } from "@connectum/core";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
+import { defineService, type ProtocolRegistration } from "@connectum/core";
 import { createTestServer, withTestServer } from "../../src/test-server.ts";
 import type { TestServer } from "../../src/types.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
+import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 const echoRoutes = defineService(EchoService, {
 	echo: (req) => create(EchoResponseSchema, { message: `echo:${req.message}`, timestamp: 0n }),
@@ -84,6 +85,65 @@ describe("createTestServer", () => {
 			await Promise.all([server1.close(), server2.close()]);
 		}
 	});
+});
+
+describe("createTestServer options", () => {
+	it("applies the given interceptors to every call", async () => {
+		const reject: Interceptor = () => () => {
+			throw new ConnectError("blocked by interceptor", Code.PermissionDenied);
+		};
+		const server = await createTestServer({ services: [echoRoutes], interceptors: [reject] });
+		try {
+			await assert.rejects(callEcho(server), (err: unknown) => {
+				const connectErr = ConnectError.from(err);
+				assert.strictEqual(connectErr.code, Code.PermissionDenied);
+				assert.strictEqual(connectErr.rawMessage, "blocked by interceptor");
+				return true;
+			});
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("mounts the given protocols next to the services", async () => {
+		const extra: ProtocolRegistration = {
+			name: "extra",
+			register(router) {
+				router.service(StreamingService, {
+					echo: (req) => create(ItemSchema, { value: `protocol:${req.value}`, sequence: req.sequence }),
+					async *server() {},
+					client: async () => ({ total: 0 }),
+					async *bidi() {},
+				});
+			},
+		};
+		const server = await createTestServer({ services: [echoRoutes], protocols: [extra] });
+		try {
+			const item = await createClient(StreamingService, server.transport).echo(create(ItemSchema, { value: "x", sequence: 4 }));
+			assert.strictEqual(item.value, "protocol:x");
+			assert.strictEqual(item.sequence, 4);
+			assert.strictEqual(await callEcho(server), "echo:ping", "the services stay reachable");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("listens on the requested port, and reports it in port and baseUrl", async () => {
+		// Learn a free port from a throwaway server, then ask for exactly that port.
+		const probe = await createTestServer({ services: [echoRoutes] });
+		const requested = probe.port;
+		await probe.close();
+
+		const server = await createTestServer({ services: [echoRoutes], port: requested });
+		try {
+			assert.strictEqual(server.port, requested);
+			assert.strictEqual(new URL(server.baseUrl).port, String(requested));
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
 });
 
 describe("withTestServer", () => {

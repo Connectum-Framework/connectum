@@ -95,6 +95,22 @@ describe("createDescriptorPool", () => {
         assert.deepStrictEqual(pool.services, ["S"]);
     });
 
+    // "the numbers of all known extensions" of a type: extensions of one message
+    // declared in different files all count, each resolving to its own file.
+    it("merges the extensions of one message type that are declared in different files", () => {
+        const pool = createDescriptorPool({
+            files: [
+                file({ name: "m.proto", package: "p", messageType: [{ name: "M" }] }),
+                file({ name: "x.proto", package: "p", dependency: ["m.proto"], extension: [{ name: "from_x", number: 120, extendee: ".p.M" }] }),
+                file({ name: "y.proto", package: "p", dependency: ["m.proto"], extension: [{ name: "from_y", number: 110, extendee: ".p.M" }] }),
+            ],
+            services: [],
+        });
+        assert.deepStrictEqual(pool.extensionNumbersOf("p.M"), [110, 120]);
+        assert.strictEqual(pool.fileContainingExtension("p.M", 120)?.name, "x.proto");
+        assert.strictEqual(pool.fileContainingExtension("p.M", 110)?.name, "y.proto");
+    });
+
     it("indexes extensions whose extendee is written with or without a leading dot", () => {
         const pool = createDescriptorPool({
             files: [

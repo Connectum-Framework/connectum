@@ -97,24 +97,6 @@ describe("createMockStream", () => {
     });
   }
 
-  it("works with different types (string, number, object)", async () => {
-    const strings = createMockStream(["a", "b", "c"]);
-    const numbers = createMockStream([10, 20, 30]);
-    const objects = createMockStream([{ x: 1 }, { x: 2 }]);
-
-    const collectedStrings: string[] = [];
-    for await (const s of strings) collectedStrings.push(s);
-    assert.deepStrictEqual(collectedStrings, ["a", "b", "c"]);
-
-    const collectedNumbers: number[] = [];
-    for await (const n of numbers) collectedNumbers.push(n);
-    assert.deepStrictEqual(collectedNumbers, [10, 20, 30]);
-
-    const collectedObjects: Array<{ x: number }> = [];
-    for await (const o of objects) collectedObjects.push(o);
-    assert.deepStrictEqual(collectedObjects, [{ x: 1 }, { x: 2 }]);
-  });
-
   it("is reusable — can iterate twice and get same items", async () => {
     const items = ["alpha", "beta", "gamma"];
     const stream = createMockStream(items);
@@ -128,22 +110,5 @@ describe("createMockStream", () => {
     assert.deepStrictEqual(first, items);
     assert.deepStrictEqual(second, items);
     assert.deepStrictEqual(first, second);
-  });
-
-  it("implements AsyncIterable protocol (Symbol.asyncIterator)", () => {
-    const stream = createMockStream([1, 2, 3]);
-
-    assert.strictEqual(
-      typeof stream[Symbol.asyncIterator],
-      "function",
-      "must have Symbol.asyncIterator method",
-    );
-
-    const iterator = stream[Symbol.asyncIterator]();
-    assert.strictEqual(
-      typeof iterator.next,
-      "function",
-      "iterator must have next() method",
-    );
   });
 });
