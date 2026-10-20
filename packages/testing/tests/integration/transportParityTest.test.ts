@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
+import type { NormalizedMetric, NormalizedSpan } from "../../src/otel-collectors.ts";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
 
@@ -123,6 +124,108 @@ describe("defaultCompare", () => {
     it("passes when both errors match in every field", () => {
         const error = { code: 5, message: "not_found", details: [{ reason: "x" }], metadata: { "x-tag": "a" } };
         defaultCompare({ error }, { error: { ...error } });
+    });
+
+    // The documented invariant covers response headers and trailers, spans (modulo the
+    // transport attribute) and metrics (modulo the transport label), not only payloads
+    // and errors: a divergence in any of them must fail the comparison on its own.
+    describe("headers and trailers", () => {
+        for (const field of ["responseHeaders", "trailers"] as const) {
+            const failure = field === "responseHeaders" ? /response headers mismatch/ : /trailers mismatch/;
+
+            it(`${field}: equal maps pass`, () => {
+                defaultCompare({ [field]: { "x-a": "1" } }, { [field]: { "x-a": "1" } });
+            });
+
+            it(`${field}: a differing value fails`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1" } }, { [field]: { "x-a": "2" } }), failure);
+            });
+
+            it(`${field}: an entry present on one transport only fails`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1" } }, { [field]: { "x-a": "1", "x-b": "2" } }), failure);
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1", "x-b": "2" } }, { [field]: { "x-a": "1" } }), failure);
+            });
+
+            it(`${field}: a non-empty map against none at all fails`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1" } }, {}), failure);
+                assert.throws(() => defaultCompare({}, { [field]: { "x-a": "1" } }), failure);
+            });
+        }
+    });
+
+    describe("spans", () => {
+        const span = (overrides: Partial<NormalizedSpan> = {}): NormalizedSpan => ({
+            name: "echo.v1.EchoService/Echo",
+            kind: 1,
+            attributes: { "rpc.method": "Echo" },
+            events: [{ name: "message", attributes: { "message.type": "RECEIVED" } }],
+            status: { code: 0, message: undefined },
+            traceId: "trace-http",
+            spanId: "span-http",
+            parentSpanId: "parent-http",
+            ...overrides,
+        });
+
+        it("ignores the identifiers that legitimately differ between independent runs", () => {
+            defaultCompare({ spans: [span()] }, { spans: [span({ traceId: "trace-local", spanId: "span-local", parentSpanId: "parent-local" })] });
+        });
+
+        const divergences: { field: string; other: NormalizedSpan }[] = [
+            { field: "name", other: span({ name: "echo.v1.EchoService/SecureEcho" }) },
+            { field: "kind", other: span({ kind: 2 }) },
+            { field: "attributes", other: span({ attributes: { "rpc.method": "SecureEcho" } }) },
+            { field: "events", other: span({ events: [] }) },
+            { field: "status code", other: span({ status: { code: 2, message: undefined } }) },
+            { field: "status message", other: span({ status: { code: 0, message: "boom" } }) },
+            { field: "parent presence", other: span({ parentSpanId: undefined }) },
+        ];
+        for (const { field, other } of divergences) {
+            it(`a differing ${field} alone fails`, () => {
+                assert.throws(() => defaultCompare({ spans: [span()] }, { spans: [other] }), /OTEL spans mismatch/);
+            });
+        }
+
+        it("a different number of spans fails", () => {
+            assert.throws(() => defaultCompare({ spans: [span()] }, { spans: [span(), span({ name: "second" })] }), /OTEL spans mismatch/);
+        });
+
+        it("spans reported by one transport only fail", () => {
+            assert.throws(() => defaultCompare({ spans: [span()] }, {}), /OTEL spans mismatch/);
+            assert.throws(() => defaultCompare({}, { spans: [span()] }), /OTEL spans mismatch/);
+        });
+    });
+
+    describe("metrics", () => {
+        const metric = (overrides: Partial<NormalizedMetric> = {}): NormalizedMetric => ({
+            name: "rpc.server.duration",
+            description: "call duration",
+            unit: "ms",
+            type: "1",
+            points: [{ attributes: { "rpc.method": "Echo" }, value: 1 }],
+            ...overrides,
+        });
+
+        it("equal metrics pass", () => {
+            defaultCompare({ metrics: [metric()] }, { metrics: [metric()] });
+        });
+
+        const divergences: { field: string; other: NormalizedMetric }[] = [
+            { field: "name", other: metric({ name: "rpc.client.duration" }) },
+            { field: "unit", other: metric({ unit: "s" }) },
+            { field: "type", other: metric({ type: "2" }) },
+            { field: "label set", other: metric({ points: [{ attributes: { "rpc.method": "SecureEcho" }, value: 1 }] }) },
+            { field: "recorded value", other: metric({ points: [{ attributes: { "rpc.method": "Echo" }, value: 2 }] }) },
+        ];
+        for (const { field, other } of divergences) {
+            it(`a differing ${field} alone fails`, () => {
+                assert.throws(() => defaultCompare({ metrics: [metric()] }, { metrics: [other] }), /OTEL metrics mismatch/);
+            });
+        }
+
+        it("metrics reported by one transport only fail", () => {
+            assert.throws(() => defaultCompare({ metrics: [metric()] }, {}), /OTEL metrics mismatch/);
+            assert.throws(() => defaultCompare({}, { metrics: [metric()] }), /OTEL metrics mismatch/);
+        });
     });
 
     describe("readMaxBytes diagnostic text is the single documented exemption", () => {
