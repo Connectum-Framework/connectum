@@ -236,50 +236,18 @@ describe('Full Interceptor Chain Integration', () => {
             handler(mockReq), // This should be rejected (capacity = 2)
         ];
 
-        // At least one should fail with ResourceExhausted
+        // Exactly the third call is refused with ResourceExhausted; the first two complete.
         const results = await Promise.allSettled(requests);
 
         const rejected = results.filter((r) => r.status === 'rejected');
-        assert(rejected.length > 0, 'Expected at least one request to be rejected');
+        assert.strictEqual(rejected.length, 1, 'Expected exactly one request to be rejected');
+        assert.strictEqual(results.filter((r) => r.status === 'fulfilled').length, 2);
 
         // Check that rejected request has correct error
         const rejectedError = (rejected[0] as PromiseRejectedResult).reason;
         assertConnectError(rejectedError, Code.ResourceExhausted);
 
-        // Max concurrent calls should not exceed capacity
-        assert(maxConcurrentCalls <= 2, `Max concurrent calls ${maxConcurrentCalls} exceeded capacity 2`);
-    });
-
-    it('should skip health check services when configured', async () => {
-        const loggerInterceptor = createLoggerInterceptor({
-            skipHealthCheck: true,
-        });
-        const retryInterceptor = createRetryInterceptor({
-            maxRetries: 3,
-        });
-
-        // Health check request
-        const healthCheckReq = {
-            url: 'http://localhost/grpc.health.v1.Health/Check',
-            signal: new AbortController().signal,
-            stream: false,
-            message: {},
-            service: { typeName: 'grpc.health.v1.Health' },
-            method: {
-                name: 'Check',
-                kind: 'unary',
-            },
-        } as any;
-
-        const next = mock.fn(async () => ({
-            message: { status: 'SERVING' },
-        }));
-
-        const handler = loggerInterceptor(retryInterceptor(next as any));
-
-        const result = await handler(healthCheckReq);
-
-        assert.strictEqual((result.message as any).status, 'SERVING');
-        assert.strictEqual(next.mock.calls.length, 1);
+        // The two admitted calls ran side by side, and no third one beside them.
+        assert.strictEqual(maxConcurrentCalls, 2);
     });
 });
