@@ -65,88 +65,10 @@ describe("AmqpAdapter", () => {
         assert.equal(adapter.name, "amqp");
     });
 
-    it("should accept a URL string", () => {
-        const adapter = AmqpAdapter({ url: "amqp://guest:guest@localhost:5672" });
-        assert.ok(adapter);
-    });
-
-    it("should accept custom exchange name", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            exchange: "custom.exchange",
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "amqp");
-    });
-
-    it("should accept exchange options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            exchangeType: "direct",
-            exchangeOptions: {
-                durable: false,
-                autoDelete: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept queue options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            queueOptions: {
-                durable: true,
-                messageTtl: 60_000,
-                maxLength: 10_000,
-                deadLetterExchange: "dlx.exchange",
-                deadLetterRoutingKey: "dlq",
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept consumer options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            consumerOptions: {
-                prefetch: 20,
-                exclusive: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept publisher options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            publisherOptions: {
-                persistent: false,
-                mandatory: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept all options together without TypeError", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://guest:guest@localhost:5672",
-            socketOptions: { timeout: 5000 },
-            exchange: "test.events",
-            exchangeType: "topic",
-            exchangeOptions: { durable: true, autoDelete: false },
-            queueOptions: {
-                durable: true,
-                messageTtl: 30_000,
-                maxLength: 5000,
-                deadLetterExchange: "dlx",
-                deadLetterRoutingKey: "dlq.key",
-            },
-            consumerOptions: { prefetch: 5, exclusive: false },
-            publisherOptions: { persistent: true, mandatory: false },
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "amqp");
-    });
+    // The options are observed on a broker, where the effect of each can be told from its absence:
+    // url and exchange (every broker test), exchangeType and exchangeOptions, queueOptions,
+    // consumerOptions.prefetch and publisherOptions.persistent (amqp-contract-gaps.test.ts),
+    // publisherOptions.mandatory and correlationHeader (amqp-broker.test.ts).
 
     it("should throw when publishing without connection", async () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
@@ -179,14 +101,6 @@ describe("AmqpAdapter", () => {
             () => adapter.publish("test.event", new Uint8Array([1])),
             (err: unknown) => err instanceof AmqpConnectionError && err.message === "AmqpAdapter: not connected (or recovery in progress)",
         );
-    });
-
-    it("should expose required EventAdapter methods", () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        assert.equal(typeof adapter.connect, "function");
-        assert.equal(typeof adapter.disconnect, "function");
-        assert.equal(typeof adapter.publish, "function");
-        assert.equal(typeof adapter.subscribe, "function");
     });
 });
 
@@ -522,65 +436,8 @@ describe("createBackoffGuard", () => {
     });
 });
 
-describe("AmqpAdapter publisher options", () => {
-    it("should construct with publisher options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            publisherOptions: {
-                persistent: true,
-                mandatory: false,
-            },
-        });
-        assert.ok(adapter);
-    });
-});
-
-describe("AmqpAdapter AdapterContext", () => {
-    it("connect() accepts AdapterContext parameter", () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-
-        // connect() should accept an optional AdapterContext
-        assert.equal(typeof adapter.connect, "function");
-    });
-
-    it("connect() accepts AdapterContext without TypeError", async () => {
-        // recovery: false — with recovery enabled (default), connect() retries
-        // with backoff until the broker appears instead of rejecting.
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
-
-        // connect() will fail (no broker), but should accept the context
-        // without throwing TypeError. The serviceName is mapped to
-        // clientProperties.connection_name.
-        await assert.rejects(
-            () => adapter.connect({ serviceName: "order.v1@test-host" }),
-            (err: Error) => {
-                assert.ok(
-                    !(err instanceof TypeError),
-                    "Should not throw TypeError for AdapterContext",
-                );
-                return true;
-            },
-        );
-    });
-
-    it("connect() works with undefined context (backward compat)", async () => {
-        // recovery: false — with recovery enabled (default), connect() retries
-        // with backoff until the broker appears instead of rejecting.
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
-
-        // Calling connect() without context should still work (minus broker availability)
-        await assert.rejects(
-            () => adapter.connect(),
-            (err: Error) => {
-                assert.ok(
-                    !(err instanceof TypeError),
-                    "Should not throw TypeError for missing context",
-                );
-                return true;
-            },
-        );
-    });
-});
+// The serviceName of the AdapterContext becomes the connection_name client property, which only a
+// broker shows: amqp-recovery.test.ts counts the broker's connections by that name.
 
 describe("toAmqpPattern", () => {
     it("requires at least one segment after a terminal >", () => {

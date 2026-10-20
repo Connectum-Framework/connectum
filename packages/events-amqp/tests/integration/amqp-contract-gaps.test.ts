@@ -140,6 +140,171 @@ describe("AMQP external-contract surface on a real broker", { skip: AMQP_URL ===
         }
     });
 
+    // AMQP 0-9-1 delivery-mode: 1 is non-persistent, 2 is persistent. The documented default of
+    // `publisherOptions.persistent` is true (deliveryMode 2). A message is fetched with basic.get
+    // straight after publish() resolved: once the broker confirmed the publish, the message is
+    // already on the queue, so the get needs no waiting.
+    for (const [label, publisherOptions, expectedDeliveryMode] of [
+        ["by default", {}, 2],
+        ["with persistent: false", { persistent: false }, 1],
+        ["with persistent: true", { persistent: true }, 2],
+    ] as const) {
+        it(`publish() resolves with the message already on the queue, in a frame with the exchange, routing key, bytes and delivery mode ${expectedDeliveryMode} ${label}`, async () => {
+            const exchange = `it.frame.${expectedDeliveryMode}.${randomUUID().slice(0, 6)}`;
+            const adapter = AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false, publisherOptions });
+            await adapter.connect();
+            const conn = await connect(url);
+            try {
+                const ch = await conn.createChannel();
+                const q = await ch.assertQueue("", { exclusive: true });
+                await ch.bindQueue(q.queue, exchange, "frame.key");
+
+                await adapter.publish("frame.key", new Uint8Array([9, 8, 7]));
+
+                const msg = await ch.get(q.queue, { noAck: true });
+                assert.ok(msg, "the message must be on the queue as soon as publish() resolved");
+                assert.equal(msg.fields.exchange, exchange);
+                assert.equal(msg.fields.routingKey, "frame.key");
+                assert.deepEqual(new Uint8Array(msg.content), new Uint8Array([9, 8, 7]));
+                assert.equal(msg.properties.deliveryMode, expectedDeliveryMode);
+            } finally {
+                await conn.close();
+                await adapter.disconnect();
+            }
+        });
+    }
+
+    // RabbitMQ documents x-message-ttl, x-max-length, x-dead-letter-exchange and
+    // x-dead-letter-routing-key as the queue arguments of those limits. AMQP cannot read a queue's
+    // arguments back, so the oracle is the broker's equivalence rule: re-declaring the queue with
+    // exactly the expected arguments succeeds and changing any single one fails with 406.
+    it("queueOptions become the x-message-ttl, x-max-length and dead-letter arguments of the subscription queue, each one", async () => {
+        const exchange = `it.qopts.${run}`;
+        const group = "g";
+        const queue = `${exchange}.${group}`;
+        const dlx = `it.qopts.dlx.${run}`;
+        const expected = {
+            "x-message-ttl": 60_000,
+            "x-max-length": 500,
+            "x-dead-letter-exchange": dlx,
+            "x-dead-letter-routing-key": "dead",
+        };
+        const adapter = AmqpAdapter({
+            url,
+            exchange,
+            exchangeType: "topic",
+            recovery: false,
+            queueOptions: { messageTtl: 60_000, maxLength: 500, deadLetterExchange: dlx, deadLetterRoutingKey: "dead" },
+        });
+        await adapter.connect();
+        const conn = await connect(url);
+        try {
+            await adapter.subscribe(["qopts.key"], async (_e, ack) => ack(), { group });
+
+            const same = await conn.createChannel();
+            await same.assertQueue(queue, { durable: true, arguments: expected });
+            await same.close();
+
+            const changed: Array<[string, Record<string, unknown>]> = [
+                ["x-message-ttl", { ...expected, "x-message-ttl": 61_000 }],
+                ["x-max-length", { ...expected, "x-max-length": 501 }],
+                ["x-dead-letter-exchange", { ...expected, "x-dead-letter-exchange": `${dlx}.other` }],
+                ["x-dead-letter-routing-key", { ...expected, "x-dead-letter-routing-key": "other" }],
+            ];
+            for (const [name, args] of changed) {
+                const different = await conn.createChannel();
+                different.on("error", () => {});
+                await assert.rejects(
+                    () => different.assertQueue(queue, { durable: true, arguments: args }),
+                    (err: unknown) => /PRECONDITION_FAILED|406/.test(String((err as Error).message)),
+                    `a queue declared without exactly the configured ${name} must be refused as inequivalent`,
+                );
+            }
+        } finally {
+            await adapter.disconnect();
+            const cleanup = await conn.createChannel();
+            await cleanup.deleteQueue(queue).catch(() => {});
+            await cleanup.deleteExchange(exchange).catch(() => {});
+            await conn.close().catch(() => {});
+        }
+    });
+
+    // The oracle is again the broker's equivalence rule: an exchange re-declared with the same
+    // type, durability and auto-delete flag is accepted, and changing any one of them is refused
+    // with 406 PRECONDITION_FAILED.
+    it("exchangeType and exchangeOptions are the type, durable and auto-delete properties of the declared exchange", async () => {
+        const exchange = `it.xopts.${run}`;
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "direct", exchangeOptions: { durable: false, autoDelete: true }, recovery: false });
+        await adapter.connect();
+        const conn = await connect(url);
+        try {
+            const same = await conn.createChannel();
+            await same.assertExchange(exchange, "direct", { durable: false, autoDelete: true });
+            await same.close();
+
+            const variants: Array<[string, Parameters<amqp.Channel["assertExchange"]>]> = [
+                ["exchange type", [exchange, "topic", { durable: false, autoDelete: true }]],
+                ["durable flag", [exchange, "direct", { durable: true, autoDelete: true }]],
+                ["auto-delete flag", [exchange, "direct", { durable: false, autoDelete: false }]],
+            ];
+            for (const [name, args] of variants) {
+                const different = await conn.createChannel();
+                different.on("error", () => {});
+                await assert.rejects(
+                    () => different.assertExchange(...args),
+                    (err: unknown) => /PRECONDITION_FAILED|406/.test(String((err as Error).message)),
+                    `an exchange declared with another ${name} must be refused as inequivalent`,
+                );
+            }
+        } finally {
+            await adapter.disconnect();
+            const cleanup = await conn.createChannel();
+            await cleanup.deleteExchange(exchange).catch(() => {});
+            await conn.close().catch(() => {});
+        }
+    });
+
+    // AMQP basic.qos prefetch-count bounds the unacknowledged deliveries of a consumer. The
+    // documented default of `consumerOptions.prefetch` is 10. Handlers that never settle hold
+    // their deliveries, so the number of handler calls is the number the broker was allowed to
+    // push before an acknowledgement.
+    for (const [label, consumerOptions, expectedInFlight] of [
+        ["the default of 10", {}, 10],
+        ["an explicit 3", { prefetch: 3 }, 3],
+    ] as const) {
+        it(`a consumer holds at most ${label} unacknowledged deliveries`, async () => {
+            const exchange = `it.prefetch.${expectedInFlight}.${run}`;
+            const adapter = AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false, consumerOptions });
+            await adapter.connect();
+            const conn = await connect(url);
+            let held = 0;
+            const never = new Promise<void>(() => {});
+            try {
+                await adapter.subscribe(
+                    ["prefetch.key"],
+                    async () => {
+                        held += 1;
+                        await never;
+                    },
+                    { group: "g" },
+                );
+                for (let i = 0; i < expectedInFlight + 5; i += 1) {
+                    await adapter.publish("prefetch.key", new Uint8Array([i]));
+                }
+                await waitFor(() => held >= expectedInFlight);
+                // The broker would push more at once if the limit were higher: give it the time.
+                await sleep(500);
+                assert.equal(held, expectedInFlight);
+            } finally {
+                await adapter.disconnect();
+                const cleanup = await conn.createChannel();
+                await cleanup.deleteQueue(`${exchange}.g`).catch(() => {});
+                await cleanup.deleteExchange(exchange).catch(() => {});
+                await conn.close().catch(() => {});
+            }
+        });
+    }
+
     it("an encode hook that throws rejects the publish with AmqpSerializationError and nothing reaches the broker", async () => {
         const exchange = `it.encode-fail.${run}`;
         const adapter = AmqpAdapter({

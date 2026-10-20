@@ -49,15 +49,9 @@ async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
 describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_URL not set" : false, concurrency: 1 }, () => {
     const url = AMQP_URL as string;
 
-    it("per-message confirm: publish resolves on broker ack", async () => {
-        const adapter = AmqpAdapter({ url, exchange: "it.confirms", recovery: false });
-        await adapter.connect();
-        try {
-            await adapter.publish("it.confirms.ok", new Uint8Array([1, 2, 3]));
-        } finally {
-            await adapter.disconnect();
-        }
-    });
+    // The per-message confirm is observed in amqp-contract-gaps.test.ts: there publish() is followed
+    // by a basic.get that must find the message at once, with its exchange, routing key, bytes and
+    // delivery mode.
 
     it("mandatory + header correlation: unroutable rejects, concurrent routable resolve", async () => {
         const adapter = AmqpAdapter({
@@ -120,6 +114,49 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             await adapter.disconnect();
         }
     });
+
+    // The spec scenario with three publishes cannot tell correlation from luck: a returned
+    // message that is blamed on a neighbour needs the neighbour to still be pending. Many
+    // publishes in flight at once, alternating routable and unroutable, leave no room for that:
+    // every unroutable one must reject with its own routing key and every routable one resolve.
+    for (const [label, correlationHeader] of [
+        ["header correlation (default)", true],
+        ["single-flight (correlationHeader: false)", false],
+    ] as const) {
+        it(`mandatory + ${label}: each of 40 concurrent publishes gets its own outcome`, async () => {
+            const exchange = `it.many.${correlationHeader ? "header" : "single"}`;
+            const adapter = AmqpAdapter({
+                url,
+                exchange,
+                exchangeType: "topic",
+                recovery: false,
+                publisherOptions: { mandatory: true, correlationHeader },
+            });
+            await adapter.connect();
+            try {
+                const sub = await adapter.subscribe([`${exchange}.bound.*`], async (_e, ack) => ack(), { group: "g1" });
+
+                const keys = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? `${exchange}.bound.${i}` : `${exchange}.UNBOUND.${i}`));
+                const results = await Promise.allSettled(keys.map((key) => adapter.publish(key, new Uint8Array([1]))));
+
+                results.forEach((result, i) => {
+                    const key = keys[i] as string;
+                    if (i % 2 === 0) {
+                        assert.equal(result.status, "fulfilled", `${key} is routable and must resolve`);
+                    } else {
+                        assert.equal(result.status, "rejected", `${key} is unroutable and must reject`);
+                        const reason = (result as PromiseRejectedResult).reason;
+                        assert.ok(reason instanceof AmqpUnroutableError, `${key}: expected AmqpUnroutableError, got: ${String(reason)}`);
+                        assert.equal(reason.routingKey, key, "the rejection names the routing key of its own publish");
+                    }
+                });
+
+                await sub.unsubscribe();
+            } finally {
+                await adapter.disconnect();
+            }
+        });
+    }
 
     it("single-flight leaves the wire clean (no x-connectum-publish-id header)", async () => {
         const adapter = AmqpAdapter({
@@ -231,13 +268,23 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             },
         });
         await adapter.connect();
+        const conn = await connect(url);
         try {
+            // The queues are durable: drop what an earlier run left in the dead-letter queue.
+            const ch = await conn.createChannel();
+            await ch.purgeQueue("partner.dead.v1");
             const received: Array<{ payload: Uint8Array }> = [];
             const sub = await adapter.subscribe(
                 ["inbound"],
-                async (event, ack) => {
+                async (event, ack, nack) => {
                     received.push({ payload: event.payload });
-                    await ack();
+                    // A message the handler rejects without requeue must leave through the
+                    // queue's dead-letter arguments; any other is acknowledged.
+                    if (new TextDecoder().decode(event.payload).includes("poison")) {
+                        await nack(false);
+                    } else {
+                        await ack();
+                    }
                 },
                 { group: "partner" },
             );
@@ -248,8 +295,27 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             await waitFor(() => received.length === 1);
             assert.equal(new TextDecoder().decode(received[0]?.payload), '{"code":"0104603..."}');
 
+            // The rejected message is dead-lettered to partner.dlx with the routing key
+            // "inbound.dead", so it lands in partner.dead.v1 with its content type kept.
+            const poison = new TextEncoder().encode(JSON.stringify({ code: "poison" }));
+            await adapter.publish("inbound", poison);
+            await waitFor(() => received.length === 2);
+
+            let dead = await ch.get("partner.dead.v1", { noAck: true });
+            for (let i = 0; i < 50 && !dead; i += 1) {
+                await sleep(100);
+                dead = await ch.get("partner.dead.v1", { noAck: true });
+            }
+            assert.ok(dead, "the rejected message must reach the dead-letter queue");
+            assert.equal(new TextDecoder().decode(dead.content), '{"code":"poison"}');
+            assert.equal(dead.properties.contentType, "application/json");
+            assert.equal(dead.fields.exchange, "partner.dlx");
+            assert.equal(dead.fields.routingKey, "inbound.dead");
+            assert.equal(await ch.get("partner.dead.v1", { noAck: true }), false, "the acknowledged message must not be dead-lettered");
+
             await sub.unsubscribe();
         } finally {
+            await conn.close().catch(() => undefined);
             await adapter.disconnect();
         }
     });
@@ -271,7 +337,14 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             serialization: { contentType: "application/octet-stream", encode: xor, decode: xor },
         });
         await adapter.connect();
+        // A plain amqplib consumer reads the frame as the broker holds it: the adapter's own
+        // consumer decodes on delivery, so only the raw frame shows that encode really ran.
+        const conn = await connect(url);
         try {
+            const raw = await conn.createChannel();
+            const rawQueue = await raw.assertQueue("", { exclusive: true });
+            await raw.bindQueue(rawQueue.queue, "it.transcode", "it.transcode.evt");
+
             const received: Uint8Array[] = [];
             const sub = await adapter.subscribe(
                 ["it.transcode.evt"],
@@ -288,8 +361,15 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             await waitFor(() => received.length === 1);
             assert.equal(new TextDecoder().decode(received[0]), "round-trip");
 
+            const onWire = await raw.get(rawQueue.queue, { noAck: true });
+            assert.ok(onWire, "the raw queue must hold the published frame");
+            assert.deepEqual(new Uint8Array(onWire.content), xor(original), "the bytes on the wire are the encode hook's output");
+            assert.notDeepEqual(new Uint8Array(onWire.content), original, "the payload must not travel untransformed");
+            assert.equal(onWire.properties.contentType, "application/octet-stream");
+
             await sub.unsubscribe();
         } finally {
+            await conn.close().catch(() => undefined);
             await adapter.disconnect();
         }
     });
@@ -361,8 +441,23 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
         });
         await assert.rejects(
             () => missing.connect(),
-            (err: unknown) => err instanceof AmqpTopologyError,
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpTopologyError, `expected AmqpTopologyError, got: ${String(err)}`);
+                // The documented identity of the failing object, and the broker's own NOT_FOUND reply as the cause.
+                assert.deepEqual(err.object, { kind: "queue", name: "it.does.not.exist" });
+                assert.equal((err.cause as { code?: number } | undefined)?.code, 404);
+                return true;
+            },
         );
+        // check mode only looks: a queue that is missing is not created on the adapter's behalf.
+        const probeConn = await connect(url);
+        try {
+            const probe = await probeConn.createChannel();
+            probe.on("error", () => {});
+            await assert.rejects(() => probe.checkQueue("it.does.not.exist"));
+        } finally {
+            await probeConn.close().catch(() => undefined);
+        }
     });
 
     // ── External-contract publish mode (#161) ──────────────────────────────
@@ -461,16 +556,26 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             const received: amqp.ConsumeMessage[] = [];
             await ch.consume(q.queue, (m) => { if (m) received.push(m); }, { noAck: true });
 
+            const before = Date.now();
             await adapter.publish("env.rk", new Uint8Array([9]));
+            const after = Date.now();
             await waitFor(() => received.length > 0);
 
             const msg = received[0];
             assert.ok(msg);
             const headers = (msg.properties.headers ?? {}) as Record<string, unknown>;
-            assert.equal(typeof headers["x-event-id"], "string", "x-event-id stamped by default");
-            assert.equal(typeof headers["x-published-at"], "string", "x-published-at stamped by default");
-            assert.equal(typeof msg.properties.messageId, "string", "messageId auto-populated by default");
-            assert.equal(typeof msg.properties.timestamp, "number", "timestamp auto-populated by default");
+            const eventId = headers["x-event-id"];
+            assert.equal(typeof eventId, "string", "x-event-id stamped by default");
+            assert.ok((eventId as string).length > 0, "x-event-id is not empty");
+            assert.equal(msg.properties.messageId, eventId, "messageId carries the same identity as x-event-id");
+            // x-published-at is the publish instant as an ISO-8601 UTC timestamp.
+            const publishedAt = headers["x-published-at"];
+            assert.equal(typeof publishedAt, "string", "x-published-at stamped by default");
+            assert.equal(new Date(publishedAt as string).toISOString(), publishedAt, "x-published-at is an ISO-8601 instant");
+            assert.ok(Date.parse(publishedAt as string) >= before && Date.parse(publishedAt as string) <= after, "x-published-at is the instant of this publish");
+            // The AMQP 0-9-1 timestamp property counts whole seconds since the epoch.
+            const timestamp = msg.properties.timestamp as number;
+            assert.ok(timestamp >= Math.floor(before / 1000) && timestamp <= Math.ceil(after / 1000), `timestamp ${timestamp} is the second of this publish`);
         } finally {
             await conn.close();
             await adapter.disconnect();
@@ -486,7 +591,12 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
             publisherOptions: { externalContract: true, mandatory: true },
         });
         await adapter.connect();
+        const conn = await connect(url);
         try {
+            const ch = await conn.createChannel();
+            const q = await ch.assertQueue("", { exclusive: true });
+            await ch.bindQueue(q.queue, "it.external.mandatory", "ext.bound");
+
             // No queue bound for this key → the mandatory publish is returned and,
             // even though no x-connectum-publish-id header is on the wire, the
             // forced single-flight correlation still detects it as unroutable.
@@ -494,7 +604,16 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
                 adapter.publish("ext.unbound", new Uint8Array([1])),
                 (err: unknown) => err instanceof AmqpUnroutableError,
             );
+
+            // A routable mandatory publish resolves, and its frame has no correlation header.
+            await adapter.publish("ext.bound", new Uint8Array([2]));
+            const msg = await ch.get(q.queue, { noAck: true });
+            assert.ok(msg, "the routable message must be on the queue");
+            const headers = (msg.properties.headers ?? {}) as Record<string, unknown>;
+            assert.equal(headers["x-connectum-publish-id"], undefined, "external-contract mode keeps the correlation header off the wire");
+            assert.equal(headers["x-event-id"], undefined);
         } finally {
+            await conn.close().catch(() => undefined);
             await adapter.disconnect();
         }
     });
