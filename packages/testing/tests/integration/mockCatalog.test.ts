@@ -168,6 +168,56 @@ describe("createMockContext", () => {
         });
     });
 
+    describe("an unusable catalog is rejected up front", () => {
+        it("throws for a catalog with no service", () => {
+            assert.throws(() => createMockContext({ catalog: defineCatalog({}), mocks: [] }), (err: unknown) => err instanceof Error && /at least one service/.test(err.message));
+        });
+    });
+
+    // The inbound deadline cascades into outgoing calls: when the call does not set its own
+    // `timeoutMs` the remaining inbound deadline is injected, and a caller may shorten the
+    // deadline but never extend it (the effective value is `min(timeoutMs, remaining)`).
+    describe("inbound deadline cascade", () => {
+        async function deadlineSeenByMock(options: { inboundTimeoutMs?: number; callTimeoutMs?: number }): Promise<number | undefined> {
+            let seen: number | undefined;
+            const ctx = createMockContext({
+                catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+                mocks: [
+                    mockService(EchoService, {
+                        echo: (req, mockCtx) => {
+                            seen = mockCtx.timeoutMs();
+                            return create(EchoResponseSchema, { message: req.message, timestamp: 0n });
+                        },
+                    }),
+                ],
+                ...(options.inboundTimeoutMs !== undefined ? { timeoutMs: options.inboundTimeoutMs } : {}),
+            });
+            await ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "x" }), options.callTimeoutMs !== undefined ? { timeoutMs: options.callTimeoutMs } : undefined);
+            return seen;
+        }
+
+        it("injects the remaining inbound deadline when the call sets none", async () => {
+            const seen = await deadlineSeenByMock({ inboundTimeoutMs: 60_000 });
+            assert.ok(seen !== undefined && seen > 0 && seen <= 60_000, `expected a deadline within (0, 60000], got ${seen}`);
+            // A deadline that merely echoed some default would not track the inbound one.
+            assert.ok(seen > 30_000, `the injected deadline must be what remains of the inbound one, got ${seen}`);
+        });
+
+        it("lets the call shorten the deadline", async () => {
+            const seen = await deadlineSeenByMock({ inboundTimeoutMs: 60_000, callTimeoutMs: 1_000 });
+            assert.ok(seen !== undefined && seen > 0 && seen <= 1_000, `expected a deadline within (0, 1000], got ${seen}`);
+        });
+
+        it("clamps a call's longer deadline to the remaining inbound one", async () => {
+            const seen = await deadlineSeenByMock({ inboundTimeoutMs: 5_000, callTimeoutMs: 600_000 });
+            assert.ok(seen !== undefined && seen > 0 && seen <= 5_000, `expected a deadline within (0, 5000], got ${seen}`);
+        });
+
+        it("sets no deadline when neither the inbound request nor the call has one", async () => {
+            assert.strictEqual(await deadlineSeenByMock({}), undefined);
+        });
+    });
+
     // A catalog service that has no mock is a resolver miss, which the
     // catalog contract reports as Code.Unavailable naming the service.
     describe("calls to a service outside the mock set", () => {
