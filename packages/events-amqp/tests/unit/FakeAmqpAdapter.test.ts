@@ -719,3 +719,37 @@ describe("FakeAmqpAdapter delivery follows the configured exchange type", () => 
         assert.equal(free, 1);
     });
 });
+
+describe("FakeAmqpAdapter subscription patterns", () => {
+    for (const [label, pattern] of [
+        ["the empty string", ""],
+        ["an empty segment between dots", "a..b"],
+        ["a leading dot", ".a"],
+        ["a trailing dot", "a."],
+        ["a lone dot", "."],
+    ] as const) {
+        it(`rejects ${label} like the real adapter and leaves no subscription`, async () => {
+            const fake = FakeAmqpAdapter();
+            await fake.connect();
+            let handled = 0;
+
+            await assert.rejects(
+                fake.subscribe(["a.b", pattern], async () => {
+                    handled += 1;
+                }),
+                (error: unknown) => error instanceof TypeError && error.message.startsWith(`AmqpAdapter: subscription pattern "${pattern}" has an empty segment (`),
+            );
+
+            const result = await fake.control.deliver("a.b", new Uint8Array([1]));
+            assert.equal(result.delivered, 0, "the rejected call left no subscription behind");
+            assert.equal(handled, 0);
+        });
+    }
+
+    it("accepts literal, single-segment wildcard and tail wildcard patterns", async () => {
+        const fake = FakeAmqpAdapter();
+        await fake.connect();
+
+        await fake.subscribe(["a.b", "c.*", "d.>", ">"], async () => undefined);
+    });
+});

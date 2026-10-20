@@ -17,6 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import { assertSubscriptionPatterns } from "@connectum/events";
 import type amqp from "amqplib";
 import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpPublishNackError, AmqpPublishTimeoutError, AmqpSerializationError, AmqpTopologyError, AmqpUnroutableError } from "./errors.ts";
@@ -82,8 +83,12 @@ export function toAmqpPattern(pattern: string): string {
     return pattern;
 }
 
-/** Split a pattern into segments, rejecting a complete `>` segment that is not terminal. */
+/**
+ * Split a pattern into segments, rejecting an empty segment (a binding with an empty key matches
+ * only an event with an empty routing key) and a complete `>` segment that is not terminal.
+ */
 function splitPattern(pattern: string): string[] {
+    assertSubscriptionPatterns({ adapter: "AmqpAdapter", patterns: [pattern] });
     const segments = pattern.split(".");
     const greaterThanIndex = segments.indexOf(">");
     if (greaterThanIndex !== -1 && greaterThanIndex !== segments.length - 1) {
