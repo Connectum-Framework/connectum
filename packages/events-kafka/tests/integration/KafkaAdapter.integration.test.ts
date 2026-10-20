@@ -707,8 +707,10 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             await adapter1.disconnect();
         }
         assert.deepEqual(firstRun, ["m1", "m2"], "m3 must not start after the consumer was told to stop");
+        // m2 was in the handler when the consumer was told to stop and the handler acknowledged it:
+        // it is settled according to the handler's outcome, so both m1 and m2 are committed.
         const committed = await committedOffset(group, topic);
-        assert.ok(committed === 2 || committed === 1, `committed offset must cover m1 and possibly m2, got ${committed}`);
+        assert.equal(committed, 2, "the acknowledged message being handled at the stop is committed together with the one before it");
 
         const secondRun: string[] = [];
         const adapter2 = newAdapter();
@@ -724,8 +726,7 @@ describe("Kafka adapter broker integration", { skip: KAFKA_TEST_URL === undefine
             );
             try {
                 await waitFor(async () => (await committedOffset(group, topic)) === 3, "offset 3 committed", async () => ({ committed: await committedOffset(group, topic), secondRun }));
-                assert.equal(secondRun.at(-1), "m3", "m3 is delivered to the next consumer");
-                assert.ok(!secondRun.includes("m1"), "m1 was acked and must not come back");
+                assert.deepEqual(secondRun, ["m3"], "only the message that was left over is delivered to the next consumer");
             } finally {
                 await subscription.unsubscribe();
             }

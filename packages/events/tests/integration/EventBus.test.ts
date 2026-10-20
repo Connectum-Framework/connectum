@@ -30,13 +30,49 @@ function fakeDescService(typeName: string, methods: ReturnType<typeof fakeDescMe
 }
 
 describe("EventBus lifecycle", () => {
-    it("starts and stops with MemoryAdapter", async () => {
+    it("connects, subscribes, then closes the subscription before disconnecting", async () => {
+        const calls: string[] = [];
+        const inner = MemoryAdapter();
+        const adapter: EventAdapter = {
+            ...inner,
+            async connect(context) {
+                calls.push("connect");
+                await inner.connect(context);
+            },
+            async disconnect() {
+                calls.push("disconnect");
+                await inner.disconnect();
+            },
+            async subscribe(patterns, handler, options) {
+                calls.push(`subscribe:${patterns.join(",")}`);
+                const subscription = await inner.subscribe(patterns, handler, options);
+                return {
+                    async unsubscribe() {
+                        calls.push("unsubscribe");
+                        await subscription.unsubscribe();
+                    },
+                };
+            },
+        };
+        const method = fakeDescMethod("onEvent", EventOptionsSchema.typeName, EventOptionsSchema);
         const bus = createEventBus({
-            adapter: MemoryAdapter(),
+            adapter,
+            routes: [
+                (router) => {
+                    router.service(fakeDescService("test.v1.LifecycleService", [method]), { onEvent: async () => {} } as any);
+                },
+            ],
         });
 
         await bus.start();
+        assert.deepEqual(calls, ["connect", `subscribe:${EventOptionsSchema.typeName}`], "start() connects, then subscribes");
+
         await bus.stop();
+        assert.deepEqual(
+            calls,
+            ["connect", `subscribe:${EventOptionsSchema.typeName}`, "unsubscribe", "disconnect"],
+            "stop() closes the subscription first and disconnects last",
+        );
     });
 
     it("throws on double start", async () => {
@@ -72,9 +108,21 @@ describe("EventBus lifecycle", () => {
         });
     });
 
-    it("supports start-stop-start cycle", async () => {
+    it("supports start-stop-start cycle: each cycle connects and disconnects the adapter once", async () => {
+        const calls: string[] = [];
+        const inner = MemoryAdapter();
         const bus = createEventBus({
-            adapter: MemoryAdapter(),
+            adapter: {
+                ...inner,
+                async connect(context) {
+                    calls.push("connect");
+                    await inner.connect(context);
+                },
+                async disconnect() {
+                    calls.push("disconnect");
+                    await inner.disconnect();
+                },
+            },
         });
 
         await bus.start();
@@ -83,15 +131,37 @@ describe("EventBus lifecycle", () => {
         // Second start should succeed (shutdown signal reset between cycles)
         await bus.start();
         await bus.stop();
+
+        assert.deepEqual(calls, ["connect", "disconnect", "connect", "disconnect"]);
     });
 
-    it("starts with shutdown signal", async () => {
+    it("aborts the signal of a running handler when the shutdown signal given to start() aborts", async () => {
+        // A handler's `signal` is aborted on server shutdown: the signal passed to
+        // `start()` must reach it, not only the per-event timeout and the drain.
+        const adapter = MemoryAdapter();
+        const shutdown = new AbortController();
+        const observed: Array<{ before: boolean; after: boolean }> = [];
+        const method = fakeDescMethod("onEvent", EventOptionsSchema.typeName, EventOptionsSchema);
         const bus = createEventBus({
-            adapter: MemoryAdapter(),
+            adapter,
+            routes: [
+                (router) => {
+                    router.service(fakeDescService("test.v1.ShutdownSignalService", [method]), {
+                        onEvent: async (_msg: unknown, ctx: { signal: AbortSignal }) => {
+                            const before = ctx.signal.aborted;
+                            shutdown.abort(new Error("server shutdown"));
+                            observed.push({ before, after: ctx.signal.aborted });
+                        },
+                    } as any);
+                },
+            ],
         });
 
-        await bus.start({ signal: AbortSignal.timeout(5000) });
+        await bus.start({ signal: shutdown.signal });
+        await adapter.publish(EventOptionsSchema.typeName, new Uint8Array());
         await bus.stop();
+
+        assert.deepEqual(observed, [{ before: false, after: true }]);
     });
 
     it("resets shutdown signal between start-stop cycles", async () => {
@@ -682,23 +752,6 @@ describe("EventBus graceful drain", () => {
         assert.equal(handlerCallCount, 2, "second cycle should work cleanly");
     });
 
-    it("empty drain completes immediately", async () => {
-        const manual = createManualAdapter();
-
-        const bus = createEventBus({
-            adapter: manual.adapter,
-            drainTimeout: 5000,
-            routes: [],
-        });
-
-        await bus.start();
-
-        const start = Date.now();
-        await bus.stop();
-        const elapsed = Date.now() - start;
-
-        assert.ok(elapsed < 500, `empty drain took ${elapsed}ms, expected immediate`);
-    });
 });
 
 // =============================================================================

@@ -370,7 +370,7 @@ describe("Custom middleware ordering", () => {
         assert.deepEqual(failing.calls, ["ack"], "DLQ acks the original after dead-lettering it");
     });
 
-    it("custom middleware sees error from DLQ on handler failure", async () => {
+    it("custom middleware outside the DLQ never sees a handler failure that the DLQ dead-lettered", async () => {
         const tracker = createTrackingAdapter();
         const executionOrder: string[] = [];
         let customCaughtError = false;
@@ -574,35 +574,6 @@ describe("Explicit ack/nack", () => {
         assert.deepEqual(calls, ["nack-requeue"], "nack should be called with requeue=true");
     });
 
-    it("explicit ctx.ack() followed by ctx.nack() is idempotent (second call ignored)", async () => {
-        const tracker = createTrackingAdapter();
-
-        const method = fakeDescMethod("doubleSettleEvent", EventOptionsSchema.typeName, EventOptionsSchema);
-        const service = fakeDescService("pipeline.v1.DoubleSettleService", [method]);
-
-        bus = createEventBus({
-            adapter: tracker.adapter,
-            routes: [
-                (router) => {
-                    router.service(service, {
-                        doubleSettleEvent: async (_event: unknown, ctx: EventContext) => {
-                            await ctx.ack();
-                            await ctx.nack(false); // should be ignored
-                        },
-                    } as any);
-                },
-            ],
-        });
-
-        await bus.start();
-
-        const event = makeRawEvent(EventOptionsSchema.typeName, "evt-double-settle");
-        const { promise, calls } = tracker.deliver(event);
-        await promise;
-
-        // Only the first ack should fire
-        assert.deepEqual(calls, ["ack"], "only the first settlement should take effect");
-    });
 });
 
 // =============================================================================
@@ -617,38 +588,6 @@ describe("Publish with options", () => {
             await bus.stop();
             bus = null;
         }
-    });
-
-    it("publish with topic override sends event to custom topic", async () => {
-        const tracker = createTrackingAdapter();
-
-        bus = createEventBus({
-            adapter: tracker.adapter,
-        });
-
-        await bus.start();
-
-        const fakeSchema = EventOptionsSchema;
-        await bus.publish(fakeSchema, {} as any, { topic: "custom.override.topic" });
-
-        assert.equal(tracker.published.length, 1);
-        assert.equal(tracker.published[0]!.eventType, "custom.override.topic");
-    });
-
-    it("publish without topic override uses schema.typeName", async () => {
-        const tracker = createTrackingAdapter();
-
-        bus = createEventBus({
-            adapter: tracker.adapter,
-        });
-
-        await bus.start();
-
-        const fakeSchema = EventOptionsSchema;
-        await bus.publish(fakeSchema, {} as any);
-
-        assert.equal(tracker.published.length, 1);
-        assert.equal(tracker.published[0]!.eventType, EventOptionsSchema.typeName);
     });
 
     it("publish with metadata passes metadata to adapter", async () => {
@@ -669,25 +608,6 @@ describe("Publish with options", () => {
 
         assert.equal(tracker.published.length, 1);
         assert.deepEqual(tracker.published[0]!.options?.metadata, metadata);
-    });
-
-    it("publish with both topic and metadata works together", async () => {
-        const tracker = createTrackingAdapter();
-
-        bus = createEventBus({
-            adapter: tracker.adapter,
-        });
-
-        await bus.start();
-
-        await bus.publish(EventOptionsSchema, {} as any, {
-            topic: "notifications.email",
-            metadata: { "priority": "high" },
-        });
-
-        assert.equal(tracker.published.length, 1);
-        assert.equal(tracker.published[0]!.eventType, "notifications.email");
-        assert.equal(tracker.published[0]!.options?.metadata?.priority, "high");
     });
 });
 

@@ -126,7 +126,8 @@ describe("Redis adapter reclaim integration", { skip: REDIS_TEST_URL === undefin
                 });
 
                 assert.deepEqual(attemptsOf("healthy"), [1], "an acknowledged entry is never redelivered");
-                assert.ok((attemptsOf("transient")[1] ?? 0) >= 2, `the redelivery must carry the delivery count (got ${attemptsOf("transient")})`);
+                // Delivery count of the group: XREADGROUP 1, the XCLAIM that ages the entry +1, the reclaiming XAUTOCLAIM +1.
+                assert.deepEqual(attemptsOf("transient"), [1, 3], "the redelivery must carry the group's delivery count");
 
                 const stillPending = await pendingIds(control, streamKey, group);
                 const entries = (await control.call("XRANGE", streamKey, "-", "+")) as [string, string[]][];

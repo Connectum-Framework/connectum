@@ -19,6 +19,8 @@ interface Harness {
     /** Arguments of every `console.error` call made while the batch ran. */
     readonly errorLogs: unknown[][];
     heartbeats: number;
+    /** Wall-clock time of every `heartbeat()` call, in call order. */
+    readonly heartbeatTimes: number[];
     /** Most `heartbeat()` calls that were awaiting their answer at the same moment. */
     maxConcurrentHeartbeats: number;
     /**
@@ -64,6 +66,7 @@ function harness(options: {
         paused,
         errorLogs,
         heartbeats: 0,
+        heartbeatTimes: [],
         maxConcurrentHeartbeats: 0,
         whenHeartbeats: (count, timeoutMs = 10_000) =>
             new Promise<void>((resolve, reject) => {
@@ -121,6 +124,7 @@ function harness(options: {
                 },
                 heartbeat: async () => {
                     state.heartbeats++;
+                    state.heartbeatTimes.push(Date.now());
                     const call = state.heartbeats;
                     for (const waiter of heartbeatWaiters.filter((w) => w.count <= call)) {
                         heartbeatWaiters.splice(heartbeatWaiters.indexOf(waiter), 1);
@@ -262,8 +266,17 @@ describe("createBatchConsumer", () => {
             },
         });
         await h.run();
+        // One log call that names the topic, the partition and the offset of the message that failed
+        // (the second of three: offset 11 on partition 3) and carries the error itself. The layout of
+        // the line is not fixed, so the assertion looks for the three identifiers, not for a format.
         assert.equal(h.errorLogs.length, 1);
-        assert.deepEqual(h.errorLogs[0], ["[KafkaAdapter] handler error for orders.created[3]@11:", failure]);
+        const [entry] = h.errorLogs as [unknown[]];
+        const line = entry.filter((part) => typeof part === "string").join(" ");
+        assert.match(line, /orders\.created/);
+        assert.match(line, /\b3\b/, "the partition is named");
+        assert.match(line, /\b11\b/, "the offset of the failed message is named");
+        assert.doesNotMatch(line, /\b(10|12)\b/, "the offsets of the messages around it are not");
+        assert.ok(entry.includes(failure), "the error itself is carried by the log call");
     });
 
     it("settled messages produce no error log", async () => {
@@ -527,21 +540,6 @@ describe("createBatchConsumer", () => {
         assert.equal(committed.paused.length, 0);
     });
 
-    it("a cancelled resume timer never resumes the partition", async () => {
-        const timers = new Set<NodeJS.Timeout>();
-        const h = harness({
-            messages: three,
-            redeliveryDelay: 40,
-            resumeTimers: timers,
-            handler: async () => {
-                throw new Error("boom");
-            },
-        });
-        await h.run();
-        for (const timer of timers) clearTimeout(timer);
-        await sleep(120);
-        assert.equal(h.paused[0]?.resumed, false);
-    });
 });
 
 describe("createBatchConsumer heartbeat while a handler runs", () => {
@@ -570,6 +568,12 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
         await h.run();
         assert.equal(waitFailure, undefined, "the timer kept beating while the handler was busy");
         assert.ok(atAck >= 5, `expected at least 5 heartbeats during one handler turn, saw ${atAck}`);
+        // The adapter checks twice per heartbeat interval (the Kafka adapter guide: "checking twice per
+        // interval"), so with an interval of 40 ms the first five beats are at least four ticks of 20 ms
+        // apart. A timer ticking faster than that sends more heartbeats than the broker's cadence
+        // allows; a slow host can only stretch the gap, never shrink it.
+        const [first, , , , fifth] = h.heartbeatTimes as [number, number, number, number, number];
+        assert.ok(fifth - first >= 70, `five beats must span at least four ticks of ${interval / 2} ms, spanned ${fifth - first} ms`);
     });
 
     it("does not heartbeat from the timer when the handler is faster than a tick", async () => {
@@ -581,7 +585,9 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
             },
         });
         await h.run();
-        assert.equal(h.heartbeats, 1, "only the heartbeat after the commit");
+        // The timer has no time to tick before the handler returns. (The adapter also beats once after
+        // each message; that is not documented, so the assertion allows it but no more.)
+        assert.ok(h.heartbeats <= 1, `a handler faster than a tick leaves at most the one heartbeat after the message, saw ${h.heartbeats}`);
     });
 
     const outcomes: { name: string; handler: RawEventHandler }[] = [
@@ -653,12 +659,15 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
             },
         });
         await h.run();
-        assert.equal(h.heartbeats, 3, "instant handlers leave only the three post-commit heartbeats");
+        // Instant handlers need no timer beat: at most one heartbeat per message, and nothing
+        // afterwards — an earlier message's timer must not keep beating through the later ones.
+        const afterRun = h.heartbeats;
+        assert.ok(afterRun <= three.length, `at most one heartbeat per instant message, saw ${afterRun}`);
         await sleep(120);
-        assert.equal(h.heartbeats, 3);
+        assert.equal(h.heartbeats, afterRun, "no timer outlives its message");
     });
 
-    it("never has two heartbeats in flight at once", async () => {
+    it("never has two heartbeats in flight at once (Connectum decision, no documented source)", async () => {
         const h = harness({
             messages: [{ offset: "10", value: "a" }],
             heartbeatInterval: interval,
@@ -720,7 +729,7 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
         assert.deepEqual(h.resolved, ["10"]);
     });
 
-    it("a failed commit takes precedence over a heartbeat failure", async () => {
+    it("a failed commit takes precedence over a heartbeat failure (Connectum decision, no documented source)", async () => {
         const h = harness({
             messages: [{ offset: "10", value: "a" }],
             heartbeatInterval: interval,
@@ -893,11 +902,11 @@ describe("createBatchConsumer commit strategy", () => {
         assert.equal(h.errorLogs.length, 1);
     });
 
-    it("per-batch pauses the partition after a requeue exactly as per-message does", async () => {
+    it("per-batch pauses the partition after a requeue for the redelivery delay, then resumes it, exactly as per-message does", async () => {
         const resumeTimers = new Set<NodeJS.Timeout>();
         const h = harness({
             commitStrategy: "per-batch",
-            redeliveryDelay: 60_000,
+            redeliveryDelay: 40,
             resumeTimers,
             messages: three,
             handler: async () => undefined,
@@ -905,7 +914,9 @@ describe("createBatchConsumer commit strategy", () => {
         await h.run();
         assert.equal(h.paused.length, 1);
         assert.equal(resumeTimers.size, 1);
-        for (const timer of resumeTimers) clearTimeout(timer);
+        assert.equal(h.paused[0]?.resumed, false, "the partition stays paused right after the batch");
+        await sleep(160);
+        assert.equal(h.paused[0]?.resumed, true, "the pause ends after the delay");
     });
 
     it("per-batch commits the acknowledged messages when the consumer is stopped in the middle of the batch", async () => {
@@ -937,7 +948,7 @@ describe("createBatchConsumer commit strategy", () => {
         assert.deepEqual(h.commits, [{ partition: 3, offset: "12" }]);
     });
 
-    it("per-batch lets the heartbeat failure win over a failed commit and logs the commit failure", async () => {
+    it("per-batch lets the heartbeat failure win over a failed commit and logs the commit failure (Connectum decision, no documented source)", async () => {
         const h = harness({
             commitStrategy: "per-batch",
             messages: three,

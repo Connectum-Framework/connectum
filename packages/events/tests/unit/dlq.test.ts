@@ -16,23 +16,30 @@ function makeRawEvent(overrides?: Partial<RawEvent>): RawEvent {
     };
 }
 
-function makeCtx(raw?: RawEvent) {
+function makeCtx(raw?: RawEvent, options?: { ackFails?: boolean }) {
     const event = raw ?? makeRawEvent();
     let acked = false;
     let nacked = false;
+    let ackAttempts = 0;
+    const nackRequeueArgs: boolean[] = [];
 
     const ctx = createEventContext({
         raw: event,
         signal: AbortSignal.timeout(1000),
         onAck: async () => {
+            ackAttempts++;
+            if (options?.ackFails) {
+                throw new Error("ack failed");
+            }
             acked = true;
         },
-        onNack: async () => {
+        onNack: async (requeue) => {
             nacked = true;
+            nackRequeueArgs.push(requeue);
         },
     });
 
-    return { ctx, isAcked: () => acked, isNacked: () => nacked };
+    return { ctx, isAcked: () => acked, isNacked: () => nacked, ackAttempts: () => ackAttempts, nackRequeueArgs };
 }
 
 describe("dlqMiddleware", () => {
@@ -107,7 +114,7 @@ describe("dlqMiddleware", () => {
         };
 
         const dlqEvent = makeRawEvent({ eventType: "my-service.dlq" });
-        const { ctx, isAcked } = makeCtx(dlqEvent);
+        const { ctx, isAcked, isNacked } = makeCtx(dlqEvent);
 
         const mw = dlqMiddleware({ topic: "my-service.dlq" }, mockAdapter as EventAdapter);
 
@@ -121,8 +128,56 @@ describe("dlqMiddleware", () => {
 
         // Should NOT publish to DLQ (would create infinite loop)
         assert.equal(publishCalled, false);
-        // Should NOT ack (error propagates)
+        // Neither ack nor nack: the event is left unacknowledged
         assert.equal(isAcked(), false);
+        assert.equal(isNacked(), false);
+    });
+
+    it("nacks the original without requeue and does not rethrow when the DLQ publish fails", async () => {
+        // The events middleware guide: if the DLQ publish fails, the middleware calls
+        // `ctx.nack(false)` and does not rethrow.
+        const mockAdapter: Pick<EventAdapter, "publish"> = {
+            async publish() {
+                throw new Error("broker unavailable");
+            },
+        };
+
+        const event = makeRawEvent({ eventId: "evt-dlq-down" });
+        const { ctx, isAcked, nackRequeueArgs } = makeCtx(event);
+
+        const mw = dlqMiddleware({ topic: "my-service.dlq" }, mockAdapter as EventAdapter);
+
+        await mw(event, ctx, async () => {
+            throw new Error("handler failed");
+        });
+
+        assert.deepEqual(nackRequeueArgs, [false], "exactly one nack, without requeue (requeueing would loop a poison event)");
+        assert.equal(isAcked(), false, "an event that never reached the DLQ must not be acknowledged");
+    });
+
+    it("does not rethrow when the DLQ publish succeeds but the ack fails, and the fallback nack is a no-op", async () => {
+        // The events middleware guide: if publishing succeeds but `ctx.ack()` rejects, the
+        // same fallback is attempted; the context's first-settlement rule makes that later
+        // `nack()` a no-op, so broker redelivery can still occur.
+        const published: string[] = [];
+        const mockAdapter: Pick<EventAdapter, "publish"> = {
+            async publish(eventType) {
+                published.push(eventType);
+            },
+        };
+
+        const event = makeRawEvent();
+        const { ctx, ackAttempts, nackRequeueArgs } = makeCtx(event, { ackFails: true });
+
+        const mw = dlqMiddleware({ topic: "my-service.dlq" }, mockAdapter as EventAdapter);
+
+        await mw(event, ctx, async () => {
+            throw new Error("handler failed");
+        });
+
+        assert.deepEqual(published, ["my-service.dlq"]);
+        assert.equal(ackAttempts(), 1, "ack is attempted once");
+        assert.deepEqual(nackRequeueArgs, [], "the failed ack settled the context, so the fallback nack reaches no adapter");
     });
 
     it("serializes a non-Error throwable as UnknownError in dlq.error", async () => {
@@ -148,7 +203,7 @@ describe("dlqMiddleware", () => {
         assert.equal(published[0]!.metadata?.["dlq.error"], "UnknownError");
     });
 
-    it("uses custom errorSerializer when provided (N-8)", async () => {
+    it("uses custom errorSerializer when provided", async () => {
         const published: { metadata?: Record<string, string> }[] = [];
         const mockAdapter: Pick<EventAdapter, "publish"> = {
             async publish(_eventType, _payload, options) {

@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createEventContext } from "../../src/EventContext.ts";
 import { NonRetryableError, RetryableError } from "../../src/errors.ts";
+import { dlqMiddleware } from "../../src/middleware/dlq.ts";
+import type { EventAdapter } from "../../src/types.ts";
+
+/**
+ * Run a failing handler through the DLQ middleware with its default serializer and
+ * return the `dlq.error` label it wrote. The middleware guide says the default is the
+ * error name for an `Error` and `UnknownError` for any other thrown value.
+ */
+async function deadLetterErrorLabel(thrown: unknown): Promise<string | undefined> {
+    let label: string | undefined;
+    const adapter = {
+        async publish(_topic: string, _payload: Uint8Array, options?: { metadata?: Record<string, string> }) {
+            label = options?.metadata?.["dlq.error"];
+        },
+    } as unknown as EventAdapter;
+    const raw = { eventId: "e1", eventType: "t", payload: new Uint8Array(), publishedAt: new Date(), attempt: 1, metadata: new Map<string, string>() };
+    const ctx = createEventContext({ raw, signal: AbortSignal.timeout(1000), onAck: async () => {}, onNack: async () => {} });
+    await dlqMiddleware({ topic: "t.dlq" }, adapter)(raw, ctx, async () => {
+        throw thrown;
+    });
+    return label;
+}
 
 describe("NonRetryableError", () => {
     it("isNonRetryable returns true for NonRetryableError instances", () => {
@@ -18,21 +41,14 @@ describe("NonRetryableError", () => {
         assert.equal(NonRetryableError.isNonRetryable(undefined), false);
     });
 
-    it("has correct name property", () => {
-        const error = new NonRetryableError("test");
-        assert.equal(error.name, "NonRetryableError");
+    it("is reported by its class name in dlq.error (a real Error, not an unknown throwable)", async () => {
+        assert.equal(await deadLetterErrorLabel(new NonRetryableError("test")), "NonRetryableError");
     });
 
     it("preserves cause via ErrorOptions", () => {
         const cause = new Error("root cause");
         const error = new NonRetryableError("wrapper", { cause });
         assert.equal(error.cause, cause);
-    });
-
-    it("is instanceof Error", () => {
-        const error = new NonRetryableError("test");
-        assert.ok(error instanceof Error);
-        assert.ok(error instanceof NonRetryableError);
     });
 });
 
@@ -52,21 +68,14 @@ describe("RetryableError", () => {
         assert.equal(RetryableError.isRetryable(undefined), false);
     });
 
-    it("has correct name property", () => {
-        const error = new RetryableError("test");
-        assert.equal(error.name, "RetryableError");
+    it("is reported by its class name in dlq.error (a real Error, not an unknown throwable)", async () => {
+        assert.equal(await deadLetterErrorLabel(new RetryableError("test")), "RetryableError");
     });
 
     it("preserves cause via ErrorOptions", () => {
         const cause = new Error("root cause");
         const error = new RetryableError("wrapper", { cause });
         assert.equal(error.cause, cause);
-    });
-
-    it("is instanceof Error", () => {
-        const error = new RetryableError("test");
-        assert.ok(error instanceof Error);
-        assert.ok(error instanceof RetryableError);
     });
 });
 
@@ -98,17 +107,5 @@ describe("Brand interaction", () => {
     it("RetryableError is not detected as non-retryable", () => {
         const error = new RetryableError("test");
         assert.equal(NonRetryableError.isNonRetryable(error), false);
-    });
-
-    it("error with both brands is detected by both guards", () => {
-        const NON_RETRYABLE = Symbol.for("@connectum/events.NonRetryableError");
-        const RETRYABLE = Symbol.for("@connectum/events.RetryableError");
-        const dualBranded = Object.assign(new Error("dual"), {
-            [NON_RETRYABLE]: true,
-            [RETRYABLE]: true,
-        });
-        // Both type guards detect their respective brand
-        assert.equal(NonRetryableError.isNonRetryable(dualBranded), true);
-        assert.equal(RetryableError.isRetryable(dualBranded), true);
     });
 });

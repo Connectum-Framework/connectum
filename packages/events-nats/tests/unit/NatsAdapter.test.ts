@@ -1,46 +1,9 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import { describe, it } from "node:test";
 import { NatsAdapter } from "../../src/NatsAdapter.ts";
 
 describe("NatsAdapter", () => {
-    it("should return an adapter with name 'nats'", () => {
-        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
-        assert.equal(adapter.name, "nats");
-    });
-
-    it("should accept a single server string", () => {
-        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
-        assert.ok(adapter);
-    });
-
-    it("should accept an array of servers", () => {
-        const adapter = NatsAdapter({
-            servers: ["nats://host1:4222", "nats://host2:4222"],
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept custom stream name", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            stream: "custom-stream",
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "nats");
-    });
-
-    it("should accept consumer options", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            consumerOptions: {
-                deliverPolicy: "all",
-                ackWait: 60_000,
-                maxDeliver: 10,
-            },
-        });
-        assert.ok(adapter);
-    });
-
     it("should throw when publishing without connection", async () => {
         const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
         await assert.rejects(
@@ -62,151 +25,76 @@ describe("NatsAdapter", () => {
         // disconnect() should be a no-op when not connected
         await adapter.disconnect();
     });
-
-    it("should expose required EventAdapter methods", () => {
-        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
-        assert.equal(typeof adapter.connect, "function");
-        assert.equal(typeof adapter.disconnect, "function");
-        assert.equal(typeof adapter.publish, "function");
-        assert.equal(typeof adapter.subscribe, "function");
-    });
-
-    it("should accept group names with dots and special chars without throwing", () => {
-        // sanitizeDurableName is internal, but we can verify it indirectly:
-        // Creating an adapter with a group containing dots/special chars
-        // should not throw during construction. The sanitization happens at
-        // subscribe time, but the adapter itself should accept any config.
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            stream: "my.stream.name",
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "nats");
-    });
 });
 
-describe("NatsAdapter internal utilities (indirect testing)", () => {
-    // -----------------------------------------------------------------------
-    // toDeliverPolicy() — private, maps "all"|"last"|undefined → DeliverPolicy
-    //
-    // This function is called inside subscribe() when creating a durable
-    // consumer. Because subscribe() requires a live NATS broker, we cannot
-    // invoke it in unit tests. We verify indirectly that the adapter accepts
-    // all three deliver policy values without construction errors.
-    // -----------------------------------------------------------------------
-
-    it("should accept deliverPolicy 'all' without construction error", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            consumerOptions: { deliverPolicy: "all" },
+/**
+ * A stand-in for a NATS server that only reads the client's CONNECT message and then drops the
+ * connection: the adapter's connect() rejects, and what it announced about itself is recorded.
+ * Nothing here depends on JetStream, so no broker is needed.
+ */
+async function announcedConnectOptions(run: (url: string) => Promise<void>): Promise<Record<string, unknown>> {
+    let announced: Record<string, unknown> | undefined;
+    const server = createServer((socket) => {
+        socket.on("error", () => undefined);
+        socket.write('INFO {"server_id":"stand-in","version":"2.10.0","proto":1,"headers":true,"max_payload":1048576,"jetstream":true}\r\n');
+        let received = "";
+        socket.on("data", (chunk) => {
+            received += chunk.toString();
+            const line = received.split("\r\n").find((candidate) => candidate.startsWith("CONNECT "));
+            if (line !== undefined && announced === undefined) {
+                announced = JSON.parse(line.slice("CONNECT ".length)) as Record<string, unknown>;
+                socket.destroy();
+            }
         });
-        assert.ok(adapter);
     });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        await run(`nats://127.0.0.1:${address.port}`);
+    } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    assert.ok(announced, "the client must have sent its CONNECT message");
+    return announced;
+}
 
-    it("should accept deliverPolicy 'last' without construction error", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            consumerOptions: { deliverPolicy: "last" },
+/** The stand-in drops every connection, so the client must not keep reconnecting or waiting. */
+const GIVE_UP_AT_ONCE = { reconnect: false, timeout: 2_000 } as const;
+
+describe("NatsAdapter connection name", () => {
+    // The events guide: the EventBus derives a service identifier that adapters use for the broker
+    // connection name (NATS connection `name`), and an explicit adapter option always wins.
+
+    it("announces the service identifier given to connect() as the connection name", async () => {
+        const announced = await announcedConnectOptions(async (url) => {
+            const adapter = NatsAdapter({ servers: url, connectionOptions: GIVE_UP_AT_ONCE });
+            await assert.rejects(adapter.connect({ serviceName: "order.v1@test-host" }));
         });
-        assert.ok(adapter);
+        assert.equal(announced.name, "order.v1@test-host");
     });
 
-    it("should accept deliverPolicy 'new' without construction error", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            consumerOptions: { deliverPolicy: "new" },
+    it("announces an explicit connectionOptions.name instead of the service identifier", async () => {
+        const announced = await announcedConnectOptions(async (url) => {
+            const adapter = NatsAdapter({ servers: url, connectionOptions: { ...GIVE_UP_AT_ONCE, name: "explicit-name" } });
+            await assert.rejects(adapter.connect({ serviceName: "order.v1@test-host" }));
         });
-        assert.ok(adapter);
+        assert.equal(announced.name, "explicit-name");
     });
 
-    it("should default deliverPolicy when undefined (no consumerOptions)", () => {
-        // When consumerOptions is omitted, toDeliverPolicy(undefined) returns
-        // DeliverPolicy.New. This is tested indirectly: the adapter should not
-        // throw during construction with no consumerOptions.
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
+    it("announces no connection name when there is neither an explicit name nor a service identifier", async () => {
+        const announced = await announcedConnectOptions(async (url) => {
+            const adapter = NatsAdapter({ servers: url, connectionOptions: GIVE_UP_AT_ONCE });
+            await assert.rejects(adapter.connect());
         });
-        assert.ok(adapter);
+        assert.equal(announced.name, undefined);
     });
 
-    // -----------------------------------------------------------------------
-    // sanitizeDurableName() — private, replaces [^a-zA-Z0-9_-] with "_"
-    //
-    // This function is called inside subscribe() via consumerName().
-    // We cannot directly test it without a live broker. Instead, we verify
-    // that the adapter accepts stream names with special characters (dots,
-    // wildcards) which would be passed through sanitizeDurableName().
-    //
-    // NOTE: sanitizeDurableName is exercised at subscribe time, not at
-    // construction. The tests below verify construction accepts these values
-    // without TypeError, but actual sanitization correctness requires an
-    // integration test with a running NATS server.
-    // -----------------------------------------------------------------------
-
-    it("should accept stream name with dots (sanitized at subscribe time)", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            stream: "my.events.stream",
+    it("reaches the server when `servers` is given as an array", async () => {
+        const announced = await announcedConnectOptions(async (url) => {
+            const adapter = NatsAdapter({ servers: [url], connectionOptions: GIVE_UP_AT_ONCE });
+            await assert.rejects(adapter.connect({ serviceName: "array.v1@test-host" }));
         });
-        assert.ok(adapter);
-    });
-
-    it("should accept stream name with hyphens and underscores", () => {
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            stream: "my-events_stream",
-        });
-        assert.ok(adapter);
-    });
-});
-
-describe("NatsAdapter AdapterContext", () => {
-    // Note: connect() requires a running NATS server, so we test the interface
-    // contract and error types rather than successful connection.
-
-    it("connect() accepts AdapterContext parameter", () => {
-        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
-
-        // connect() should accept an optional AdapterContext
-        assert.equal(typeof adapter.connect, "function");
-    });
-
-    it("connect() accepts AdapterContext without TypeError", async () => {
-        const adapter = NatsAdapter({ servers: "nats://invalid-host:4222" });
-
-        // connect() will fail (no broker), but should accept the context
-        // without throwing TypeError. The actual NATS connection name =
-        // connectionOptions?.name ?? context?.serviceName
-        await assert.rejects(
-            () => adapter.connect({ serviceName: "order.v1@test-host" }),
-            (err: Error) => {
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for AdapterContext");
-                return true;
-            },
-        );
-    });
-
-    it("adapter can be constructed with explicit connectionOptions.name", () => {
-        // Verify that providing both connectionOptions.name and context.serviceName
-        // is valid. The priority chain is: connectionOptions.name > context.serviceName
-        const adapter = NatsAdapter({
-            servers: "nats://localhost:4222",
-            connectionOptions: { name: "explicit-name" },
-        });
-
-        assert.equal(adapter.name, "nats");
-    });
-
-    it("connect() works with undefined context (backward compat)", async () => {
-        const adapter = NatsAdapter({ servers: "nats://invalid-host:4222" });
-
-        // Calling connect() without context should still work (minus broker availability)
-        await assert.rejects(
-            () => adapter.connect(),
-            (err: Error) => {
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for missing context");
-                return true;
-            },
-        );
+        assert.equal(announced.name, "array.v1@test-host");
     });
 });

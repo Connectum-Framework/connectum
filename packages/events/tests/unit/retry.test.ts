@@ -274,25 +274,47 @@ describe("retryMiddleware", () => {
         assert.equal(callCount, 1);
     });
 
-    it("backward compat: retryableErrors predicate still works for plain errors", async () => {
-        let callCount = 0;
-        const mw = retryMiddleware({
-            maxRetries: 3,
-            backoff: "fixed",
-            initialDelay: 10,
-            retryableErrors: (err) => err instanceof Error && err.message !== "fatal",
+    describe("documented backoff strategies", () => {
+        // The middleware guide's table of delay formulas (initialDelay=1000, multiplier=2):
+        // exponential 1000, 2000, 4000, 8000; linear 1000, 2000, 3000, 4000; fixed 1000 x4.
+        const alwaysFails = async () => {
+            throw new Error("always fails");
+        };
+        const schedule = (options: Parameters<typeof retryMiddleware>[0]) =>
+            recordBackoffDelays(() => assert.rejects(() => retryMiddleware(options)(makeRawEvent(), makeCtx(), alwaysFails)));
+
+        it("exponential: initialDelay * multiplier^(attempt-1)", async () => {
+            assert.deepEqual(await schedule({ maxRetries: 4, backoff: "exponential", initialDelay: 1000, multiplier: 2 }), [1000, 2000, 4000, 8000]);
         });
 
-        await assert.rejects(
-            () =>
-                mw(makeRawEvent(), makeCtx(), async () => {
-                    callCount++;
-                    throw new Error("fatal");
-                }),
-            { message: /fatal/ },
-        );
+        it("exponential honours a custom multiplier", async () => {
+            assert.deepEqual(await schedule({ maxRetries: 3, backoff: "exponential", initialDelay: 100, multiplier: 3 }), [100, 300, 900]);
+        });
 
-        // Predicate rejects plain Error("fatal") -- only 1 call
-        assert.equal(callCount, 1);
+        it("linear: initialDelay * attempt", async () => {
+            assert.deepEqual(await schedule({ maxRetries: 4, backoff: "linear", initialDelay: 1000 }), [1000, 2000, 3000, 4000]);
+        });
+
+        it("fixed: initialDelay every time", async () => {
+            assert.deepEqual(await schedule({ maxRetries: 4, backoff: "fixed", initialDelay: 1000 }), [1000, 1000, 1000, 1000]);
+        });
+
+        it("every strategy is capped at maxDelay", async () => {
+            assert.deepEqual(await schedule({ maxRetries: 4, backoff: "linear", initialDelay: 1000, maxDelay: 2500 }), [1000, 2000, 2500, 2500], "linear");
+            assert.deepEqual(await schedule({ maxRetries: 4, backoff: "exponential", initialDelay: 1000, multiplier: 2, maxDelay: 3000 }), [1000, 2000, 3000, 3000], "exponential");
+            assert.deepEqual(await schedule({ maxRetries: 2, backoff: "fixed", initialDelay: 5000, maxDelay: 1000 }), [1000, 1000], "fixed");
+        });
+
+        it("a non-retryable error is thrown immediately, without any backoff delay", async () => {
+            const mw = retryMiddleware({ maxRetries: 3, backoff: "fixed", initialDelay: 1000 });
+            const delays = await recordBackoffDelays(() =>
+                assert.rejects(() =>
+                    mw(makeRawEvent(), makeCtx(), async () => {
+                        throw new NonRetryableError("invalid payload");
+                    }),
+                ),
+            );
+            assert.deepEqual(delays, []);
+        });
     });
 });
