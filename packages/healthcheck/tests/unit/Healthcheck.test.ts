@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { Healthcheck, healthcheckManager } from "../../src/Healthcheck.ts";
 import { createHealthcheckManager } from "../../src/HealthcheckManager.ts";
@@ -27,13 +28,6 @@ describe("Healthcheck", () => {
 		healthcheckManager.clear();
 	});
 
-	it("should return ProtocolRegistration directly", () => {
-		const protocol = Healthcheck();
-
-		assert.strictEqual(protocol.name, "healthcheck");
-		assert.strictEqual(typeof protocol.register, "function");
-	});
-
 	// HTTP endpoints are off unless asked for: with no option at all there is no
 	// handler, exactly as with an explicit false.
 	it("should not have httpHandler by default or when httpEnabled is false", () => {
@@ -47,11 +41,6 @@ describe("Healthcheck", () => {
 
 		assert.ok(protocol.httpHandler);
 		assert.strictEqual(typeof protocol.httpHandler, "function");
-	});
-
-	it("should accept custom watchInterval", () => {
-		const protocol = Healthcheck({ watchInterval: 1000 });
-		assert.ok(protocol);
 	});
 
 	// httpPaths replaces the default path list: the configured path answers and
@@ -126,50 +115,6 @@ describe("Healthcheck", () => {
 		assert.deepStrictEqual(askHttpHandler(handler, "/healthz"), { handled: true, statusCode: 200 });
 	});
 
-	it("should use custom manager when provided in options", () => {
-		const customManager = createHealthcheckManager();
-		const protocol = Healthcheck({ manager: customManager });
-
-		assert.ok(protocol);
-		assert.strictEqual(protocol.name, "healthcheck");
-
-		// The custom manager should be independent from the singleton
-		assert.notStrictEqual(customManager, healthcheckManager);
-	});
-
-	it("should default to singleton manager when no manager option", () => {
-		// This verifies the protocol uses the module-level singleton.
-		// We can observe this by checking that setup() initializes the singleton.
-		const protocol = Healthcheck();
-
-		assert.ok(protocol);
-		assert.strictEqual(protocol.name, "healthcheck");
-		assert.strictEqual(typeof protocol.register, "function");
-	});
-});
-
-describe("healthcheckManager singleton", () => {
-	afterEach(() => {
-		healthcheckManager.clear();
-	});
-
-	it("should be importable as a standalone export", () => {
-		assert.ok(healthcheckManager);
-		assert.strictEqual(typeof healthcheckManager.update, "function");
-		assert.strictEqual(typeof healthcheckManager.getStatus, "function");
-	});
-
-	it("should be the same instance across imports", async () => {
-		const { healthcheckManager: mgr1 } = await import("../../src/Healthcheck.ts");
-		const { healthcheckManager: mgr2 } = await import("../../src/Healthcheck.ts");
-
-		assert.strictEqual(mgr1, mgr2);
-	});
-
-	it("should allow operations before register is called", () => {
-		assert.strictEqual(healthcheckManager.getAllStatuses().size, 0);
-		assert.strictEqual(healthcheckManager.areAllHealthy(), false);
-	});
 });
 
 describe("Healthcheck register() and resolveServiceStatus", () => {
@@ -313,6 +258,139 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 			serviceNames.map((name) => [name, { status: ServingStatus.UNKNOWN }]),
 		);
 		assert.strictEqual(manager.getStatus("svc.v1.DeclaredOnly"), undefined);
+	});
+
+	// The manager passed in the options is the one the protocol reports from
+	// and initializes; the module singleton is left alone.
+	it("reports from the manager given in options and leaves the singleton untouched", () => {
+		const customManager = createHealthcheckManager();
+		const protocol = Healthcheck({ manager: customManager });
+		const { router, getHandlers } = createMockRouter();
+
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
+		customManager.update(ServingStatus.SERVING, "svc.v1.Foo");
+
+		assert.strictEqual(getHandlers().check!({ service: "svc.v1.Foo" }).status, ServingStatus.SERVING);
+		assert.strictEqual(healthcheckManager.getAllStatuses().size, 0);
+	});
+
+	// Without the manager option the module-level singleton is what the
+	// application controls with healthcheckManager.update(): it is initialized
+	// by setup and read by Check.
+	it("uses the singleton healthcheckManager when no manager is given", () => {
+		const protocol = Healthcheck();
+		const { router, getHandlers } = createMockRouter();
+
+		protocol.setup?.(createMockContext(["svc.v1.Foo"]));
+		protocol.register(router);
+
+		assert.deepStrictEqual(
+			[...healthcheckManager.getAllStatuses().entries()],
+			[["svc.v1.Foo", { status: ServingStatus.UNKNOWN }]],
+		);
+		healthcheckManager.update(ServingStatus.SERVING, "svc.v1.Foo");
+		assert.strictEqual(getHandlers().check!({ service: "svc.v1.Foo" }).status, ServingStatus.SERVING);
+		assert.strictEqual(getHandlers().check!({ service: "" }).status, ServingStatus.SERVING);
+	});
+
+	// grpc.health.v1: a tracked service that is not serving answers Check with
+	// status NOT_SERVING; only an untracked name is NOT_FOUND.
+	it("resolveServiceStatus: a tracked service reports its own NOT_SERVING and UNKNOWN as they are", () => {
+		const manager = createHealthcheckManager();
+		const protocol = Healthcheck({ manager });
+		const { router, getHandlers } = createMockRouter();
+
+		protocol.setup?.(createMockContext(["svc.v1.Foo", "svc.v1.Bar"]));
+		protocol.register(router);
+		manager.update(ServingStatus.NOT_SERVING, "svc.v1.Foo");
+
+		assert.strictEqual(getHandlers().check!({ service: "svc.v1.Foo" }).status, ServingStatus.NOT_SERVING);
+		assert.strictEqual(getHandlers().check!({ service: "svc.v1.Bar" }).status, ServingStatus.UNKNOWN);
+	});
+});
+
+describe("Healthcheck Watch handler", () => {
+	/**
+	 * Install the protocol on a mock router and return its Watch handler, the
+	 * isolated manager and the abort controller standing for the client call.
+	 */
+	function startWatch(options: { watchInterval?: number } = {}) {
+		const manager = createHealthcheckManager();
+		const protocol = Healthcheck({ manager, ...options });
+		let handlers: Record<string, Function> = {};
+		protocol.setup?.({ services: [{ typeName: "svc.v1.Foo" }], registry: [] } as any);
+		protocol.register({
+			service(_desc: unknown, impl: Record<string, Function>) {
+				handlers = impl;
+			},
+		} as unknown as ConnectRouter);
+		const controller = new AbortController();
+		const stream = handlers.watch!({ service: "svc.v1.Foo" }, { signal: controller.signal }) as AsyncGenerator<{ status: ServingStatus }>;
+		return { manager, controller, stream };
+	}
+
+	/**
+	 * Resolve to the pending stream item, or to "silent" when it does not arrive
+	 * in time. The same pending item can be awaited again: a second next() call
+	 * on a generator would queue behind it and skip it.
+	 */
+	function within(pending: Promise<IteratorResult<{ status: ServingStatus }>>, ms: number) {
+		return Promise.race([pending, delay(ms, "silent" as const)]);
+	}
+
+	// The documented polling cadence: a change is noticed within the
+	// configured interval, not within the 500 ms default.
+	it("notices a status change within a custom watchInterval", async () => {
+		const { manager, controller, stream } = startWatch({ watchInterval: 20 });
+		try {
+			assert.strictEqual((await stream.next()).value?.status, ServingStatus.UNKNOWN);
+
+			manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+			const second = await within(stream.next(), 400);
+
+			assert.notStrictEqual(second, "silent", "a 20 ms interval must report the change well before the 500 ms default");
+			assert.strictEqual((second as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.SERVING);
+		} finally {
+			controller.abort();
+		}
+	});
+
+	// Without the option the cadence is 500 ms: nothing within 250 ms, the
+	// change within 1500 ms.
+	it("polls every 500 ms when watchInterval is not given", async () => {
+		const { manager, controller, stream } = startWatch();
+		try {
+			await stream.next();
+
+			manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+			const pending = stream.next();
+			const early = await within(pending, 250);
+			assert.strictEqual(early, "silent", "the default interval must not report the change after 250 ms");
+			const late = await within(pending, 1250);
+
+			assert.notStrictEqual(late, "silent", "the change must be reported within 1500 ms of the update");
+			assert.strictEqual((late as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.SERVING);
+		} finally {
+			controller.abort();
+		}
+	});
+
+	// "Terminates when the client disconnects": a call aborted while the
+	// handler waits for the next poll ends the stream normally instead of
+	// failing it with AbortError. The long interval keeps the handler inside
+	// that wait when the abort arrives.
+	it("ends the stream normally when the client call is aborted during the wait", async () => {
+		const { controller, stream } = startWatch({ watchInterval: 60_000 });
+		await stream.next();
+		const waiting = stream.next();
+		await delay(10);
+
+		controller.abort();
+		const end = await within(waiting, 2000);
+
+		assert.notStrictEqual(end, "silent", "the aborted wait must end the stream promptly");
+		assert.strictEqual((end as IteratorResult<{ status: ServingStatus }>).done, true);
 	});
 });
 

@@ -204,21 +204,65 @@ describe("errorHandler interceptor", () => {
         originalError.mock.restore();
     });
 
-    it("should use default options (no args)", async () => {
-        const originalError = mock.method(console, "error", () => {});
+    // Both logErrors and includeStackTrace default to "NODE_ENV is not production",
+    // read when the interceptor is created. A failing call shows what the defaults
+    // are: the console log for logErrors, the stack handed to onError for
+    // includeStackTrace (an onError callback replaces the console log).
+    describe("defaults that depend on NODE_ENV", () => {
+        type Captured = { stack?: string | undefined };
 
-        // Default: logErrors and includeStackTrace depend on NODE_ENV
-        const interceptor = createErrorHandlerInterceptor();
+        async function runWithEnv(nodeEnv: string): Promise<{ consoleCalls: unknown[][]; infoStack: string | undefined }> {
+            const savedEnv = process.env.NODE_ENV;
+            const consoleErrorMock = mock.method(console, "error", () => {});
+            try {
+                process.env.NODE_ENV = nodeEnv;
+                const failing = mock.fn(async () => {
+                    throw new Error("default options failure");
+                });
 
-        const next = createMockNext({ message: { result: "ok" } });
+                await assert.rejects(() => createErrorHandlerInterceptor()(failing as any)(mockReq));
+                const consoleCalls = consoleErrorMock.mock.calls.map((call) => [...call.arguments]);
 
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
+                const captured: Captured = {};
+                await assert.rejects(() =>
+                    createErrorHandlerInterceptor({
+                        onError: (info) => {
+                            captured.stack = info.stack;
+                        },
+                    })(failing as any)(mockReq),
+                );
+                return { consoleCalls, infoStack: captured.stack };
+            } finally {
+                consoleErrorMock.mock.restore();
+                if (savedEnv === undefined) {
+                    delete process.env.NODE_ENV;
+                } else {
+                    process.env.NODE_ENV = savedEnv;
+                }
+            }
+        }
 
-        assert.strictEqual((result.message as any).result, "ok");
-        assert.strictEqual(next.mock.calls.length, 1);
+        it("logs the failure with its stack outside production", async () => {
+            const { consoleCalls, infoStack } = await runWithEnv("development");
 
-        originalError.mock.restore();
+            const logged = consoleCalls.flat();
+            assert.ok(
+                logged.some((arg) => arg instanceof Error && arg.message === "default options failure"),
+                "the failure must be logged",
+            );
+            assert.ok(
+                logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)),
+                "a stack string must be logged",
+            );
+            assert.ok(infoStack && /\n\s+at /.test(infoStack), "onError must receive the stack");
+        });
+
+        it("logs nothing and passes no stack in production", async () => {
+            const { consoleCalls, infoStack } = await runWithEnv("production");
+
+            assert.deepStrictEqual(consoleCalls, []);
+            assert.strictEqual(infoStack, undefined);
+        });
     });
 
     it("should handle string errors", async () => {
@@ -336,22 +380,81 @@ describe("errorHandler interceptor", () => {
             assert.strictEqual(info.code, Code.Internal);
         });
 
-        it("should be silent with logErrors: false and no onError callback", async () => {
+        // onError "replaces console.error when provided": the callback gets the
+        // failure and the console stays silent even with logErrors left on.
+        it("should not write to the console when onError is provided, even with logErrors: true", async () => {
             const consoleErrorMock = mock.method(console, "error", () => {});
+            try {
+                const received: Error[] = [];
+                const interceptor = createErrorHandlerInterceptor({
+                    logErrors: true,
+                    onError: (info) => {
+                        received.push(info.error);
+                    },
+                });
+                const plain = mock.fn(async () => {
+                    throw new Error("plain failure");
+                });
+                const sanitizable = mock.fn(async () => {
+                    throw Object.assign(new Error("sanitizable failure"), { clientMessage: "safe text", serverDetails: {}, code: Code.Internal });
+                });
 
-            const interceptor = createErrorHandlerInterceptor({ logErrors: false });
+                await assert.rejects(() => interceptor(plain as any)(mockReq));
+                await assert.rejects(() => interceptor(sanitizable as any)(mockReq));
 
-            const next = mock.fn(async () => {
-                throw new Error("silent error");
+                assert.deepStrictEqual(
+                    received.map((error) => (error instanceof ConnectError ? error.rawMessage : error.message)),
+                    ["plain failure", "sanitizable failure"],
+                );
+                assert.strictEqual(consoleErrorMock.mock.calls.length, 0, "console.error should not be called");
+            } finally {
+                consoleErrorMock.mock.restore();
+            }
+        });
+
+        // includeStackTrace: false keeps the stack out of the callback too, for
+        // both kinds of failure.
+        it("should pass no stack to onError when includeStackTrace is false", async () => {
+            const stacks: Array<string | undefined> = [];
+            const interceptor = createErrorHandlerInterceptor({
+                includeStackTrace: false,
+                onError: (info) => {
+                    stacks.push(info.stack);
+                },
+            });
+            const plain = mock.fn(async () => {
+                throw new Error("plain failure");
+            });
+            const sanitizable = mock.fn(async () => {
+                throw Object.assign(new Error("sanitizable failure"), { clientMessage: "safe text", serverDetails: {}, code: Code.Internal });
             });
 
-            const handler = interceptor(next as any);
+            await assert.rejects(() => interceptor(plain as any)(mockReq));
+            await assert.rejects(() => interceptor(sanitizable as any)(mockReq));
 
-            await assert.rejects(() => handler(mockReq));
+            assert.deepStrictEqual(stacks, [undefined, undefined]);
+        });
 
-            assert.strictEqual(consoleErrorMock.mock.calls.length, 0, "console.error should not be called");
+        // Without onError a SanitizableError is logged like any failure: the
+        // original error and the text the client receives, never one standing
+        // in for the other.
+        it("should log a SanitizableError and the client text it is turned into", async () => {
+            const consoleErrorMock = mock.method(console, "error", () => {});
+            try {
+                const original = Object.assign(new Error("internal db error"), { clientMessage: "Something went wrong", serverDetails: {}, code: Code.Unavailable });
+                const interceptor = createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: false });
+                const next = mock.fn(async () => {
+                    throw original;
+                });
 
-            consoleErrorMock.mock.restore();
+                await assert.rejects(() => interceptor(next as any)(mockReq));
+
+                const logged = consoleErrorMock.mock.calls.flatMap((call) => call.arguments);
+                assert.ok(logged.includes(original), "the original failure must be logged");
+                assert.ok(logged.includes("Something went wrong"), "the client-facing text must be logged");
+            } finally {
+                consoleErrorMock.mock.restore();
+            }
         });
     });
 

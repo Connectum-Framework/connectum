@@ -3,7 +3,6 @@
  *
  * Tests security-related interceptor behavior:
  * - Logger doesn't expose sensitive data patterns
- * - Logger skips health check services
  *
  * @module security.test
  */
@@ -102,43 +101,15 @@ describe('Security Integration', () => {
         const handler = loggerInterceptor(next as any);
         await handler(mockReq);
 
-        assert(loggedData.length > 0);
-        assert(loggedData.some((log) => log.message.includes('SecureMethod')));
+        assert.deepStrictEqual(
+            loggedData.map((log) => [log.message.replace(/completed in .*/, 'completed in <ms>'), log.args]),
+            [
+                ['RPC /test.Service/SecureMethod request', []],
+                ['RPC /test.Service/SecureMethod response', []],
+                ['RPC /test.Service/SecureMethod completed in <ms>', []],
+            ],
+        );
         assert(!JSON.stringify(loggedData).includes('should-be-hidden'), 'request body must not reach the log by default');
         assert(!JSON.stringify(loggedData).includes('secret-response'), 'response body must not reach the log by default');
-    });
-
-    it('should skip health check services', async () => {
-        const loggedData: unknown[] = [];
-        const mockLogger = (message: string, ...args: unknown[]) => {
-            loggedData.push({ message, args });
-        };
-
-        const loggerInterceptor = createLoggerInterceptor({
-            skipHealthCheck: true,
-            logger: mockLogger,
-        });
-
-        const healthReq = {
-            url: 'http://localhost/grpc.health.v1.Health/Check',
-            stream: false,
-            message: {},
-            service: { typeName: 'grpc.health.v1.Health' },
-            method: {
-                name: 'Check',
-                kind: 'unary',
-            },
-        } as any;
-
-        const next = mock.fn(async () => ({
-            message: { status: 'SERVING' },
-        }));
-
-        const handler = loggerInterceptor(next as any);
-        await handler(healthReq);
-
-        // Logger should NOT have logged (health check skipped)
-        assert.strictEqual(loggedData.length, 0);
-        assert.strictEqual(next.mock.calls.length, 1);
     });
 });

@@ -107,7 +107,8 @@ describe('retry interceptor', () => {
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).result, 'success');
-        assert(attempts >= 3, `Expected at least 3 attempts, got ${attempts}`);
+        assert.strictEqual(attempts, 3, `Expected 3 attempts, got ${attempts}`);
+        assert.strictEqual(next.mock.calls.length, 3);
     });
 
     it('should retry on Unavailable error', async () => {
@@ -128,7 +129,7 @@ describe('retry interceptor', () => {
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).result, 'success');
-        assert(attempts >= 2, `Expected at least 2 attempts, got ${attempts}`);
+        assert.strictEqual(attempts, 2, `Expected 2 attempts, got ${attempts}`);
     });
 
     it('should propagate non-retryable errors (NotFound)', async () => {
@@ -174,7 +175,51 @@ describe('retry interceptor', () => {
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).result, 'found');
-        assert(attempts >= 2, `Expected at least 2 attempts, got ${attempts}`);
+        assert.strictEqual(attempts, 2, `Expected 2 attempts, got ${attempts}`);
+    });
+
+    // A failure that is not a ConnectError counts as Code.Unknown (Connect's own
+    // conversion), which is not retryable by default and is when listed.
+    it('should not retry a plain Error by default but retry it when Unknown is listed', async () => {
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
+        const failing = () =>
+            mock.fn(async () => {
+                throw new Error('plain runtime fault');
+            });
+
+        const byDefault = failing();
+        await assert.rejects(() => createRetryInterceptor({ maxRetries: 3, initialDelay: 1, maxDelay: 5 })(byDefault as any)(mockReq), /plain runtime fault/);
+        assert.strictEqual(byDefault.mock.calls.length, 1);
+
+        const listed = failing();
+        await assert.rejects(
+            () => createRetryInterceptor({ maxRetries: 3, initialDelay: 1, maxDelay: 5, retryableCodes: [Code.Unknown] })(listed as any)(mockReq),
+            /plain runtime fault/,
+        );
+        assert.strictEqual(listed.mock.calls.length, 4);
+    });
+
+    // maxRetries defaults to 3: one attempt plus three retries. The random source of the
+    // backoff is pinned to its lowest value so the waits between attempts stay short.
+    it('should make 4 attempts in total with the default maxRetries', async () => {
+        const random = mock.method(Math, 'random', () => 0);
+        try {
+            const interceptor = createRetryInterceptor();
+            const mockReq = createMockRequest({ service: 'test.Service', method: 'Method', message: { field: 'value' } });
+            const next = createMockNextError(Code.Unavailable, 'Service unavailable');
+
+            await assert.rejects(
+                () => interceptor(next as any)(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable);
+                    return true;
+                },
+            );
+
+            assert.strictEqual(next.mock.calls.length, 4);
+        } finally {
+            random.mock.restore();
+        }
     });
 
     it('should throw after max retries exhausted', async () => {
@@ -270,10 +315,21 @@ describe('retry interceptor', () => {
         }
     });
 
-    it('should use default values (maxRetries=3, initialDelay=200)', () => {
-        // Should not throw with default options
-        const interceptor = createRetryInterceptor();
-        assert.ok(interceptor);
+    // Opting in with skipStreaming: false retries a streaming call whose opening fails.
+    it('should retry the opening of a streaming call when skipStreaming=false', async () => {
+        const interceptor = createRetryInterceptor({ maxRetries: 2, initialDelay: 1, maxDelay: 5, skipStreaming: false });
+        const mockReq = createMockRequest({ service: 'test.Service', method: 'StreamMethod', stream: true, message: { field: 'value' } });
+        const next = createMockNextError(Code.Unavailable, 'Service unavailable');
+
+        await assert.rejects(
+            () => interceptor(next as any)(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Unavailable);
+                return true;
+            },
+        );
+
+        assert.strictEqual(next.mock.calls.length, 3);
     });
 
     describe('additional retry scenarios', () => {
@@ -362,11 +418,11 @@ describe('retry interceptor', () => {
             assert.strictEqual(attempts, 3, `Expected 3 attempts, got ${attempts}`);
         });
 
-        it('should pass through streaming request when skipStreaming=true (default)', async () => {
+        // skipStreaming is not given: streaming calls are passed through by default.
+        it('should pass through streaming request by default (skipStreaming not given)', async () => {
             const interceptor = createRetryInterceptor({
                 maxRetries: 3,
                 initialDelay: 10,
-                skipStreaming: true,
             });
 
             const mockReq = createMockRequest({
