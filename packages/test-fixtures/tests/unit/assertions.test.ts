@@ -101,6 +101,37 @@ describe("assertConnectError", () => {
         );
     });
 
+    // A RegExp with the `g` or `y` flag remembers where its last match ended. Reusing one
+    // object across assertions must not make the second assertion look at a stale offset.
+    for (const flags of ["g", "y", "gi"]) {
+        it(`gives the same verdict when the same /${flags} RegExp object is used twice`, () => {
+            // The message is "[internal] boom"; a sticky pattern has to match from offset 0.
+            const pattern = new RegExp(".*boom", flags);
+            const error = new ConnectError("boom", Code.Internal);
+
+            assertConnectError(error, Code.Internal, pattern);
+            assertConnectError(error, Code.Internal, pattern);
+        });
+    }
+
+    it("does not move lastIndex of the caller's RegExp", () => {
+        const pattern = /boom/g;
+        pattern.lastIndex = 0;
+
+        assertConnectError(new ConnectError("boom", Code.Internal), Code.Internal, pattern);
+
+        assert.strictEqual(pattern.lastIndex, 0);
+    });
+
+    it("still rejects a non-matching RegExp with the g flag on every call", () => {
+        const pattern = /absent/g;
+        const error = new ConnectError("boom", Code.Internal);
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+            assert.throws(() => assertConnectError(error, Code.Internal, pattern), assert.AssertionError);
+        }
+    });
+
     it("narrows type after assertion — error.code is accessible without cast", () => {
         const error: unknown = new ConnectError("typed", Code.AlreadyExists);
         assertConnectError(error, Code.AlreadyExists);
