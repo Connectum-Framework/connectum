@@ -36,6 +36,17 @@ describe("isConnectionLostError", () => {
         assert.equal(isConnectionLostError(new Error("Socket closed unexpectedly")), true);
     });
 
+    // The texts amqplib 2.2.0 itself puts on the errors it raises when a connection or a
+    // channel goes away: lib/channel.js:37 rejects the outstanding confirms with
+    // "channel closed", lib/connection.js:590 raises "Connection closed: <reply>" for a broker
+    // close and lib/connection.js:344 "Connection closed (<error>)" for a client-side close.
+    it("classifies the exact texts amqplib raises on a channel or connection close as connection loss", () => {
+        assert.equal(isConnectionLostError(new Error("channel closed")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed: 320 (CONNECTION-FORCED) with message \"CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'\"")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed (Error: Unexpected close)")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed (by client)")), true);
+    });
+
     it("does NOT classify a genuine broker nack as connection loss", () => {
         // amqplib uses Error("message nacked") for a real negative ack
         assert.equal(isConnectionLostError(new Error("message nacked")), false);
@@ -141,7 +152,11 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
-            { message: "AmqpAdapter: not connected (or recovery in progress)" },
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                assert.equal(err.message, "AmqpAdapter: not connected (or recovery in progress)");
+                return true;
+            },
         );
     });
 
@@ -149,14 +164,21 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.subscribe(["test.>"], async () => {}),
-            { message: "AmqpAdapter: not connected (or recovery in progress)" },
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                assert.equal(err.message, "AmqpAdapter: not connected (or recovery in progress)");
+                return true;
+            },
         );
     });
 
-    it("should not throw when disconnecting without prior connection", async () => {
+    it("disconnect() without a prior connection resolves and leaves the adapter not connected", async () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        // disconnect() should be a no-op when not connected
         await adapter.disconnect();
+        await assert.rejects(
+            () => adapter.publish("test.event", new Uint8Array([1])),
+            (err: unknown) => err instanceof AmqpConnectionError && err.message === "AmqpAdapter: not connected (or recovery in progress)",
+        );
     });
 
     it("should expose required EventAdapter methods", () => {
@@ -169,12 +191,22 @@ describe("AmqpAdapter", () => {
 });
 
 describe("AmqpAdapter connection guard", () => {
-    it("should be safe to call disconnect() multiple times", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        // Multiple disconnect() calls should not throw
+    // A disconnect() that finds nothing to close must not poison the adapter: a connect()
+    // issued afterwards starts a clean attempt, which here reaches the socket and is
+    // refused, instead of being turned away as closed.
+    it("repeated disconnect() calls leave the adapter able to start a clean connect()", async () => {
+        const adapter = AmqpAdapter({ url: "amqp://127.0.0.1:1", recovery: false });
         await adapter.disconnect();
         await adapter.disconnect();
         await adapter.disconnect();
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: unknown) => {
+                assert.ok(!(err instanceof AmqpConnectionError), `a clean attempt fails on the socket, got: ${String(err)}`);
+                assert.equal((err as NodeJS.ErrnoException).code, "ECONNREFUSED", "with recovery: false the original error is thrown unchanged");
+                return true;
+            },
+        );
     });
 
     // With a finite maxRetries and no initialConnectMaxRetries, amqplib's own
@@ -193,6 +225,7 @@ describe("AmqpAdapter connection guard", () => {
                 (err: unknown) => {
                     assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
                     assert.ok(err.cause instanceof Error, "the original connection error is kept as the cause");
+                    assert.equal((err.cause as NodeJS.ErrnoException).code, "ECONNREFUSED", "the cause is the refused connection itself, not a wrapper or a stand-in");
                     return true;
                 },
             );
