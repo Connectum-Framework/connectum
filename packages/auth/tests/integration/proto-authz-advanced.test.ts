@@ -68,7 +68,7 @@ describe("Proto Authz Advanced — Integration", () => {
                     assert.ok(err instanceof Error);
                     assert.strictEqual((err as Error).name, "AuthzDeniedError");
                     assert.strictEqual((err as any).ruleName, "proto:policy");
-                    assert.strictEqual((err as any).code, Code.PermissionDenied);
+                    assert.strictEqual((err as { code?: unknown }).code, Code.PermissionDenied);
                     return true;
                 },
             );

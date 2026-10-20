@@ -112,13 +112,11 @@ describe("testing/test-jwt-rs256", () => {
     it("rejects a token whose kid names no published key even though the published key signed it", async () => {
         // A valid signature is not enough: the verifier selects the key by kid (RFC 7515 section 4.1.4),
         // and a kid that the JWKS does not list leaves it with no key to verify against.
-        // biome-ignore lint/suspicious/noExplicitAny: minimal next stub for the interceptor under test
-        const handler = jwtInterceptor()((async () => ({ message: {} })) as any);
+        const handler = jwtInterceptor()((async () => ({ message: {} })) as never);
         const token = await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: "unlisted-kid", issuer: ISSUER, audience: AUDIENCE });
         const req = createMockRequest(REQ);
         req.header.set("authorization", `Bearer ${token}`);
-        // biome-ignore lint/suspicious/noExplicitAny: mock request
-        await assert.rejects(handler(req as any), (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated);
+        await assert.rejects(handler(req), (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated);
     });
 
     it("mints tokens that expire in one hour unless another lifetime is asked for", async () => {

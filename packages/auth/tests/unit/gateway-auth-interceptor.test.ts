@@ -186,7 +186,7 @@ describe("gateway-auth-interceptor", () => {
                 const handler = interceptor((async () => {
                     capturedContext = getAuthContext();
                     return { message: {} };
-                }) as any);
+                }) as never);
                 const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
                 req.header.set("x-gateway-secret", "my-secret-123");
                 req.header.set("x-user-id", "user-1");
@@ -234,7 +234,7 @@ describe("gateway-auth-interceptor", () => {
                 const handler = interceptor((async () => {
                     capturedContext = getAuthContext();
                     return { message: {} };
-                }) as any);
+                }) as never);
                 const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
                 req.header.set("x-gateway-secret", "my-secret-123");
                 req.header.set("x-user-id", "user-1");
