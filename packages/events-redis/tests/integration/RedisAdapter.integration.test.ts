@@ -116,7 +116,9 @@ describe("Redis adapter protocol integration", { skip: REDIS_TEST_URL === undefi
                 assert.equal(deliveries.length, 2);
                 assert.equal(deliveries[0]?.eventId, deliveries[1]?.eventId);
                 assert.equal(deliveries[0]?.attempt, 1);
-                assert.ok((deliveries[1]?.attempt ?? 0) >= 2);
+                // The redelivery carries the group's delivery count: XREADGROUP counted 1, the
+                // test's XCLAIM (used to age the entry) +1, the reclaiming XAUTOCLAIM +1.
+                assert.equal(deliveries[1]?.attempt, 3);
 
                 const pendingAfterAck = normalizeXPendingReply(await control.call("XPENDING", streamKey, group, "-", "+", "10"), context);
                 assert.deepEqual(pendingAfterAck, []);

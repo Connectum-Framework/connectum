@@ -387,7 +387,9 @@ for (const image of IMAGES) {
             await first;
             const liveConnections = await connectionsNamedSettled(name, 1);
             assert.equal(liveConnections, 1, "only one connection is open");
-            assert.match(secondOutcome, /AmqpConnectionError: AmqpAdapter: (already connected|connect\(\) already in progress)/);
+            // The first connect() cannot have finished when the second one is issued, so the refusal is the
+            // overlap one: the adapter is not yet connected, a connect() is in progress.
+            assert.equal(secondOutcome, "AmqpConnectionError: AmqpAdapter: connect() already in progress");
             await adapter.disconnect();
             assert.equal(await connectionsNamedSettled(name, 0), 0);
         });

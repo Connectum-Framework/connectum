@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { RawInput } from "../../src/scaffold/config.ts";
+import { resolveConfig } from "../../src/scaffold/config.ts";
 import { collectConfig, isNonInteractive, type Prompter, promptForMissing } from "../../src/scaffold/prompts.ts";
 
 function stubPrompter(answers: { text?: string; select?: Record<string, string>; confirm?: Record<string, boolean> } = {}): { prompter: Prompter; calls: string[] } {
@@ -162,6 +163,73 @@ describe("promptForMissing", () => {
         const out = await promptForMissing({}, prompter);
         assert.equal(out.events, "amqp");
         assert.ok(calls.includes("select:Event adapter"));
+    });
+});
+
+describe("promptForMissing: what the wizard asks and accepts", () => {
+    /** Records what each question offers and hands the project name check to the test. */
+    function recordingPrompter(): { prompter: Prompter; offered: Map<string, string[]>; nameCheck: () => (value: string | undefined) => string | undefined } {
+        const offered = new Map<string, string[]>();
+        let check: ((value: string | undefined) => string | undefined) | undefined;
+        const prompter: Prompter = {
+            async text(opts) {
+                check = opts.validate;
+                return "svc";
+            },
+            async select(opts) {
+                offered.set(
+                    opts.message,
+                    opts.options.map((option) => option.value),
+                );
+                return opts.options[0]?.value as never;
+            },
+            // Events are switched on so that the adapter question is asked as well.
+            async confirm(opts) {
+                return opts.message === "Add an EventBus?";
+            },
+        };
+        return {
+            prompter,
+            offered,
+            nameCheck: () => {
+                assert.ok(check !== undefined, "the project name question has no validation");
+                return check;
+            },
+        };
+    }
+
+    // The guide's flag table lists the accepted values of each flag, and every interactive choice
+    // has a flag; Deno is out of scope, so it must not be offered.
+    it("offers exactly the values the flags of the guide accept", async () => {
+        const { prompter, offered } = recordingPrompter();
+        await promptForMissing({}, prompter);
+        assert.deepEqual(offered.get("Runtime"), ["node", "bun"]);
+        assert.deepEqual(offered.get("Node execution model"), ["raw", "tsx"]);
+        assert.deepEqual(offered.get("Package manager"), ["pnpm", "npm", "bun"]);
+        assert.deepEqual(offered.get("Event adapter"), ["nats", "kafka", "redpanda", "redis", "amqp"]);
+    });
+
+    // The wizard applies the rule of the non-interactive path, with its message, instead of
+    // accepting a name that would only be refused afterwards.
+    it("rejects an invalid project name with the message the non-interactive path gives, and accepts a valid one", async () => {
+        const { prompter, nameCheck } = recordingPrompter();
+        await promptForMissing({}, prompter);
+        const check = nameCheck();
+        for (const invalid of ["My-App", "my app", "node_modules", "a${b}c"]) {
+            let expected = "";
+            try {
+                resolveConfig({ name: invalid });
+            } catch (err) {
+                expected = (err as Error).message;
+            }
+            assert.notEqual(expected, "", `${invalid} must be refused by the non-interactive path`);
+            assert.equal(check(invalid), expected, invalid);
+        }
+        assert.equal(check("billing"), undefined);
+        assert.equal(check("apps/billing"), undefined);
+        for (const blank of ["", "   ", undefined]) {
+            assert.equal(typeof check(blank), "string", `a blank answer (${JSON.stringify(blank)}) must be refused`);
+        }
     });
 });
 

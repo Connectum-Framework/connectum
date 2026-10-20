@@ -224,6 +224,17 @@ describe("config", () => {
 			delete process.env.OTEL_SERVICE_NAME;
 		});
 
+		// The OpenTelemetry SDK environment-variable specification reads an empty value as
+		// unset, and so does the service-name precedence of the exporter configuration:
+		// an exported-but-empty OTEL_SERVICE_NAME must not hide the package name.
+		it("should treat an empty OTEL_SERVICE_NAME as unset and fall back to the package name", () => {
+			process.env.OTEL_SERVICE_NAME = "";
+			process.env.npm_package_name = "npm-service";
+			process.env.npm_package_version = "1.0.0";
+
+			assert.strictEqual(getServiceMetadata().name, "npm-service");
+		});
+
 		// The OpenTelemetry resource specification says an unset service.name is
 		// "unknown_service" (underscore). Connectum falls back to "unknown-service"
 		// (hyphen) and "0.0.0" for the version (the specification defines no default

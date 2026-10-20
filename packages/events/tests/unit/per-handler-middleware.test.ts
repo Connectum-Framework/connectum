@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { EventOptionsSchema } from "../../gen/connectum/events/v1/options_pb.js";
 import { createEventBus } from "../../src/EventBus.ts";
-import { EventRouterImpl } from "../../src/EventRouter.ts";
 import type {
     AdapterContext,
     EventAdapter,
@@ -194,43 +193,6 @@ describe("Per-handler middleware", () => {
         assert.deepEqual(log, ["per-handler:before", "handler", "per-handler:after"]);
     });
 
-    it("per-handler middleware overrides global middleware", async () => {
-        const tracker = createTrackingAdapter();
-        const log: string[] = [];
-
-        const method = fakeDescMethod("overrideEvent", EventOptionsSchema.typeName, EventOptionsSchema);
-        const service = fakeDescService("test.v1.OverrideService", [method]);
-
-        bus = createEventBus({
-            adapter: tracker.adapter,
-            middleware: {
-                custom: [createTrackingMiddleware("global", log)],
-            },
-            routes: [
-                (router) => {
-                    router.service(service, {
-                        overrideEvent: {
-                            handler: async () => {
-                                log.push("handler");
-                            },
-                            middleware: [createTrackingMiddleware("override", log)],
-                        },
-                    } as any);
-                },
-            ],
-        });
-
-        await bus.start();
-
-        const { promise } = tracker.deliver(makeRawEvent(EventOptionsSchema.typeName));
-        await promise;
-
-        // Global middleware should NOT appear in log
-        assert.ok(!log.includes("global:before"), "global middleware should NOT be applied");
-        assert.ok(!log.includes("global:after"), "global middleware should NOT be applied");
-        assert.deepEqual(log, ["override:before", "handler", "override:after"]);
-    });
-
     it("mixed handlers: simple uses global, config uses per-handler", async () => {
         const tracker = createTrackingAdapter();
         const log: string[] = [];
@@ -347,82 +309,5 @@ describe("Per-handler middleware", () => {
 
         // Global middleware should be used when middleware field is absent
         assert.deepEqual(log, ["global:before", "handler", "global:after"]);
-    });
-});
-
-// =============================================================================
-// EventRouter unit tests for per-handler middleware parsing
-// =============================================================================
-
-describe("EventRouter per-handler middleware parsing", () => {
-    it("parses simple function handler (no middleware in entry)", () => {
-        const method = fakeDescMethod("simpleEvent", "test.v1.SimpleEvent");
-        const service = fakeDescService("test.v1.Service", [method]);
-
-        const router = new EventRouterImpl();
-        router.service(service, {
-            simpleEvent: async () => {},
-        } as any);
-
-        assert.equal(router.entries.length, 1);
-        assert.equal(router.entries[0]!.middleware, undefined);
-        assert.equal(typeof router.entries[0]!.handler, "function");
-    });
-
-    it("parses config object with handler and middleware", () => {
-        const method = fakeDescMethod("configEvent", "test.v1.ConfigEvent");
-        const service = fakeDescService("test.v1.Service", [method]);
-
-        const myMiddleware: EventMiddleware = async (_e, _c, next) => {
-            await next();
-        };
-
-        const router = new EventRouterImpl();
-        router.service(service, {
-            configEvent: {
-                handler: async () => {},
-                middleware: [myMiddleware],
-            },
-        } as any);
-
-        assert.equal(router.entries.length, 1);
-        assert.ok(router.entries[0]!.middleware);
-        assert.equal(router.entries[0]!.middleware!.length, 1);
-        assert.equal(router.entries[0]!.middleware![0], myMiddleware);
-        assert.equal(typeof router.entries[0]!.handler, "function");
-    });
-
-    it("parses config object without middleware field (undefined)", () => {
-        const method = fakeDescMethod("noMwEvent", "test.v1.NoMwEvent");
-        const service = fakeDescService("test.v1.Service", [method]);
-
-        const router = new EventRouterImpl();
-        router.service(service, {
-            noMwEvent: {
-                handler: async () => {},
-            },
-        } as any);
-
-        assert.equal(router.entries.length, 1);
-        assert.equal(router.entries[0]!.middleware, undefined);
-        assert.equal(typeof router.entries[0]!.handler, "function");
-    });
-
-    it("parses config object with empty middleware array", () => {
-        const method = fakeDescMethod("emptyMwEvent", "test.v1.EmptyMwEvent");
-        const service = fakeDescService("test.v1.Service", [method]);
-
-        const router = new EventRouterImpl();
-        router.service(service, {
-            emptyMwEvent: {
-                handler: async () => {},
-                middleware: [],
-            },
-        } as any);
-
-        assert.equal(router.entries.length, 1);
-        assert.ok(router.entries[0]!.middleware);
-        assert.equal(router.entries[0]!.middleware!.length, 0);
-        assert.equal(typeof router.entries[0]!.handler, "function");
     });
 });

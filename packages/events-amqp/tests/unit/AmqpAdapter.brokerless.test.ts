@@ -228,6 +228,24 @@ describe("envelope headers: real adapter and fake agree", () => {
         assert.deepEqual(Object.keys(published[0]?.headers ?? {}).sort(), ["custom", ...ENVELOPE_HEADERS]);
     });
 
+    it("an external contract drops the adapter's own envelope keys from the caller's metadata and sends the rest as given", async () => {
+        // Documented: in external-contract mode the wire frame carries only the headers the caller
+        // supplied, and the adapter's own envelope keys are dropped from them too.
+        const { model, published } = makeModel(null);
+        activeModel = model;
+        const adapter = adapterFor({ publisherOptions: { externalContract: true } });
+        try {
+            await adapter.connect();
+            await adapter.publish("order.created", new Uint8Array([1]), {
+                metadata: { "x-trace-id": "t1", "x-event-id": "spoofed", "x-published-at": "spoofed", "x-connectum-publish-id": "spoofed" },
+            });
+        } finally {
+            await adapter.disconnect();
+        }
+        assert.equal(published.length, 1);
+        assert.deepEqual(published[0]?.headers, { "x-trace-id": "t1" });
+    });
+
     it("the fake strips the same documented envelope from the metadata a handler sees", async () => {
         const fake = FakeAmqpAdapter();
         await fake.connect();
