@@ -1,309 +1,205 @@
 /**
  * Unit tests for serializer interceptor
  *
+ * The serializer turns the protobuf request message into its JSON form for the
+ * downstream handler and the JSON response back into a protobuf message. The
+ * expected JSON forms come from the protobuf JSON mapping (a zero scalar is
+ * left out unless implicit values are emitted), checked with a real schema.
+ *
  * @module serializer.test
  */
 
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import type { DescMessage } from '@bufbuild/protobuf';
+import { create, isMessage } from '@bufbuild/protobuf';
+import { createMockRequest } from '@connectum/test-fixtures';
+import { type Item, ItemSchema } from '../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts';
 import { createSerializerInterceptor } from '../../src/serializer.ts';
 
-/**
- * Create mock DescMessage with full protobuf metadata for toJson/fromJson
- */
-function createMockMessage(typeName: string): DescMessage {
-    return {
-        kind: 'message',
-        typeName,
-        name: typeName.split('.').pop() || typeName,
-        fields: [],
-        field: {},
-        oneofs: [],
-        members: [], // CRITICAL: required for create() to work
-        nestedEnums: [],
-        nestedMessages: [],
-        nestedExtensions: [],
-        parent: undefined,
-        proto: {
-            options: undefined,
-        },
-        file: {
-            name: `${typeName.split('.')[0]}.proto`,
-            proto: {
-                edition: 'EDITION_PROTO3',
-            },
-        },
-    } as any as DescMessage;
+const NAMESPACED_SERVICE = 'streaming.v1.StreamingService';
+const GRPC_SERVICE = 'grpc.health.v1.Health';
+
+function unaryRequest(service: string, message: unknown, stream = false) {
+    const req = createMockRequest({ service, method: 'Method', message, stream });
+    req.method = { name: 'Method', input: ItemSchema, output: ItemSchema };
+    return req;
+}
+
+function jsonResponse(service: string, message: unknown, stream = false) {
+    return { stream, service: { typeName: service }, method: { name: 'Method', input: ItemSchema, output: ItemSchema }, message };
+}
+
+async function* items<T>(...values: T[]): AsyncGenerator<T> {
+    for (const value of values) yield value;
+}
+
+async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
+    const out: T[] = [];
+    for await (const value of stream) out.push(value);
+    return out;
 }
 
 describe('serializer interceptor', () => {
-    it('should serialize unary request to JSON', async () => {
-        const interceptor = createSerializerInterceptor({ skipGrpcServices: false });
+    describe('unary request', () => {
+        it('should hand the downstream the JSON form of the request, emitting implicit values by default', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'ok' }));
 
-        const inputSchema = createMockMessage('test.InputMessage');
-        const outputSchema = createMockMessage('test.OutputMessage');
+            await createSerializerInterceptor()(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema, { value: 'a' })));
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
-
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        await handler(mockReq);
-
-        assert.strictEqual(next.mock.calls.length, 1);
-        // Message should be serialized to JSON (object or string)
-        assert.strictEqual(typeof mockReq.message, 'object');
-    });
-
-    it('should skip gRPC services when skipGrpcServices=true', async () => {
-        const interceptor = createSerializerInterceptor({ skipGrpcServices: true });
-
-        const originalMessage = { field: 'value' };
-        const mockReq = {
-            url: 'http://localhost/grpc.Service/Method',
-            stream: false,
-            message: originalMessage,
-            service: { typeName: 'grpc.Service' },
-            method: { input: { fields: [] } },
-        } as any;
-
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'grpc.Service' },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        await handler(mockReq);
-
-        // Message should NOT be modified for gRPC services
-        assert.strictEqual(mockReq.message, originalMessage);
-        assert.strictEqual(next.mock.calls.length, 1);
-    });
-
-    it('should NOT skip gRPC services when skipGrpcServices=false', async () => {
-        const interceptor = createSerializerInterceptor({ skipGrpcServices: false });
-
-        const inputSchema = createMockMessage('grpc.InputMessage');
-        const outputSchema = createMockMessage('grpc.OutputMessage');
-
-        const originalMessage = { field: 'value' };
-        const mockReq = {
-            url: 'http://localhost/grpc.Service/Method',
-            stream: false,
-            message: originalMessage,
-            service: { typeName: 'grpc.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
-
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'grpc.Service' },
-            method: { output: outputSchema },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        await handler(mockReq);
-
-        assert.strictEqual(next.mock.calls.length, 1);
-    });
-
-    it('should serialize streaming request with alwaysEmitImplicit option', async () => {
-        const interceptor = createSerializerInterceptor({
-            skipGrpcServices: false,
-            alwaysEmitImplicit: true,
+            assert.strictEqual(next.mock.calls.length, 1);
+            assert.deepStrictEqual((next.mock.calls[0]!.arguments[0] as { message: unknown }).message, { value: 'a', sequence: 0 });
         });
 
-        const inputSchema = createMockMessage('test.StreamInputMessage');
-        const outputSchema = createMockMessage('test.OutputMessage');
+        it('should leave implicit values out of the request JSON when alwaysEmitImplicit=false', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'ok' }));
 
-        async function* mockStream() {
-            yield { field: 'value1' };
-            yield { field: 'value2' };
-        }
+            await createSerializerInterceptor({ alwaysEmitImplicit: false })(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema, { value: 'a' })));
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/StreamMethod',
-            stream: true,
-            message: mockStream(),
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
-
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        await handler(mockReq);
-
-        // CRITICAL: Verify toJsonStream uses alwaysEmitImplicit, not ignoreUnknownFields
-        assert.strictEqual(next.mock.calls.length, 1);
-        // Message should be wrapped in toJsonStream async generator
-        assert.strictEqual(typeof mockReq.message, 'object');
-    });
-
-    it('should deserialize unary response from JSON with ignoreUnknownFields', async () => {
-        const interceptor = createSerializerInterceptor({
-            skipGrpcServices: false,
-            ignoreUnknownFields: true,
+            assert.deepStrictEqual((next.mock.calls[0]!.arguments[0] as { message: unknown }).message, { value: 'a' });
         });
 
-        const inputSchema = createMockMessage('test.InputMessage');
-        const outputSchema = createMockMessage('test.OutputMessage');
+        it('should keep the other request fields and not modify the caller request', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'ok' }));
+            const original = create(ItemSchema, { value: 'a', sequence: 3 });
+            const req = unaryRequest(NAMESPACED_SERVICE, original);
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
+            await createSerializerInterceptor()(next as any)(req);
 
-        const mockRes = {
-            stream: false,
-            message: { result: 'success', unknownField: 'ignore me' },
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        const result = await handler(mockReq);
-
-        // Response should be deserialized
-        assert.strictEqual(next.mock.calls.length, 1);
-        assert.strictEqual(typeof result.message, 'object');
+            const forwarded = next.mock.calls[0]!.arguments[0] as typeof req;
+            assert.notStrictEqual(forwarded, req);
+            assert.strictEqual(forwarded.url, req.url);
+            assert.strictEqual(forwarded.signal, req.signal);
+            assert.strictEqual(forwarded.header, req.header);
+            assert.strictEqual(req.message, original, 'the caller request must still hold the protobuf message');
+        });
     });
 
-    it('should deserialize streaming response from JSON', async () => {
-        const interceptor = createSerializerInterceptor({
-            skipGrpcServices: false,
-            ignoreUnknownFields: true,
+    describe('unary response', () => {
+        it('should turn the JSON response into a protobuf message', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'x', sequence: 7 }));
+
+            const result = await createSerializerInterceptor()(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema)));
+
+            assert.ok(isMessage(result.message, ItemSchema), 'the response message must be a protobuf Item');
+            const item = result.message as Item;
+            assert.strictEqual(item.value, 'x');
+            assert.strictEqual(item.sequence, 7);
         });
 
-        const inputSchema = createMockMessage('test.InputMessage');
-        const outputSchema = createMockMessage('test.StreamOutputMessage');
+        it('should ignore unknown response fields by default', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'x', extraField: 1 }));
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
+            const result = await createSerializerInterceptor()(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema)));
 
-        async function* mockResStream() {
-            yield { result: 'value1' };
-            yield { result: 'value2' };
-        }
+            assert.strictEqual((result.message as Item).value, 'x');
+            assert.ok(!('extraField' in (result.message as object)), 'the unknown field must be dropped');
+        });
 
-        const mockRes = {
-            stream: true,
-            message: mockResStream(),
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
+        it('should refuse unknown response fields when ignoreUnknownFields=false', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, { value: 'x', extraField: 1 }));
 
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
+            await assert.rejects(() => createSerializerInterceptor({ ignoreUnknownFields: false })(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema))), /extraField/);
+        });
 
-        const result = await handler(mockReq);
+        it('should let a downstream failure through unchanged', async () => {
+            const failure = new Error('downstream failed');
+            const next = mock.fn(async () => {
+                throw failure;
+            });
 
-        // Response stream should be wrapped in fromJsonStream
-        assert.strictEqual(result.stream, true);
-        assert.strictEqual(typeof result.message, 'object');
+            await assert.rejects(
+                () => createSerializerInterceptor()(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema))),
+                (err: unknown) => err === failure,
+            );
+        });
     });
 
-    it('should use alwaysEmitImplicit option for unary serialization', async () => {
-        const interceptor = createSerializerInterceptor({
-            skipGrpcServices: false,
-            alwaysEmitImplicit: false,
+    describe('grpc.* services', () => {
+        it('should pass a grpc.* call through untouched by default', async () => {
+            const req = unaryRequest(GRPC_SERVICE, { service: 'x' });
+            const res = jsonResponse(GRPC_SERVICE, { status: 'SERVING' });
+            const next = mock.fn(async (_req: unknown) => res);
+
+            const result = await createSerializerInterceptor()(next as any)(req);
+
+            assert.strictEqual(next.mock.calls[0]!.arguments[0], req, 'the very same request object must reach the downstream');
+            assert.strictEqual(result, res, 'the very same response object must come back');
         });
 
-        const inputSchema = createMockMessage('test.InputMessage');
-        const outputSchema = createMockMessage('test.OutputMessage');
+        it('should convert a grpc.* call when skipGrpcServices=false', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(GRPC_SERVICE, { value: 'x' }));
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value', implicitField: 0 },
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
+            const result = await createSerializerInterceptor({ skipGrpcServices: false })(next as any)(unaryRequest(GRPC_SERVICE, create(ItemSchema, { value: 'a' })));
 
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
+            assert.deepStrictEqual((next.mock.calls[0]!.arguments[0] as { message: unknown }).message, { value: 'a', sequence: 0 });
+            assert.ok(isMessage(result.message, ItemSchema));
+        });
 
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
+        it('should treat only the grpc. namespace as grpc services', async () => {
+            // "grpcx." and "my.grpc." are application namespaces and are converted.
+            for (const service of ['grpcx.v1.Service', 'my.grpc.v1.Service']) {
+                const next = mock.fn(async (_req: unknown) => jsonResponse(service, { value: 'x' }));
 
-        await handler(mockReq);
+                const result = await createSerializerInterceptor()(next as any)(unaryRequest(service, create(ItemSchema, { value: 'a' })));
 
-        assert.strictEqual(next.mock.calls.length, 1);
+                assert.deepStrictEqual((next.mock.calls[0]!.arguments[0] as { message: unknown }).message, { value: 'a', sequence: 0 }, service);
+                assert.ok(isMessage(result.message, ItemSchema), service);
+            }
+        });
     });
 
-    it('should handle both request and response serialization', async () => {
-        const interceptor = createSerializerInterceptor({
-            skipGrpcServices: false,
-            alwaysEmitImplicit: true,
-            ignoreUnknownFields: true,
+    describe('streaming', () => {
+        it('should hand the downstream the JSON form of every streamed request message', async () => {
+            let seen: unknown[] = [];
+            const next = mock.fn(async (req: { message: AsyncIterable<unknown> }) => {
+                seen = await collect(req.message);
+                return jsonResponse(NAMESPACED_SERVICE, items(), true);
+            });
+            const request = unaryRequest(NAMESPACED_SERVICE, items(create(ItemSchema, { value: 'a', sequence: 1 }), create(ItemSchema, { value: 'b' })), true);
+
+            await createSerializerInterceptor()(next as any)(request);
+
+            assert.deepStrictEqual(seen, [
+                { value: 'a', sequence: 1 },
+                { value: 'b', sequence: 0 },
+            ]);
         });
 
-        const inputSchema = createMockMessage('test.InputMessage');
-        const outputSchema = createMockMessage('test.OutputMessage');
+        it('should leave implicit values out of streamed request JSON when alwaysEmitImplicit=false', async () => {
+            let seen: unknown[] = [];
+            const next = mock.fn(async (req: { message: AsyncIterable<unknown> }) => {
+                seen = await collect(req.message);
+                return jsonResponse(NAMESPACED_SERVICE, items(), true);
+            });
+            const request = unaryRequest(NAMESPACED_SERVICE, items(create(ItemSchema, { value: 'b' })), true);
 
-        const mockReq = {
-            url: 'http://localhost/test.Service/Method',
-            stream: false,
-            message: { field: 'value' },
-            service: { typeName: 'test.Service' },
-            method: { input: inputSchema, output: outputSchema },
-        } as any;
+            await createSerializerInterceptor({ alwaysEmitImplicit: false })(next as any)(request);
 
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            service: { typeName: 'test.Service' },
-            method: { output: outputSchema },
-        };
+            assert.deepStrictEqual(seen, [{ value: 'b' }]);
+        });
 
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
+        it('should turn every streamed JSON response message into a protobuf message', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, items({ value: 'x', sequence: 1 }, { value: 'y', sequence: 2 }), true));
 
-        const result = await handler(mockReq);
+            const result = await createSerializerInterceptor()(next as any)(unaryRequest(NAMESPACED_SERVICE, items(), true));
 
-        // Both request and response should be serialized/deserialized
-        assert.strictEqual(next.mock.calls.length, 1);
-        assert.strictEqual(typeof result.message, 'object');
+            const received = await collect(result.message as AsyncIterable<Item>);
+            assert.strictEqual(result.stream, true);
+            assert.deepStrictEqual(
+                received.map((m) => [isMessage(m, ItemSchema), m.value, m.sequence]),
+                [
+                    [true, 'x', 1],
+                    [true, 'y', 2],
+                ],
+            );
+        });
+
+        it('should refuse an unknown field in a streamed response when ignoreUnknownFields=false', async () => {
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, items({ value: 'x', extraField: 1 }), true));
+
+            const result = await createSerializerInterceptor({ ignoreUnknownFields: false })(next as any)(unaryRequest(NAMESPACED_SERVICE, items(), true));
+
+            await assert.rejects(() => collect(result.message as AsyncIterable<Item>), /extraField/);
+        });
     });
 });
