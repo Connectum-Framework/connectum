@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { context, metrics, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { getLogger } from "../../src/logger.ts";
+import { getMeter } from "../../src/meter.ts";
 import { getProvider, initProvider, shutdownProvider } from "../../src/provider.ts";
+import { getTracer } from "../../src/tracer.ts";
 
 const ENV_KEYS = [
 	"OTEL_TRACES_EXPORTER",
@@ -43,8 +45,8 @@ interface LogRecord {
 }
 
 interface Payload {
-	resourceSpans?: Array<{ resource: OtlpResource }>;
-	resourceMetrics?: Array<{ resource: OtlpResource }>;
+	resourceSpans?: Array<{ resource: OtlpResource; scopeSpans: Array<{ spans: Array<{ name: string }> }> }>;
+	resourceMetrics?: Array<{ resource: OtlpResource; scopeMetrics: Array<{ metrics: Array<{ name: string }> }> }>;
 	resourceLogs?: Array<{ resource: OtlpResource; scopeLogs: Array<{ logRecords: LogRecord[] }> }>;
 }
 
@@ -184,6 +186,34 @@ describe("provider: exported telemetry content", () => {
 			);
 		});
 	}
+
+	// Oracle: getTracer() and getMeter() are documented as the accessors of the package's
+	// tracer and meter (the current provider's). After the provider is shut down and
+	// created again, telemetry written through them has to reach the exporter of the
+	// new provider; an instrument kept from before would write into the stopped one.
+	describe("accessors after the provider is recreated", () => {
+		it("should export a span started through getTracer() by the provider that replaced a stopped one", async () => {
+			getTracer().startSpan("before-restart").end();
+			await shutdownProvider();
+
+			getTracer().startSpan("after-restart").end();
+			await shutdownProvider();
+
+			const names = received("/v1/traces").flatMap((p) => p.resourceSpans ?? []).flatMap((r) => r.scopeSpans).flatMap((s) => s.spans).map((s) => s.name);
+			assert.deepStrictEqual(names, ["before-restart", "after-restart"]);
+		});
+
+		it("should export a metric recorded through getMeter() by the provider that replaced a stopped one", async () => {
+			getMeter().createCounter("before_restart_total").add(1);
+			await shutdownProvider();
+
+			getMeter().createCounter("after_restart_total").add(1);
+			await shutdownProvider();
+
+			const names = received("/v1/metrics").flatMap((p) => p.resourceMetrics ?? []).flatMap((r) => r.scopeMetrics).flatMap((s) => s.metrics).map((m) => m.name);
+			assert.deepStrictEqual(names, ["before_restart_total", "after_restart_total"]);
+		});
+	});
 
 	// Oracle: the observability logging guide: "When an active span exists, the
 	// OpenTelemetry SDK automatically includes trace_id and span_id in log records."
