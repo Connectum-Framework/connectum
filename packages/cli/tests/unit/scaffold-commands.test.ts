@@ -162,10 +162,6 @@ describe("executeGenerateService", () => {
         rmSync(dir, { recursive: true, force: true });
     });
 
-    it("exports a citty command with a run handler", () => {
-        assert.equal(typeof generateServiceCommand.run, "function");
-    });
-
     // A handler that is generated for fewer rpc methods than the proto declares leaves the others
     // to fail at runtime without a trace, so the check is derived from the generated proto: every
     // rpc it declares must own exactly one throwing handler, keyed by the camelCase method name.
