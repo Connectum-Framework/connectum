@@ -1,7 +1,7 @@
 /**
  * Public-API surface regression tests.
  *
- * Const-object enums (ADR-001) carry BOTH a runtime value and a type. They must
+ * Const-object enums (the erasable-syntax replacement for `enum`) carry BOTH a runtime value and a type. They must
  * be re-exported from the package barrel (`src/index.ts`) as VALUES — a
  * type-only re-export (`export type { X }`) erases the runtime const, leaving
  * the symbol `undefined` for every consumer while the `.d.ts` still advertises
