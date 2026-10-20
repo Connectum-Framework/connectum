@@ -643,6 +643,62 @@ describe("AMQP broker integration", { skip: AMQP_URL === undefined ? "AMQP_TEST_
         });
     }
 
+    for (const [label, pattern] of [
+        ["the empty string", ""],
+        ["an empty segment between dots", "a..b"],
+        ["a leading dot", ".a"],
+        ["a trailing dot", "a."],
+        ["a lone dot", "."],
+    ] as const) {
+        it(`subscribe() rejects ${label} and declares no queue`, async () => {
+            const run = randomUUID();
+            const exchange = `it.emptyseg.${run}`;
+            const group = `g-${run}`;
+            const adapter = AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false });
+            await adapter.connect();
+            const admin = await connect(url);
+            try {
+                await assert.rejects(
+                    adapter.subscribe(["ok.one", pattern], async () => undefined, { group }),
+                    (error: unknown) => error instanceof TypeError && error.message.startsWith(`AmqpAdapter: subscription pattern "${pattern}" has an empty segment (`),
+                );
+
+                // A failed checkQueue closes its channel, so the probe gets a channel of its own.
+                const probe = await admin.createChannel();
+                probe.on("error", () => undefined);
+                await assert.rejects(() => probe.checkQueue(`${exchange}.${group}`), "the rejected call declared no queue for its good pattern either");
+            } finally {
+                await adapter.disconnect();
+                const cleanup = await admin.createChannel();
+                await cleanup.deleteQueue(`${exchange}.${group}`).catch(() => undefined);
+                await cleanup.deleteExchange(exchange).catch(() => undefined);
+                await admin.close();
+            }
+        });
+    }
+
+    it("subscribe() still declares the queue for literal, single-segment wildcard and tail wildcard patterns", async () => {
+        const run = randomUUID();
+        const exchange = `it.emptyseg.${run}`;
+        const group = `g-${run}`;
+        const adapter = AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false });
+        await adapter.connect();
+        const admin = await connect(url);
+        try {
+            await adapter.subscribe(["ok.one", "ok.*", "ok.>"], async () => undefined, { group });
+
+            const probe = await admin.createChannel();
+            const declared = await probe.checkQueue(`${exchange}.${group}`);
+            assert.equal(declared.queue, `${exchange}.${group}`);
+        } finally {
+            await adapter.disconnect();
+            const cleanup = await admin.createChannel();
+            await cleanup.deleteQueue(`${exchange}.${group}`).catch(() => undefined);
+            await cleanup.deleteExchange(exchange).catch(() => undefined);
+            await admin.close();
+        }
+    });
+
     // Connection-recovery scenarios (broker drop/restart mid-test) are in
     // amqp-recovery.test.ts — they need programmatic container control.
 });

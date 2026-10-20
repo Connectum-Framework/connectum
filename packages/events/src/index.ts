@@ -33,7 +33,8 @@ export { dlqMiddleware } from "./middleware/dlq.ts";
 export { retryMiddleware } from "./middleware/retry.ts";
 // Middleware
 export { composeMiddleware } from "./middleware.ts";
-
+// Subscription pattern validation shared by adapters
+export { assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
 // Topic resolution
 export { resolveTopicName } from "./topic.ts";
 // Types

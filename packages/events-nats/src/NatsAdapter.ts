@@ -10,6 +10,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import { assertSubscriptionPatterns } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -215,6 +216,10 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
+            // Before any consumer is created: a malformed pattern must not leave consumers of its
+            // good neighbours behind, and the server would only answer "no responders" for it.
+            assertSubscriptionPatterns({ adapter: "NatsAdapter", patterns });
+
             if (!js || !jsm) {
                 throw new Error("NatsAdapter: not connected");
             }
