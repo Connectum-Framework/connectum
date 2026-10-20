@@ -17,6 +17,11 @@ export interface AmqpAdapterOptions {
 
     /**
      * Socket options passed to `amqplib.connect()`.
+     *
+     * `noDelay` is `true` unless you set it: the adapter turns Nagle's algorithm off on its
+     * connections (the working connection and the startup probe), because with it on a publish
+     * that follows the delivery of the previous message on the same connection waited about
+     * 40 ms. Pass `{ noDelay: false }` to get amqplib's own default back.
      */
     readonly socketOptions?: Record<string, unknown>;
 

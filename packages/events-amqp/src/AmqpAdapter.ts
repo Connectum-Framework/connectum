@@ -468,9 +468,15 @@ export function createBackoffGuard(backoff: (attempt: number) => number): Backof
  * Assemble amqplib connect options from socket options + client properties.
  * Single builder for both connect sites (the adapter's connection and the
  * startup probe) so they cannot silently diverge.
+ *
+ * `noDelay` defaults to `true`: amqplib leaves Nagle's algorithm on unless asked
+ * (`!!sockopts.noDelay`), and with it on a publish that follows the delivery of the previous
+ * message on the same connection waited about 40 ms (measured 43.9 ms against 0.4 ms on
+ * RabbitMQ 4.3.6). An explicit `socketOptions.noDelay`, `false` included, wins.
  */
 function buildConnectOptions(socketOptions: Record<string, unknown> | undefined, clientProperties: Record<string, string>): Record<string, unknown> {
     const opts: Record<string, unknown> = { ...socketOptions };
+    opts.noDelay = socketOptions?.noDelay ?? true;
     if (Object.keys(clientProperties).length > 0) {
         opts.clientProperties = clientProperties;
     }
