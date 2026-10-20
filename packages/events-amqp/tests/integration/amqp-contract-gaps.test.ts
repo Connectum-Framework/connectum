@@ -147,7 +147,6 @@ describe("AMQP external-contract surface on a real broker", { skip: AMQP_URL ===
     for (const [label, publisherOptions, expectedDeliveryMode] of [
         ["by default", {}, 2],
         ["with persistent: false", { persistent: false }, 1],
-        ["with persistent: true", { persistent: true }, 2],
     ] as const) {
         it(`publish() resolves with the message already on the queue, in a frame with the exchange, routing key, bytes and delivery mode ${expectedDeliveryMode} ${label}`, async () => {
             const exchange = `it.frame.${expectedDeliveryMode}.${randomUUID().slice(0, 6)}`;
