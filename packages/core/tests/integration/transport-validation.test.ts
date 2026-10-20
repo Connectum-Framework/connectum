@@ -10,12 +10,17 @@
  */
 
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
 import { MountedService } from "../../../reflection/tests/fixtures/fixture/v1/multi_pb.ts";
 import { defineService, type ServiceDefinition } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
 import { TRANSPORT_VALIDATION_ERROR_CODE, TransportValidationError } from "../../src/TransportValidation.ts";
 import type { ProtocolRegistration } from "../../src/types.ts";
+import { ServerState } from "../../src/types.ts";
 import { StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 /** User service with a bidi method (`streaming.v1.StreamingService.Bidi`). */
@@ -63,6 +68,61 @@ describe("Server.start() transport validation", () => {
                 return true;
             },
         );
+        // A refused start leaves a stopped server that never bound a port.
+        assert.strictEqual(server.state, ServerState.STOPPED);
+        assert.strictEqual(server.address, null);
+    });
+
+    describe("TLS", () => {
+        let tlsDir: string;
+        let tls: { keyPath: string; certPath: string };
+
+        before(() => {
+            // A throwaway self-signed pair per run: no key material is committed.
+            tlsDir = mkdtempSync(join(tmpdir(), "connectum-transport-validation-"));
+            tls = { keyPath: join(tlsDir, "server.key"), certPath: join(tlsDir, "server.crt") };
+            execFileSync(
+                "openssl",
+                ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-keyout", tls.keyPath, "-out", tls.certPath],
+                { stdio: "ignore" },
+            );
+        });
+
+        after(() => {
+            rmSync(tlsDir, { recursive: true, force: true });
+        });
+
+        /** Start a TLS server with a user bidi service, returning the transport-validation diagnostics logged while starting. */
+        async function startTls(allowHTTP1: boolean): Promise<string[]> {
+            const original = console.warn;
+            const warnings: string[] = [];
+            console.warn = (...args: unknown[]): void => {
+                warnings.push(args.map(String).join(" "));
+            };
+            const server = createServer({ services: [bidiUserService()], port: 0, host: "127.0.0.1", interceptors: [], tls, allowHTTP1 });
+            try {
+                await server.start();
+                assert.ok(server.isRunning, "a TLS server with a bidi service must start whatever the diagnostics say");
+            } finally {
+                console.warn = original;
+                await server.stop();
+            }
+            return warnings.filter((w) => w.includes(TRANSPORT_VALIDATION_ERROR_CODE));
+        }
+
+        // Transport guide: with TLS that still allows HTTP/1.1 a client may negotiate it over ALPN,
+        // so a bidi method is a residual risk: one warning, never a refusal.
+        it("starts a TLS server that allows HTTP/1.1, logging one warning that names the bidi method and the fix", async () => {
+            const diagnostics = await startTls(true);
+
+            assert.strictEqual(diagnostics.length, 1);
+            assert.ok(diagnostics[0]?.includes("streaming.v1.StreamingService.Bidi"));
+            assert.ok(diagnostics[0]?.includes("allowHTTP1: false"));
+        });
+
+        it("starts a TLS server that refuses HTTP/1.1 without any diagnostic", async () => {
+            assert.deepStrictEqual(await startTls(false), []);
+        });
     });
 
     it("starts cleanly for the same user service on h2c (allowHTTP1: false)", async () => {

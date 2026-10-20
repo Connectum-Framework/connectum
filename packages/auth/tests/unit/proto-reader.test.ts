@@ -24,7 +24,7 @@ describe("proto-reader", () => {
             assert.strictEqual(resolved.requires, undefined);
         });
 
-        it("should resolve method with internal: true (ADR-029)", () => {
+        it("should resolve method with internal: true", () => {
             const service = createFakeService();
             const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }), { register: true });
 
@@ -435,7 +435,7 @@ describe("proto-reader", () => {
         });
     });
 
-    describe("getInternalMethods() (ADR-029)", () => {
+    describe("getInternalMethods()", () => {
         it("should return patterns for internal methods only", () => {
             const service = createFakeService({ typeName: "trips.v1.TripService" });
             createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }), { register: true });

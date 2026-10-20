@@ -27,8 +27,10 @@ describe("bulkhead interceptor", () => {
         const interceptor = createBulkheadInterceptor({ capacity: 2, queueSize: 2 });
 
         let activeCount = 0;
+        let maxActive = 0;
         const next = mock.fn(async () => {
             activeCount++;
+            maxActive = Math.max(maxActive, activeCount);
             await new Promise((resolve) => setTimeout(resolve, 100));
             activeCount--;
             return { message: { result: "success" } };
@@ -44,6 +46,35 @@ describe("bulkhead interceptor", () => {
         const results = await Promise.all(promises);
         assert.strictEqual(results.length, 3);
         results.forEach((r) => assert.strictEqual((r.message as any).result, "success"));
+        // The third call was held back until a slot freed up, not run beside the first two.
+        assert.strictEqual(maxActive, 2);
+    });
+
+    // capacity and queueSize both default to 10: ten calls run, ten wait, the
+    // twenty-first is refused with the limits it was refused at.
+    it("should admit 10 running and 10 queued calls by default and refuse the 21st", async () => {
+        const interceptor = createBulkheadInterceptor();
+        const gate = Promise.withResolvers<void>();
+        const next = mock.fn(async () => {
+            await gate.promise;
+            return { message: { result: "success" } };
+        });
+        const handler = interceptor(next as any);
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+
+        // The refusal is immediate, so the outcomes are collected before anything is awaited.
+        const settled = Promise.allSettled(Array.from({ length: 21 }, () => handler(mockReq)));
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.strictEqual(next.mock.calls.length, 10, "only 10 calls may run at once");
+        gate.resolve();
+        const results = await settled;
+
+        assert.strictEqual(results.filter((r) => r.status === "fulfilled").length, 20);
+        const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+        assert.strictEqual(rejected.length, 1);
+        // The 21st call is the one refused: the first 20 fit in the 10 running slots and the queue of 10.
+        assert.strictEqual(results[20]!.status, "rejected", "the 21st call must be the refused one");
+        assertConnectError(rejected[0]!.reason, Code.ResourceExhausted, "Bulkhead capacity exceeded (capacity: 10, queueSize: 10)");
     });
 
     it("should reject request when queue full", async () => {
@@ -145,6 +176,51 @@ describe("bulkhead interceptor", () => {
         gate.resolve();
         assert.strictEqual(((await unary).message as any).result, "unary");
         assert.strictEqual(next.mock.calls.length, 2);
+    });
+
+    // skipStreaming is not given: streaming calls bypass the limit by default.
+    it("should skip streaming by default", async () => {
+        const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0 });
+
+        const gate = Promise.withResolvers<void>();
+        const next = mock.fn(async (req: any) => {
+            if (!req.stream) await gate.promise;
+            return { stream: req.stream, message: { result: req.stream ? "streaming" : "unary" } };
+        });
+        const handler = interceptor(next as any);
+
+        const unary = handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+        const result = await handler(createMockRequest({ service: "test.Service", method: "StreamMethod", message: { field: "value" }, stream: true }));
+        assert.strictEqual((result.message as any).result, "streaming");
+
+        gate.resolve();
+        await unary;
+    });
+
+    // With skipStreaming: false a streaming call competes for the same slots as
+    // a unary one.
+    it("should apply the limit to streaming calls when skipStreaming=false", async () => {
+        const interceptor = createBulkheadInterceptor({ capacity: 1, queueSize: 0, skipStreaming: false });
+
+        const gate = Promise.withResolvers<void>();
+        const next = mock.fn(async (req: any) => {
+            if (!req.stream) await gate.promise;
+            return { stream: req.stream, message: { result: "ok" } };
+        });
+        const handler = interceptor(next as any);
+
+        const unary = handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+        await assert.rejects(
+            () => handler(createMockRequest({ service: "test.Service", method: "StreamMethod", message: { field: "value" }, stream: true })),
+            (err: unknown) => {
+                assertConnectError(err, Code.ResourceExhausted, "Bulkhead capacity exceeded");
+                return true;
+            },
+        );
+        assert.strictEqual(next.mock.calls.length, 1, "the refused streaming call must not reach the handler");
+
+        gate.resolve();
+        await unary;
     });
 
     it("should handle custom capacity", async () => {

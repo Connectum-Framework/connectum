@@ -85,11 +85,13 @@ describe('logger interceptor', () => {
             Error
         );
 
-        // Verify timing was logged (request + timing = 2 calls)
-        const timingCall = loggerFn.mock.calls.find(
-            (c: any) => c.arguments[0]?.includes('completed in')
-        );
-        assert.ok(timingCall, 'timing log must be present on exception');
+        // A plain Error is reported under the code Unknown, and the call is still closed out:
+        // request, failure, completion, in this order.
+        const lines = loggerFn.mock.calls.map((c: any) => c.arguments);
+        assert.strictEqual(lines.length, 3);
+        assert.deepStrictEqual(lines[0], ['RPC /test.Service/Method request']);
+        assert.deepStrictEqual(lines[1], ['RPC /test.Service/Method failed with Unknown']);
+        assert.match(lines[2]![0] as string, /^RPC \/test\.Service\/Method completed in \d+(\.\d+)?ms$/);
     });
 
     it('should skip health check services when skipHealthCheck=true', async () => {
@@ -134,38 +136,42 @@ describe('logger interceptor', () => {
         assert.strictEqual(loggerFn.mock.calls.length, 3);
     });
 
-    it('should handle streaming requests', async () => {
-        const loggerFn = mock.fn();
-        const interceptor = createLoggerInterceptor({ logger: loggerFn });
+    // skipHealthCheck is on by default, and the match is "the service type name contains
+    // grpc.health" (as documented), not an exact name.
+    it('should skip health check services by default, wherever grpc.health appears in the name', async () => {
+        for (const service of ['grpc.health.v1.Health', 'acme.grpc.health.v1.Probe']) {
+            const loggerFn = mock.fn();
+            const next = mock.fn(async () => ({ stream: false, message: {}, method: { output: {} } }));
 
-        async function* mockStream() {
-            yield { field: 'value1' };
-            yield { field: 'value2' };
+            await createLoggerInterceptor({ logger: loggerFn })(next as any)(createMockRequest({ service, method: 'Check' }));
+
+            assert.strictEqual(loggerFn.mock.calls.length, 0, service);
+            assert.strictEqual(next.mock.calls.length, 1, service);
         }
-
-        const mockReq = createMockRequest({ service: 'test.Service', method: 'StreamMethod', stream: true, message: mockStream() });
-
-        // CRITICAL: mockRes must have method.output for logResStream to work
-        const mockRes = {
-            stream: false,
-            message: { result: 'success' },
-            method: {
-                output: {
-                    typeName: 'test.OutputMessage',
-                    fields: [],
-                    members: [],
-                },
-            },
-        };
-
-        const next = mock.fn(async () => mockRes);
-        const handler = interceptor(next as any);
-
-        await handler(mockReq);
-
-        // For streaming, logReqStream wraps the iterator
-        assert.strictEqual(next.mock.calls.length, 1);
     });
+
+    // Without a custom logger each line goes to console[level], debug by default.
+    for (const [label, options, method] of [
+        ['debug by default', {}, 'debug'],
+        ['info', { level: 'info' }, 'info'],
+        ['warn', { level: 'warn' }, 'warn'],
+        ['error', { level: 'error' }, 'error'],
+    ] as const) {
+        it(`should write to console.${method} when the level is ${label}`, async () => {
+            const spies = Object.fromEntries((['debug', 'info', 'warn', 'error'] as const).map((name) => [name, mock.method(console, name, () => {})]));
+            try {
+                const next = mock.fn(async () => ({ stream: false, message: {}, method: { output: {} } }));
+
+                await createLoggerInterceptor(options)(next as any)(createMockRequest({ service: 'test.Service', method: 'Method' }));
+
+                for (const [name, spy] of Object.entries(spies)) {
+                    assert.strictEqual(spy.mock.calls.length, name === method ? 3 : 0, `console.${name}`);
+                }
+            } finally {
+                for (const spy of Object.values(spies)) spy.mock.restore();
+            }
+        });
+    }
 
     it('should log every message of a streaming call and write the completion line last', async () => {
         const loggerFn = mock.fn();

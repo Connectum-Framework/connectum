@@ -108,11 +108,9 @@ describe("headers", () => {
             assert.strictEqual(result.type, "unknown");
         });
 
-        // Решение Connectum, документированного источника нет: guide/auth/context.md
-        // перечисляет заголовки x-auth-*, но не называет предел длины. Выбрано:
-        // subject режется до 512 символов, а не отклоняется. Побочное следствие
-        // политики: два subject с общим префиксом в 512 знаков после усечения
-        // неразличимы.
+        // Guide (context.md, "Propagated Headers", Limits and sizes): x-auth-subject is cut to 512
+        // characters, truncated and not rejected. A side effect the guide names: two subjects that
+        // share their first 512 characters become indistinguishable downstream.
         it("should truncate subject exceeding 512 characters", () => {
             const headers = new Headers();
             const longSubject = "a".repeat(600);
@@ -125,8 +123,8 @@ describe("headers", () => {
             assert.strictEqual(result.subject, "a".repeat(512));
         });
 
-        // Нижняя половина пары: значение ровно на пределе (решение Connectum, см. выше)
-        // проходит без изменений, значит усечение начинается именно с 513-го знака.
+        // Lower half of the pair: a value exactly at the documented limit passes unchanged, so the
+        // cut starts at the 513th character.
         it("should not truncate subject within 512 character limit", () => {
             const headers = new Headers();
             const subject = "a".repeat(512);
@@ -138,8 +136,7 @@ describe("headers", () => {
             assert.strictEqual(result.subject.length, 512);
         });
 
-        // Решение Connectum, документированного источника нет: тип аутентификации
-        // x-auth-type режется до 128 знаков, а не отклоняется.
+        // Guide (context.md, Limits and sizes): x-auth-type is cut to 128 characters, not rejected.
         it("should truncate type exceeding 128 characters", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "user-1");
@@ -261,8 +258,7 @@ describe("headers", () => {
             assert.strictEqual(headers.get(AUTH_HEADERS.NAME), null);
         });
 
-        // Решение Connectum, документированного источника нет: отображаемое имя
-        // режется до 256 знаков при записи в x-auth-name, а не отклоняется.
+        // Guide (context.md, Limits and sizes): x-auth-name is cut to 256 characters, not rejected.
         it("should truncate name exceeding 256 characters", () => {
             const headers = new Headers();
             const context: AuthContext = {
@@ -277,6 +273,41 @@ describe("headers", () => {
             setAuthHeaders(headers, context);
             assert.strictEqual(headers.get(AUTH_HEADERS.NAME)!.length, 256);
         });
+    });
+
+    // Guide (context.md, Limits and sizes): x-auth-subject is cut to 512 characters,
+    // x-auth-type to 128 and x-auth-name to 256, when written and when read. A cut value keeps
+    // its first characters. One character under, at and one over each limit separates a limit
+    // that is moved by one in either direction, and the letters cycle so a cut from the wrong end
+    // gives a different string.
+    describe("length limits of subject, type and name", () => {
+        const fields = [
+            { field: "subject", header: "x-auth-subject", limit: 512 },
+            { field: "type", header: "x-auth-type", limit: 128 },
+            { field: "name", header: "x-auth-name", limit: 256 },
+        ] as const;
+        const textOfLength = (length: number): string => Array.from({ length }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+
+        for (const { field, header, limit } of fields) {
+            for (const length of [limit - 1, limit, limit + 1]) {
+                const value = textOfLength(length);
+                const expected = value.slice(0, limit);
+
+                it(`should write a ${field} of ${length} characters as ${expected.length} characters`, () => {
+                    const headers = new Headers();
+                    setAuthHeaders(headers, { subject: "s", type: "t", name: "n", roles: [], scopes: [], claims: {}, [field]: value });
+
+                    assert.strictEqual(headers.get(header), expected);
+                });
+
+                it(`should read a ${field} of ${length} characters as ${expected.length} characters`, () => {
+                    const headers = new Headers({ "x-auth-subject": "s", "x-auth-type": "t", "x-auth-name": "n" });
+                    headers.set(header, value);
+
+                    assert.strictEqual(parseAuthHeaders(headers)?.[field], expected);
+                });
+            }
+        }
     });
 
     // Guide (context.md, "Propagated Headers"): control characters are removed from the

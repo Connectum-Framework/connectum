@@ -9,9 +9,10 @@ import { createMockNext, createMockNextError, createMockRequest } from "@connect
 import { createFallbackInterceptor } from "../../src/fallback.ts";
 
 describe("fallback interceptor", () => {
-    it("should pass request on success", async () => {
+    it("should pass request on success without asking the fallback handler", async () => {
+        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
         const interceptor = createFallbackInterceptor({
-            handler: () => ({ fallback: "value" }),
+            handler: fallbackHandler,
         });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
@@ -22,6 +23,7 @@ describe("fallback interceptor", () => {
         const result = await handler(mockReq);
 
         assert.strictEqual((result.message as any).result, "success");
+        assert.strictEqual(fallbackHandler.mock.calls.length, 0);
     });
 
     it("should call handler on failure", async () => {
@@ -123,17 +125,28 @@ describe("fallback interceptor", () => {
         assert.deepStrictEqual(result.message, { fallback: "async_value" });
     });
 
-    it("should activate fallback on error", async () => {
-        const interceptor = createFallbackInterceptor({
-            handler: () => ({ fallback: "value" }),
+    // skipStreaming is not given: a failing streaming call is left alone by default.
+    it("should skip streaming by default", async () => {
+        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
+        const failure = new ConnectError("Service error", Code.Internal);
+        const next = mock.fn(async () => {
+            throw failure;
         });
 
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+        await assert.rejects(
+            () => interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true })),
+            (err: unknown) => err === failure,
+        );
+        assert.strictEqual(fallbackHandler.mock.calls.length, 0);
+    });
 
+    // With skipStreaming: false a failing streaming call gets the substitute response.
+    it("should replace a failing streaming call when skipStreaming=false", async () => {
+        const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "value" }), skipStreaming: false });
         const next = createMockNextError(Code.Internal, "Service error");
 
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
+        const result = await interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true }));
 
         assert.deepStrictEqual(result.message, { fallback: "value" });
     });
@@ -226,48 +239,25 @@ describe("fallback interceptor", () => {
             assert.deepStrictEqual(result.message, { fallback: "data" });
         });
 
-        it("should handle async fallback handler that resolves", async () => {
-            const interceptor = createFallbackInterceptor({
-                handler: async () => {
-                    await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
-                    return { items: [], total: 0 };
-                },
-            });
-
-            const mockReq = createMockRequest({
-                service: "test.Service",
-                method: "Method",
-                message: { field: "value" },
-            });
-
-            const next = createMockNextError(Code.Unavailable, "Service unavailable");
-
-            const handler = interceptor(next as any);
-            const result = await handler(mockReq);
-
-            assert.deepStrictEqual(result.message, { items: [], total: 0 });
-            assert.strictEqual(result.stream, false);
-        });
-
-        it("should propagate error when async fallback handler rejects", async () => {
+        // A rejecting asynchronous handler fails the call with its own rejection:
+        // the awaited handler result is what the caller sees, not the original error.
+        it("should fail with the rejection of an asynchronous handler, not the original error", async () => {
             const interceptor = createFallbackInterceptor({
                 handler: async () => {
                     throw new Error("Async fallback failed");
                 },
             });
-
-            const mockReq = createMockRequest({
-                service: "test.Service",
-                method: "Method",
-                message: { field: "value" },
-            });
-
             const next = createMockNextError(Code.Internal, "Service error");
 
-            const handler = interceptor(next as any);
-
             await assert.rejects(
-                () => handler(mockReq),
+                () =>
+                    interceptor(next as any)(
+                        createMockRequest({
+                            service: "test.Service",
+                            method: "Method",
+                            message: { field: "value" },
+                        }),
+                    ),
                 (err: unknown) => {
                     assert.ok(err instanceof Error);
                     assert.strictEqual(err.message, "Async fallback failed");

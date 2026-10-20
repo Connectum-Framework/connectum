@@ -6,13 +6,15 @@
  */
 
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
+import type { Interceptor } from "@connectrpc/connect";
 import { Code } from "@connectrpc/connect";
-import { assertConnectError, createMockRequest } from "@connectum/testing";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/test-jwt.ts";
+import { createTestJwtRS256, generateRsaTestKeypair, type RsaTestKeypair, startTestJwksServer, type TestJwksServer } from "../../src/testing/test-jwt-rs256.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
 
@@ -85,6 +87,8 @@ describe("jwt-auth-interceptor", () => {
                 () => handler(req),
                 (err: unknown) => {
                     assertConnectError(err, Code.Unauthenticated);
+                    // The guide fixes the client text of a failed verification: the cause is not disclosed.
+                    assert.strictEqual(err.rawMessage, "Authentication failed");
                     return true;
                 },
             );
@@ -198,6 +202,21 @@ describe("jwt-auth-interceptor", () => {
             });
         }
 
+        // The guide ties the minimum to "those algorithms ... when configured": a list that names
+        // several HMAC algorithms must satisfy the strongest of them, wherever it sits in the list.
+        for (const [algorithms, minBytes] of [
+            [["HS256", "HS512"], 64],
+            [["HS512", "HS256"], 64],
+            [["HS384", "HS512"], 64],
+            [["HS256", "HS384"], 48],
+            [["HS384", "HS256"], 48],
+        ] as const) {
+            it(`should require ${minBytes} bytes of secret when the algorithms are ${JSON.stringify(algorithms)}`, () => {
+                assert.throws(() => createJwtAuthInterceptor({ secret: "a".repeat(minBytes - 1), algorithms: [...algorithms] }), new RegExp(`at least ${minBytes} bytes`));
+                assert.doesNotThrow(() => createJwtAuthInterceptor({ secret: "a".repeat(minBytes), algorithms: [...algorithms] }));
+            });
+        }
+
         it("should measure the HMAC secret in UTF-8 bytes, not characters", () => {
             // The guide states the minimum in UTF-8 bytes. 16 two-byte characters are
             // 32 bytes (accepted); 15 of them plus one ASCII character are 31 bytes (rejected).
@@ -211,16 +230,23 @@ describe("jwt-auth-interceptor", () => {
                 skipMethods: ["test.Service/Method"],
             });
 
-            const next = async (_req: any) => ({ message: {} });
-            const handler = interceptor(next as any);
+            const next = createMockNext();
+            const handler = interceptor(next);
 
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            // No authorization header, but method is skipped
+            // No authorization header, but the method is listed
+            await handler(createMockRequest(MOCK_REQUEST_DEFAULTS));
+            assert.strictEqual(next.mock.calls.length, 1, "the listed method must reach the handler without a token");
 
-            await handler(req);
-            // Should not throw — method is skipped
-        });
-        it("should reject with Unauthenticated a validly signed JWT that has no subject claim", async () => {
+            // A method outside the list still demands a token: the option must not switch authentication off wholesale.
+            await assert.rejects(
+                () => handler(createMockRequest({ service: "test.Service", method: "OtherMethod" })),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 1, "an unlisted method must not reach the handler");
+        });        it("should reject with Unauthenticated a validly signed JWT that has no subject claim", async () => {
             // A verified token without `sub` carries no identity: the call must fail closed
             // and the handler must never run with an anonymous or empty subject.
             const key = new TextEncoder().encode(TEST_JWT_SECRET);
@@ -244,7 +270,9 @@ describe("jwt-auth-interceptor", () => {
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assertConnectError(err, Code.Unauthenticated, "missing subject");
+                    assertConnectError(err, Code.Unauthenticated);
+                    // The guide names this text for a valid token that carries no subject.
+                    assert.strictEqual(err.rawMessage, "JWT missing subject claim");
                     return true;
                 },
             );
@@ -428,6 +456,119 @@ describe("jwt-auth-interceptor", () => {
                     return true;
                 },
             );
+        });
+    });
+
+    describe("token validity rules", () => {
+        const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+        /** Run one call; a refusal must be `Unauthenticated` and must not reach the handler. */
+        async function admits(interceptor: Interceptor, token: string): Promise<boolean> {
+            const next = createMockNext();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("authorization", `Bearer ${token}`);
+            try {
+                await interceptor(next)(req);
+            } catch (err) {
+                assertConnectError(err, Code.Unauthenticated);
+                assert.strictEqual(next.mock.calls.length, 0, "a refused token must not reach the handler");
+                return false;
+            }
+            return next.mock.calls.length === 1;
+        }
+
+        const hmacKey = new TextEncoder().encode(TEST_JWT_SECRET);
+
+        it("should treat the exp second itself as expired and admit a token that expires later", async () => {
+            // RFC 7519 section 4.1.4: the token must not be accepted on or after its exp time.
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            const signWithExp = (exp: number) => new jose.SignJWT({ sub: "user-1" }).setProtectedHeader({ alg: "HS256" }).setExpirationTime(exp).sign(hmacKey);
+
+            assert.strictEqual(await admits(interceptor, await signWithExp(nowSeconds() - 1)), false, "exp one second ago");
+            assert.strictEqual(await admits(interceptor, await signWithExp(nowSeconds())), false, "exp equal to the current second");
+            assert.strictEqual(await admits(interceptor, await signWithExp(nowSeconds() + 30)), true, "exp thirty seconds ahead");
+        });
+
+        it("should refuse a token before its nbf time and admit it from that second on", async () => {
+            // RFC 7519 section 4.1.5: the token must not be accepted before its nbf time.
+            const interceptor = createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
+            const signWithNbf = (nbf: number) => new jose.SignJWT({ sub: "user-1" }).setProtectedHeader({ alg: "HS256" }).setNotBefore(nbf).setExpirationTime("1h").sign(hmacKey);
+
+            assert.strictEqual(await admits(interceptor, await signWithNbf(nowSeconds() + 10)), false, "nbf ten seconds ahead");
+            assert.strictEqual(await admits(interceptor, await signWithNbf(nowSeconds())), true, "nbf equal to the current second");
+            assert.strictEqual(await admits(interceptor, await signWithNbf(nowSeconds() - 600)), true, "nbf ten minutes ago");
+        });
+
+        it("should accept only the configured algorithms", async () => {
+            // One 64-byte secret satisfies the minimum of every HMAC algorithm, so the algorithm
+            // list is the only thing that separates the tokens below.
+            const secret = "k".repeat(64);
+            const key = new TextEncoder().encode(secret);
+            const sign = (alg: string) => new jose.SignJWT({ sub: "user-1" }).setProtectedHeader({ alg }).setExpirationTime("1h").sign(key);
+            const hs256 = await sign("HS256");
+            const hs512 = await sign("HS512");
+
+            const onlyHs256 = createJwtAuthInterceptor({ secret, algorithms: ["HS256"] });
+            assert.strictEqual(await admits(onlyHs256, hs256), true);
+            assert.strictEqual(await admits(onlyHs256, hs512), false, "an HS512 token must be refused when only HS256 is configured");
+
+            const onlyHs512 = createJwtAuthInterceptor({ secret, algorithms: ["HS512"] });
+            assert.strictEqual(await admits(onlyHs512, hs512), true);
+            assert.strictEqual(await admits(onlyHs512, hs256), false, "an HS256 token must be refused when only HS512 is configured");
+
+            // Without the option both are verified by the same key: the refusals above come from the option.
+            const unrestricted = createJwtAuthInterceptor({ secret });
+            assert.strictEqual(await admits(unrestricted, hs256), true);
+            assert.strictEqual(await admits(unrestricted, hs512), true);
+        });
+
+        it("should refuse an unsecured token (alg none) for every key source", async () => {
+            // RFC 7519 section 6 defines unsecured JWTs; a verifier that is configured with a key
+            // must never accept a token that carries no signature.
+            const unsecured = new jose.UnsecuredJWT({ sub: "user-1" }).setExpirationTime("1h").encode();
+            const { publicKey } = await jose.generateKeyPair("ES256");
+
+            assert.strictEqual(await admits(createJwtAuthInterceptor({ secret: TEST_JWT_SECRET }), unsecured), false, "secret");
+            assert.strictEqual(await admits(createJwtAuthInterceptor({ publicKey }), unsecured), false, "publicKey");
+        });
+    });
+
+    describe("key source priority", () => {
+        let keypair: RsaTestKeypair;
+        let jwks: TestJwksServer;
+
+        before(async () => {
+            keypair = await generateRsaTestKeypair();
+            jwks = await startTestJwksServer(keypair.publicJwk);
+        });
+
+        after(async () => {
+            await jwks.close();
+        });
+
+        async function admits(interceptor: Interceptor, token: string): Promise<boolean> {
+            const next = createMockNext();
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("authorization", `Bearer ${token}`);
+            try {
+                await interceptor(next)(req);
+            } catch (err) {
+                assertConnectError(err, Code.Unauthenticated);
+                return false;
+            }
+            return next.mock.calls.length === 1;
+        }
+
+        it("should verify against jwksUri and ignore publicKey and secret when all three are set", async () => {
+            // The guide: if jwksUri is set, publicKey and secret are ignored.
+            const { publicKey: unrelatedKey } = await jose.generateKeyPair("ES256");
+            const interceptor = createJwtAuthInterceptor({ jwksUri: jwks.url, publicKey: unrelatedKey, secret: TEST_JWT_SECRET });
+
+            const publishedKeyToken = await createTestJwtRS256(keypair.privateKey, { sub: "user-1" }, { kid: keypair.kid });
+            assert.strictEqual(await admits(interceptor, publishedKeyToken), true, "a token signed by the published key");
+
+            // The secret would verify this token if it were not ignored.
+            assert.strictEqual(await admits(interceptor, await createTestJwt({ sub: "user-1" })), false, "a token signed with the ignored secret");
         });
     });
 });

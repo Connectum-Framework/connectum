@@ -1,5 +1,5 @@
 /**
- * In-process transport — Phase 1 regression tests.
+ * In-process transport regression tests.
  *
  * Verifies the foundation invariants for the in-process transport:
  *   - createLocalTransport / server.localClient work without server.start()
@@ -38,7 +38,7 @@ function makeEchoRoutes() {
     });
 }
 
-describe("createLocalTransport / server.localClient (Phase 1)", () => {
+describe("createLocalTransport / server.localClient", () => {
     it("server.localClient invokes registered service without start()", async () => {
         const server = createServer({ services: [makeEchoRoutes()] });
 
@@ -141,7 +141,7 @@ describe("createLocalTransport / server.localClient (Phase 1)", () => {
     });
 });
 
-describe("Headers round-trip (Phase 2.1)", () => {
+describe("Headers round-trip", () => {
     it("propagates a custom request header to the handler", async () => {
         let seen: string | null = null;
         const routes = defineService(EchoService, {
@@ -216,8 +216,8 @@ describe("Headers round-trip (Phase 2.1)", () => {
     });
 });
 
-describe("Synthetic origin (Phase 2.3)", () => {
-    it("interceptors observe a non-empty req.url with service/method in path", async () => {
+describe("Synthetic origin", () => {
+    it("a client-side interceptor sees the same synthetic url, with exactly /<service>/<method> as its path", async () => {
         const observedUrls: string[] = [];
         const server = createServer({ services: [makeEchoRoutes()] });
 
@@ -233,12 +233,8 @@ describe("Synthetic origin (Phase 2.3)", () => {
 
         await client.echo(create(EchoRequestSchema, { message: "u" }));
 
-        assert.strictEqual(observedUrls.length, 1);
-        const url = observedUrls[0] ?? "";
-        assert.ok(url.length > 0, "req.url must be non-empty");
-        // The path is exactly /<service>/<method>: "Echo" alone would also match
-        // the service name, so the method is checked as the final path segment.
-        assert.ok(url.endsWith(`/${EchoService.typeName}/${EchoService.method.echo.name}`), `req.url must end with /<service>/<method>, got: ${url}`);
+        // The user guide gives `https://in-memory/<service>/<method>` as the URL of a local call.
+        assert.deepStrictEqual(observedUrls, [`https://in-memory/${EchoService.typeName}/${EchoService.method.echo.name}`]);
     });
 
     // The user guide tells authors of policy interceptors that a local call

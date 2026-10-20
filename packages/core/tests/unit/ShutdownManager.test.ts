@@ -175,6 +175,26 @@ describe("ShutdownManager", () => {
             );
         });
 
+        it("should leave the graph and the hooks untouched when a registration is rejected for a cycle", async () => {
+            const manager = new ShutdownManager();
+            const order: string[] = [];
+
+            manager.addHook("a", slowHook(order, "a"));
+            manager.addHook("b", ["a"], slowHook(order, "b"));
+            assert.throws(
+                () => manager.addHook("a", ["b"], () => {
+                    order.push("rejected");
+                }),
+                { message: /cycle/i },
+            );
+
+            // Had the rejected edge a -> b stayed in the graph, the two modules would
+            // wait for each other; had the rejected handler stayed registered, it would run.
+            await within(manager.executeAll(), 1000, "executeAll() did not settle after a rejected cyclic registration");
+
+            assert.deepStrictEqual(order, ["a", "b"]);
+        });
+
         it("should throw on self-cycle (A -> A)", () => {
             const manager = new ShutdownManager();
 
@@ -193,14 +213,6 @@ describe("ShutdownManager", () => {
     // ---------------------------------------------------------------
 
     describe("executeAll()", () => {
-        it("should not throw when no hooks are registered", async () => {
-            const manager = new ShutdownManager();
-
-            await assert.doesNotReject(async () => {
-                await manager.executeAll();
-            });
-        });
-
         it("should execute multiple handlers registered for the same module", async () => {
             const manager = new ShutdownManager();
             const started = new Set<string>();

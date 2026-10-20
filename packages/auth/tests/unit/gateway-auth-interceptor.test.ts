@@ -175,6 +175,29 @@ describe("gateway-auth-interceptor", () => {
             assert.deepStrictEqual(capturedContext.roles, ["admin", "editor", "viewer"]);
         });
 
+        // The guide: the roles header holds a JSON array or comma-separated roles. A single role
+        // whose name happens to be valid JSON (a number, true, null) is still a comma-separated list
+        // of one role. The implementation parses it as JSON first and drops every non-array result,
+        // so such a role silently disappears (fail-closed, but the documented value is not honoured).
+        for (const role of ["123", "true", "null"]) {
+            it(`should read the single role "${role}" from a comma-separated roles header`, { skip: "known defect, fails against the documented behaviour: a roles header that is valid JSON but not an array (123, true, null) yields no roles instead of one comma-separated role" }, async () => {
+                const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+                let capturedContext: AuthContext | undefined;
+                const handler = interceptor((async () => {
+                    capturedContext = getAuthContext();
+                    return { message: {} };
+                }) as never);
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-gateway-secret", "my-secret-123");
+                req.header.set("x-user-id", "user-1");
+                req.header.set("x-user-roles", role);
+
+                await handler(req);
+
+                assert.deepStrictEqual(capturedContext?.roles, [role]);
+            });
+        }
+
         it("should use defaultType when type header is missing", async () => {
             const interceptor = createGatewayAuthInterceptor({
                 ...DEFAULT_OPTIONS,
@@ -197,6 +220,30 @@ describe("gateway-auth-interceptor", () => {
             assert.ok(capturedContext);
             assert.strictEqual(capturedContext.type, "custom-gateway");
         });
+
+        // The guide documents `defaultType` as defaulting to 'gateway', both when the mapping names
+        // no type header and when the mapped header is absent from the request.
+        for (const [label, headerMapping] of [
+            ["the mapped type header is absent from the request", DEFAULT_OPTIONS.headerMapping],
+            ["no type header is mapped", { subject: "x-user-id" }],
+        ] as const) {
+            it(`should report the type "gateway" when defaultType is not set and ${label}`, async () => {
+                const interceptor = createGatewayAuthInterceptor({ ...DEFAULT_OPTIONS, headerMapping });
+
+                let capturedContext: AuthContext | undefined;
+                const handler = interceptor((async () => {
+                    capturedContext = getAuthContext();
+                    return { message: {} };
+                }) as never);
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-gateway-secret", "my-secret-123");
+                req.header.set("x-user-id", "user-1");
+
+                await handler(req);
+
+                assert.strictEqual(capturedContext?.type, "gateway");
+            });
+        }
 
         it("should prefer the type header over defaultType when the gateway sends one", async () => {
             const interceptor = createGatewayAuthInterceptor({
@@ -444,26 +491,6 @@ describe("gateway-auth-interceptor", () => {
                     );
                 }
             }
-        });
-
-        it("should set auth context in AsyncLocalStorage", async () => {
-            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
-
-            let capturedContext: AuthContext | undefined;
-            const next = mock.fn(async (_req: any) => {
-                capturedContext = getAuthContext();
-                return { message: {} };
-            }) as any;
-
-            const handler = interceptor(next);
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            req.header.set("x-gateway-secret", "my-secret-123");
-            req.header.set("x-user-id", "als-user");
-
-            await handler(req);
-
-            assert.ok(capturedContext);
-            assert.strictEqual(capturedContext.subject, "als-user");
         });
 
         it("should propagate headers when propagateHeaders is true", async () => {

@@ -1,6 +1,6 @@
 /**
  * createCatalogClient — the catalog-typed call/stream surface usable OUTSIDE a
- * Server (issue #170: workers / schedulers / CLIs).
+ * Server (workers / schedulers / CLIs).
  *
  * Drives REAL in-memory dispatch: a `createRouterTransport` stub stands in for
  * the remote service, wired through the same `RemoteResolver` factories

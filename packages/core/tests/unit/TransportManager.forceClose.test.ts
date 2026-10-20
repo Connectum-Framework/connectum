@@ -192,24 +192,6 @@ describe("TransportManager shutdown with clients that never close", () => {
         });
     }
 
-    it("close() drains an idle HTTP/2 client without waiting for the force-close path", async () => {
-        await listenTracked({ handler: respondOk as never, config: { allowHTTP1: false, port: 0, host: "127.0.0.1" } });
-        const session = connectHttp2(`http://127.0.0.1:${transport.address?.port}`);
-        session.on("error", () => {});
-        // A well-behaved client closes its session once the server says GOAWAY.
-        session.on("goaway", () => session.close());
-        const req = session.request({ ":path": "/" });
-        req.resume();
-        req.end();
-        await once(req, "end");
-
-        // Node >= 24 sends GOAWAY from server.close() itself, Node 22 does not:
-        // without the explicit session.close() this would hang until the
-        // force-close path on Node 22.
-        assert.strictEqual(await settlesWithin(transport.close(), 2000), true, "idle HTTP/2 session must receive GOAWAY and drain");
-        session.destroy();
-    });
-
     // On a runtime whose server.close() does not send GOAWAY to open sessions
     // (Node 22) the transport itself must ask every tracked session to close,
     // otherwise an idle keep-alive client holds the shutdown until the

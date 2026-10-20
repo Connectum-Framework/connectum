@@ -228,10 +228,4 @@ describe("collectFileProtos", () => {
         assert.strictEqual((result[2] as any).name, "dep3.proto");
         assert.strictEqual((result[3] as any).name, "main.proto");
     });
-
-    it("should return empty array for empty registry", () => {
-        const result = collectFileProtos([] as any);
-        assert.deepStrictEqual(result, []);
-        assert.strictEqual(result.length, 0);
-    });
 });

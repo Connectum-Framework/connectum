@@ -71,6 +71,45 @@ describe("auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 0);
         });
 
+        // The default extractor reads only `Authorization: Bearer <token>`. The authentication
+        // scheme name is case-insensitive (RFC 9110 section 11.1) and is separated from the token
+        // by whitespace (RFC 6750 section 2.1); any other scheme, or no token, means no credentials.
+        const extractionCases: Array<{ header: string; token: string | null }> = [
+            { header: "Bearer abc.def.ghi", token: "abc.def.ghi" },
+            { header: "bearer abc.def.ghi", token: "abc.def.ghi" },
+            { header: "BEARER abc.def.ghi", token: "abc.def.ghi" },
+            { header: "Basic dXNlcjpwYXNz", token: null },
+            { header: "Bearer", token: null },
+            { header: "Bearerabc.def.ghi", token: null },
+        ];
+        for (const { header, token } of extractionCases) {
+            it(`should ${token === null ? "treat as missing credentials" : `extract the token from`} the header "${header}"`, async () => {
+                const seen: string[] = [];
+                const handler = createAuthInterceptor({
+                    verifyCredentials: async (credentials: string) => {
+                        seen.push(credentials);
+                        return { subject: "user", roles: [], scopes: [], claims: {}, type: "test" };
+                    },
+                })(createMockNext());
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("authorization", header);
+
+                if (token === null) {
+                    await assert.rejects(
+                        () => handler(req),
+                        (err: unknown) => {
+                            assertConnectError(err, Code.Unauthenticated);
+                            return true;
+                        },
+                    );
+                    assert.deepStrictEqual(seen, [], "nothing must be verified when there is no bearer token");
+                } else {
+                    await handler(req);
+                    assert.deepStrictEqual(seen, [token]);
+                }
+            });
+        }
+
         it("should throw Unauthenticated when verifyCredentials throws", async () => {
             const verifyCredentials = mock.fn(async () => {
                 throw new Error("Invalid token");
@@ -194,6 +233,42 @@ describe("auth-interceptor", () => {
             }
             assert.strictEqual(next.mock.calls.length, 2, "a method outside the service wildcard must not reach next");
         });
+
+        // The interceptor removes incoming x-auth-* identity headers: a client could send any of
+        // the six to impersonate a caller downstream, on a skipped method as well as on an
+        // authenticated one (with propagation off nothing writes them back).
+        const identityHeaders = ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"];
+        for (const [label, authenticated] of [
+            ["a skipped method", false],
+            ["an authenticated call without propagation", true],
+        ] as const) {
+            it(`should remove client-supplied identity headers on ${label}`, async () => {
+                const interceptor = createAuthInterceptor({
+                    verifyCredentials: async () => ({ subject: "real-user", roles: [], scopes: [], claims: {}, type: "test" }),
+                    skipMethods: ["test.Service/Method"],
+                });
+                const req = createMockRequest(authenticated ? { service: "test.Service", method: "Other" } : MOCK_REQUEST_DEFAULTS);
+                for (const name of identityHeaders) req.header.set(name, "spoofed");
+                req.header.set("x-unrelated", "keep-me");
+                if (authenticated) req.header.set("authorization", "Bearer token");
+
+                const seen: Record<string, string | null> = {};
+                await interceptor((async (r: { header: Headers }) => {
+                    for (const name of [...identityHeaders, "x-unrelated"]) seen[name] = r.header.get(name);
+                    return { message: {} };
+                }) as never)(req);
+
+                assert.deepStrictEqual(seen, {
+                    "x-auth-subject": null,
+                    "x-auth-type": null,
+                    "x-auth-name": null,
+                    "x-auth-roles": null,
+                    "x-auth-scopes": null,
+                    "x-auth-claims": null,
+                    "x-unrelated": "keep-me",
+                });
+            });
+        }
 
         it("should set auth context in AsyncLocalStorage", async () => {
             const expectedContext: AuthContext = {

@@ -111,6 +111,28 @@ describe("retrying a failed initial route materialization", () => {
         assert.strictEqual(reply.message, "after-retry", "the server must be usable after the retry");
     });
 
+    it("does not call setup again when a protocol's register fails on a router built after a successful materialization", async () => {
+        let registers = 0;
+        let setups = 0;
+        const flakyLater: ProtocolRegistration = {
+            name: "flaky-later",
+            setup: () => {
+                setups++;
+            },
+            register: () => {
+                // 1: HTTP adapter router (initial materialization), 2: the first in-process router.
+                if (++registers === 2) throw new Error("register failed on a later router");
+            },
+        };
+        const server = createServer({ services: [echo], port: 0, allowHTTP1: false, protocols: [flakyLater] });
+
+        assert.throws(() => server.localClient(EchoService), /register failed on a later router/);
+        const reply = await server.localClient(EchoService).echo({ message: "second-try" });
+
+        assert.strictEqual(reply.message, "second-try");
+        assert.strictEqual(setups, 1, "a failure while building a later router must not make the next router set the protocol up again");
+    });
+
     it("does not call setup again for routers built after a successful materialization", async () => {
         const tracking = trackingProtocol();
         const server = createServer({ services: [echo], port: 0, allowHTTP1: false, protocols: [tracking] });

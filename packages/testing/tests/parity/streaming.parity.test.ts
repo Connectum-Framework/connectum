@@ -13,7 +13,7 @@ import assert from "node:assert";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
-import { defaultCompare, transportParityTest } from "../../src/transportParityTest.ts";
+import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
 function streamingRoutes() {
@@ -43,6 +43,18 @@ function streamingRoutes() {
     });
 }
 
+/**
+ * Asserts the handler's own answer on both transports, then the structural parity.
+ * Two transports that agree on a wrong answer (or on a truncated stream) must still fail.
+ */
+function expectOnBoth(expected: unknown) {
+    return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
+        assert.deepStrictEqual(http.response, expected, "HTTP transport result");
+        assert.deepStrictEqual(local.response, expected, "Local transport result");
+        defaultCompare(http, local);
+    };
+}
+
 // 4.1 Unary
 transportParityTest("parity 4.1: unary RPC works identically", {
     services: [streamingRoutes()],
@@ -51,6 +63,7 @@ transportParityTest("parity 4.1: unary RPC works identically", {
         const res = await client.echo(create(ItemSchema, { value: "hello", sequence: 7 }));
         return { response: { value: res.value, sequence: res.sequence } };
     },
+    compare: expectOnBoth({ value: "echo:hello", sequence: 7 }),
 });
 
 // 4.2 Server-streaming
@@ -64,6 +77,13 @@ transportParityTest("parity 4.2: server-streaming yields N messages in order", {
         }
         return { response: { items: collected } };
     },
+    compare: expectOnBoth({
+        items: [
+            { value: "s:0", sequence: 0 },
+            { value: "s:1", sequence: 1 },
+            { value: "s:2", sequence: 2 },
+        ],
+    }),
 });
 
 // 4.3 Client-streaming
@@ -79,6 +99,7 @@ transportParityTest("parity 4.3: client-streaming aggregates N inputs", {
         const res = await client.client(send());
         return { response: { total: res.total } };
     },
+    compare: expectOnBoth({ total: 3 }),
 });
 
 // 4.4 Bidi-streaming
@@ -97,6 +118,13 @@ transportParityTest("parity 4.4: bidi-streaming echoes each message in order", {
         }
         return { response: { items: out } };
     },
+    compare: expectOnBoth({
+        items: [
+            { value: "bidi:b0", sequence: 0 },
+            { value: "bidi:b1", sequence: 1 },
+            { value: "bidi:b2", sequence: 2 },
+        ],
+    }),
 });
 
 // 4.5 Unary cancellation

@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { create, createFileRegistry, fromBinary } from "@bufbuild/protobuf";
+import { create, createFileRegistry, fromBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import { CodeGeneratorRequestSchema, type FileDescriptorProto, FileDescriptorProtoSchema, FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import { protocGenCatalog } from "../../src/plugin.ts";
 
@@ -26,17 +26,17 @@ function fdpFromFixture(relPbPath: string): FileDescriptorProto {
     return fromBinary(FileDescriptorProtoSchema, Buffer.from(match[1], "base64"));
 }
 
-function runPlugin(fileToGenerate: string[], parameter: string) {
+function runPlugin(fileToGenerate: string[], parameter: string, extraFiles: FileDescriptorProto[] = []) {
     const request = create(CodeGeneratorRequestSchema, {
         fileToGenerate,
         parameter,
-        protoFile: [fdpFromFixture("echo/v1/echo_pb.ts"), fdpFromFixture("streaming/v1/streaming_pb.ts")],
+        protoFile: [fdpFromFixture("echo/v1/echo_pb.ts"), fdpFromFixture("streaming/v1/streaming_pb.ts"), ...extraFiles],
     });
     return protocGenCatalog.run(request);
 }
 
-function generate(fileToGenerate: string[], parameter = "target=ts,import_extension=.js"): { name: string; content: string } {
-    const response = runPlugin(fileToGenerate, parameter);
+function generate(fileToGenerate: string[], parameter = "target=ts,import_extension=.js", extraFiles: FileDescriptorProto[] = []): { name: string; content: string } {
+    const response = runPlugin(fileToGenerate, parameter, extraFiles);
     assert.strictEqual(response.error, "", `plugin reported an error: ${response.error}`);
     const file = response.file[0];
     assert.ok(file, "plugin produced no file");
@@ -224,6 +224,103 @@ describe("protoc-gen-connectum-catalog — generation", () => {
             "",
         ].join("\n");
         assert.strictEqual(text, expected);
+    });
+
+    // The relative module specifiers take the extension from the standard `import_extension`
+    // option: none by default, `.js` for compiled contracts, `.ts` for source ones.
+    describe("import_extension", () => {
+        const cases: Array<{ parameter: string; specifier: string }> = [
+            { parameter: "target=ts", specifier: "./echo/v1/echo_pb" },
+            { parameter: "target=ts,import_extension=.js", specifier: "./echo/v1/echo_pb.js" },
+            { parameter: "target=ts,import_extension=.ts", specifier: "./echo/v1/echo_pb.ts" },
+        ];
+        for (const { parameter, specifier } of cases) {
+            it(`${parameter} imports the descriptors from "${specifier}"`, () => {
+                const { content } = generate(["echo/v1/echo.proto"], parameter);
+                const specifiers = [...content.matchAll(/from "(\.[^"]+)"/g)].map((m) => m[1]);
+                assert.ok(specifiers.length > 0, "the catalog must import the generated descriptors");
+                assert.deepStrictEqual([...new Set(specifiers)], [specifier]);
+            });
+        }
+    });
+
+    // Catalogs are built from synthetic descriptors for shapes the echo and streaming fixtures
+    // do not have: several services in one file, files without services, and one message name
+    // used by two packages.
+    describe("shapes beyond the fixtures", () => {
+        function protoFile(init: MessageInitShape<typeof FileDescriptorProtoSchema>): FileDescriptorProto {
+            return create(FileDescriptorProtoSchema, { syntax: "proto3", ...init });
+        }
+        const multi = protoFile({
+            name: "multi/v1/multi.proto",
+            package: "multi.v1",
+            messageType: [{ name: "Req" }, { name: "Res" }],
+            service: [
+                {
+                    name: "First",
+                    method: [
+                        { name: "One", inputType: ".multi.v1.Req", outputType: ".multi.v1.Res" },
+                        { name: "Many", inputType: ".multi.v1.Req", outputType: ".multi.v1.Res", serverStreaming: true },
+                    ],
+                },
+                { name: "Second", method: [{ name: "Two", inputType: ".multi.v1.Req", outputType: ".multi.v1.Res", clientStreaming: true }] },
+            ],
+        });
+        const messagesOnly = protoFile({ name: "plain/v1/plain.proto", package: "plain.v1", messageType: [{ name: "Only" }] });
+
+        it("lists every service of a file with several services, in declaration order, with every method in the map of its kind", () => {
+            const { content } = generate(["multi/v1/multi.proto"], "target=ts,import_extension=.js", [multi]);
+
+            const catalogKeys = [...content.matchAll(/^ {4}"([^"]+)": \w+,$/gm)].map((m) => m[1]);
+            assert.deepStrictEqual(catalogKeys, ["multi.v1.First", "multi.v1.Second"]);
+
+            const callMapStart = content.indexOf("interface ConnectumCallMap");
+            const streamMapStart = content.indexOf("interface ConnectumStreamMap");
+            const entries = (section: string) => [...section.matchAll(/^ {8}"([^"]+)": \{ request:.*?(?:kind: "([^"]+)" )?\};$/gm)].map((m) => `${m[1]}${m[2] ? `|${m[2]}` : ""}`);
+            assert.deepStrictEqual(entries(content.slice(callMapStart, streamMapStart)), ["multi.v1.First/One"]);
+            assert.deepStrictEqual(entries(content.slice(streamMapStart)), ["multi.v1.First/Many|server-stream", "multi.v1.Second/Two|client-stream"]);
+        });
+
+        it("skips a file without services among the files to generate and still lists the others", () => {
+            const { content } = generate(["plain/v1/plain.proto", "multi/v1/multi.proto"], "target=ts,import_extension=.js", [messagesOnly, multi]);
+            const catalogKeys = [...content.matchAll(/^ {4}"([^"]+)": \w+,$/gm)].map((m) => m[1]);
+            assert.deepStrictEqual(catalogKeys, ["multi.v1.First", "multi.v1.Second"]);
+        });
+
+        it("treats files without services as an empty catalog: no augmentation, no failure", () => {
+            const { content } = generate(["plain/v1/plain.proto"], "target=ts,import_extension=.js", [messagesOnly]);
+            assert.match(content, /^export const serviceCatalog = Object\.freeze\(\{\}\);$/m);
+            assert.doesNotMatch(content, /declare module/);
+        });
+
+        // Two packages may each declare a message called `Item`. In the generated file every type
+        // name must still denote the message of its own package; the identifiers themselves are
+        // free, so they are resolved through the import statements.
+        it("keeps same-named messages of different packages apart", () => {
+            const owner = (pkg: string) =>
+                protoFile({
+                    name: `${pkg}/v1/${pkg}.proto`,
+                    package: `${pkg}.v1`,
+                    messageType: [{ name: "Item" }],
+                    service: [{ name: "Svc", method: [{ name: "Get", inputType: `.${pkg}.v1.Item`, outputType: `.${pkg}.v1.Item` }] }],
+                });
+            const { content } = generate(["alpha/v1/alpha.proto", "beta/v1/beta.proto"], "target=ts,import_extension=.js", [owner("alpha"), owner("beta")]);
+
+            // local identifier -> where it comes from and under which exported name
+            const bindings = new Map<string, { module: string; exported: string }>();
+            for (const line of content.matchAll(/^import (?:type )?\{ ([^}]+) \} from "([^"]+)";$/gm)) {
+                for (const specifier of (line[1] as string).split(",")) {
+                    const [exported, local] = specifier.trim().split(/\s+as\s+/);
+                    bindings.set((local ?? exported) as string, { module: line[2] as string, exported: exported as string });
+                }
+            }
+            for (const pkg of ["alpha", "beta"]) {
+                const entry = content.match(new RegExp(`"${pkg}\\.v1\\.Svc/Get": \\{ request: MessageInitShape<typeof ([\\w$]+)>; response: ([\\w$]+) \\};`));
+                assert.ok(entry, `the ${pkg} method must be in ConnectumCallMap`);
+                assert.deepStrictEqual(bindings.get(entry[1] as string), { module: `./${pkg}/v1/${pkg}_pb.js`, exported: "ItemSchema" }, `${pkg} request type`);
+                assert.deepStrictEqual(bindings.get(entry[2] as string), { module: `./${pkg}/v1/${pkg}_pb.js`, exported: "Item" }, `${pkg} response type`);
+            }
+        });
     });
 
     describe("empty input", () => {

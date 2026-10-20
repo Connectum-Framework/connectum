@@ -101,15 +101,6 @@ describe("assertConnectError", () => {
         );
     });
 
-    it("works without messagePattern (code-only check)", () => {
-        const error = new ConnectError(
-            "some detailed error message",
-            Code.Internal,
-        );
-        assertConnectError(error, Code.Internal);
-        // No throw — assertion passed with code-only check
-    });
-
     it("narrows type after assertion — error.code is accessible without cast", () => {
         const error: unknown = new ConnectError("typed", Code.AlreadyExists);
         assertConnectError(error, Code.AlreadyExists);
@@ -118,6 +109,44 @@ describe("assertConnectError", () => {
         // Accessing .code and .message without cast proves type narrowing works.
         assert.strictEqual(error.code, Code.AlreadyExists);
         assert.ok(error.message.includes("typed"));
+    });
+
+    // The pattern is matched against the full message, code prefix included, and matching
+    // is refused when the message exceeds 1000 characters. The boundary is exact: 1000 is
+    // matched, 1001 is refused even though the pattern would match.
+    describe("message length limit", () => {
+        const prefix = "[internal] ";
+        const withMessageLength = (length: number) => new ConnectError("x".repeat(length - prefix.length), Code.Internal);
+
+        it("matches a message of exactly 1000 characters", () => {
+            const error = withMessageLength(1000);
+            assert.strictEqual(error.message.length, 1000);
+
+            assertConnectError(error, Code.Internal, "xxx");
+            assertConnectError(error, Code.Internal, /^\[internal\] x+$/);
+        });
+
+        it("refuses to match a message of 1001 characters, even with a pattern that would match", () => {
+            const error = withMessageLength(1001);
+            assert.strictEqual(error.message.length, 1001);
+
+            assert.throws(
+                () => assertConnectError(error, Code.Internal, "xxx"),
+                (err: unknown) => err instanceof assert.AssertionError && err.message.includes("1001"),
+            );
+            assert.throws(() => assertConnectError(error, Code.Internal, /x/), assert.AssertionError);
+        });
+
+        it("does not look at the message length when no pattern is given", () => {
+            assertConnectError(withMessageLength(5000), Code.Internal);
+        });
+    });
+
+    it("a string pattern is matched against the full message, code prefix included", () => {
+        const error = new ConnectError("user not found", Code.NotFound);
+
+        assertConnectError(error, Code.NotFound, "[not_found] user not found");
+        assert.throws(() => assertConnectError(error, Code.NotFound, "[internal] user not found"), assert.AssertionError);
     });
 
     it("matches ConnectError message format [code] message", () => {

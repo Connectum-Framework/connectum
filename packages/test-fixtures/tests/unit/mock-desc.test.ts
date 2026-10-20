@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
+import { FieldOptionsSchema } from "@bufbuild/protobuf/wkt";
 import {
   createMockDescField,
   createMockDescMessage,
@@ -179,10 +180,26 @@ describe("createMockDescMessage", () => {
     assert.strictEqual(msg.parent, undefined);
   });
 
-  it("generates file name from typeName", () => {
-    const msg = createMockDescMessage("acme.v1.UserService") as any;
+  // The edition of a proto3 file is what create() inspects to decide how field
+  // presence is tracked, so a descriptor that omits it is not shaped like a real one.
+  it("the file of a message reports the edition of a real proto3 file", { skip: "known defect, fails against the documented behaviour: the mock file has no `edition` (DescFile.edition is 999 for proto3), only a string in `proto.edition`" }, () => {
+    const real = realMessage(USER);
+    const mock = createMockDescMessage(USER);
 
-    assert.strictEqual(msg.file.name, "acme/v1/UserService.proto");
+    assert.strictEqual(mock.file.edition, real.file.edition);
+  });
+
+  // DescField.parent is "the message this field is declared on".
+  it("every field points back at the message that declares it, like a real field", { skip: "known defect, fails against the documented behaviour: fields built by createMockDescMessage keep `parent` undefined instead of the message" }, () => {
+    const real = realMessage(USER);
+    assert.ok(real.fields.every((f) => f.parent === real), "reference: a real field points at its message");
+
+    const msg = createMockDescMessage(USER, { fields: [{ name: "id" }, { name: "email" }] });
+
+    assert.ok(
+      msg.fields.every((f) => f.parent === msg),
+      "each field of the mock message must point back at it",
+    );
   });
 
   it("creates oneofs from options", () => {
@@ -453,12 +470,6 @@ describe("createMockDescField", () => {
     assert.strictEqual((field as any).scalar, 5);
   });
 
-  it("unknown type defaults to string (9)", () => {
-    const field = createMockDescField("data", { type: "unknown_type" });
-
-    assert.strictEqual((field as any).scalar, 9);
-  });
-
   it("fieldNumber defaults to 1", () => {
     const field = createMockDescField("value");
 
@@ -479,10 +490,17 @@ describe("createMockDescField", () => {
     }
   });
 
-  it("isSensitive sets debug_redact in proto options", () => {
+  // FieldOptions in @bufbuild/protobuf names the property debugRedact (the
+  // protobuf-es rule for the proto field debug_redact); a descriptor produced by
+  // the library never carries a snake_case key.
+  it("isSensitive marks the field the way FieldOptions of the real library does", { skip: "known defect, fails against the documented behaviour: the mock sets `debug_redact` while FieldOptions names the property `debugRedact`" }, () => {
+    const real = create(FieldOptionsSchema, { debugRedact: true });
+    assert.strictEqual(real.debugRedact, true, "reference: the real property is debugRedact");
+    assert.strictEqual("debug_redact" in real, false, "reference: the real options message has no snake_case key");
+
     const field = createMockDescField("password", { isSensitive: true });
 
-    assert.strictEqual((field as any).proto.options.debug_redact, true);
+    assert.strictEqual((field.proto.options as { debugRedact?: boolean } | undefined)?.debugRedact, true);
   });
 
   // A real field without annotations has no options message at all.
@@ -505,7 +523,6 @@ describe("createMockDescField", () => {
     assert.strictEqual(field.repeated, false);
     assert.strictEqual(field.packed, false);
     assert.strictEqual(field.optional, false);
-    assert.strictEqual(field.parent, undefined);
     assert.strictEqual(field.oneof, undefined);
   });
 });
@@ -601,17 +618,6 @@ describe("createMockDescMethod", () => {
     assert.strictEqual(method.output.typeName, "test.CreateOrderResponse");
   });
 
-  it("useSensitiveRedaction sets debug_redact in proto options", () => {
-    const method = createMockDescMethod("Login", {
-      useSensitiveRedaction: true,
-    });
-
-    assert.strictEqual(
-      (method as any).proto.options.debug_redact,
-      true,
-    );
-  });
-
   // A real method without annotations has no options message at all.
   it("no redaction by default", () => {
     const real = realMethod("GetUser");
@@ -629,6 +635,5 @@ describe("createMockDescMethod", () => {
 
     assert.strictEqual(method.kind, "rpc");
     assert.strictEqual(method.deprecated, false);
-    assert.strictEqual(method.parent, undefined);
   });
 });

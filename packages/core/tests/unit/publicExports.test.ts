@@ -1,7 +1,7 @@
 /**
  * Public-API surface regression tests.
  *
- * Const-object enums (ADR-001) carry BOTH a runtime value and a type. They must
+ * Const-object enums (the erasable-syntax replacement for `enum`) carry BOTH a runtime value and a type. They must
  * be re-exported from the package barrel (`src/index.ts`) as VALUES — a
  * type-only re-export (`export type { X }`) erases the runtime const, leaving
  * the symbol `undefined` for every consumer while the `.d.ts` still advertises
@@ -13,7 +13,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { EffectiveTransport, ServerState, TransportValidationMode } from "../../src/index.ts";
+import { EffectiveTransport, LifecycleEvent, ServerState, TransportValidationMode } from "../../src/index.ts";
 
 describe("public exports — const-object enums are runtime values from the barrel", () => {
     it("TransportValidationMode is a runtime object with its documented members", () => {
@@ -36,7 +36,13 @@ describe("public exports — const-object enums are runtime values from the barr
         });
     });
 
-    it("ServerState (existing const-enum) stays a runtime value too", () => {
-        assert.strictEqual(typeof ServerState, "object");
+    it("ServerState is a runtime object with the documented lifecycle states", () => {
+        // The documented lifecycle: created -> starting -> running -> stopping -> stopped.
+        assert.deepStrictEqual({ ...ServerState }, { CREATED: "created", STARTING: "starting", RUNNING: "running", STOPPING: "stopping", STOPPED: "stopped" });
+    });
+
+    it("LifecycleEvent is a runtime object with the documented event names", () => {
+        // The event names a consumer passes to server.on(): start, ready, stopping, stop, error.
+        assert.deepStrictEqual({ ...LifecycleEvent }, { START: "start", READY: "ready", STOPPING: "stopping", STOP: "stop", ERROR: "error" });
     });
 });
