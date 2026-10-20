@@ -141,6 +141,8 @@ describe("timeout interceptor", () => {
         assert.strictEqual(settled, false, "the call must still be open 1 ms before the default limit");
 
         t.mock.timers.tick(1);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.strictEqual(settled, true, "the call must be rejected at the default limit");
         const err = await outcome;
 
         assertConnectError(err, Code.DeadlineExceeded, "30000ms");
