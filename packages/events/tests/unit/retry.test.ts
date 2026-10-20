@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createEventBus } from "../../src/EventBus.ts";
 import { createEventContext } from "../../src/EventContext.ts";
 import { NonRetryableError, RetryableError } from "../../src/errors.ts";
+import { MemoryAdapter } from "../../src/MemoryAdapter.ts";
 import { retryMiddleware } from "../../src/middleware/retry.ts";
 import type { RawEvent } from "../../src/types.ts";
 
@@ -321,6 +323,82 @@ describe("retryMiddleware", () => {
             );
             assert.deepEqual(delays, []);
             assert.equal(calls, 1, "the handler runs once and is not retried");
+        });
+    });
+
+    // A maxRetries that cannot work used to be accepted: the attempt loop then never ran, the
+    // handler was never called and `undefined` was thrown to the dead-letter middleware.
+    describe("maxRetries validation", () => {
+        for (const [label, value, errorType] of [
+            ["a negative number", -1, RangeError],
+            ["NaN", Number.NaN, RangeError],
+            ["a fraction", 2.5, RangeError],
+            ["Infinity", Number.POSITIVE_INFINITY, RangeError],
+            ["a string", "3", TypeError],
+            ["null", null, TypeError],
+        ] as const) {
+            it(`refuses ${label} when the middleware is created, naming the option and the value`, () => {
+                assert.throws(
+                    () => retryMiddleware({ maxRetries: value as unknown as number }),
+                    (error: unknown) =>
+                        error instanceof errorType && error.message.includes("retryMiddleware") && error.message.includes("maxRetries") && error.message.includes(String(value)),
+                );
+            });
+        }
+
+        it("refuses a bad maxRetries of an EventBus before any event is handled", () => {
+            assert.throws(
+                () => createEventBus({ adapter: MemoryAdapter(), middleware: { retry: { maxRetries: -1 } } }),
+                (error: unknown) => error instanceof RangeError && error.message.includes("maxRetries"),
+            );
+        });
+
+        it("maxRetries 0 calls the handler once, waits no delay and throws the handler's own error", async () => {
+            const failure = new Error("boom");
+            let calls = 0;
+            const mw = retryMiddleware({ maxRetries: 0, backoff: "fixed", initialDelay: 1000 });
+            const delays = await recordBackoffDelays(() =>
+                assert.rejects(
+                    () =>
+                        mw(makeRawEvent(), makeCtx(), async () => {
+                            calls += 1;
+                            throw failure;
+                        }),
+                    (error: unknown) => error === failure,
+                ),
+            );
+            assert.equal(calls, 1);
+            assert.deepEqual(delays, []);
+        });
+
+        it("an omitted maxRetries calls a failing handler 4 times and throws its own error", async () => {
+            const failure = new Error("boom");
+            let calls = 0;
+            const mw = retryMiddleware({ backoff: "fixed", initialDelay: 1 });
+            await assert.rejects(
+                () =>
+                    mw(makeRawEvent(), makeCtx(), async () => {
+                        calls += 1;
+                        throw failure;
+                    }),
+                (error: unknown) => error === failure,
+            );
+            assert.equal(calls, 4);
+        });
+
+        it("maxRetries 2 calls a failing handler 3 times and throws its own error", async () => {
+            const failure = new Error("boom");
+            let calls = 0;
+            const mw = retryMiddleware({ maxRetries: 2, backoff: "fixed", initialDelay: 1 });
+            await assert.rejects(
+                () =>
+                    mw(makeRawEvent(), makeCtx(), async () => {
+                        calls += 1;
+                        throw failure;
+                    }),
+                (error: unknown) => error === failure,
+            );
+            assert.equal(calls, 3);
         });
     });
 });
