@@ -7,7 +7,17 @@
  */
 
 import type { Interceptor, StreamRequest, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { FallbackOptions } from "./types.ts";
+
+/**
+ * Whether a failure is a refusal of access. A fallback value stands in for a failed
+ * dependency; it must not stand in for a caller who is not allowed.
+ */
+function isAccessRefusal(err: unknown): boolean {
+    const code = ConnectError.from(err).code;
+    return code === Code.Unauthenticated || code === Code.PermissionDenied;
+}
 
 /** Content types the Connect protocol uses for a GET request, keyed by its `encoding` query parameter. */
 const CONNECT_GET_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -44,6 +54,12 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * Provides fallback response when service fails, enabling graceful degradation.
  * The handler returns the RPC response message, not a response wrapper.
  * In the server example, getCachedData is application code that returns that message.
+ *
+ * A refusal of access is never replaced: a failure with the code `Unauthenticated` or
+ * `PermissionDenied` is rethrown as it is, and the `handler` is not called for it. The
+ * fallback value is for failed dependencies, timeouts and bugs, not for callers who are
+ * not allowed. Even so, put the authentication and authorization interceptors in front of
+ * the default interceptors, as the authentication guide shows.
  *
  * The response synthesised by the fallback interceptor carries only the protocol
  * headers it needs, on a server chain and on a client transport alike:
@@ -118,6 +134,12 @@ export function createFallbackInterceptor<T = unknown>(options: FallbackOptions<
             // Execute normally
             return await next(req);
         } catch (err) {
+            // A refusal of access (`Unauthenticated`, `PermissionDenied`) reaches the caller as it is,
+            // wherever the authentication or authorization interceptor stands in the chain.
+            if (isAccessRefusal(err)) {
+                throw err;
+            }
+
             // Call fallback handler
             const fallbackValue = await handler(err as Error);
 
