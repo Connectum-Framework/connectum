@@ -9,7 +9,6 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
-import { assertSubscriptionPatterns } from "@connectum/events";
 import { Redis } from "ioredis";
 import { watchConnection } from "./lifecycle.ts";
 import type { RedisReplyMapping } from "./RedisProtocol.ts";
@@ -276,10 +275,6 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
-            // Before any stream or consumer group is created: Redis accepts an empty segment in a
-            // key without complaint, so nothing but this check stops the stream from being made.
-            assertSubscriptionPatterns({ adapter: "RedisAdapter", patterns });
-
             if (!redis) {
                 throw new Error("RedisAdapter: not connected");
             }

@@ -248,9 +248,9 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
-            // Before a consumer is created and connected: the broker would answer with an error that
-            // does not name the pattern ("invalid topic", "does not host this topic-partition").
-            assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns });
+            // Before a consumer is created and connected: Kafka refuses these topic names and the
+            // broker's answer ("invalid topic") does not name the pattern.
+            assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns, rule: "kafka-topic-name" });
 
             if (!connected) {
                 throw new Error("KafkaAdapter: not connected");
