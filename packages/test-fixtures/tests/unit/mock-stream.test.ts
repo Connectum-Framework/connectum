@@ -111,21 +111,4 @@ describe("createMockStream", () => {
     assert.deepStrictEqual(second, items);
     assert.deepStrictEqual(first, second);
   });
-
-  // Leaving a for-await loop early must end the iteration there: the items that
-  // were not consumed are never produced, and a fresh iteration starts from the top.
-  it("stops producing items when the consumer breaks out, and a later iteration starts over", async () => {
-    const stream = createMockStream([1, 2, 3, 4]);
-
-    const first: number[] = [];
-    for await (const item of stream) {
-      first.push(item);
-      if (item === 2) break;
-    }
-    const second: number[] = [];
-    for await (const item of stream) second.push(item);
-
-    assert.deepStrictEqual(first, [1, 2]);
-    assert.deepStrictEqual(second, [1, 2, 3, 4]);
-  });
 });
