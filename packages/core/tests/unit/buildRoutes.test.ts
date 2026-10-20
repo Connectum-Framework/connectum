@@ -354,7 +354,11 @@ describe("buildRoutes()", () => {
                 services: [
                     echoService(async (_message, signal) => {
                         started();
-                        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+                        // Give up after a second so that a signal that never aborts fails the assertion below instead of hanging.
+                        await new Promise<void>((resolve) => {
+                            signal.addEventListener("abort", () => resolve(), { once: true });
+                            setTimeout(resolve, 1000).unref();
+                        });
                         abortedInHandler = signal.aborted;
                         return "late";
                     }),
