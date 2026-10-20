@@ -569,7 +569,7 @@ describe("circuit breaker interceptor", () => {
                 );
                 assert.strictEqual(next.mock.calls.length, 2, "the third call must be refused without reaching the downstream");
                 assert.ok(
-                    consoleErrorMock.mock.calls.every((call) => call.arguments.includes(classifierBug)) && consoleErrorMock.mock.calls.length === 2,
+                    consoleErrorMock.mock.calls.every((call) => (call.arguments as unknown[]).includes(classifierBug)) && consoleErrorMock.mock.calls.length === 2,
                     "each classification failure must be reported with the predicate's own error",
                 );
             } finally {

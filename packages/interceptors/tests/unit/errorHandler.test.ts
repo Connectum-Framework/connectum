@@ -209,7 +209,7 @@ describe("errorHandler interceptor", () => {
     // are: the console log for logErrors, the stack handed to onError for
     // includeStackTrace (an onError callback replaces the console log).
     describe("defaults that depend on NODE_ENV", () => {
-        type Captured = { stack?: string };
+        type Captured = { stack?: string | undefined };
 
         async function runWithEnv(nodeEnv: string): Promise<{ consoleCalls: unknown[][]; infoStack: string | undefined }> {
             const savedEnv = process.env.NODE_ENV;
