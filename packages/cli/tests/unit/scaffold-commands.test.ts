@@ -11,18 +11,13 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
+import { fileURLToPath } from "node:url";
 import { executeGenerateService, generateServiceCommand } from "../../src/commands/generate-service.ts";
-import { executeInit, initCommand } from "../../src/commands/init.ts";
+import { executeInit } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
 import { cloneOf, cloneStub } from "../helpers/baseFixture.ts";
 import { protoRpcMethods as rpcMethods } from "../helpers/generatedCode.ts";
-
-describe("init command", () => {
-    it("exports a citty command with a run handler", () => {
-        assert.equal(typeof initCommand.run, "function");
-    });
-});
 
 describe("executeInit pipeline (injected clone, no network)", () => {
     let workdir: string;
@@ -97,14 +92,23 @@ describe("executeInit pipeline (injected clone, no network)", () => {
         assert.match(readFileSync(join(workdir, "demo/src/server.ts"), "utf8"), /services: \[\],/);
     });
 
-    it("refuses to clobber a non-empty target directory", async () => {
+    // Refusing means refusing completely: neither the file that collides nor any other file of the
+    // scaffold may be written into the directory the user already owns.
+    it("refuses to clobber a non-empty target directory and leaves it exactly as it was", async () => {
         mkdirSync(join(workdir, "taken"), { recursive: true });
         writeFileSync(join(workdir, "taken/package.json"), "{}");
         await assert.rejects(() => executeInit({ name: "taken", clone: cloneStub }), /already exists and is not empty/);
+        assert.deepEqual(readdirSync(join(workdir, "taken")), ["package.json"]);
+        assert.equal(readFileSync(join(workdir, "taken/package.json"), "utf8"), "{}");
     });
 
-    it("rejects an invalid runtime before doing any work", async () => {
-        await assert.rejects(() => executeInit({ name: "x", runtime: "deno", clone: cloneStub }), /invalid --runtime/);
+    // Deno is out of scope: the refusal names the value and lists exactly what is accepted.
+    it("rejects an invalid runtime before doing any work, listing the accepted values", async () => {
+        await assert.rejects(
+            () => executeInit({ name: "x", runtime: "deno", clone: cloneStub }),
+            (err: Error) => /invalid --runtime "deno"/.test(err.message) && /expected one of: node, bun\)/.test(err.message),
+        );
+        assert.deepEqual(readdirSync(workdir), []);
     });
 
     it("fails clearly when the target path exists as a file (not a raw ENOTDIR)", async () => {
@@ -320,5 +324,71 @@ describe("executeGenerateService: registration hint and existing files", () => {
         const out = printed.join("\n");
         assert.match(out, /Generated 2 file\(s\)/);
         assert.ok(!out.includes("Skipped"), out);
+    });
+});
+
+/** Gitignored scratch area of the repository: the tests below write nothing outside it. */
+const scratchRoot = fileURLToPath(new URL("../../../../.tmp/", import.meta.url));
+
+describe("the commands as the CLI runs them, in a scratch directory inside the repository", () => {
+    let workdir: string;
+    let cwd: string;
+    let previousTmpdir: string | undefined;
+
+    beforeEach(() => {
+        mkdirSync(scratchRoot, { recursive: true });
+        workdir = mkdtempSync(join(scratchRoot, "commands-"));
+        mkdirSync(join(workdir, "project"));
+        mkdirSync(join(workdir, "tmp"));
+        cwd = process.cwd();
+        process.chdir(join(workdir, "project"));
+        // `init` fetches the base into a directory under the system temporary directory.
+        previousTmpdir = process.env.TMPDIR;
+        process.env.TMPDIR = join(workdir, "tmp");
+        mock.method(console, "log", () => undefined);
+    });
+
+    afterEach(() => {
+        mock.restoreAll();
+        process.chdir(cwd);
+        if (previousTmpdir === undefined) {
+            delete process.env.TMPDIR;
+        } else {
+            process.env.TMPDIR = previousTmpdir;
+        }
+        rmSync(workdir, { recursive: true, force: true });
+    });
+
+    // The command's own `run` is what the CLI executes: it has to hand every argument on, under the
+    // flag names the guide documents (`--with-events`, `--force`).
+    it("generate service: run turns --with-events and --force into the files and the overwrite", async () => {
+        const impl = join(workdir, "project/src/services/billingService.ts");
+        const run = generateServiceCommand.run as (context: { args: Record<string, unknown> }) => Promise<void>;
+        await run({ args: { name: "billing", "with-events": true, force: false } });
+        assert.match(readFileSync(impl, "utf8"), /export const billingEventRoutes\b/);
+
+        writeFileSync(impl, "// hand-written implementation\n");
+        await run({ args: { name: "billing", "with-events": false, force: false } });
+        assert.equal(readFileSync(impl, "utf8"), "// hand-written implementation\n");
+
+        await run({ args: { name: "billing", "with-events": false, force: true } });
+        assert.doesNotMatch(readFileSync(impl, "utf8"), /hand-written/);
+        assert.match(readFileSync(impl, "utf8"), /export const billingService\b/);
+    });
+
+    // The guide says "--force: Overwrite existing files". A directory that already holds files is
+    // refused without it (covered above); with it, the scaffold replaces what collides and leaves
+    // every other file of the directory alone.
+    it("init --force scaffolds into a non-empty directory, replacing colliding files and keeping the others", async () => {
+        mkdirSync("taken");
+        writeFileSync("taken/package.json", "{}");
+        writeFileSync("taken/notes.txt", "mine");
+
+        await executeInit({ name: "taken", force: true, clone: cloneStub });
+
+        const pkg = JSON.parse(readFileSync("taken/package.json", "utf8"));
+        assert.equal(pkg.name, "taken");
+        assert.equal(readFileSync("taken/notes.txt", "utf8"), "mine");
+        assert.equal(existsSync("taken/src/services/greeterService.ts"), true);
     });
 });
