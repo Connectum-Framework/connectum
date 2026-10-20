@@ -376,16 +376,21 @@ describe("Healthcheck Watch handler", () => {
 		}
 	});
 
-	// "Terminates when the client disconnects": the aborted wait ends the
-	// stream normally instead of failing it with AbortError.
-	it("ends the stream normally when the client call is aborted", async () => {
-		const { controller, stream } = startWatch({ watchInterval: 20 });
+	// "Terminates when the client disconnects": a call aborted while the
+	// handler waits for the next poll ends the stream normally instead of
+	// failing it with AbortError. The long interval keeps the handler inside
+	// that wait when the abort arrives.
+	it("ends the stream normally when the client call is aborted during the wait", async () => {
+		const { controller, stream } = startWatch({ watchInterval: 60_000 });
 		await stream.next();
+		const waiting = stream.next();
+		await delay(10);
 
 		controller.abort();
-		const end = await stream.next();
+		const end = await within(waiting, 2000);
 
-		assert.strictEqual(end.done, true);
+		assert.notStrictEqual(end, "silent", "the aborted wait must end the stream promptly");
+		assert.strictEqual((end as IteratorResult<{ status: ServingStatus }>).done, true);
 	});
 });
 
