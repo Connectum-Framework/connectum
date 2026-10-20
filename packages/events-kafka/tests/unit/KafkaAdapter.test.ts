@@ -57,7 +57,7 @@ describe("KafkaAdapter", () => {
     });
 
     it("accepts false or a positive topicDiscoveryInterval and rejects anything else", () => {
-        for (const good of [false, 1, 2_147_483_647]) {
+        for (const good of [false, 1, 2_147_483_647] as const) {
             assert.doesNotThrow(() => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: good } }));
         }
 
