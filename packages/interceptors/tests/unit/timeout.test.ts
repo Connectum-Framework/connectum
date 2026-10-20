@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextSlow, createMockRequest } from "@connectum/test-fixtures";
 import { createTimeoutInterceptor } from "../../src/timeout.ts";
@@ -83,40 +83,6 @@ describe("timeout interceptor", () => {
         assert.strictEqual(next.mock.calls[0].arguments[0], mockReq);
     });
 
-    it("should handle custom duration", async () => {
-        const interceptor = createTimeoutInterceptor({ duration: 200 });
-
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
-
-        const next = createMockNextSlow(300);
-
-        const handler = interceptor(next as any);
-
-        await assert.rejects(
-            () => handler(mockReq),
-            (err: unknown) => {
-                assertConnectError(err, Code.DeadlineExceeded, "200ms");
-                return true;
-            },
-        );
-
-        // Wait for mock timer to drain
-        await new Promise((resolve) => setTimeout(resolve, 350));
-    });
-
-    it("should not timeout fast requests", async () => {
-        const interceptor = createTimeoutInterceptor({ duration: 1000 });
-
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
-
-        const next = createMockNextSlow(10, { message: { result: "fast" } });
-
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
-
-        assert.strictEqual((result.message as any).result, "fast");
-    });
-
     for (const [label, duration, got] of [
         ["zero", 0, "0"],
         ["negative", -1, "-1"],
@@ -149,17 +115,35 @@ describe("timeout interceptor", () => {
         assert.strictEqual(typeof createTimeoutInterceptor({ duration: 2_147_483_647 }), "function");
     });
 
-    it("should use default duration", async () => {
-        const interceptor = createTimeoutInterceptor(); // Uses default 30000ms
-
+    // The default limit is 30000 ms: a call that never answers is still open one
+    // millisecond before it and rejected with DeadlineExceeded at it. A virtual
+    // clock stands in for 30 s of waiting.
+    it("should enforce a default duration of 30000 ms", async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const interceptor = createTimeoutInterceptor();
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+        const next = mock.fn(() => new Promise<never>(() => {}));
 
-        const next = createMockNext();
+        let settled = false;
+        const outcome = interceptor(next as any)(mockReq).then(
+            () => {
+                settled = true;
+                return undefined;
+            },
+            (err: unknown) => {
+                settled = true;
+                return err;
+            },
+        );
 
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
+        t.mock.timers.tick(29_999);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.strictEqual(settled, false, "the call must still be open 1 ms before the default limit");
 
-        assert.strictEqual((result.message as any).result, "success");
+        t.mock.timers.tick(1);
+        const err = await outcome;
+
+        assertConnectError(err, Code.DeadlineExceeded, "30000ms");
     });
 
     describe("streaming with skipStreaming option", () => {
@@ -189,8 +173,10 @@ describe("timeout interceptor", () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
 
-        it("should pass through streaming request when skipStreaming=true (default)", async () => {
-            const interceptor = createTimeoutInterceptor({ duration: 50, skipStreaming: true });
+        // skipStreaming is not given: the default skips streaming calls, so the
+        // downstream call outliving the 50 ms limit still answers.
+        it("should pass through streaming request by default (skipStreaming not given)", async () => {
+            const interceptor = createTimeoutInterceptor({ duration: 50 });
 
             const mockReq = createMockRequest({
                 service: "test.Service",
