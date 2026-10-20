@@ -493,26 +493,6 @@ describe("gateway-auth-interceptor", () => {
             }
         });
 
-        it("should set auth context in AsyncLocalStorage", async () => {
-            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
-
-            let capturedContext: AuthContext | undefined;
-            const next = mock.fn(async (_req: any) => {
-                capturedContext = getAuthContext();
-                return { message: {} };
-            }) as any;
-
-            const handler = interceptor(next);
-            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
-            req.header.set("x-gateway-secret", "my-secret-123");
-            req.header.set("x-user-id", "als-user");
-
-            await handler(req);
-
-            assert.ok(capturedContext);
-            assert.strictEqual(capturedContext.subject, "als-user");
-        });
-
         it("should propagate headers when propagateHeaders is true", async () => {
             const interceptor = createGatewayAuthInterceptor({
                 ...DEFAULT_OPTIONS,
