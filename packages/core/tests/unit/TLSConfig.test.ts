@@ -5,9 +5,11 @@
 import assert from "node:assert";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { relative } from "node:path";
 import { resolve } from "node:path/posix";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createServer } from "../../src/Server.ts";
 import { getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
 
 describe("TLSConfig", () => {
@@ -221,6 +223,122 @@ describe("TLSConfig", () => {
 
 			assert.strictEqual(result.key.toString(), "dirpath-key-content");
 			assert.strictEqual(result.cert.toString(), "dirpath-cert-content");
+		});
+
+		it("should resolve relative explicit paths against the current working directory", () => {
+			writeFileSync(resolve(testDir, "rel.key"), "rel-key-content");
+			writeFileSync(resolve(testDir, "rel.crt"), "rel-cert-content");
+
+			const result = readTLSCertificates({
+				keyPath: relative(cwd(), resolve(testDir, "rel.key")),
+				certPath: relative(cwd(), resolve(testDir, "rel.crt")),
+			});
+
+			assert.strictEqual(result.key.toString(), "rel-key-content");
+			assert.strictEqual(result.cert.toString(), "rel-cert-content");
+		});
+
+		it("should prefer explicit paths over TLS_DIR_PATH", () => {
+			writeFileSync(resolve(testDir, "server.key"), "env-key-content");
+			writeFileSync(resolve(testDir, "server.crt"), "env-cert-content");
+			writeFileSync(resolve(testDir, "own.key"), "own-key-content");
+			writeFileSync(resolve(testDir, "own.crt"), "own-cert-content");
+			process.env.TLS_DIR_PATH = testDir;
+
+			const result = readTLSCertificates({ keyPath: resolve(testDir, "own.key"), certPath: resolve(testDir, "own.crt") });
+
+			assert.strictEqual(result.key.toString(), "own-key-content");
+			assert.strictEqual(result.cert.toString(), "own-cert-content");
+		});
+
+		describe("a single explicit path", () => {
+			// The directory holds a complete, readable pair, so a loader that falls back
+			// to it would start without error but serve another certificate than the
+			// operator named. The path the operator gave does not exist, so any attempt
+			// to read it would surface as ENOENT instead of the configuration error.
+			function writeDirectoryPair(): void {
+				writeFileSync(resolve(testDir, "server.key"), "dir-key-content");
+				writeFileSync(resolve(testDir, "server.crt"), "dir-cert-content");
+			}
+
+			function assertConfigurationError(error: unknown, given: "keyPath" | "certPath", missing: "keyPath" | "certPath"): true {
+				assert.ok(error instanceof Error, "an Error is expected");
+				assert.notStrictEqual((error as NodeJS.ErrnoException).code, "ENOENT", "the configuration error must come before any file is read");
+				assert.ok(error.message.includes(`"${given}" is set`), `message names the given parameter: ${error.message}`);
+				assert.ok(error.message.includes(`"${missing}" is not`), `message names the missing parameter: ${error.message}`);
+				return true;
+			}
+
+			it("should reject keyPath without certPath instead of reading the directory", () => {
+				writeDirectoryPair();
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath: resolve(testDir, "only.key"), dirPath: testDir }),
+					(error) => assertConfigurationError(error, "keyPath", "certPath"),
+				);
+			});
+
+			it("should reject certPath without keyPath instead of reading the directory", () => {
+				writeDirectoryPair();
+
+				assert.throws(
+					() => readTLSCertificates({ certPath: resolve(testDir, "only.crt"), dirPath: testDir }),
+					(error) => assertConfigurationError(error, "certPath", "keyPath"),
+				);
+			});
+
+			it("should reject a single path when the directory comes from TLS_DIR_PATH", () => {
+				writeDirectoryPair();
+				process.env.TLS_DIR_PATH = testDir;
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath: resolve(testDir, "only.key") }),
+					(error) => assertConfigurationError(error, "keyPath", "certPath"),
+				);
+			});
+
+			it("should reject an existing single file as well, not only a missing one", () => {
+				writeDirectoryPair();
+				writeFileSync(resolve(testDir, "only.key"), "only-key-content");
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath: resolve(testDir, "only.key"), dirPath: testDir }),
+					(error) => assertConfigurationError(error, "keyPath", "certPath"),
+				);
+			});
+
+			it("should treat an empty string as not supplied and reject the pair it leaves incomplete", () => {
+				writeDirectoryPair();
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath: resolve(testDir, "only.key"), certPath: "", dirPath: testDir }),
+					(error) => assertConfigurationError(error, "keyPath", "certPath"),
+				);
+				assert.throws(
+					() => readTLSCertificates({ keyPath: "", certPath: resolve(testDir, "only.crt"), dirPath: testDir }),
+					(error) => assertConfigurationError(error, "certPath", "keyPath"),
+				);
+			});
+
+			it("should make server.start() reject with the configuration error and leave no listener", async () => {
+				writeDirectoryPair();
+				const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { certPath: resolve(testDir, "only.crt"), dirPath: testDir } });
+
+				await assert.rejects(
+					() => server.start(),
+					(error) => assertConfigurationError(error, "certPath", "keyPath"),
+				);
+				assert.strictEqual(server.address, null);
+			});
+
+			it("should read the directory when both explicit paths are empty strings", () => {
+				writeDirectoryPair();
+
+				const result = readTLSCertificates({ keyPath: "", certPath: "", dirPath: testDir });
+
+				assert.strictEqual(result.key.toString(), "dir-key-content");
+				assert.strictEqual(result.cert.toString(), "dir-cert-content");
+			});
 		});
 	});
 });
