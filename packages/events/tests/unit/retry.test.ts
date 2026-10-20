@@ -335,6 +335,7 @@ describe("retryMiddleware", () => {
             ["a fraction", 2.5, RangeError],
             ["Infinity", Number.POSITIVE_INFINITY, RangeError],
             ["a string", "3", TypeError],
+            ["null", null, TypeError],
         ] as const) {
             it(`refuses ${label} when the middleware is created, naming the option and the value`, () => {
                 assert.throws(

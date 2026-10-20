@@ -42,7 +42,7 @@ function calculateDelay(options: Required<Pick<RetryOptions, "backoff" | "initia
  * Refuse a `maxRetries` the attempt loop cannot honour. A negative number or `NaN` would skip the
  * loop, so the handler would never run and `undefined` would reach the dead-letter middleware.
  */
-function requireMaxRetries(value: unknown): void {
+function requireMaxRetries(value: unknown): asserts value is number {
     const message = `retryMiddleware: maxRetries must be an integer of at least 0, got ${typeof value === "string" ? JSON.stringify(value) : String(value)}`;
     if (typeof value !== "number") {
         throw new TypeError(message);
@@ -60,7 +60,9 @@ function requireMaxRetries(value: unknown): void {
  * the error is re-thrown for the next middleware (e.g., DLQ).
  */
 export function retryMiddleware(options?: RetryOptions): EventMiddleware {
-    const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+    // Only an omitted value takes the default: an explicit `null` is a mistake and is refused below.
+    const configuredMaxRetries: unknown = options?.maxRetries;
+    const maxRetries = configuredMaxRetries === undefined ? DEFAULT_MAX_RETRIES : configuredMaxRetries;
     requireMaxRetries(maxRetries);
     const backoff = options?.backoff ?? "exponential";
     const initialDelay = options?.initialDelay ?? DEFAULT_INITIAL_DELAY;
