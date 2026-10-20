@@ -39,6 +39,20 @@ function calculateDelay(options: Required<Pick<RetryOptions, "backoff" | "initia
 }
 
 /**
+ * Refuse a `maxRetries` the attempt loop cannot honour. A negative number or `NaN` would skip the
+ * loop, so the handler would never run and `undefined` would reach the dead-letter middleware.
+ */
+function requireMaxRetries(value: unknown): void {
+    const message = `retryMiddleware: maxRetries must be an integer of at least 0, got ${typeof value === "string" ? JSON.stringify(value) : String(value)}`;
+    if (typeof value !== "number") {
+        throw new TypeError(message);
+    }
+    if (!Number.isInteger(value) || value < 0) {
+        throw new RangeError(message);
+    }
+}
+
+/**
  * Create a retry middleware with configurable options.
  *
  * On handler failure, retries up to `maxRetries` times with
@@ -47,6 +61,7 @@ function calculateDelay(options: Required<Pick<RetryOptions, "backoff" | "initia
  */
 export function retryMiddleware(options?: RetryOptions): EventMiddleware {
     const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+    requireMaxRetries(maxRetries);
     const backoff = options?.backoff ?? "exponential";
     const initialDelay = options?.initialDelay ?? DEFAULT_INITIAL_DELAY;
     const maxDelay = options?.maxDelay ?? DEFAULT_MAX_DELAY;
