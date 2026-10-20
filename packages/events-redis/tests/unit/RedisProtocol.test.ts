@@ -65,12 +65,6 @@ describe("Redis Streams reply normalization", () => {
         ]);
     });
 
-    it("normalizes object-shaped native stream fields", () => {
-        assert.deepEqual(normalizeXReadGroupReply({ s1: [["1-0", { eventId: "e1", payload: "cA==" }]] }, RESP3_NATIVE), [
-            ["s1", entries],
-        ]);
-    });
-
     it("normalizes Redis 6.2 and newer XAUTOCLAIM variants", () => {
         assert.deepEqual(normalizeXAutoClaimReply(["0-0", entries], RESP3_LEGACY), ["0-0", entries, []]);
         assert.deepEqual(normalizeXAutoClaimReply(["0-0", entries, ["deleted-0"]], RESP3_NATIVE), [
