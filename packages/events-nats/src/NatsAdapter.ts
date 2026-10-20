@@ -40,7 +40,7 @@ function toDeliverPolicy(policy: "new" | "all" | "last" | undefined): DeliverPol
         case "all":
             return DeliverPolicy.All;
         case "last":
-            return DeliverPolicy.Last;
+            return DeliverPolicy.LastPerSubject;
         default:
             return DeliverPolicy.New;
     }

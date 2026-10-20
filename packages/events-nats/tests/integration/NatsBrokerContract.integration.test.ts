@@ -179,7 +179,7 @@ describe("NATS adapter documented broker behaviour", { skip: NATS_TEST_URL === u
         const configurations = [
             { label: "defaults", consumerOptions: undefined, ackWaitNs: 30_000 * NS_PER_MS, maxDeliver: 5, deliverPolicy: "new" },
             { label: "custom ackWait and maxDeliver, deliverPolicy all", consumerOptions: { ackWait: 60_000, maxDeliver: 10, deliverPolicy: "all" as const }, ackWaitNs: 60_000 * NS_PER_MS, maxDeliver: 10, deliverPolicy: "all" },
-            { label: "deliverPolicy last", consumerOptions: { deliverPolicy: "last" as const }, ackWaitNs: 30_000 * NS_PER_MS, maxDeliver: 5, deliverPolicy: "last" },
+            { label: "deliverPolicy last", consumerOptions: { deliverPolicy: "last" as const }, ackWaitNs: 30_000 * NS_PER_MS, maxDeliver: 5, deliverPolicy: "last_per_subject" },
             { label: "deliverPolicy new, stated explicitly", consumerOptions: { deliverPolicy: "new" as const }, ackWaitNs: 30_000 * NS_PER_MS, maxDeliver: 5, deliverPolicy: "new" },
         ];
         for (const { label, consumerOptions, ackWaitNs, maxDeliver, deliverPolicy } of configurations) {
@@ -289,6 +289,47 @@ describe("NATS adapter documented broker behaviour", { skip: NATS_TEST_URL === u
 
         it("deliverPolicy last delivers the last existing event of the subject and then the new ones", async () => {
             assert.deepEqual(await deliveredWith("last"), ["old-3", "fresh"]);
+        });
+
+        /** Publish history on several subjects, subscribe to `patterns` with `deliverPolicy: "last"`, then publish one more event; returns the payloads the handler saw. */
+        async function lastOnPatterns(patterns: string[]): Promise<string[]> {
+            const stream = uniqueName("ctr");
+            const adapter = NatsAdapter({ servers, stream, consumerOptions: { deliverPolicy: "last" } });
+            const seen: string[] = [];
+            try {
+                await adapter.connect({ serviceName: "contract-deliver-last-patterns" });
+                for (const [subject, payload] of [
+                    ["wild.a", "a-old"],
+                    ["wild.b", "b-old"],
+                    ["wild.a", "a-last"],
+                ] as const) {
+                    await adapter.publish(subject, bytes(payload));
+                }
+                const subscription = await adapter.subscribe(
+                    patterns,
+                    async (event, ack) => {
+                        seen.push(Buffer.from(event.payload).toString());
+                        await ack();
+                    },
+                    { group: "wild" },
+                );
+                await adapter.publish("wild.c", bytes("fresh"));
+                await waitFor(() => seen.includes("fresh"), "delivery of the fresh event");
+                await sleep(300);
+                await subscription.unsubscribe();
+                return [...seen].sort();
+            } finally {
+                await adapter.disconnect();
+            }
+        }
+
+        // The NatsConsumerOptions reference: `"last"` is the last message per subject.
+        it("deliverPolicy last on a wildcard delivers the last existing event of every matching subject", async () => {
+            assert.deepEqual(await lastOnPatterns(["wild.*"]), ["a-last", "b-old", "fresh"]);
+        });
+
+        it("deliverPolicy last with a wildcard and a literal pattern that overlap handles every event once", async () => {
+            assert.deepEqual(await lastOnPatterns(["wild.a", "wild.*"]), ["a-last", "b-old", "fresh"]);
         });
     });
 
