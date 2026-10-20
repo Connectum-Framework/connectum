@@ -1,9 +1,10 @@
 /**
- * Unit tests for the internal (service-to-service) auth interceptor (ADR-029).
+ * Unit tests for the internal (service-to-service) auth interceptor.
  *
  * Covers:
  * - per-service containment: an A-signed token claiming `iss: B` is REJECTED
- *   (the empirical issuer-bound JWKS finding from ADR-029 §2);
+ *   (a key is resolved by `kid` independently of `iss`, so only a keyset bound to the
+ *   claimed issuer contains a compromised service);
  * - meshIdentityTrust allow-list (allow / deny + header stripping);
  * - signedTokenTrust happy path and identity binding;
  * - sharedSecretTrust constant-time compare;
@@ -508,7 +509,7 @@ describe("internal-auth-interceptor", () => {
         });
 
         // ====================================================================
-        // HEADLINE CONTAINMENT TEST (ADR-029 §2 empirical finding):
+        // HEADLINE CONTAINMENT TEST (a shared keyset would accept this forgery):
         // A token claiming iss:B but signed with A's private key (header kid_A)
         // MUST be rejected as Unauthenticated. With issuer-bound JWKS, the iss:B
         // claim selects B's keyset (kid_B only) -> ERR_JWKS_NO_MATCHING_KEY.

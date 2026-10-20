@@ -1,5 +1,5 @@
 /**
- * Integration tests for the INTERNAL AUTH -> PROTO AUTHZ interceptor chain (ADR-029).
+ * Integration tests for the INTERNAL AUTH -> PROTO AUTHZ interceptor chain.
  *
  * Exercises the LOAD-BEARING seam: createInternalAuthInterceptor must run
  * BEFORE createProtoAuthzInterceptor and populate the AuthContext that
@@ -22,7 +22,7 @@ import { createFakeMethod, createFakeService, createMethodOptions, createProtoMo
 const PRINCIPAL = "cluster.local/ns/default/sa/trips";
 const PRINCIPAL_HEADER = "x-forwarded-client-principal";
 
-describe("Internal Auth Chain (INTERNAL AUTH -> PROTO AUTHZ) — Integration (ADR-029)", () => {
+describe("Internal Auth Chain (INTERNAL AUTH -> PROTO AUTHZ) — Integration", () => {
     // service has default_policy deny so an internal method MUST be allowed by
     // the internal rule, not by any default-allow shortcut.
     const service = createFakeService({ typeName: "trips.v1.TripService" });

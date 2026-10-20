@@ -648,10 +648,10 @@ describe("proto-authz-interceptor", () => {
         });
     });
 
-    // ADR-029: internal (service-to-service) methods compose inclusively with
+    // Internal (service-to-service) methods compose inclusively with
     // the existing authz model. The internal identity is populated upstream by
     // createInternalAuthInterceptor; here we simulate it via authContextStorage.run.
-    describe("internal methods (ADR-029)", () => {
+    describe("internal methods", () => {
         const internalContext: AuthContext = {
             subject: "trips-service",
             roles: ["worker"],
