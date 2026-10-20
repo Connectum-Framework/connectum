@@ -494,19 +494,24 @@ describe("toAmqpPattern", () => {
     });
 });
 
+/** Escape every character that has a meaning in a regular expression, backslash included. */
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 describe("validateSubscriptionPatterns", () => {
     const EXCHANGE_TYPES = ["topic", "direct", "fanout", "headers"] as const;
     const TOPOLOGY_MODES = ["assert", "check", "skip"] as const;
 
     for (const [label, pattern, reason] of [
         ["the empty string", "", "the pattern is empty"],
-        ["an empty segment between dots", "a..b", 'it contains "\\.\\."'],
-        ["a leading dot", ".a", 'it starts with "\\."'],
-        ["a trailing dot", "a.", 'it ends with "\\."'],
-        ["a lone dot", ".", 'it starts with "\\."'],
+        ["an empty segment between dots", "a..b", 'it contains ".."'],
+        ["a leading dot", ".a", 'it starts with "."'],
+        ["a trailing dot", "a.", 'it ends with "."'],
+        ["a lone dot", ".", 'it starts with "."'],
     ] as const) {
         it(`rejects ${label} on every exchange type in every topology mode`, () => {
-            const expected = new RegExp(`^AmqpAdapter: subscription pattern "${pattern.replace(/\./g, "\\.")}" has an empty segment \\(${reason}\\)\\. Every dot-separated segment of a pattern must be non-empty\\.$`);
+            const expected = new RegExp(`^${escapeRegExp(`AmqpAdapter: subscription pattern "${pattern}" has an empty segment (${reason}). Every dot-separated segment of a pattern must be non-empty.`)}$`);
             for (const exchangeType of EXCHANGE_TYPES) {
                 for (const topologyMode of TOPOLOGY_MODES) {
                     assert.throws(
