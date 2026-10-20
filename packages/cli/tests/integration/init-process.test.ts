@@ -176,7 +176,8 @@ describe("init process: --help", () => {
                 "--force",
                 "--ref",
             ]) {
-                assert.ok(run.output.includes(flag), `--help does not list ${flag}:\n${run.output}`);
+                // The flag must end there: `--catalogue` does not list `--catalog`.
+                assert.match(run.output, new RegExp(`${flag}(?![\\w-])`), `--help does not list ${flag}:\n${run.output}`);
             }
         } finally {
             rmSync(cwd, { recursive: true, force: true });

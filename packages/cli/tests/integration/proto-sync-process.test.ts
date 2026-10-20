@@ -120,7 +120,8 @@ describe("proto sync process exit code", () => {
 
         assert.equal(run.code, 0);
         for (const flag of ["--from", "--out", "--template", "--timeout", "--dry-run"]) {
-            assert.ok(run.output.includes(flag), `--help does not list ${flag}:\n${run.output}`);
+            // The flag must end there: `--dry-runs` does not list `--dry-run`.
+            assert.match(run.output, new RegExp(`${flag}(?![\\w-])`), `--help does not list ${flag}:\n${run.output}`);
         }
     });
 
