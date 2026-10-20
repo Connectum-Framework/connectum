@@ -318,15 +318,19 @@ describe('createDefaultInterceptors', () => {
             const handler = compose(chain, next);
 
             const first = handler(request());
-            await assert.rejects(
-                () => handler(request()),
-                (err: unknown) => {
-                    assertConnectError(err, Code.ResourceExhausted, 'Bulkhead capacity exceeded');
-                    return true;
-                },
+            // The second call is refused at once when the options were forwarded. The gate is opened
+            // after one turn so that a handler that admitted it cannot leave the test waiting forever.
+            const second = handler(request()).then(
+                () => 'admitted',
+                (err: unknown) => err,
             );
+            await new Promise((resolve) => setImmediate(resolve));
             gate.resolve();
             await first;
+
+            const outcome = await second;
+            assert.notStrictEqual(outcome, 'admitted', 'the second concurrent call must be refused');
+            assertConnectError(outcome, Code.ResourceExhausted, 'Bulkhead capacity exceeded');
         });
 
         // fallback sits inside retry: a failure is replaced by the fallback value at
