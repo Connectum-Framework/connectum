@@ -185,7 +185,7 @@ export function topologyOwnsSubscriptionBindings(options: {
  * matches but the error text indicates a close.
  */
 export function isConnectionLostError(err: unknown): boolean {
-    return err instanceof Error && /channel closed|connection closed|closed unexpectedly/i.test(err.message);
+    return err instanceof Error && /channel closed|connection closed/i.test(err.message);
 }
 
 /**
