@@ -1924,7 +1924,29 @@ describe("handleDelivery never lets a failure escape the consume callback", () =
         assert.equal(events.length, 0);
     });
 
-    it("a handler that throws synchronously after an explicit ack() sends no requeue", async () => {
+    it("a plain (non-async) handler that calls ack() and then throws synchronously sends no requeue", async () => {
+        const calls: string[] = [];
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: recordingChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                // A plain function: the throw is a real synchronous throw, not a rejection.
+                handler: ((_event: unknown, ack: () => Promise<void>) => {
+                    void ack();
+                    throw new Error("synchronous failure after ack");
+                }) as unknown as RawEventHandler,
+                decode: undefined,
+                lifecycle: undefined,
+            }),
+        );
+        await settle();
+
+        assert.deepEqual(calls, ["ack"], "exactly one acknowledgement and no requeue");
+    });
+
+    it("an async handler that awaits ack() and then throws sends no requeue", async () => {
         const calls: string[] = [];
 
         handleDelivery({
