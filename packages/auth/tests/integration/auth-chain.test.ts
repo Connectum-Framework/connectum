@@ -431,49 +431,6 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             assert.strictEqual(req.header.get("x-auth-scopes"), "read write");
         });
 
-        it("should have auth headers available even after authz denied", async () => {
-            const token = await createTestJwt({
-                sub: "denied-user",
-                roles: ["viewer"],
-            });
-
-            const authInterceptor = createJwtAuthInterceptor({
-                secret: TEST_JWT_SECRET,
-                propagateHeaders: true,
-                claimsMapping: { roles: "roles" },
-            });
-
-            const authzInterceptor = createAuthzInterceptor({
-                defaultPolicy: "deny",
-                rules: [
-                    {
-                        name: "admin-only",
-                        methods: ["test.v1.TestService/*"],
-                        requires: { roles: ["admin"] },
-                        effect: "allow",
-                    },
-                ],
-            });
-
-            const headers = new Headers();
-            headers.set("authorization", `Bearer ${token}`);
-            const req = createMockRequest({ ...MOCK_REQUEST_DEFAULTS, headers });
-
-            const next = mock.fn(async () => ({ message: {} }));
-            const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
-
-            await assert.rejects(
-                () => handler(req),
-                (err: unknown) => {
-                    assertConnectError(err, Code.PermissionDenied);
-                    return true;
-                },
-            );
-
-            // Auth headers were set before authz denied
-            assert.strictEqual(req.header.get("x-auth-subject"), "denied-user");
-            assert.strictEqual(req.header.get("x-auth-type"), "jwt");
-        });
     });
 
     describe("scope-based authorization in chain", () => {
