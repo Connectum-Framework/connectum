@@ -9,7 +9,12 @@
  */
 
 import assert from 'node:assert';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
+import { create, isMessage } from '@bufbuild/protobuf';
+import type { ConnectError, Interceptor } from '@connectrpc/connect';
+import { Code } from '@connectrpc/connect';
+import { assertConnectError, createMockNext, createMockNextError, createMockNextSlow, createMockRequest } from '@connectum/test-fixtures';
+import { EchoRequestSchema, EchoResponseSchema } from '../../../testing/tests/fixtures/validated/pb/validated/v1/validated_pb.ts';
 import { createDefaultInterceptors } from '../../src/defaults.ts';
 
 describe('createDefaultInterceptors', () => {
@@ -166,7 +171,236 @@ describe('createDefaultInterceptors', () => {
         assert.strictEqual(interceptors.length, 7);
     });
 
-    describe('interceptor chain ordering and disabling', () => {
+    // The built chain is run, not counted: order and option forwarding are what
+    // callers rely on, and a count cannot show either. interceptors[0] is the
+    // outermost, as in Connect's applyInterceptors.
+    describe('behaviour of the built chain', () => {
+        const SECRET = 'db-password-hunter2';
+
+        function compose(interceptors: Interceptor[], next: unknown): (req: unknown) => Promise<any> {
+            let wrapped = next as any;
+            for (const interceptor of [...interceptors].reverse()) {
+                wrapped = interceptor(wrapped);
+            }
+            return wrapped;
+        }
+
+        function request(message: unknown = {}, stream = false) {
+            return createMockRequest({ service: 'test.Service', method: 'Method', message, stream });
+        }
+
+        function validatedRequest(message: string, count = 0) {
+            const req = request(create(EchoRequestSchema, { message, count }));
+            req.method = { name: 'Echo', input: EchoRequestSchema, output: EchoResponseSchema };
+            return req;
+        }
+
+        // The circuit breaker wraps retry: one logical call that exhausts its retries
+        // is ONE breaker failure. With the two the other way round every attempt would
+        // count, and the circuit would open during the first call.
+        it('should wrap retry in the circuit breaker and apply the options of both', async () => {
+            const chain = createDefaultInterceptors({
+                retry: { maxRetries: 1, initialDelay: 1, maxDelay: 5 },
+                circuitBreaker: { threshold: 2, halfOpenAfter: 60_000 },
+                validation: false,
+            });
+            const next = createMockNextError(Code.Unavailable, 'upstream down');
+            const handler = compose(chain, next);
+
+            await assert.rejects(
+                () => handler(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable, 'upstream down');
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 2, 'first logical call: one attempt and one retry');
+
+            await assert.rejects(() => handler(request()));
+            assert.strictEqual(next.mock.calls.length, 4, 'second logical call: circuit still closed after one logical failure');
+
+            await assert.rejects(
+                () => handler(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable, 'Circuit breaker is open');
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 4, 'the open circuit refuses the third call without reaching the handler');
+        });
+
+        // errorHandler is outermost: the inner interceptors see the raw failure. A
+        // plain Error reaches retry as Code.Unknown, which is retried only when listed;
+        // an errorHandler placed inside retry would turn it into Internal first.
+        it('should put errorHandler outermost, so inner interceptors see the raw failure', async () => {
+            const chain = createDefaultInterceptors({
+                retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5, retryableCodes: [Code.Unknown] },
+                validation: false,
+            });
+            const next = mock.fn(async () => {
+                throw new Error(`connect failed: password=${SECRET}`);
+            });
+
+            await assert.rejects(
+                () => compose(chain, next)(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal, 'internal error');
+                    assert.ok(!(err as ConnectError).rawMessage.includes(SECRET), 'the failure text must not reach the caller');
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 3, 'retry must have seen Unknown and retried twice');
+        });
+
+        it('should forward the errorHandler options', async () => {
+            const chain = createDefaultInterceptors({ errorHandler: { exposeErrorMessages: true, logErrors: false }, validation: false });
+            const next = mock.fn(async () => {
+                throw new Error('visible text');
+            });
+
+            await assert.rejects(
+                () => compose(chain, next)(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal, 'visible text');
+                    return true;
+                },
+            );
+        });
+
+        it('should forward the timeout options', async () => {
+            const chain = createDefaultInterceptors({ timeout: { duration: 20 }, validation: false });
+            const next = createMockNextSlow(300);
+
+            await assert.rejects(
+                () => compose(chain, next)(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.DeadlineExceeded, '20ms');
+                    return true;
+                },
+            );
+            // Let the abandoned slow call finish before the test ends.
+            await new Promise((resolve) => setTimeout(resolve, 350));
+        });
+
+        // The timeout wraps retry: its deadline covers the whole retry sequence. With the
+        // two the other way round every attempt would get a fresh deadline and a handler
+        // that fails at once would never time out.
+        it('should wrap retry in the timeout, so the deadline covers all retries', async () => {
+            const random = mock.method(Math, 'random', () => 0.9);
+            try {
+                const chain = createDefaultInterceptors({
+                    timeout: { duration: 60 },
+                    retry: { maxRetries: 20, initialDelay: 20, maxDelay: 20 },
+                    validation: false,
+                });
+                const next = createMockNextError(Code.Unavailable, 'upstream down');
+
+                await assert.rejects(
+                    () => compose(chain, next)(request()),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.DeadlineExceeded, '60ms');
+                        return true;
+                    },
+                );
+                assert.ok(next.mock.calls.length < 20, `retries must stop at the deadline, but ${next.mock.calls.length} attempts were made`);
+            } finally {
+                random.mock.restore();
+            }
+        });
+
+        it('should forward the bulkhead options', async () => {
+            const chain = createDefaultInterceptors({ bulkhead: { capacity: 1, queueSize: 0 }, validation: false });
+            const gate = Promise.withResolvers<void>();
+            const next = mock.fn(async () => {
+                await gate.promise;
+                return { stream: false, message: { result: 'ok' } };
+            });
+            const handler = compose(chain, next);
+
+            const first = handler(request());
+            await assert.rejects(
+                () => handler(request()),
+                (err: unknown) => {
+                    assertConnectError(err, Code.ResourceExhausted, 'Bulkhead capacity exceeded');
+                    return true;
+                },
+            );
+            gate.resolve();
+            await first;
+        });
+
+        // fallback sits inside retry: a failure is replaced by the fallback value at
+        // the first attempt, so retry never sees it. With the order reversed the
+        // handler would be retried before the fallback is used.
+        it('should put fallback inside retry', async () => {
+            const chain = createDefaultInterceptors({
+                retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
+                fallback: { handler: () => ({ fallback: true }) },
+                validation: false,
+            });
+            const next = createMockNextError(Code.Unavailable, 'upstream down');
+
+            const result = await compose(chain, next)(request());
+
+            assert.deepStrictEqual(result.message, { fallback: true });
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it('should reject an invalid request with InvalidArgument before the handler by default', async () => {
+            const next = createMockNext();
+
+            await assert.rejects(
+                () => compose(createDefaultInterceptors(), next)(validatedRequest('ab')),
+                (err: unknown) => {
+                    assertConnectError(err, Code.InvalidArgument);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0, 'an invalid request must not reach the handler');
+        });
+
+        it('should let a valid request through the default validation', async () => {
+            const next = createMockNext();
+
+            const result = await compose(createDefaultInterceptors(), next)(validatedRequest('abc'));
+
+            assert.strictEqual((result.message as any).result, 'success');
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it('should let an invalid request through when validation is disabled', async () => {
+            const next = createMockNext();
+
+            await compose(createDefaultInterceptors({ validation: false }), next)(validatedRequest('ab'));
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        // The serializer is innermost: validation still sees the protobuf message (a JSON
+        // object would not even be validated), and only the handler receives the JSON form.
+        it('should validate the protobuf request before the serializer converts it', async () => {
+            const chain = createDefaultInterceptors({ serializer: { alwaysEmitImplicit: false } });
+            const response = { stream: false, service: { typeName: 'test.Service' }, method: { output: EchoResponseSchema }, message: { message: 'ok' } };
+            const next = mock.fn(async (_req: unknown) => response);
+
+            await assert.rejects(
+                () => compose(chain, next)(validatedRequest('ab')),
+                (err: unknown) => {
+                    assertConnectError(err, Code.InvalidArgument);
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+
+            // Valid request: the handler receives the JSON form, without the implicit zero count
+            // because the serializer options were forwarded.
+            const result = await compose(chain, next)(validatedRequest('abc'));
+            assert.deepStrictEqual((next.mock.calls[0]!.arguments[0] as { message: unknown }).message, { message: 'abc' });
+            assert.ok(isMessage(result.message, EchoResponseSchema), 'the response must come back as a protobuf message');
+        });
+    });
+
+    describe('interceptor chain disabling', () => {
         it('should create 2 interceptors with all defaults', () => {
             const interceptors = createDefaultInterceptors();
 
@@ -174,18 +408,6 @@ describe('createDefaultInterceptors', () => {
             for (const ic of interceptors) {
                 assert.strictEqual(typeof ic, 'function');
             }
-        });
-
-        it('should maintain correct order: errorHandler first, serializer last', () => {
-            const onlyFirstLast = createDefaultInterceptors({
-                errorHandler: true,
-                validation: false,
-                serializer: true,
-            });
-
-            assert.strictEqual(onlyFirstLast.length, 2);
-            assert.strictEqual(typeof onlyFirstLast[0], 'function');
-            assert.strictEqual(typeof onlyFirstLast[1], 'function');
         });
 
         it('should allow disabling each default-enabled interceptor individually with false', () => {
