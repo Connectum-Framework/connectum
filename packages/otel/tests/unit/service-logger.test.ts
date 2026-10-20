@@ -229,6 +229,8 @@ describe("getLogger", () => {
 		capture.restore();
 	});
 
+	// No document names the fallback logger name; "unknown" is Connectum's own choice and
+	// this pins it so that a record without a name and without a span stays recognisable.
 	it("should use 'unknown' when called without name and no active span", () => {
 		const capture = captureEmit();
 		const logger = getLogger();
