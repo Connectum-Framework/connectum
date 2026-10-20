@@ -25,6 +25,11 @@ import { MAX_TIMER_MS, requireFiniteNumber, requireInteger } from "./validate.ts
  * handlers and I/O must observe the signal to stop promptly. A cancelled attempt
  * cannot become a successful retry result when it completes later.
  *
+ * The delay between attempts follows cockatiel's `ExponentialBackoff` with its
+ * default decorrelated-jitter generator, scaled by `initialDelay` and capped at
+ * `maxDelay`. The delays are randomized, so exact values and multipliers are not
+ * guaranteed.
+ *
  * Use retries only for idempotent operations. Streaming is skipped by default;
  * opting in retries opening failures, not errors while consuming an opened stream.
  *

@@ -45,7 +45,12 @@ types and start the project.
 - The CLI downloads its starter project on first use, so project creation
   requires network access.
 - `connectum proto sync` requires a reachable server with reflection enabled,
-  the `buf` CLI, and a `buf.gen.yaml` template.
+  the `buf` CLI, and a `buf.gen.yaml` template. Each reflection request has a
+  time limit of 10000 ms; raise it with `--timeout <ms>` (an integer from 1 to
+  99999999) for a slow server.
+- `connectum init` fetches a base project pinned to a tag of the examples
+  repository, so one CLI version always scaffolds the same base; `--ref <ref>`
+  fetches another ref for one run.
 - The CLI's `FileRegistry` belongs to the CLI's protobuf dependency copy; do not
   assume it is the same object as an application registry.
 

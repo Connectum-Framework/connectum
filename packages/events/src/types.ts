@@ -49,7 +49,15 @@ export interface EventSubscription {
  * Options for raw subscribe
  */
 export interface RawSubscribeOptions {
-    /** Consumer group name for load-balanced consumption */
+    /**
+     * Consumer group name for load-balanced consumption.
+     *
+     * Without it the adapter picks a new random group for every subscription.
+     * With Kafka and Redis Streams that group has no committed position, so a
+     * restarted process starts at the end of the stream and never sees the events
+     * published while it was down; give the subscription an explicit `group` to
+     * keep its position across restarts.
+     */
     group?: string;
 }
 
@@ -342,7 +350,15 @@ export interface EventBusOptions {
      * hand-maintaining raw topic strings. Subscribers still register via `routes`.
      */
     publishes?: DescService[];
-    /** Consumer group name */
+    /**
+     * Consumer group name, passed to every subscription of this bus.
+     *
+     * When omitted, the adapter picks a new random group per subscription. With
+     * Kafka that group (`connectum-<uuid>`) has no committed offset and
+     * `consumerOptions.fromBeginning` is `false` by default, so after a restart the
+     * events published during the downtime are not delivered. Set an explicit
+     * `group` for a subscription that must not lose them.
+     */
     group?: string;
     /** Middleware configuration */
     middleware?: MiddlewareConfig;
