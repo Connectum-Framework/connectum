@@ -51,8 +51,8 @@ describe("batch span processor environment", () => {
 	const cases: Array<{ variable: (typeof BSP_KEYS)[number]; bad: string; field: string; fallback: number }> = [
 		{ variable: "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", bad: "abc", field: "maxExportBatchSize", fallback: 100 },
 		{ variable: "OTEL_BSP_MAX_QUEUE_SIZE", bad: "abc", field: "maxQueueSize", fallback: 1000 },
-		{ variable: "OTEL_BSP_SCHEDULE_DELAY", bad: "0", field: "scheduledDelayMillis", fallback: 1000 },
-		{ variable: "OTEL_BSP_EXPORT_TIMEOUT", bad: "-5", field: "exportTimeoutMillis", fallback: 10000 },
+		{ variable: "OTEL_BSP_SCHEDULE_DELAY", bad: "-5", field: "scheduledDelayMillis", fallback: 1000 },
+		{ variable: "OTEL_BSP_EXPORT_TIMEOUT", bad: "10s", field: "exportTimeoutMillis", fallback: 10000 },
 	];
 
 	for (const { variable, bad, field, fallback } of cases) {

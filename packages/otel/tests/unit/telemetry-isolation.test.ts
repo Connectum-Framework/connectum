@@ -293,7 +293,7 @@ describe("telemetry never changes the outcome of a call", () => {
 				const next = (async () => {
 					throw value;
 				}) as never;
-				const handler = createOtelClientInterceptor()(next);
+				const handler = createOtelClientInterceptor({ serverAddress: "localhost" })(next);
 
 				const { observed, span } = await observedSpan(async () => {
 					const outcome = await outcomeOf(() => handler(createMockRequest({ service: "acme.v1.Svc", method: "Run" })));
