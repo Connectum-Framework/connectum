@@ -202,6 +202,21 @@ describe("jwt-auth-interceptor", () => {
             });
         }
 
+        // The guide ties the minimum to "those algorithms ... when configured": a list that names
+        // several HMAC algorithms must satisfy the strongest of them, wherever it sits in the list.
+        for (const [algorithms, minBytes] of [
+            [["HS256", "HS512"], 64],
+            [["HS512", "HS256"], 64],
+            [["HS384", "HS512"], 64],
+            [["HS256", "HS384"], 48],
+            [["HS384", "HS256"], 48],
+        ] as const) {
+            it(`should require ${minBytes} bytes of secret when the algorithms are ${JSON.stringify(algorithms)}`, () => {
+                assert.throws(() => createJwtAuthInterceptor({ secret: "a".repeat(minBytes - 1), algorithms: [...algorithms] }), new RegExp(`at least ${minBytes} bytes`));
+                assert.doesNotThrow(() => createJwtAuthInterceptor({ secret: "a".repeat(minBytes), algorithms: [...algorithms] }));
+            });
+        }
+
         it("should measure the HMAC secret in UTF-8 bytes, not characters", () => {
             // The guide states the minimum in UTF-8 bytes. 16 two-byte characters are
             // 32 bytes (accepted); 15 of them plus one ASCII character are 31 bytes (rejected).

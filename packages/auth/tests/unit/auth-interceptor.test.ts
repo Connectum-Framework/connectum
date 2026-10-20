@@ -234,6 +234,42 @@ describe("auth-interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 2, "a method outside the service wildcard must not reach next");
         });
 
+        // The interceptor removes incoming x-auth-* identity headers: a client could send any of
+        // the six to impersonate a caller downstream, on a skipped method as well as on an
+        // authenticated one (with propagation off nothing writes them back).
+        const identityHeaders = ["x-auth-subject", "x-auth-type", "x-auth-name", "x-auth-roles", "x-auth-scopes", "x-auth-claims"];
+        for (const [label, authenticated] of [
+            ["a skipped method", false],
+            ["an authenticated call without propagation", true],
+        ] as const) {
+            it(`should remove client-supplied identity headers on ${label}`, async () => {
+                const interceptor = createAuthInterceptor({
+                    verifyCredentials: async () => ({ subject: "real-user", roles: [], scopes: [], claims: {}, type: "test" }),
+                    skipMethods: ["test.Service/Method"],
+                });
+                const req = createMockRequest(authenticated ? { service: "test.Service", method: "Other" } : MOCK_REQUEST_DEFAULTS);
+                for (const name of identityHeaders) req.header.set(name, "spoofed");
+                req.header.set("x-unrelated", "keep-me");
+                if (authenticated) req.header.set("authorization", "Bearer token");
+
+                const seen: Record<string, string | null> = {};
+                await interceptor((async (r: { header: Headers }) => {
+                    for (const name of [...identityHeaders, "x-unrelated"]) seen[name] = r.header.get(name);
+                    return { message: {} };
+                }) as never)(req);
+
+                assert.deepStrictEqual(seen, {
+                    "x-auth-subject": null,
+                    "x-auth-type": null,
+                    "x-auth-name": null,
+                    "x-auth-roles": null,
+                    "x-auth-scopes": null,
+                    "x-auth-claims": null,
+                    "x-unrelated": "keep-me",
+                });
+            });
+        }
+
         it("should set auth context in AsyncLocalStorage", async () => {
             const expectedContext: AuthContext = {
                 subject: "als-user",
