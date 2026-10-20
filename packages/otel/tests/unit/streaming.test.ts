@@ -17,7 +17,7 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import type { Interceptor } from "@connectrpc/connect";
 import { createMockRequest, type NormalizedSpan } from "@connectum/testing";
-import { SpanKind } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import * as semconv from "@opentelemetry/semantic-conventions/incubating";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
@@ -419,8 +419,7 @@ describe("wrapAsyncIterable", () => {
 		assert.strictEqual(mock.ended, true);
 		assert.strictEqual(mock.recordedExceptions.length, 1);
 		assert.strictEqual((mock.recordedExceptions[0] as Error).message, "stream failed");
-		assert.strictEqual(mock.statuses.length, 1);
-		assert.strictEqual(mock.statuses[0]!.code, 2); // SpanStatusCode.ERROR = 2
+		assert.deepStrictEqual(mock.statuses, [{ code: SpanStatusCode.ERROR, message: "stream failed" }]);
 	});
 
 	it("should NOT end span when endSpanOnComplete is false (default)", async () => {
@@ -676,6 +675,50 @@ for (const side of SIDES) {
 				`${side.responseDirection} #1 size 30`,
 				`${side.responseDirection} #2 size 40`,
 			].sort());
+		});
+
+		// Oracle: the span status rules of the OpenTelemetry trace API and the package
+		// guide: a stream that raises an error ends its span with status ERROR carrying the
+		// error message and records the exception; the error still reaches the consumer.
+		it("should end the span with status ERROR and the recorded exception when the streamed response fails", async () => {
+			const failure = new Error("stream failed");
+			const next: any = async () => ({ stream: true, message: mockAsyncIterableWithError([sized(15)], failure) });
+			const handler = side.create({})(next);
+			const received: unknown[] = [];
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				await assert.rejects(async () => {
+					for await (const message of streamOf(response)) received.push(message);
+				}, failure);
+			});
+
+			assert.strictEqual(received.length, 1, "the message before the failure is delivered");
+			const span = onlySpan(observed);
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+			assert.strictEqual(span.status.message, "stream failed");
+			const exceptions = span.events.filter((e) => e.name === "exception");
+			assert.strictEqual(exceptions.length, 1);
+			assert.strictEqual(exceptions[0]?.attributes["exception.message"], "stream failed");
+		});
+
+		// Oracle: the same rules: a consumer that stops reading is not a failure, so the
+		// span still ends, exactly once, with its status unset and no exception.
+		it("should end the span with its status unset and no exception when the consumer stops reading early", async () => {
+			async function* endless() {
+				for (let i = 0; ; i++) yield sized(i + 1);
+			}
+			const next: any = async () => ({ stream: true, message: endless() });
+			const handler = side.create({})(next);
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				for await (const _message of streamOf(response)) break;
+			});
+
+			const span = onlySpan(observed);
+			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
+			assert.deepStrictEqual(span.events, []);
 		});
 
 		it("should pass stream=true to the filter for streaming requests", async () => {
