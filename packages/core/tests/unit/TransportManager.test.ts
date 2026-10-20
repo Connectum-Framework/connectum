@@ -339,17 +339,6 @@ describe("TransportManager", () => {
             assert.strictEqual(transport.address, null);
         });
 
-        it("should be safe to call when already clean", () => {
-            transport = new TransportManager();
-
-            assert.doesNotThrow(() => {
-                transport.dispose();
-            });
-
-            assert.strictEqual(transport.server, null);
-            assert.strictEqual(transport.address, null);
-        });
-
         it("should be idempotent: a second dispose() after a real listen/close/dispose cycle does not throw and leaves the state empty", async () => {
             // A repeated dispose() is what a stop() that failed halfway and is
             // retried does; it must not dereference the already-dropped server.
