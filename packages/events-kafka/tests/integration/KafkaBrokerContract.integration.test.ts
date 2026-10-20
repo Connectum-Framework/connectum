@@ -170,7 +170,7 @@ describe("Kafka adapter documented broker behaviour", { skip: KAFKA_TEST_URL ===
                 (subscription) => subscription,
                 (error: unknown) => error,
             );
-            assert.ok(!(outcome instanceof Error && /heartbeatInterval/.test(outcome.message)), "the client must not refuse the configuration locally");
+            assert.ok(!(outcome instanceof Error), `subscribe must not fail: the broker refuses the member, the client does not (${outcome instanceof Error ? outcome.message : ""})`);
             await sleep(5_000);
             const members = (await admin.describeGroups([group])).groups[0]?.members.length ?? 0;
             assert.equal(members, 0, "no member may be admitted with a session timeout below the broker's minimum");
