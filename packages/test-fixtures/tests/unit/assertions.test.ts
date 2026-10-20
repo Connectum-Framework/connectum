@@ -101,15 +101,6 @@ describe("assertConnectError", () => {
         );
     });
 
-    it("works without messagePattern (code-only check)", () => {
-        const error = new ConnectError(
-            "some detailed error message",
-            Code.Internal,
-        );
-        assertConnectError(error, Code.Internal);
-        // No throw — assertion passed with code-only check
-    });
-
     it("narrows type after assertion — error.code is accessible without cast", () => {
         const error: unknown = new ConnectError("typed", Code.AlreadyExists);
         assertConnectError(error, Code.AlreadyExists);

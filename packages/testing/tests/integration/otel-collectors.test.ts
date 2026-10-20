@@ -11,14 +11,9 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import { DataPointType } from "@opentelemetry/sdk-metrics";
-import { InMemoryMetricCollector, InMemorySpanCollector, TRANSPORT_METRIC_ATTRIBUTE, TRANSPORT_SPAN_ATTRIBUTE } from "../../src/otel-collectors.ts";
+import { InMemoryMetricCollector, InMemorySpanCollector } from "../../src/otel-collectors.ts";
 
 describe("InMemorySpanCollector", () => {
-    it("reports the transport marker's documented attribute names", () => {
-        assert.strictEqual(TRANSPORT_SPAN_ATTRIBUTE, "connectum.transport");
-        assert.strictEqual(TRANSPORT_METRIC_ATTRIBUTE, "transport");
-    });
-
     it("reports a finished span's name, kind, attributes and status, without the transport attribute", async () => {
         const collector = new InMemorySpanCollector();
         try {

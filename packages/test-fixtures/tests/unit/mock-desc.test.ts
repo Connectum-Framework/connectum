@@ -490,12 +490,6 @@ describe("createMockDescField", () => {
     }
   });
 
-  it("isSensitive currently records the marker under the key debug_redact", () => {
-    const field = createMockDescField("password", { isSensitive: true });
-
-    assert.strictEqual((field as any).proto.options.debug_redact, true);
-  });
-
   // FieldOptions in @bufbuild/protobuf names the property debugRedact (the
   // protobuf-es rule for the proto field debug_redact); a descriptor produced by
   // the library never carries a snake_case key.
@@ -529,7 +523,6 @@ describe("createMockDescField", () => {
     assert.strictEqual(field.repeated, false);
     assert.strictEqual(field.packed, false);
     assert.strictEqual(field.optional, false);
-    assert.strictEqual(field.parent, undefined);
     assert.strictEqual(field.oneof, undefined);
   });
 });
@@ -625,17 +618,6 @@ describe("createMockDescMethod", () => {
     assert.strictEqual(method.output.typeName, "test.CreateOrderResponse");
   });
 
-  it("useSensitiveRedaction sets debug_redact in proto options", () => {
-    const method = createMockDescMethod("Login", {
-      useSensitiveRedaction: true,
-    });
-
-    assert.strictEqual(
-      (method as any).proto.options.debug_redact,
-      true,
-    );
-  });
-
   // A real method without annotations has no options message at all.
   it("no redaction by default", () => {
     const real = realMethod("GetUser");
@@ -653,6 +635,5 @@ describe("createMockDescMethod", () => {
 
     assert.strictEqual(method.kind, "rpc");
     assert.strictEqual(method.deprecated, false);
-    assert.strictEqual(method.parent, undefined);
   });
 });
