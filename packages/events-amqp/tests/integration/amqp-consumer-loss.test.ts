@@ -33,6 +33,10 @@ async function waitFor(cond: () => boolean, timeoutMs = 20_000): Promise<void> {
     }
 }
 
+/** Erlang expression: the broker sends channel.close 406 to every channel that has a consumer. */
+const CLOSE_CONSUMER_CHANNELS =
+    "[rabbit_channel:send_command(proplists:get_value(pid, I), {'channel.close', 406, list_to_binary(\"PRECONDITION_FAILED - injected\"), 0, 0}) || I <- rabbit_channel:info_all([pid, consumer_count]), proplists:get_value(consumer_count, I) > 0].";
+
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (payload: Uint8Array): string => new TextDecoder().decode(payload);
 
@@ -189,10 +193,7 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
             // rebuild on the next) is not asserted here, only the loss itself and
             // the final state. The restoration path is exercised by the
             // deleted-queue scenarios.
-            await ctl(
-                "eval",
-                "[rabbit_channel:send_command(proplists:get_value(pid, I), {'channel.close', 406, list_to_binary(\"PRECONDITION_FAILED - injected\"), 0, 0}) || I <- rabbit_channel:info_all([pid, consumer_count]), proplists:get_value(consumer_count, I) > 0].",
-            );
+            await ctl("eval", CLOSE_CONSUMER_CHANNELS);
 
             await waitFor(() => events.some((e) => e.type === "consumer-lost"));
             const lost = events.find((e) => e.type === "consumer-lost");
@@ -586,15 +587,167 @@ describe("AMQP consumer loss on a live connection (testcontainers)", { skip: RUN
         assert.equal((await listQueues()).includes("loss.disc.g"), false, "a disconnected adapter must not re-declare a queue");
     });
 
-    it("the broker log has no unknown delivery tag from any scenario above", { timeout: 30_000 }, async () => {
-        const stream = await container.logs();
-        const chunks: string[] = [];
-        stream.on("data", (chunk: Buffer | string) => chunks.push(chunk.toString()));
-        await sleep(1_500);
-        stream.destroy();
+    // The documented behaviour of a handler that outlives its consumer: the adapter closes the lost
+    // consumer's channel, so the handler's late ack() is skipped locally and reported as
+    // settlement-skipped, and the unacknowledged message goes back to the queue and reaches the
+    // restored consumer as a later attempt. The late ack must never reach the broker.
+    it("a handler that outlives its lost consumer: its late ack is skipped and reported, and the message reaches the restored consumer again", { timeout: 60_000 }, async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "loss.late",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: { onLifecycle: (event) => events.push(event) },
+        });
+        await adapter.connect();
+        try {
+            const attempts: number[] = [];
+            const payloads: string[] = [];
+            let releaseFirst: () => void = () => undefined;
+            const firstMayAck = new Promise<void>((resolve) => {
+                releaseFirst = resolve;
+            });
+            let firstAckSettled = false;
+            await adapter.subscribe(
+                ["loss.late.evt"],
+                async (event, ack) => {
+                    attempts.push(event.attempt);
+                    payloads.push(decode(event.payload));
+                    if (attempts.length === 1) {
+                        await firstMayAck;
+                        await ack();
+                        firstAckSettled = true;
+                        return;
+                    }
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("loss.late.evt", encode("held"));
+            await waitFor(() => attempts.length === 1);
 
-        const log = chunks.join("");
-        assert.ok(log.length > 0, "the broker log was read");
-        assert.equal(log.includes("unknown delivery tag"), false, "an ack/nack/requeue reached a channel that no longer owned the delivery");
+            await ctl("eval", CLOSE_CONSUMER_CHANNELS);
+            await waitFor(() => events.some((e) => e.type === "consumer-lost"));
+            await waitFor(() => attempts.length === 2);
+            assert.deepEqual(payloads, ["held", "held"], "the unacknowledged message came back");
+            assert.equal(attempts[0], 1);
+            assert.ok((attempts[1] ?? 0) >= 2, "the redelivery is a later attempt");
+
+            releaseFirst();
+            await waitFor(() => firstAckSettled);
+            const skipped = events.filter((e) => e.type === "settlement-skipped");
+            assert.equal(skipped.length, 1, "exactly one skipped settlement is reported");
+            const event = skipped[0];
+            assert.ok(event?.type === "settlement-skipped");
+            assert.equal(event.action, "ack");
+            assert.equal(event.queue, "loss.late.g");
+            assert.equal(event.routingKey, "loss.late.evt");
+
+            // The restored consumer is alive and nothing was processed a third time.
+            await sleep(500);
+            assert.equal(attempts.length, 2);
+            await adapter.publish("loss.late.evt", encode("next"));
+            await waitFor(() => attempts.length === 3);
+            assert.equal(payloads[2], "next");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    // When the broker cancels the consumer (its queue was deleted) the channel stays open, and the
+    // delivery the handler holds is gone with the queue. A late ack() sent on that channel would be
+    // answered by the broker with "unknown delivery tag" and a channel close. The adapter closes the
+    // lost consumer's channel first, so the late ack is skipped locally and reported.
+    it("a handler that outlives a deleted queue: its late ack is skipped and reported and never reaches the broker", { timeout: 60_000 }, async () => {
+        const events: AmqpLifecycleEvent[] = [];
+        const adapter = AmqpAdapter({
+            url,
+            exchange: "loss.latedel",
+            exchangeType: "topic",
+            recovery: { initialDelay: 100, maxDelay: 500 },
+            lifecycle: { onLifecycle: (event) => events.push(event) },
+        });
+        await adapter.connect();
+        try {
+            let delivered = 0;
+            let releaseFirst: () => void = () => undefined;
+            const firstMayAck = new Promise<void>((resolve) => {
+                releaseFirst = resolve;
+            });
+            let firstAckSettled = false;
+            await adapter.subscribe(
+                ["loss.latedel.evt"],
+                async (_event, ack) => {
+                    delivered += 1;
+                    if (delivered === 1) {
+                        await firstMayAck;
+                        await ack();
+                        firstAckSettled = true;
+                        return;
+                    }
+                    await ack();
+                },
+                { group: "g" },
+            );
+            await adapter.publish("loss.latedel.evt", encode("held"));
+            await waitFor(() => delivered === 1);
+
+            await ctl("delete_queue", "loss.latedel.g");
+            await waitFor(() => events.some((e) => e.type === "consumer-restored"));
+
+            releaseFirst();
+            await waitFor(() => firstAckSettled);
+            const skipped = events.filter((e) => e.type === "settlement-skipped");
+            assert.equal(skipped.length, 1, "exactly one skipped settlement is reported");
+            const event = skipped[0];
+            assert.ok(event?.type === "settlement-skipped");
+            assert.equal(event.action, "ack");
+            assert.equal(event.queue, "loss.latedel.g");
+
+            // The consumer restored on the re-declared queue still works: the late ack did not close its channel.
+            await adapter.publish("loss.latedel.evt", encode("next"));
+            await waitFor(() => delivered === 2);
+            assert.equal(events.filter((e) => e.type === "consumer-lost").length, 1, "the late ack did not cost a second consumer");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+        }
+    });
+
+    // RabbitMQ answers a settlement of a delivery tag its channel does not own with
+    // "PRECONDITION_FAILED - unknown delivery tag" in its log. The negative check is only worth
+    // something if this log capture can see that text, so the test first reads the log, then makes
+    // the broker print the text on purpose over a raw channel, and requires the capture to show it.
+    it("the broker log has no unknown delivery tag from any scenario above, and the capture does see one when it happens", { timeout: 60_000 }, async () => {
+        const readLog = async (): Promise<string> => {
+            const stream = await container.logs();
+            const chunks: string[] = [];
+            stream.on("data", (chunk: Buffer | string) => chunks.push(chunk.toString()));
+            await sleep(1_500);
+            stream.destroy();
+            return chunks.join("");
+        };
+
+        const before = await readLog();
+        assert.ok(before.length > 0, "the broker log was read");
+        assert.equal(before.includes("unknown delivery tag"), false, "an ack/nack/requeue reached a channel that no longer owned the delivery");
+
+        const conn = await connect(url);
+        try {
+            const ch = await conn.createChannel();
+            ch.on("error", () => undefined);
+            await ch.assertQueue("loss.log.probe", { exclusive: true });
+            ch.sendToQueue("loss.log.probe", Buffer.from("probe"));
+            const got = await ch.get("loss.log.probe");
+            assert.ok(got, "the probe message was fetched");
+            ch.ack(got);
+            ch.ack(got);
+            await sleep(500);
+        } finally {
+            await conn.close().catch(() => undefined);
+        }
+
+        const afterProbe = await readLog();
+        assert.equal(afterProbe.includes("unknown delivery tag"), true, "the capture shows the broker's unknown delivery tag text when a double ack provokes it");
     });
 });

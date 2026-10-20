@@ -3,19 +3,6 @@ import { describe, it } from "node:test";
 import { RedisAdapter } from "../../src/RedisAdapter.ts";
 
 describe("RedisAdapter", () => {
-    it("should return an adapter with name 'redis'", () => {
-        const adapter = RedisAdapter();
-        assert.equal(adapter.name, "redis");
-    });
-
-    it("should have all required EventAdapter methods", () => {
-        const adapter = RedisAdapter();
-        assert.equal(typeof adapter.connect, "function");
-        assert.equal(typeof adapter.disconnect, "function");
-        assert.equal(typeof adapter.publish, "function");
-        assert.equal(typeof adapter.subscribe, "function");
-    });
-
     it("should throw when publishing without connection", async () => {
         const adapter = RedisAdapter();
         const payload = new Uint8Array([1, 2, 3]);
@@ -35,93 +22,39 @@ describe("RedisAdapter", () => {
         );
     });
 
-    it("should accept options without url or redisOptions", () => {
-        const adapter = RedisAdapter({});
-        assert.equal(adapter.name, "redis");
-    });
-
-    it("should accept options with url", () => {
-        const adapter = RedisAdapter({ url: "redis://localhost:6379" });
-        assert.equal(adapter.name, "redis");
-    });
-
-    it("should accept options with brokerOptions", () => {
-        const adapter = RedisAdapter({
-            brokerOptions: {
-                maxLen: 1000,
-                blockMs: 3000,
-                count: 5,
-            },
-        });
-        assert.equal(adapter.name, "redis");
-    });
-
     it("should not throw on disconnect when not connected", async () => {
         const adapter = RedisAdapter();
         // Disconnect on a never-connected adapter should be a no-op
         await adapter.disconnect();
     });
 
-    it("should accept empty default options", () => {
-        const adapter = RedisAdapter();
-        assert.equal(adapter.name, "redis");
-    });
-
-    it("should accept options with redisOptions", () => {
-        const adapter = RedisAdapter({
-            redisOptions: { maxRetriesPerRequest: 3, lazyConnect: true },
-        });
-        assert.equal(adapter.name, "redis");
+    it("rejects native RESP3 reply mapping on the RESP2 wire protocol when the adapter is created", () => {
+        assert.throws(() => RedisAdapter({ redisOptions: { replyMapping: "resp3" } }), TypeError);
     });
 });
 
-describe("RedisAdapter AdapterContext", () => {
-    // Note: connect() requires a running Redis server, so we test the interface
-    // contract and construction behavior rather than successful connection.
+describe("RedisAdapter failed connect", () => {
+    // An unreachable host: the client gives up at once (no retries), so connect() rejects.
+    const unreachable = { lazyConnect: true, host: "127.0.0.1", port: 1, retryStrategy: () => null } as const;
 
-    it("connect() accepts AdapterContext parameter", () => {
-        const adapter = RedisAdapter();
-        assert.equal(typeof adapter.connect, "function");
-    });
+    it("rejects with the connection error and leaves the adapter free to connect again", async () => {
+        const adapter = RedisAdapter({ redisOptions: unreachable });
 
-    it("connect() accepts AdapterContext without TypeError", async () => {
-        // Use lazyConnect to prevent automatic connection and an unreachable host
-        const adapter = RedisAdapter({
-            redisOptions: { lazyConnect: true, host: "invalid-redis-host", port: 1, retryStrategy: () => null },
-        });
-
-        // connect() will fail (no Redis server), but should accept the context
-        // without throwing TypeError. The actual connectionName =
-        // redisOptions.connectionName ?? context.serviceName
-        await assert.rejects(
-            () => adapter.connect({ serviceName: "order.v1@test-host" }),
-            (err: Error) => {
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for AdapterContext");
-                return true;
-            },
+        const firstError = await adapter.connect({ serviceName: "order.v1@test-host" }).then(
+            () => assert.fail("connect() must reject when the broker is unreachable"),
+            (error: Error) => error,
         );
-    });
+        assert.doesNotMatch(firstError.message, /already connected/);
 
-    it("adapter can be constructed with explicit redisOptions.connectionName", () => {
-        // Verify construction works -- actual priority is tested at connect() time
-        const adapter = RedisAdapter({
-            redisOptions: { connectionName: "explicit-name", lazyConnect: true },
-        });
-        assert.equal(adapter.name, "redis");
-    });
-
-    it("connect() works with undefined context (backward compat)", async () => {
-        const adapter = RedisAdapter({
-            redisOptions: { lazyConnect: true, host: "invalid-redis-host", port: 1, retryStrategy: () => null },
-        });
-
-        // Calling connect() without context should still work (minus Redis availability)
-        await assert.rejects(
-            () => adapter.connect(),
-            (err: Error) => {
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for missing context");
-                return true;
-            },
+        // A failed connect() must not leave a half-open client behind: the retry is a fresh attempt
+        // that fails for the same reason, not an "already connected" refusal.
+        const secondError = await adapter.connect().then(
+            () => assert.fail("the second connect() must also reject"),
+            (error: Error) => error,
         );
+        assert.doesNotMatch(secondError.message, /already connected/);
+        assert.equal(secondError.message, firstError.message);
+
+        await adapter.disconnect();
     });
 });

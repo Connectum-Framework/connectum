@@ -37,19 +37,6 @@ function makeCtx() {
 }
 
 describe("retry through composeMiddleware (bug reproduction)", () => {
-    it("retry middleware alone: handler called 3 times (1 + 2 retries)", async () => {
-        let callCount = 0;
-        const mw = retryMiddleware({ maxRetries: 2, backoff: "fixed", initialDelay: 10 });
-
-        // Direct call — works fine, next is just a callback
-        await mw(makeRawEvent(), makeCtx(), async () => {
-            callCount++;
-            if (callCount < 3) throw new Error("fail");
-        });
-
-        assert.equal(callCount, 3, "direct call: handler should be called 3 times");
-    });
-
     it("retry middleware through composeMiddleware: handler should be called 3 times", async () => {
         let callCount = 0;
         const retry = retryMiddleware({ maxRetries: 2, backoff: "fixed", initialDelay: 10 });

@@ -1,5 +1,5 @@
 /**
- * Unit tests for the events module fragment (task 2.2): adapter table, proto/option
+ * Unit tests for the events module fragment: adapter table, proto/option
  * generation, EventBus/EventRoute wiring, buf.yaml lint excepts, and composition.
  */
 

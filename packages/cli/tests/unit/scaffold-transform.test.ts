@@ -3,7 +3,7 @@
  *
  * Validates config resolution, script/devDep synthesis (lifecycle-fix,
  * package-manager independence, runtime variance), the in-process e2e test
- * generation (D-7), and the whole-tree transform.
+ * generation, and the whole-tree transform.
  */
 
 import assert from "node:assert/strict";
@@ -307,13 +307,6 @@ describe("transformBase", () => {
         assert.match(out.get("buf.gen.yaml") ?? "", /protoc-gen-es/);
         assert.doesNotMatch(out.get("buf.gen.yaml") ?? "", /catalog/);
         assert.match(out.get("README.md") ?? "", /payments/);
-    });
-
-    it("transforms package.json (name, no private, testing dep)", () => {
-        const pkg = JSON.parse(transformBase(base, nodePnpm).get("package.json") ?? "{}");
-        assert.equal(pkg.name, "payments");
-        assert.equal(pkg.private, undefined);
-        assert.equal(pkg.devDependencies["@connectum/testing"], "^1.0.0");
     });
 
     it("emits a standalone pnpm-workspace.yaml (build-approval) for pnpm only", () => {

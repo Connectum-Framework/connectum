@@ -36,6 +36,17 @@ describe("isConnectionLostError", () => {
         assert.equal(isConnectionLostError(new Error("Socket closed unexpectedly")), true);
     });
 
+    // The texts amqplib 2.2.0 itself puts on the errors it raises when a connection or a
+    // channel goes away: lib/channel.js:37 rejects the outstanding confirms with
+    // "channel closed", lib/connection.js:590 raises "Connection closed: <reply>" for a broker
+    // close and lib/connection.js:344 "Connection closed (<error>)" for a client-side close.
+    it("classifies the exact texts amqplib raises on a channel or connection close as connection loss", () => {
+        assert.equal(isConnectionLostError(new Error("channel closed")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed: 320 (CONNECTION-FORCED) with message \"CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'\"")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed (Error: Unexpected close)")), true);
+        assert.equal(isConnectionLostError(new Error("Connection closed (by client)")), true);
+    });
+
     it("does NOT classify a genuine broker nack as connection loss", () => {
         // amqplib uses Error("message nacked") for a real negative ack
         assert.equal(isConnectionLostError(new Error("message nacked")), false);
@@ -54,94 +65,20 @@ describe("AmqpAdapter", () => {
         assert.equal(adapter.name, "amqp");
     });
 
-    it("should accept a URL string", () => {
-        const adapter = AmqpAdapter({ url: "amqp://guest:guest@localhost:5672" });
-        assert.ok(adapter);
-    });
-
-    it("should accept custom exchange name", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            exchange: "custom.exchange",
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "amqp");
-    });
-
-    it("should accept exchange options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            exchangeType: "direct",
-            exchangeOptions: {
-                durable: false,
-                autoDelete: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept queue options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            queueOptions: {
-                durable: true,
-                messageTtl: 60_000,
-                maxLength: 10_000,
-                deadLetterExchange: "dlx.exchange",
-                deadLetterRoutingKey: "dlq",
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept consumer options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            consumerOptions: {
-                prefetch: 20,
-                exclusive: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept publisher options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            publisherOptions: {
-                persistent: false,
-                mandatory: true,
-            },
-        });
-        assert.ok(adapter);
-    });
-
-    it("should accept all options together without TypeError", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://guest:guest@localhost:5672",
-            socketOptions: { timeout: 5000 },
-            exchange: "test.events",
-            exchangeType: "topic",
-            exchangeOptions: { durable: true, autoDelete: false },
-            queueOptions: {
-                durable: true,
-                messageTtl: 30_000,
-                maxLength: 5000,
-                deadLetterExchange: "dlx",
-                deadLetterRoutingKey: "dlq.key",
-            },
-            consumerOptions: { prefetch: 5, exclusive: false },
-            publisherOptions: { persistent: true, mandatory: false },
-        });
-        assert.ok(adapter);
-        assert.equal(adapter.name, "amqp");
-    });
+    // The options are observed on a broker, where the effect of each can be told from its absence:
+    // url and exchange (every broker test), exchangeType and exchangeOptions, queueOptions,
+    // consumerOptions.prefetch and publisherOptions.persistent (amqp-contract-gaps.test.ts),
+    // publisherOptions.mandatory and correlationHeader (amqp-broker.test.ts).
 
     it("should throw when publishing without connection", async () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.publish("test.event", new Uint8Array([1, 2, 3])),
-            { message: "AmqpAdapter: not connected (or recovery in progress)" },
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                assert.equal(err.message, "AmqpAdapter: not connected (or recovery in progress)");
+                return true;
+            },
         );
     });
 
@@ -149,32 +86,41 @@ describe("AmqpAdapter", () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
         await assert.rejects(
             () => adapter.subscribe(["test.>"], async () => {}),
-            { message: "AmqpAdapter: not connected (or recovery in progress)" },
+            (err: unknown) => {
+                assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
+                assert.equal(err.message, "AmqpAdapter: not connected (or recovery in progress)");
+                return true;
+            },
         );
     });
 
-    it("should not throw when disconnecting without prior connection", async () => {
+    it("disconnect() without a prior connection resolves and leaves the adapter not connected", async () => {
         const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        // disconnect() should be a no-op when not connected
         await adapter.disconnect();
-    });
-
-    it("should expose required EventAdapter methods", () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        assert.equal(typeof adapter.connect, "function");
-        assert.equal(typeof adapter.disconnect, "function");
-        assert.equal(typeof adapter.publish, "function");
-        assert.equal(typeof adapter.subscribe, "function");
+        await assert.rejects(
+            () => adapter.publish("test.event", new Uint8Array([1])),
+            (err: unknown) => err instanceof AmqpConnectionError && err.message === "AmqpAdapter: not connected (or recovery in progress)",
+        );
     });
 });
 
 describe("AmqpAdapter connection guard", () => {
-    it("should be safe to call disconnect() multiple times", async () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-        // Multiple disconnect() calls should not throw
+    // A disconnect() that finds nothing to close must not poison the adapter: a connect()
+    // issued afterwards starts a clean attempt, which here reaches the socket and is
+    // refused, instead of being turned away as closed.
+    it("repeated disconnect() calls leave the adapter able to start a clean connect()", async () => {
+        const adapter = AmqpAdapter({ url: "amqp://127.0.0.1:1", recovery: false });
         await adapter.disconnect();
         await adapter.disconnect();
         await adapter.disconnect();
+        await assert.rejects(
+            () => adapter.connect(),
+            (err: unknown) => {
+                assert.ok(!(err instanceof AmqpConnectionError), `a clean attempt fails on the socket, got: ${String(err)}`);
+                assert.equal((err as NodeJS.ErrnoException).code, "ECONNREFUSED", "with recovery: false the original error is thrown unchanged");
+                return true;
+            },
+        );
     });
 
     // With a finite maxRetries and no initialConnectMaxRetries, amqplib's own
@@ -193,6 +139,7 @@ describe("AmqpAdapter connection guard", () => {
                 (err: unknown) => {
                     assert.ok(err instanceof AmqpConnectionError, `expected AmqpConnectionError, got: ${String(err)}`);
                     assert.ok(err.cause instanceof Error, "the original connection error is kept as the cause");
+                    assert.equal((err.cause as NodeJS.ErrnoException).code, "ECONNREFUSED", "the cause is the refused connection itself, not a wrapper or a stand-in");
                     return true;
                 },
             );
@@ -444,19 +391,33 @@ describe("createBackoffGuard", () => {
         });
     }
 
-    it("a Promise return gives up with 'must be synchronous' and is not awaited", () => {
-        let rejectLater: ((err: Error) => void) | undefined;
-        const pending = new Promise<number>((_resolve, reject) => {
-            rejectLater = reject;
-        });
-        const guard = createBackoffGuard(() => pending as unknown as number);
-        assert.throws(() => guard.calculateDelay(1));
-        const giveUp = guard.giveUpError();
-        assert.ok(giveUp instanceof AmqpConnectionError);
-        assert.ok(giveUp.cause instanceof Error);
-        assert.match(giveUp.cause.message, /must be synchronous/);
-        // The guard attached a rejection handler: a later rejection is not unhandled.
-        rejectLater?.(new Error("late"));
+    it("a Promise return gives up with 'must be synchronous', is not awaited, and its later rejection is not unhandled", async () => {
+        // The listener belongs to this test: a late rejection that escaped the guard is seen here and
+        // fails this test, instead of surfacing after it has ended or in whichever test runs next.
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            let rejectLater: ((err: Error) => void) | undefined;
+            const pending = new Promise<number>((_resolve, reject) => {
+                rejectLater = reject;
+            });
+            const guard = createBackoffGuard(() => pending as unknown as number);
+            assert.throws(() => guard.calculateDelay(1));
+            const giveUp = guard.giveUpError();
+            assert.ok(giveUp instanceof AmqpConnectionError);
+            assert.ok(giveUp.cause instanceof Error);
+            assert.match(giveUp.cause.message, /must be synchronous/);
+            // The guard attached a rejection handler: a later rejection is not unhandled.
+            rejectLater?.(new Error("late"));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.deepEqual(unhandled, [], "the Promise the hook returned must not raise an unhandledRejection when it rejects");
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
     });
 
     it("without a noted connection error the message says none was observed", () => {
@@ -489,65 +450,8 @@ describe("createBackoffGuard", () => {
     });
 });
 
-describe("AmqpAdapter publisher options", () => {
-    it("should construct with publisher options", () => {
-        const adapter = AmqpAdapter({
-            url: "amqp://localhost:5672",
-            publisherOptions: {
-                persistent: true,
-                mandatory: false,
-            },
-        });
-        assert.ok(adapter);
-    });
-});
-
-describe("AmqpAdapter AdapterContext", () => {
-    it("connect() accepts AdapterContext parameter", () => {
-        const adapter = AmqpAdapter({ url: "amqp://localhost:5672" });
-
-        // connect() should accept an optional AdapterContext
-        assert.equal(typeof adapter.connect, "function");
-    });
-
-    it("connect() accepts AdapterContext without TypeError", async () => {
-        // recovery: false — with recovery enabled (default), connect() retries
-        // with backoff until the broker appears instead of rejecting.
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
-
-        // connect() will fail (no broker), but should accept the context
-        // without throwing TypeError. The serviceName is mapped to
-        // clientProperties.connection_name.
-        await assert.rejects(
-            () => adapter.connect({ serviceName: "order.v1@test-host" }),
-            (err: Error) => {
-                assert.ok(
-                    !(err instanceof TypeError),
-                    "Should not throw TypeError for AdapterContext",
-                );
-                return true;
-            },
-        );
-    });
-
-    it("connect() works with undefined context (backward compat)", async () => {
-        // recovery: false — with recovery enabled (default), connect() retries
-        // with backoff until the broker appears instead of rejecting.
-        const adapter = AmqpAdapter({ url: "amqp://invalid-host:5672", recovery: false });
-
-        // Calling connect() without context should still work (minus broker availability)
-        await assert.rejects(
-            () => adapter.connect(),
-            (err: Error) => {
-                assert.ok(
-                    !(err instanceof TypeError),
-                    "Should not throw TypeError for missing context",
-                );
-                return true;
-            },
-        );
-    });
-});
+// The serviceName of the AdapterContext becomes the connection_name client property, which only a
+// broker shows: amqp-recovery.test.ts counts the broker's connections by that name.
 
 describe("toAmqpPattern", () => {
     it("requires at least one segment after a terminal >", () => {
@@ -2020,7 +1924,29 @@ describe("handleDelivery never lets a failure escape the consume callback", () =
         assert.equal(events.length, 0);
     });
 
-    it("a handler that throws synchronously after an explicit ack() sends no requeue", async () => {
+    it("a plain (non-async) handler that calls ack() and then throws synchronously sends no requeue", async () => {
+        const calls: string[] = [];
+
+        assert.doesNotThrow(() =>
+            handleDelivery({
+                channel: recordingChannel(calls),
+                message: makeMessage(),
+                queue: "orders",
+                // A plain function: the throw is a real synchronous throw, not a rejection.
+                handler: ((_event: unknown, ack: () => Promise<void>) => {
+                    void ack();
+                    throw new Error("synchronous failure after ack");
+                }) as unknown as RawEventHandler,
+                decode: undefined,
+                lifecycle: undefined,
+            }),
+        );
+        await settle();
+
+        assert.deepEqual(calls, ["ack"], "exactly one acknowledgement and no requeue");
+    });
+
+    it("an async handler that awaits ack() and then throws sends no requeue", async () => {
         const calls: string[] = [];
 
         handleDelivery({

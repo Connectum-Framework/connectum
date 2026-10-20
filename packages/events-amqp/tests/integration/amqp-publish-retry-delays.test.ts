@@ -583,6 +583,46 @@ describe("AMQP publish retry, publish drain and reconnect delays (testcontainers
             }
         });
 
+        // The documented default jitter is 0.2. With jitter 0 every saturated attempt would report the
+        // same delay, so repetition across many saturated attempts shows the jitter was lost; with
+        // the documented jitter the chance that seven draws from about fifty values are all equal is
+        // negligible.
+        it("with the default jitter the saturated delays vary inside the documented window instead of repeating one value", { timeout: 60_000 }, async () => {
+            const recovery = { initialDelay: 100, maxDelay: 150, maxRetries: 8 };
+            const reconnecting: Array<{ attempt: number; delay: number }> = [];
+            let failed = false;
+            const adapter = AmqpAdapter({
+                url,
+                exchange: "gaps.delay.jitter",
+                recovery,
+                lifecycle: {
+                    onLifecycle: (event: AmqpLifecycleEvent) => {
+                        if (event.type === "reconnecting") {
+                            reconnecting.push({ attempt: event.attempt, delay: event.delay });
+                        } else if (event.type === "reconnect-failed") {
+                            failed = true;
+                        }
+                    },
+                },
+            });
+            await adapter.connect();
+            try {
+                await stopBrokerApp();
+                await waitFor(() => failed);
+                // From attempt 2 the base is saturated at maxDelay / (1 + jitter) = 125 ms.
+                const saturated = reconnecting.filter((r) => r.attempt >= 2);
+                assert.ok(saturated.length >= 6, `enough saturated attempts to tell jitter from none (saw ${saturated.length})`);
+                for (const { attempt, delay } of saturated) {
+                    const window = documentedDelayWindow({ ...recovery, factor: 2, jitter: 0.2 }, attempt);
+                    assert.ok(delay >= window.min && delay <= window.max, `attempt ${attempt}: delay ${delay}ms outside the documented window ${window.min}..${window.max}ms`);
+                }
+                assert.ok(new Set(saturated.map((r) => r.delay)).size >= 2, `the saturated delays repeat one value, so no jitter was applied: ${JSON.stringify(saturated.map((r) => r.delay))}`);
+            } finally {
+                await restoreBrokerApp();
+                await adapter.disconnect().catch(() => undefined);
+            }
+        });
+
         it("initial connect window: every reconnecting delay stays within maxDelay and inside the documented jitter window", { timeout: 60_000 }, async () => {
             const recovery = { initialDelay: 100, maxDelay: 150, initialConnectMaxRetries: 4 };
             const reconnecting: Array<{ attempt: number; delay: number }> = [];

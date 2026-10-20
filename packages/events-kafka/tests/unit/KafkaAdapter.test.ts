@@ -1,26 +1,10 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import { describe, it } from "node:test";
 import { Kafka } from "kafkajs";
 import { defaultTopicDiscoveryIntervalMs, KafkaAdapter } from "../../src/KafkaAdapter.ts";
 
 describe("KafkaAdapter", () => {
-    it("creates adapter with correct name", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-        });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
-    it("creates adapter with custom clientId", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            clientId: "my-service",
-        });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
     it("throws when publishing without connection", async () => {
         const adapter = KafkaAdapter({
             brokers: ["localhost:9092"],
@@ -46,42 +30,9 @@ describe("KafkaAdapter", () => {
         );
     });
 
-    it("accepts multiple brokers", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["broker1:9092", "broker2:9092", "broker3:9092"],
-        });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
-    it("accepts producer options", () => {
-        // gzip is the codec the client ships with
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            producerOptions: {
-                compression: "gzip",
-            },
-        });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
-    it("accepts consumer options", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            consumerOptions: {
-                sessionTimeout: 60000,
-                fromBeginning: true,
-            },
-        });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
     it("accepts a redeliveryDelay up to the timer limit and rejects a negative, non-finite or larger one", () => {
         for (const good of [0, 250, 2_147_483_647]) {
-            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: good } });
-            assert.equal(adapter.name, "kafka");
+            assert.doesNotThrow(() => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { redeliveryDelay: good } }));
         }
 
         for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
@@ -94,8 +45,7 @@ describe("KafkaAdapter", () => {
 
     it("accepts both commit strategies and rejects any other value", () => {
         for (const good of ["per-message", "per-batch"] as const) {
-            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { commitStrategy: good } });
-            assert.equal(adapter.name, "kafka");
+            assert.doesNotThrow(() => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { commitStrategy: good } }));
         }
 
         for (const bad of ["", "batch", "PER-BATCH", "per-message "]) {
@@ -107,9 +57,9 @@ describe("KafkaAdapter", () => {
     });
 
     it("accepts false or a positive topicDiscoveryInterval and rejects anything else", () => {
-        KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
-        KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: 1 } });
-        KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: 2_147_483_647 } });
+        for (const good of [false, 1, 2_147_483_647] as const) {
+            assert.doesNotThrow(() => KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: good } }));
+        }
 
         for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
             assert.throws(
@@ -323,18 +273,6 @@ describe("KafkaAdapter", () => {
         });
     });
 
-    it("has all required EventAdapter methods", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-        });
-
-        assert.equal(typeof adapter.connect, "function");
-        assert.equal(typeof adapter.disconnect, "function");
-        assert.equal(typeof adapter.publish, "function");
-        assert.equal(typeof adapter.subscribe, "function");
-        assert.equal(typeof adapter.name, "string");
-    });
-
     it("disconnect is safe to call without connect", async () => {
         const adapter = KafkaAdapter({
             brokers: ["localhost:9092"],
@@ -345,142 +283,74 @@ describe("KafkaAdapter", () => {
     });
 });
 
-describe("KafkaAdapter internal utilities (indirect testing)", () => {
-    // -----------------------------------------------------------------------
-    // patternToKafkaTopicMatcher() — private function
-    //
-    // Maps NATS-style wildcard patterns to Kafka RegExp:
-    //   - Literal pattern → returned as string
-    //   - `*` → [^.]+ (single segment)
-    //   - `>` → .+ (one or more segments)
-    //   - Length > 256 → throws Error
-    //
-    // This function is called inside subscribe() which requires a connected
-    // Kafka broker. We cannot test it directly in unit tests.
-    //
-    // However, we can verify the adapter's behavior with various pattern
-    // inputs through the subscribe() error path (adapter must be connected).
-    // Since subscribe() checks `if (!connected)` before calling
-    // patternToKafkaTopicMatcher(), we can only test construction acceptance.
-    //
-    // For full coverage of this function, integration tests with a running
-    // Kafka broker are required.
-    // -----------------------------------------------------------------------
-
-    it("should accept adapter construction with literal pattern-style topic names", () => {
-        // patternToKafkaTopicMatcher("user.created") returns "user.created" (string)
-        // This is tested indirectly via construction and subscribe error message
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
-        assert.ok(adapter);
-    });
-
-    it("should reject subscribe with literal pattern when not connected", async () => {
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
-
-        // subscribe() fails before reaching patternToKafkaTopicMatcher
-        await assert.rejects(
-            () => adapter.subscribe(["user.created"], async () => {}),
-            { message: "KafkaAdapter: not connected" },
-        );
-    });
-
-    it("should reject subscribe with wildcard * pattern when not connected", async () => {
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
-
-        // Pattern "user.*" would be converted to RegExp /^user\.[^.]+$/
-        // but subscribe() fails before reaching patternToKafkaTopicMatcher
-        await assert.rejects(
-            () => adapter.subscribe(["user.*"], async () => {}),
-            { message: "KafkaAdapter: not connected" },
-        );
-    });
-
-    it("should reject subscribe with wildcard > pattern when not connected", async () => {
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
-
-        // Pattern "events.>" would be converted to RegExp /^events\..+$/
-        // but subscribe() fails before reaching patternToKafkaTopicMatcher
-        await assert.rejects(
-            () => adapter.subscribe(["events.>"], async () => {}),
-            { message: "KafkaAdapter: not connected" },
-        );
-    });
-
-    // NOTE: The 256-char limit check in patternToKafkaTopicMatcher() cannot be
-    // tested without a connected adapter, because subscribe() checks connection
-    // state before processing patterns. This would require an integration test.
-    it("should reject subscribe with long pattern when not connected (pre-validation)", async () => {
-        const adapter = KafkaAdapter({ brokers: ["localhost:9092"] });
-
-        const longPattern = "a".repeat(300);
-        // subscribe() rejects with "not connected" before the length check
-        await assert.rejects(
-            () => adapter.subscribe([longPattern], async () => {}),
-            { message: "KafkaAdapter: not connected" },
-        );
-    });
-});
-
-describe("KafkaAdapter AdapterContext", () => {
-    // Note: connect() calls `new Kafka(...)` then `kafka.producer().connect()`,
-    // so we cannot test connect() success without a real broker. We verify the
-    // connect() signature accepts the context parameter and that the clientId
-    // fallback logic works indirectly through construction tests.
-
-    it("connect() accepts AdapterContext parameter", () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
+/**
+ * A stand-in for a Kafka broker that reads the client id from the header of the first request
+ * (a request header is: int32 size, int16 api key, int16 api version, int32 correlation id,
+ * then the client id as an int16-prefixed string) and drops the connection. `connect()` rejects,
+ * and the identity the client announced is recorded. Nothing here needs a real broker.
+ */
+async function announcedClientId(run: (broker: string) => Promise<void>): Promise<string | null> {
+    let clientId: string | null | undefined;
+    const server = createServer((socket) => {
+        socket.on("error", () => undefined);
+        // TCP may deliver the header in pieces: collect bytes until the client id is complete.
+        let received = Buffer.alloc(0);
+        socket.on("data", (chunk: Buffer) => {
+            if (clientId !== undefined) {
+                return;
+            }
+            received = Buffer.concat([received, chunk]);
+            if (received.length < 14) {
+                return;
+            }
+            const length = received.readInt16BE(12);
+            if (length >= 0 && received.length < 14 + length) {
+                return;
+            }
+            clientId = length < 0 ? null : received.toString("utf-8", 14, 14 + length);
+            socket.destroy();
         });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        await run(`127.0.0.1:${address.port}`);
+    } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    assert.notEqual(clientId, undefined, "the client must have sent a request");
+    return clientId as string | null;
+}
 
-        // connect() should accept an optional AdapterContext
-        assert.equal(typeof adapter.connect, "function");
+describe("KafkaAdapter client id", () => {
+    // The events guide: the EventBus derives a service identifier that adapters use as the broker
+    // client identifier (Kafka `clientId`), and an explicit adapter option always wins. The
+    // KafkaAdapterOptions reference: `clientId` defaults to "connectum".
+
+    const unreachable = { retry: { retries: 0 }, connectionTimeout: 1_000 } as const;
+
+    it("announces the service identifier given to connect() as the client id", async () => {
+        const announced = await announcedClientId(async (broker) => {
+            const adapter = KafkaAdapter({ brokers: [broker], ...unreachable });
+            await assert.rejects(adapter.connect({ serviceName: "order.v1@test-host" }));
+        });
+        assert.equal(announced, "order.v1@test-host");
     });
 
-    it("connect() accepts AdapterContext without TypeError", async () => {
-        // We cannot verify the actual Kafka clientId without a running broker,
-        // but we can verify the adapter does not throw a TypeError when context is provided.
-        // The actual clientId = options.clientId ?? context?.serviceName ?? "connectum"
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            retry: { retries: 0 },
+    it("announces an explicit clientId instead of the service identifier", async () => {
+        const announced = await announcedClientId(async (broker) => {
+            const adapter = KafkaAdapter({ brokers: [broker], clientId: "explicit-client-id", ...unreachable });
+            await assert.rejects(adapter.connect({ serviceName: "order.v1@test-host" }));
         });
-
-        // connect() will throw because no broker is available, but the error
-        // should be a connection error, NOT a TypeError about the context parameter.
-        await assert.rejects(
-            () => adapter.connect({ serviceName: "order.v1@test-host" }),
-            (err: Error) => {
-                // Should fail with a connection-related error, not a type error
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for AdapterContext");
-                return true;
-            },
-        );
+        assert.equal(announced, "explicit-client-id");
     });
 
-    it("adapter can be constructed with explicit clientId", () => {
-        // Verify construction works with both clientId and context will be provided.
-        // The priority chain is: options.clientId > context.serviceName > "connectum"
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            clientId: "explicit-client-id",
+    it('announces "connectum" when there is neither an explicit client id nor a service identifier', async () => {
+        const announced = await announcedClientId(async (broker) => {
+            const adapter = KafkaAdapter({ brokers: [broker], ...unreachable });
+            await assert.rejects(adapter.connect());
         });
-
-        assert.equal(adapter.name, "kafka");
-    });
-
-    it("connect() works with undefined context (backward compat)", async () => {
-        const adapter = KafkaAdapter({
-            brokers: ["localhost:9092"],
-            retry: { retries: 0 },
-        });
-
-        // Calling connect() without context should still work (minus broker availability)
-        await assert.rejects(
-            () => adapter.connect(),
-            (err: Error) => {
-                assert.ok(!(err instanceof TypeError), "Should not throw TypeError for missing context");
-                return true;
-            },
-        );
+        assert.equal(announced, "connectum");
     });
 });
