@@ -149,15 +149,36 @@ export function getHttpExporterOptions(collector: CollectorOptions, signal: OTLP
  * - OTEL_BSP_SCHEDULE_DELAY: Time to wait before automatically exporting spans in ms (default: 1000)
  * - OTEL_BSP_EXPORT_TIMEOUT: Max time allowed for a single export operation in ms (default: 10000)
  *
+ * A value that is not an integer, or is negative, is ignored with a process warning and the
+ * default is used, as the OpenTelemetry specification asks for invalid numeric
+ * variables. The provider is created lazily on the first traced call, so throwing here
+ * would fail that user call.
+ *
  * @returns Batch span processor options
  */
 export function getBatchSpanProcessorOptions(): BatchSpanProcessorOptions {
     return {
-        maxExportBatchSize: env.get("OTEL_BSP_MAX_EXPORT_BATCH_SIZE").default(100).asIntPositive(),
-        maxQueueSize: env.get("OTEL_BSP_MAX_QUEUE_SIZE").default(1000).asIntPositive(),
-        scheduledDelayMillis: env.get("OTEL_BSP_SCHEDULE_DELAY").default(1000).asIntPositive(),
-        exportTimeoutMillis: env.get("OTEL_BSP_EXPORT_TIMEOUT").default(10000).asIntPositive(),
+        maxExportBatchSize: countFromEnv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 100),
+        maxQueueSize: countFromEnv("OTEL_BSP_MAX_QUEUE_SIZE", 1000),
+        scheduledDelayMillis: countFromEnv("OTEL_BSP_SCHEDULE_DELAY", 1000),
+        exportTimeoutMillis: countFromEnv("OTEL_BSP_EXPORT_TIMEOUT", 10000),
     };
+}
+
+/**
+ * Reads a non-negative integer from the environment; an invalid value yields a warning
+ * and `fallback`.
+ *
+ * The warning goes through `process.emitWarning` rather than the OpenTelemetry
+ * diagnostic channel: the provider sets that channel to ERROR level, which would hide it.
+ */
+function countFromEnv(name: string, fallback: number): number {
+    try {
+        return env.get(name).default(fallback).asIntPositive();
+    } catch {
+        process.emitWarning(`${name}="${process.env[name]}" is not a valid non-negative integer; using the default ${fallback}.`, { code: "CONNECTUM_OTEL_INVALID_ENV" });
+        return fallback;
+    }
 }
 
 /**
