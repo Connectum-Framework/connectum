@@ -263,4 +263,15 @@ describe("generate service: a name that maps onto another service's proto", () =
 
         assert.ok(existsSync(join(dir, "src/services/billingService.ts")));
     });
+
+    it("does not take a mention of the service name for its declaration", async () => {
+        mkdirSync(join(dir, "proto/billing/v1"), { recursive: true });
+        // The name BillingService appears only in a comment; the declared service is another one.
+        writeFileSync(join(dir, "proto/billing/v1/billing.proto"), 'syntax = "proto3";\npackage billing.v1;\n// BillingService is planned.\nservice InvoiceService {\n}\n');
+        const before = listing(dir);
+
+        await assert.rejects(() => executeGenerateService({ name: "billing", cwd: dir }), /BillingService/);
+
+        assert.deepEqual(listing(dir), before);
+    });
 });
