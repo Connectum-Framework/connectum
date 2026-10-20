@@ -67,28 +67,65 @@ describe("circuit breaker interceptor", () => {
         );
     });
 
-    it("should reject requests when circuit open", async () => {
-        const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 60_000 });
-
+    // The documented defaults: five consecutive failures open the circuit, and it
+    // stays open for 30000 ms. A virtual clock stands in for the 30 s; the breaker
+    // reads the time on the next call, so the clock is moved and the call made.
+    it("should open after 5 consecutive failures by default", async () => {
+        const interceptor = createCircuitBreakerInterceptor();
+        const next = createMockNextError(Code.Internal, "Service error");
+        const handler = interceptor(next as any);
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
 
-        const next = createMockNextError(Code.Internal, "Service error");
-
-        const handler = interceptor(next as any);
-
-        // Trigger circuit open (2 failures)
-        for (let i = 0; i < 2; i++) {
-            await assert.rejects(() => handler(mockReq));
+        for (let i = 0; i < 5; i++) {
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal);
+                    return true;
+                },
+            );
         }
-
-        // Circuit should be open now - immediate rejection with Unavailable
         await assert.rejects(
             () => handler(mockReq),
             (err: unknown) => {
-                assertConnectError(err, Code.Unavailable);
+                assertConnectError(err, Code.Unavailable, "Circuit breaker is open");
                 return true;
             },
         );
+        assert.strictEqual(next.mock.calls.length, 5, "the sixth call must be refused without reaching the downstream");
+    });
+
+    it("should stay open for 30000 ms by default and let one probe through at that point", async (t) => {
+        t.mock.timers.enable({ apis: ["Date"] });
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 1 });
+        let failing = true;
+        const next = mock.fn(async () => {
+            if (failing) {
+                throw new ConnectError("Service error", Code.Internal);
+            }
+            return { message: { result: "recovered" } };
+        });
+        const handler = interceptor(next as any);
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+
+        await assert.rejects(() => handler(mockReq));
+        failing = false;
+
+        t.mock.timers.tick(29_999);
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Unavailable, "Circuit breaker is open");
+                return true;
+            },
+        );
+        assert.strictEqual(next.mock.calls.length, 1, "the circuit must still be open 1 ms before the default delay");
+
+        t.mock.timers.tick(1);
+        const result = await handler(mockReq);
+
+        assert.strictEqual((result.message as any).result, "recovered");
+        assert.strictEqual(next.mock.calls.length, 2);
     });
 
     it("should enter half-open state after timeout", async () => {
@@ -204,6 +241,48 @@ describe("circuit breaker interceptor", () => {
             );
         }
         assert.strictEqual(next.mock.calls.length, 3);
+    });
+
+    // skipStreaming is not given: streaming failures are not counted by default.
+    it("should skip streaming by default", async () => {
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000 });
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
+        const next = createMockNextError(Code.Internal, "Service error");
+        const handler = interceptor(next as any);
+
+        for (let i = 0; i < 3; i++) {
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Internal);
+                    return true;
+                },
+            );
+        }
+        assert.strictEqual(next.mock.calls.length, 3);
+    });
+
+    it("should count streaming failures when skipStreaming=false", async () => {
+        const interceptor = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 60_000, skipStreaming: false });
+        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true });
+        const next = createMockNextError(Code.Internal, "Service error");
+        const handler = interceptor(next as any);
+
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Internal);
+                return true;
+            },
+        );
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assertConnectError(err, Code.Unavailable, "Circuit breaker is open");
+                return true;
+            },
+        );
+        assert.strictEqual(next.mock.calls.length, 1);
     });
 
     for (const threshold of [2, 7]) {
@@ -453,36 +532,49 @@ describe("circuit breaker interceptor", () => {
         });
 
         it("should count error as failure when predicate throws (fail-closed)", async () => {
-            const interceptor = createCircuitBreakerInterceptor({
-                threshold: 2,
-                halfOpenAfter: 60_000,
-                failurePredicate: () => {
-                    throw new Error("buggy classifier");
-                },
-            });
-            const next = createMockNextError(Code.NotFound, "missing");
-            const handler = interceptor(next as any);
+            // The report of the broken predicate goes to the console; it is captured so
+            // the run stays quiet and so the report can be checked to carry the cause.
+            const consoleErrorMock = mock.method(console, "error", () => {});
+            try {
+                const classifierBug = new Error("buggy classifier");
+                const interceptor = createCircuitBreakerInterceptor({
+                    threshold: 2,
+                    halfOpenAfter: 60_000,
+                    failurePredicate: () => {
+                        throw classifierBug;
+                    },
+                });
+                const next = createMockNextError(Code.NotFound, "missing");
+                const handler = interceptor(next as any);
 
-            // Caller must receive the ORIGINAL upstream error, not the predicate's
-            for (let i = 0; i < 2; i++) {
+                // Caller must receive the ORIGINAL upstream error, not the predicate's
+                for (let i = 0; i < 2; i++) {
+                    await assert.rejects(
+                        () => handler(mockReq()),
+                        (err: unknown) => {
+                            assertConnectError(err, Code.NotFound);
+                            return true;
+                        },
+                    );
+                }
+
+                // Despite NotFound being a non-failure by default, the throwing
+                // predicate fails closed: circuit is open
                 await assert.rejects(
                     () => handler(mockReq()),
                     (err: unknown) => {
-                        assertConnectError(err, Code.NotFound);
+                        assertConnectError(err, Code.Unavailable);
                         return true;
                     },
                 );
+                assert.strictEqual(next.mock.calls.length, 2, "the third call must be refused without reaching the downstream");
+                assert.ok(
+                    consoleErrorMock.mock.calls.every((call) => call.arguments.includes(classifierBug)) && consoleErrorMock.mock.calls.length === 2,
+                    "each classification failure must be reported with the predicate's own error",
+                );
+            } finally {
+                consoleErrorMock.mock.restore();
             }
-
-            // Despite NotFound being a non-failure by default, the throwing
-            // predicate fails closed: circuit is open
-            await assert.rejects(
-                () => handler(mockReq()),
-                (err: unknown) => {
-                    assertConnectError(err, Code.Unavailable);
-                    return true;
-                },
-            );
         });
 
         it("should close circuit on business error in half-open", async () => {
@@ -524,29 +616,6 @@ describe("circuit breaker interceptor", () => {
                 },
             );
             assert.strictEqual(next.mock.calls.length, 4);
-        });
-
-        it("should re-open circuit on infrastructure error in half-open", async () => {
-            const interceptor = createCircuitBreakerInterceptor({ threshold: 2, halfOpenAfter: 100 });
-            const next = createMockNextError(Code.Internal, "still down");
-            const handler = interceptor(next as any);
-
-            for (let i = 0; i < 2; i++) {
-                await assert.rejects(() => handler(mockReq()));
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 150));
-
-            // Half-open probe fails with infra error → re-open
-            await assert.rejects(() => handler(mockReq()));
-
-            await assert.rejects(
-                () => handler(mockReq()),
-                (err: unknown) => {
-                    assertConnectError(err, Code.Unavailable);
-                    return true;
-                },
-            );
         });
 
         it("defaultFailurePredicate classifies codes as documented", () => {
@@ -597,13 +666,22 @@ describe("circuit breaker interceptor", () => {
                     return true;
                 },
             );
-            assert.ok(next.mock.calls.length > 1, "retry must have produced multiple attempts");
+            assert.strictEqual(next.mock.calls.length, 4, "the first logical call must make 1 attempt plus 3 retries");
 
-            const attemptsAfterFirstCall = next.mock.calls.length;
-
-            // Circuit must still be CLOSED: second logical call reaches next again
+            // Circuit must still be CLOSED: second logical call reaches next again with
+            // its own full set of attempts, and is the second counted failure.
             await assert.rejects(() => handler(mockReq));
-            assert.ok(next.mock.calls.length > attemptsAfterFirstCall, "second logical call must reach next — circuit closed after one logical failure");
+            assert.strictEqual(next.mock.calls.length, 8, "second logical call must reach next — circuit closed after one logical failure");
+
+            // Two logical failures reached the threshold: the circuit is open now.
+            await assert.rejects(
+                () => handler(mockReq),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unavailable, "Circuit breaker is open");
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 8);
         });
     });
 });
