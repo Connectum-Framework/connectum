@@ -68,9 +68,11 @@ describe("Proto Authz Advanced — Integration", () => {
                     assert.ok(err instanceof Error);
                     assert.strictEqual((err as Error).name, "AuthzDeniedError");
                     assert.strictEqual((err as any).ruleName, "proto:policy");
+                    assert.strictEqual((err as any).code, Code.PermissionDenied);
                     return true;
                 },
             );
+            assert.strictEqual(next.mock.calls.length, 0, "a denied call must not reach the handler");
         });
     });
 
@@ -105,44 +107,59 @@ describe("Proto Authz Advanced — Integration", () => {
 
             await handler(req);
             assert.strictEqual(next.mock.calls.length, 1);
+
+            // A caller outside the rule falls through to the deny default.
+            const outsiderToken = await createTestJwt({ sub: "user-2", roles: ["viewer"] });
+            const outsiderNext = mock.fn(async () => ({ message: {} }));
+            await assert.rejects(
+                () => buildChainedHandler(authInterceptor, authzInterceptor, outsiderNext)(createProtoMockRequest(service, plainMethod, new Headers({ authorization: `Bearer ${outsiderToken}` }))),
+                (err: unknown) => {
+                    assertConnectError(err, Code.PermissionDenied);
+                    return true;
+                },
+            );
+            assert.strictEqual(outsiderNext.mock.calls.length, 0);
         });
 
-        it("should deny via fallback rule", async () => {
+        it("should deny only the callers a fallback deny rule applies to", async () => {
             const service = createFakeService();
             const plainMethod = createFakeMethod(service, "DeniedFallback");
 
-            const token = await createTestJwt({ sub: "user-1", roles: ["viewer"] });
             const authInterceptor = createJwtAuthInterceptor({
                 secret: TEST_JWT_SECRET,
                 claimsMapping: { roles: "roles" },
             });
+            // The deny rule applies to viewers only; for everyone else the allow default decides.
             const authzInterceptor = createProtoAuthzInterceptor({
                 defaultPolicy: "allow",
                 rules: [
                     {
                         name: "block-viewers",
                         methods: ["test.v1.TestService/*"],
+                        requires: { roles: ["viewer"] },
                         effect: "deny",
                     },
                 ],
             });
+            const send = async (roles: string[]) => {
+                const token = await createTestJwt({ sub: "user-1", roles });
+                const req = createProtoMockRequest(service, plainMethod, new Headers({ authorization: `Bearer ${token}` }));
+                const next = mock.fn(async () => ({ message: {} }));
+                const outcome = await buildChainedHandler(authInterceptor, authzInterceptor, next)(req).then(
+                    () => undefined,
+                    (err: unknown) => err,
+                );
+                return { outcome, reached: next.mock.calls.length };
+            };
 
-            const headers = new Headers();
-            headers.set("authorization", `Bearer ${token}`);
-            const req = createProtoMockRequest(service, plainMethod, headers);
+            const viewer = await send(["viewer"]);
+            assert.ok(viewer.outcome instanceof Error);
+            assert.strictEqual(viewer.outcome.name, "AuthzDeniedError");
+            assert.strictEqual((viewer.outcome as { ruleName?: unknown }).ruleName, "block-viewers");
+            assert.strictEqual((viewer.outcome as { code?: unknown }).code, Code.PermissionDenied);
+            assert.strictEqual(viewer.reached, 0);
 
-            const next = mock.fn(async () => ({ message: {} }));
-            const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
-
-            await assert.rejects(
-                () => handler(req),
-                (err: unknown) => {
-                    assert.ok(err instanceof Error);
-                    assert.strictEqual((err as Error).name, "AuthzDeniedError");
-                    assert.strictEqual((err as any).ruleName, "block-viewers");
-                    return true;
-                },
-            );
+            assert.deepStrictEqual(await send(["editor"]), { outcome: undefined, reached: 1 });
         });
 
         it("should skip rule when requires not met and continue to next", async () => {
