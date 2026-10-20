@@ -21,6 +21,7 @@ import type { Meter, SpanOptions } from "@opentelemetry/api";
 import { context, propagation, SpanKind } from "@opentelemetry/api";
 
 import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
+import { recordFailure } from "./failure.ts";
 import { getMeter } from "./meter.ts";
 import type { RpcClientMetrics } from "./metrics.ts";
 import { createRpcClientMetrics } from "./metrics.ts";
@@ -31,7 +32,6 @@ import {
     buildSuccessAttributes,
     detectConnectumTransport,
     estimateMessageSize,
-    recordFailure,
     wrapAsyncIterable,
 } from "./shared.ts";
 import { getTracer } from "./tracer.ts";

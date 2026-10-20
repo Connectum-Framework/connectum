@@ -7,7 +7,7 @@
  * @module traceAll
  */
 
-import { recordArgsAttribute, recordFailure } from "./shared.ts";
+import { recordArgsAttribute, recordFailure } from "./failure.ts";
 import { getTracer } from "./tracer.ts";
 import type { TraceAllOptions } from "./types.ts";
 

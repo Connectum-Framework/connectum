@@ -6,7 +6,7 @@
  * @module traced
  */
 
-import { recordArgsAttribute, recordFailure } from "./shared.ts";
+import { recordArgsAttribute, recordFailure } from "./failure.ts";
 import { getTracer } from "./tracer.ts";
 import type { TracedOptions } from "./types.ts";
 
