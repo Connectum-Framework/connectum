@@ -44,7 +44,9 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                 // Record arguments if enabled
                 if (recordArgs !== false) {
                     recordArgsAttribute(span, () => {
-                        let argsToRecord = args;
+                        // A copy, as in traceAll: a filter that masks in place must not change
+                        // the arguments the wrapped function receives.
+                        let argsToRecord = [...args];
 
                         // Whitelist filtering by name/index
                         if (Array.isArray(recordArgs)) {

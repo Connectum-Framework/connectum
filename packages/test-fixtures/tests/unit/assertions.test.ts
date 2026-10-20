@@ -114,6 +114,15 @@ describe("assertConnectError", () => {
         });
     }
 
+    // The sticky flag means "match exactly at the start" (offset 0 of a fresh copy). It is part of
+    // what the caller's pattern says, so a message where the text occurs only later is not a match.
+    it("keeps the sticky flag: /boom/y does not match a message where boom comes later", () => {
+        const error = new ConnectError("boom", Code.Internal);
+
+        assert.throws(() => assertConnectError(error, Code.Internal, /boom/y), (err: unknown) => err instanceof assert.AssertionError && err.message.includes("does not match"));
+        assertConnectError(error, Code.Internal, /\[internal\] boom/y);
+    });
+
     it("does not move lastIndex of the caller's RegExp", () => {
         const pattern = /boom/g;
         pattern.lastIndex = 0;

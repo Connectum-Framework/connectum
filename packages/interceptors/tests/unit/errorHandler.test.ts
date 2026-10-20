@@ -137,6 +137,36 @@ describe("errorHandler interceptor", () => {
         });
     }
 
+    // Connect turns an AbortError into Canceled whatever code the interceptor passes in; the code
+    // given to onError must be the one the client receives, not the one picked before that.
+    it("should give onError the same code the client receives for a DOMException AbortError (numeric code 20)", async () => {
+        const original = new DOMException("aborted", "AbortError");
+        let reported: { code: Code; error: Error } | undefined;
+        const interceptor = createErrorHandlerInterceptor({
+            logErrors: false,
+            onError: (info) => {
+                reported = { code: info.code, error: info.error };
+            },
+        });
+        const handler = interceptor((async () => {
+            throw original;
+        }) as any);
+
+        let clientCode: Code | undefined;
+        await assert.rejects(
+            () => handler(mockReq),
+            (err: unknown) => {
+                assert.ok(err instanceof ConnectError, "the client receives a ConnectError");
+                clientCode = err.code;
+                return true;
+            },
+        );
+
+        assert.strictEqual(clientCode, Code.Canceled);
+        assert.ok(reported, "onError must have been called");
+        assert.strictEqual(reported.code, clientCode, "onError and the client agree on the code");
+    });
+
     it("should log errors when logErrors is true", async () => {
         const originalError = mock.method(console, "error", () => {});
 

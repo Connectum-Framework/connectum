@@ -183,6 +183,56 @@ describe("telemetry never changes the outcome of a call", () => {
 			assert.strictEqual("function.args" in span.attributes, false);
 		});
 
+		it("hands a masking filter a copy of the arguments, so masking in place does not change what traced passes on", async () => {
+			let received: unknown[] = [];
+			const fn = traced(
+				(...args: string[]) => {
+					received = args;
+				},
+				{
+					name: "fn",
+					recordArgs: true,
+					argsFilter: (args) => {
+						args[0] = "***";
+						return args;
+					},
+				},
+			);
+
+			const { span } = await observedSpan(async () => {
+				fn("secret", "open");
+			});
+
+			assert.deepStrictEqual(received, ["secret", "open"]);
+			assert.strictEqual(span.attributes["function.args"], '["***","open"]');
+		});
+
+		it("hands a masking filter a copy of the arguments, so masking in place does not change what a traceAll method receives", async () => {
+			let received: unknown[] = [];
+			const service = traceAll(
+				{
+					find(...args: string[]) {
+						received = args;
+					},
+				},
+				{
+					prefix: "Svc",
+					recordArgs: true,
+					argsFilter: (_method, args) => {
+						args[0] = "***";
+						return args;
+					},
+				},
+			);
+
+			const { span } = await observedSpan(async () => {
+				service.find("secret", "open");
+			});
+
+			assert.deepStrictEqual(received, ["secret", "open"]);
+			assert.strictEqual(span.attributes["function.args"], '["***","open"]');
+		});
+
 		it("still records serializable arguments as JSON", async () => {
 			const fn = traced((_a: number, _b: string) => 1, { name: "fn", recordArgs: true });
 
@@ -360,6 +410,43 @@ describe("telemetry never changes the outcome of a call", () => {
 
 			const { span } = await observedSpan(async () => {
 				assert.deepStrictEqual(syncOutcomeOf(() => fn()), { kind: "threw", value: hostile });
+			});
+
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+		});
+
+		it("does not let a thrown object whose message getter throws change the outcome, and still ends the span with an error status", async () => {
+			const hostile = Object.defineProperty({}, "message", {
+				get() {
+					throw new Error("getter bug");
+				},
+			});
+			const fn = traced(
+				() => {
+					throw hostile;
+				},
+				{ name: "fn" },
+			);
+
+			const { span } = await observedSpan(async () => {
+				assert.deepStrictEqual(syncOutcomeOf(() => fn()), { kind: "threw", value: hostile });
+			});
+
+			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+		});
+
+		it("does not let a rejection with a revoked proxy change the outcome of an async function", async () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const fn = traced(
+				async () => {
+					throw proxy;
+				},
+				{ name: "fn" },
+			);
+
+			const { span } = await observedSpan(async () => {
+				assert.deepStrictEqual(await outcomeOf(() => fn()), { kind: "threw", value: proxy });
 			});
 
 			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);

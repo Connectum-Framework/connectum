@@ -124,9 +124,11 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
             const client = exposeErrorMessages || err instanceof ConnectError ? full : new ConnectError(clientMessageFor(full.code), full.code, undefined, undefined, err);
 
             if (onError) {
+                // The code the client receives: `ConnectError.from` may map the error to a different
+                // code than the one picked above (an `AbortError` becomes `Canceled`).
                 const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
                     error: full,
-                    code,
+                    code: full.code,
                 };
                 if (includeStackTrace && full.stack) info.stack = full.stack;
                 onError(info);
