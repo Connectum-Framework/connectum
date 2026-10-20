@@ -139,6 +139,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            header: new Headers(),
             signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },
@@ -244,6 +245,7 @@ describe('Resilience Pattern Integration', () => {
 
         const mockReq = {
             url: 'http://localhost/test.Service/Method',
+            header: new Headers(),
             signal: new AbortController().signal,
             stream: false,
             message: { field: 'value' },

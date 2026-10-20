@@ -239,6 +239,135 @@ describe("fallback interceptor", () => {
             assert.deepStrictEqual(result.message, { fallback: "data" });
         });
 
+        // The headers of a request include credentials, identity written by authentication
+        // interceptors and hop-by-hop fields. None of them belongs in a synthesised response; the
+        // content type is the one protocol field the response needs.
+        it("should answer with the content-type header alone, whatever the request carried", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const headers = new Headers({
+                authorization: "Bearer token-1",
+                cookie: "sid=abc",
+                traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                "x-auth-subject": "alice",
+                "x-auth-roles": '["admin"]',
+                "x-auth-scopes": "read",
+                "x-auth-claims": '{"tenant":"t1"}',
+                "x-auth-name": "Alice",
+                "x-auth-type": "jwt",
+                "x-forwarded-for": "10.0.0.5",
+                "transfer-encoding": "chunked",
+                te: "trailers",
+                "content-type": "application/json",
+            });
+            const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(createMockRequest({ headers }));
+
+            assert.deepStrictEqual([...result.header.entries()], [["content-type", "application/json"]]);
+            assert.deepStrictEqual([...result.trailer.entries()], []);
+        });
+
+        it("should answer with an empty header when the request names no content type", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const headers = new Headers({ authorization: "Bearer token-1", "x-auth-subject": "alice" });
+            const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(createMockRequest({ headers }));
+
+            assert.deepStrictEqual([...result.header.entries()], []);
+            assert.deepStrictEqual([...result.trailer.entries()], []);
+        });
+
+        // gRPC and gRPC-web clients read the call status from the trailer; without grpc-status they
+        // report "missing status". Connect puts the status in the body, so its trailer stays empty.
+        for (const [contentType, expectedTrailer] of [
+            ["application/grpc", [["grpc-status", "0"]]],
+            ["application/grpc+proto", [["grpc-status", "0"]]],
+            ["application/grpc-web+proto", [["grpc-status", "0"]]],
+            ["application/grpc-web-text", [["grpc-status", "0"]]],
+            ["Application/Grpc+Proto", [["grpc-status", "0"]]],
+            ["APPLICATION/GRPC-WEB+JSON", [["grpc-status", "0"]]],
+            ["application/proto", []],
+            ["application/json", []],
+            ["application/connect+proto", []],
+        ] as const) {
+            it(`should give the trailer ${JSON.stringify(expectedTrailer)} for the request content type ${contentType}`, async () => {
+                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const headers = new Headers({ "content-type": contentType });
+                const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(createMockRequest({ headers }));
+
+                assert.deepStrictEqual([...result.trailer.entries()], expectedTrailer);
+                assert.deepStrictEqual([...result.header.entries()], [["content-type", contentType]]);
+            });
+        }
+
+        it("should not hand back the request header object, nor follow later changes to the request", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const request = createMockRequest({ headers: new Headers({ "content-type": "application/proto" }) });
+            const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
+
+            assert.notStrictEqual(result.header, request.header);
+            request.header.set("x-auth-subject", "added-after");
+            request.header.set("content-type", "application/json");
+            assert.deepStrictEqual([...result.header.entries()], [["content-type", "application/proto"]]);
+            result.header.set("x-from-response", "1");
+            assert.strictEqual(request.header.get("x-from-response"), null, "changing the response header must not change the request");
+        });
+
+        // A Connect GET request carries its message in the URL and sends no content-type; the
+        // `encoding` query parameter names the type the response must have.
+        for (const [encoding, expected] of [
+            ["json", "application/json"],
+            ["proto", "application/proto"],
+        ] as const) {
+            it(`should derive ${expected} for a Connect GET request with encoding=${encoding} and no content-type`, async () => {
+                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const request = createMockRequest({
+                    url: `http://localhost/test.TestService/TestMethod?connect=v1&encoding=${encoding}&message=e30`,
+                    headers: new Headers({ authorization: "Bearer token-1" }),
+                });
+                request.requestMethod = "GET";
+                const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
+
+                assert.deepStrictEqual([...result.header.entries()], [["content-type", expected]]);
+                assert.deepStrictEqual([...result.trailer.entries()], []);
+            });
+        }
+
+        // A type that cannot be derived stays absent: the client then reports an unsupported
+        // content type, an explicit failure, rather than receiving a guessed one.
+        for (const [label, url] of [
+            ["an unknown encoding", "http://localhost/test.TestService/TestMethod?encoding=xml"],
+            ["an encoding named like an Object.prototype member", "http://localhost/test.TestService/TestMethod?encoding=toString"],
+            ["no encoding", "http://localhost/test.TestService/TestMethod?connect=v1"],
+        ] as const) {
+            it(`should leave the header empty for a Connect GET request with ${label}`, async () => {
+                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const request = createMockRequest({ url });
+                request.requestMethod = "GET";
+                const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
+
+                assert.deepStrictEqual([...result.header.entries()], []);
+            });
+        }
+
+        it("should prefer the request content-type over the encoding parameter of a GET request", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const request = createMockRequest({
+                url: "http://localhost/test.TestService/TestMethod?encoding=json",
+                headers: new Headers({ "content-type": "application/proto" }),
+            });
+            request.requestMethod = "GET";
+            const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
+
+            assert.deepStrictEqual([...result.header.entries()], [["content-type", "application/proto"]]);
+        });
+
+        it("should ignore the encoding parameter of a request that is not a GET", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const request = createMockRequest({ url: "http://localhost/test.TestService/TestMethod?encoding=json" });
+            request.requestMethod = "POST";
+            const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
+
+            assert.deepStrictEqual([...result.header.entries()], []);
+        });
+
         // A rejecting asynchronous handler fails the call with its own rejection:
         // the awaited handler result is what the caller sees, not the original error.
         it("should fail with the rejection of an asynchronous handler, not the original error", async () => {

@@ -90,6 +90,23 @@ createDefaultInterceptors({ errorHandler: { exposeErrorMessages: true } });
 Clients that parsed these texts must read the code, or a `ConnectError` with
 details, instead.
 
+## Fallback response
+
+`createFallbackInterceptor` (enabled in `createDefaultInterceptors` by passing
+`fallback: { handler }`) answers a failed unary call with the message the `handler`
+returns. The response it synthesises carries only the protocol headers it needs,
+on a server chain and on a client transport alike:
+
+| Part | Content |
+|---|---|
+| Header | One field, `content-type`, equal to the request `content-type`. For a Connect GET request, which sends none, it comes from the `encoding` query parameter (`json` gives `application/json`, `proto` gives `application/proto`). |
+| Trailer | `grpc-status: 0` when the request `content-type` starts with `application/grpc` (gRPC and gRPC-web); empty otherwise. |
+
+No header of the request is copied into the response, whichever interceptor added
+it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
+HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
+not in response headers.
+
 ## Cancellation behavior in 1.3
 
 Timeout now forwards its own deadline and caller cancellation to downstream

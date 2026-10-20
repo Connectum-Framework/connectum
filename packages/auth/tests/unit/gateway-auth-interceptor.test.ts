@@ -177,10 +177,9 @@ describe("gateway-auth-interceptor", () => {
 
         // The guide: the roles header holds a JSON array or comma-separated roles. A single role
         // whose name happens to be valid JSON (a number, true, null) is still a comma-separated list
-        // of one role. The implementation parses it as JSON first and drops every non-array result,
-        // so such a role silently disappears (fail-closed, but the documented value is not honoured).
+        // of one role: only a value that parses as a JSON array is read as an array.
         for (const role of ["123", "true", "null"]) {
-            it(`should read the single role "${role}" from a comma-separated roles header`, { skip: "known defect, fails against the documented behaviour: a roles header that is valid JSON but not an array (123, true, null) yields no roles instead of one comma-separated role" }, async () => {
+            it(`should read the single role "${role}" from a comma-separated roles header`, async () => {
                 const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
                 let capturedContext: AuthContext | undefined;
                 const handler = interceptor((async () => {
@@ -197,6 +196,94 @@ describe("gateway-auth-interceptor", () => {
                 assert.deepStrictEqual(capturedContext?.roles, [role]);
             });
         }
+
+        // Boundary values of the roles header. A JSON array is used as sent (strings only, no
+        // trimming or splitting); every other value is a comma-separated list whose items are
+        // trimmed and whose empty items are dropped; an empty value grants nothing.
+        for (const [label, value, expected] of [
+            ["a list whose first item is numeric", "123, admin", ["123", "admin"]],
+            ["a list with empty items and padding", "admin, editor,, viewer", ["admin", "editor", "viewer"]],
+            ["an empty JSON array", "[]", []],
+            ["a JSON array with non-string items", '["admin", 1, null]', ["admin"]],
+            ["a JSON array whose strings contain a comma and padding", '[" a,b ", "c"]', [" a,b ", "c"]],
+            ["only separators", " , ,, ", []],
+            ["an empty value", "", []],
+        ] as const) {
+            it(`should give the roles ${JSON.stringify(expected)} for ${label}`, async () => {
+                const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+                let capturedContext: AuthContext | undefined;
+                const handler = interceptor((async () => {
+                    capturedContext = getAuthContext();
+                    return { message: {} };
+                }) as never);
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-gateway-secret", "my-secret-123");
+                req.header.set("x-user-id", "user-1");
+                req.header.set("x-user-roles", value);
+
+                await handler(req);
+
+                assert.ok(capturedContext, "the handler chain must run for a trusted request");
+                assert.deepStrictEqual(capturedContext.roles, expected);
+            });
+        }
+
+        it("should give no roles when the request carries no roles header", async () => {
+            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+            let capturedContext: AuthContext | undefined;
+            const handler = interceptor((async () => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            }) as never);
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "my-secret-123");
+            req.header.set("x-user-id", "user-1");
+
+            await handler(req);
+
+            assert.ok(capturedContext, "the handler chain must run for a trusted request");
+            assert.deepStrictEqual(capturedContext.roles, []);
+        });
+
+        it("should give no roles when headerMapping.roles is not configured, even if the request sends a roles header", async () => {
+            const interceptor = createGatewayAuthInterceptor({
+                ...DEFAULT_OPTIONS,
+                headerMapping: { subject: "x-user-id" },
+            });
+            let capturedContext: AuthContext | undefined;
+            const handler = interceptor((async () => {
+                capturedContext = getAuthContext();
+                return { message: {} };
+            }) as never);
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "my-secret-123");
+            req.header.set("x-user-id", "user-1");
+            req.header.set("x-user-roles", "admin");
+
+            await handler(req);
+
+            assert.ok(capturedContext, "the handler chain must run for a trusted request");
+            assert.deepStrictEqual(capturedContext.roles, []);
+        });
+
+        it("should reject an untrusted request that carries a roles header and establish no identity", async () => {
+            const interceptor = createGatewayAuthInterceptor(DEFAULT_OPTIONS);
+            const next = createMockNext();
+            const handler = interceptor(next);
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "wrong-secret");
+            req.header.set("x-user-id", "user-1");
+            req.header.set("x-user-roles", "admin");
+
+            await assert.rejects(
+                () => handler(req),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated, "Untrusted");
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
 
         it("should use defaultType when type header is missing", async () => {
             const interceptor = createGatewayAuthInterceptor({

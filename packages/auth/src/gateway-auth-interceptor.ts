@@ -83,6 +83,30 @@ function isTrusted(headerValue: string, expectedValues: readonly string[]): bool
 }
 
 /**
+ * Read the roles header sent by a trusted gateway.
+ *
+ * A value that parses as a JSON array yields its string items as sent (non-string items are
+ * dropped, nothing is trimmed or split). Every other value, whether it is not JSON at all or is
+ * JSON of another kind (`123`, `true`, `null`, a quoted string, an object), is a comma-separated
+ * list: items are trimmed and empty items dropped. A role that is named like a JSON literal
+ * therefore stays a role instead of vanishing.
+ */
+function parseRoles(raw: string): string[] {
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            return parsed.filter((r): r is string => typeof r === "string");
+        }
+    } catch {
+        // Not JSON: read it as a comma-separated list below.
+    }
+    return raw
+        .split(",")
+        .map((r) => r.trim())
+        .filter(Boolean);
+}
+
+/**
  * Create a gateway authentication interceptor.
  *
  * Reads pre-authenticated identity from gateway-injected headers.
@@ -176,18 +200,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         if (headerMapping.roles) {
             const rolesRaw = req.header.get(headerMapping.roles);
             if (rolesRaw) {
-                try {
-                    const parsed: unknown = JSON.parse(rolesRaw);
-                    if (Array.isArray(parsed)) {
-                        roles = parsed.filter((r): r is string => typeof r === "string");
-                    }
-                } catch {
-                    // Not JSON — try comma-separated
-                    roles = rolesRaw
-                        .split(",")
-                        .map((r) => r.trim())
-                        .filter(Boolean);
-                }
+                roles = parseRoles(rolesRaw);
             }
         }
 

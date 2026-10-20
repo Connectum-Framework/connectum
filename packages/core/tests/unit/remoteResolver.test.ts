@@ -70,11 +70,27 @@ describe("mapResolver", () => {
         assert.equal(resolve({ typeName: "x.v1.A", endpoint: "eu-west" }), tA);
         assert.equal(resolve({ typeName: "z.v1.C", endpoint: "eu-west" }), null);
     });
-    it("returns null for a typeName that is not in the map even when it names an Object.prototype member", { skip: "known defect, fails against the documented behaviour: mapResolver reads map[typeName] without an own-property check, so 'constructor' resolves to Object.prototype.constructor instead of null" }, () => {
+    it("returns null for a typeName that is not in the map even when it names an Object.prototype member", () => {
         // The guide: "any typeName not in the map resolves to null".
-        for (const typeName of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+        for (const typeName of ["constructor", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "__proto__"]) {
             assert.equal(resolve({ typeName }), null, `${typeName} is not in the map`);
+            assert.equal(resolve({ typeName, endpoint: "eu-west" }), null, `${typeName} is not in the map, whatever the endpoint hint`);
         }
+    });
+    it("resolves an own key that has the name of an Object.prototype member", () => {
+        const tT = { id: "T" } as unknown as Transport;
+        const owning = mapResolver({ toString: tT, "x.v1.A": tA });
+        assert.equal(owning({ typeName: "toString" }), tT);
+        assert.equal(owning({ typeName: "toString", endpoint: "eu-west" }), tT);
+        assert.equal(owning({ typeName: "x.v1.A" }), tA);
+        assert.equal(owning({ typeName: "valueOf" }), null, "a sibling prototype name the map does not own stays unresolved");
+    });
+    it("keeps the lookup live: a key added to the map after creation resolves", () => {
+        const live: Record<string, Transport> = { "x.v1.A": tA };
+        const liveResolve = mapResolver(live);
+        assert.equal(liveResolve({ typeName: "y.v1.B" }), null);
+        live["y.v1.B"] = tB;
+        assert.equal(liveResolve({ typeName: "y.v1.B" }), tB);
     });
 });
 
