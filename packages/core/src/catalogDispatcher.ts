@@ -156,6 +156,19 @@ export function lookupCatalogMethod(catalog: ServiceCatalog | undefined, method:
 }
 
 /**
+ * Cache key of a resolved remote transport: one entry per `(typeName, endpoint)`
+ * pair. NUL separates the parts because neither a proto type name nor a
+ * sensible endpoint hint contains it. An absent endpoint and an empty one share
+ * a key. The server and the standalone `CatalogClient` both key their caches
+ * with it.
+ *
+ * @internal
+ */
+export function remoteTransportCacheKey(typeName: string, endpoint: string | undefined): string {
+    return `${typeName}\0${endpoint ?? ""}`;
+}
+
+/**
  * Resolve a remote service to a `Transport` via a {@link RemoteResolver},
  * mapping the two failure modes to the same `ConnectError` codes `ctx.call`
  * uses: a resolver that throws → `Code.Internal` (cause preserved), a resolver

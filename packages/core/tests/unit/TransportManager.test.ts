@@ -249,6 +249,27 @@ describe("TransportManager", () => {
             assert.strictEqual(await acceptsConnections(port), false, "the port must be released after close()");
         });
 
+        // Without a server there is nothing to wait for. A close() that waited for a callback
+        // nobody can fire would leave the caller (a shutdown path) hanging forever.
+        it("should resolve at once when no server was ever created", async () => {
+            transport = new TransportManager();
+
+            const outcome = await Promise.race([transport.close().then(() => "closed"), new Promise<string>((resolve) => setTimeout(resolve, 1_000, "hung"))]);
+
+            assert.strictEqual(outcome, "closed");
+        });
+
+        it("should resolve at once when the server was already disposed", async () => {
+            transport = new TransportManager();
+            await transport.listen(noopHandler, { port: 0, host: "127.0.0.1" });
+            await transport.close();
+            transport.dispose();
+
+            const outcome = await Promise.race([transport.close().then(() => "closed"), new Promise<string>((resolve) => setTimeout(resolve, 1_000, "hung"))]);
+
+            assert.strictEqual(outcome, "closed");
+        });
+
         // Node.js `server.close()`: the callback fires only once every connection has ended,
         // so a request that is still being handled is allowed to finish.
         it("should let an in-flight request finish and resolve only after it did", async () => {
