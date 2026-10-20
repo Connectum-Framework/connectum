@@ -127,7 +127,8 @@ export function createFallbackInterceptor<T = unknown>(options: FallbackOptions<
                 header.set("content-type", contentType);
             }
             const trailer = new Headers();
-            if (contentType?.startsWith("application/grpc")) {
+            // Media types are case-insensitive, and Connect matches the gRPC content types that way.
+            if (contentType?.toLowerCase().startsWith("application/grpc")) {
                 trailer.set("grpc-status", "0");
             }
 

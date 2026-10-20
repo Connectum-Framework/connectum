@@ -281,6 +281,8 @@ describe("fallback interceptor", () => {
             ["application/grpc+proto", [["grpc-status", "0"]]],
             ["application/grpc-web+proto", [["grpc-status", "0"]]],
             ["application/grpc-web-text", [["grpc-status", "0"]]],
+            ["Application/Grpc+Proto", [["grpc-status", "0"]]],
+            ["APPLICATION/GRPC-WEB+JSON", [["grpc-status", "0"]]],
             ["application/proto", []],
             ["application/json", []],
             ["application/connect+proto", []],

@@ -577,6 +577,24 @@ describe("createMockDescField", () => {
     assert.strictEqual("debug_redact" in options, false, "no snake_case key next to the real property");
   });
 
+  // A field declared inside a message is marked the same way as a field made alone, and only
+  // the fields that ask for it carry the marker.
+  it("isSensitive on a field declared in createMockDescMessage marks that field only", () => {
+    const message = createMockDescMessage("acme.v1.Login", {
+      fields: [
+        { name: "user", type: "string" },
+        { name: "password", type: "string", isSensitive: true },
+        { name: "remember", type: "bool", isSensitive: false },
+      ],
+    });
+
+    const options = message.field.password?.proto.options as FieldOptions;
+    assert.strictEqual(options.$typeName, "google.protobuf.FieldOptions");
+    assert.strictEqual(options.debugRedact, true);
+    assert.strictEqual(message.field.user?.proto.options, undefined);
+    assert.strictEqual(message.field.remember?.proto.options, undefined);
+  });
+
   // A real field without annotations has no options message at all.
   it("non-sensitive field has undefined proto options", () => {
     const real = realMessage(USER).fields[0]!;

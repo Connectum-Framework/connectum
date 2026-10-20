@@ -59,6 +59,8 @@ export interface MockDescMessageOptions {
         name: string;
         type?: string;
         fieldNumber?: number;
+        /** Mark the field as sensitive, as in {@link MockDescFieldOptions.isSensitive}. Default: `false` */
+        isSensitive?: boolean;
     }>;
     /** Oneof group names. A mock oneof group has no fields. Default: `[]` */
     oneofs?: string[];

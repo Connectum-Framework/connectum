@@ -190,6 +190,9 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         if (f.type !== undefined) {
             fieldOpts.type = f.type;
         }
+        if (f.isSensitive !== undefined) {
+            fieldOpts.isSensitive = f.isSensitive;
+        }
         return createMockDescField(f.name, fieldOpts);
     });
 
