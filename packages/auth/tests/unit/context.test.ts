@@ -89,11 +89,29 @@ describe("globalThis singleton resilience", () => {
             "authContextStorage should be the same instance as globalThis[STORAGE_KEY]");
     });
 
-    it("should have meta with initUrl", () => {
-        const meta = (globalThis as Record<symbol, unknown>)[META_KEY] as { initUrl: string; warned: boolean };
-        assert.ok(meta, "meta should exist");
-        assert.strictEqual(typeof meta.initUrl, "string");
-        assert.strictEqual(typeof meta.warned, "boolean");
+    // An older release created the shared storage before the meta slot existed. A newer copy of
+    // the package that finds such a storage must adopt it (one identity per process) and still
+    // report the duplicated initialisation instead of failing on the missing slot.
+    it("should adopt a storage created by a release that wrote no meta slot and still report the duplicate", async () => {
+        const g = globalThis as Record<symbol, unknown>;
+        const originalMeta = g[META_KEY];
+        const warningCodes: unknown[] = [];
+        const onWarning = (w: Error): void => {
+            warningCodes.push((w as Error & { code?: string }).code);
+        };
+        process.on("warning", onWarning);
+
+        try {
+            delete g[META_KEY];
+            const adopted = await loadContextModule("pre-meta-instance");
+
+            assert.strictEqual(adopted.authContextStorage, authContextStorage, "the older storage must be shared, not replaced");
+            await new Promise((resolve) => setImmediate(resolve));
+            assert.ok(warningCodes.includes("CONNECTUM_AUTH_DUP_INIT"), "the duplicated initialisation must be reported");
+        } finally {
+            process.off("warning", onWarning);
+            g[META_KEY] = originalMeta;
+        }
     });
 
     // Сценарий: один и тот же модуль вычислен дважды (например исходники и собранный

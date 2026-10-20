@@ -1,9 +1,10 @@
 /**
- * Unit tests for the internal (service-to-service) auth interceptor (ADR-029).
+ * Unit tests for the internal (service-to-service) auth interceptor.
  *
  * Covers:
  * - per-service containment: an A-signed token claiming `iss: B` is REJECTED
- *   (the empirical issuer-bound JWKS finding from ADR-029 §2);
+ *   (a key is resolved by `kid` independently of `iss`, so only a keyset bound to the
+ *   claimed issuer contains a compromised service);
  * - meshIdentityTrust allow-list (allow / deny + header stripping);
  * - signedTokenTrust happy path and identity binding;
  * - sharedSecretTrust constant-time compare;
@@ -14,6 +15,7 @@ import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
+import * as jose from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createInternalAuthInterceptor, meshIdentityTrust, sharedSecretTrust, signedTokenTrust } from "../../src/internal-auth-interceptor.ts";
 import { createTestJwtRS256, generateRsaTestKeypair, type RsaTestKeypair, startTestJwksServer, type TestJwksServer } from "../../src/testing/test-jwt-rs256.ts";
@@ -144,6 +146,17 @@ describe("internal-auth-interceptor", () => {
             assert.strictEqual(headers.get("x-forwarded-client-principal"), null);
         });
 
+        it("reads the principal from the configured header and reports the configured type and name", async () => {
+            const trust = meshIdentityTrust({ allowlist: [{ principal: PRINCIPAL, name: "Trips service" }], header: "x-peer", type: "spiffe" });
+
+            assert.strictEqual(await trust(internalReq(new Headers({ "x-forwarded-client-principal": PRINCIPAL }))), null, "the default header is not read when another one is configured");
+            const context = await trust(internalReq(new Headers({ "x-peer": PRINCIPAL })));
+            assert.strictEqual(context?.type, "spiffe");
+            assert.strictEqual(context?.name, "Trips service");
+            assert.deepStrictEqual([...(context?.roles ?? ["unset"])], [], "an entry without roles grants none");
+            assert.deepStrictEqual([...(context?.scopes ?? ["unset"])], [], "an entry without scopes grants none");
+        });
+
         // Only an exact allow-list entry is admitted. The near-misses extend the allowed principal,
         // truncate it, change its case, swap one segment, or reuse a namespace, so a lookup that
         // matches by prefix, substring, length or case rejects none of them.
@@ -223,6 +236,33 @@ describe("internal-auth-interceptor", () => {
             });
         }
 
+        it("strips the secret header even when the secret does not match", async () => {
+            // The trust header must never travel on to the handler chain, whatever the outcome.
+            const trust = sharedSecretTrust({ secret: SECRET });
+            const headers = new Headers({ "x-internal-secret": "guessed-secret" });
+
+            assert.strictEqual(await trust(internalReq(headers)), null);
+            assert.strictEqual(headers.get("x-internal-secret"), null);
+        });
+
+        it("grants the documented default identity when only the secret is configured", async () => {
+            const context = await sharedSecretTrust({ secret: SECRET })(internalReq(new Headers({ "x-internal-secret": SECRET })));
+
+            assert.strictEqual(context?.subject, "internal");
+            assert.strictEqual(context?.type, "internal");
+            assert.deepStrictEqual([...(context?.roles ?? ["unset"])], []);
+            assert.deepStrictEqual([...(context?.scopes ?? ["unset"])], []);
+        });
+
+        it("reads the secret from the configured header and grants the configured scopes and type", async () => {
+            const trust = sharedSecretTrust({ secret: SECRET, header: "x-my-secret", scopes: ["trip:read"], type: "batch" });
+
+            assert.strictEqual(await trust(internalReq(new Headers({ "x-internal-secret": SECRET }))), null, "the default header is not read when another one is configured");
+            const context = await trust(internalReq(new Headers({ "x-my-secret": SECRET })));
+            assert.deepStrictEqual([...(context?.scopes ?? [])], ["trip:read"]);
+            assert.strictEqual(context?.type, "batch");
+        });
+
         it("answers a value of a different length with null instead of throwing", async () => {
             // The trust source is a public building block. Comparing raw buffers of unequal length
             // would make the comparison itself throw, and the throw (versus a quiet rejection) would
@@ -288,7 +328,73 @@ describe("internal-auth-interceptor", () => {
             // The credential type defaults to "service" (documented default of the trust source).
             assert.strictEqual(ctx?.type, "service");
             assert.strictEqual(headers.get("x-internal-token"), null, "token header stripped");
+            // The identity expires when the token does: exp (seconds) read from the token itself.
+            const exp = jose.decodeJwt(token).exp;
+            assert.ok(exp !== undefined, "the minted token carries exp");
+            assert.strictEqual(ctx?.expiresAt?.getTime(), exp * 1000);
         });
+
+        it("accepts only RS256 unless the issuer entry lists other algorithms", async () => {
+            const { publicKey, privateKey } = await jose.generateKeyPair("RS384", { extractable: true });
+            const jwks = await startTestJwksServer({ ...(await jose.exportJWK(publicKey)), kid: "kid-rs384", alg: "RS384", use: "sig" });
+            try {
+                const token = await new jose.SignJWT({})
+                    .setProtectedHeader({ alg: "RS384", kid: "kid-rs384" })
+                    .setIssuer(ISS_B)
+                    .setAudience(AUDIENCE)
+                    .setExpirationTime("1h")
+                    .sign(privateKey);
+                const trustFor = (algorithms?: string[]) => signedTokenTrust({ issuers: { [ISS_B]: { jwksUri: jwks.url, audience: AUDIENCE, algorithms } } });
+                const present = () => internalReq(new Headers({ "x-internal-token": token }));
+
+                assert.strictEqual(await trustFor()(present()), null, "an RS384 token is refused when the issuer entry sets no algorithms");
+                assert.strictEqual(await trustFor(["RS256"])(present()), null, "an RS384 token is refused when only RS256 is listed");
+                assert.strictEqual((await trustFor(["RS384"])(present()))?.subject, ISS_B, "the same token passes once RS384 is listed");
+            } finally {
+                await jwks.close();
+            }
+        });
+
+        it("enforces the maximum token age of the issuer entry", async () => {
+            const trust = signedTokenTrust({ issuers: { [ISS_B]: { jwksUri: jwksB.url, audience: AUDIENCE, maxTokenAge: "1h" } } });
+            const signIssuedAgo = (ageSeconds: number) =>
+                new jose.SignJWT({})
+                    .setProtectedHeader({ alg: "RS256", kid: kpB.kid })
+                    .setIssuer(ISS_B)
+                    .setAudience(AUDIENCE)
+                    .setIssuedAt(Math.floor(Date.now() / 1000) - ageSeconds)
+                    .setExpirationTime("24h")
+                    .sign(kpB.privateKey);
+
+            const young = await signIssuedAgo(3000);
+            const old = await signIssuedAgo(3900);
+            assert.strictEqual((await trust(internalReq(new Headers({ "x-internal-token": young }))))?.subject, ISS_B);
+            assert.strictEqual(await trust(internalReq(new Headers({ "x-internal-token": old }))), null);
+        });
+
+        // Whatever a caller puts into the token header, only a signed token of a configured issuer
+        // opens the call; the header is removed in every case.
+        for (const [label, value] of [
+            ["a value that is not a JWT", "not-a-jwt"],
+            ["three segments that do not form a JWT", "a.b.c"],
+            ["a Bearer prefix with no token", "Bearer"],
+            ["an unsecured token naming a configured issuer", new jose.UnsecuredJWT({}).setIssuer(ISS_B).setAudience(AUDIENCE).setExpirationTime("1h").encode()],
+        ] as const) {
+            it(`rejects ${label} and still strips the token header`, async () => {
+                const next = createMockNext();
+                const headers = new Headers({ "x-internal-token": value });
+
+                await assert.rejects(
+                    () => buildInterceptor()(next)(internalReq(headers)),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0);
+                assert.strictEqual(headers.get("x-internal-token"), null);
+            });
+        }
 
         it("identifies a verified token that carries no sub claim by its issuer, the configured service name", async () => {
             // No `sub`: the only identity left is the issuer the token was verified against, which is
@@ -403,7 +509,7 @@ describe("internal-auth-interceptor", () => {
         });
 
         // ====================================================================
-        // HEADLINE CONTAINMENT TEST (ADR-029 §2 empirical finding):
+        // HEADLINE CONTAINMENT TEST (a shared keyset would accept this forgery):
         // A token claiming iss:B but signed with A's private key (header kid_A)
         // MUST be rejected as Unauthenticated. With issuer-bound JWKS, the iss:B
         // claim selects B's keyset (kid_B only) -> ERR_JWKS_NO_MATCHING_KEY.

@@ -145,10 +145,51 @@ describe("session-auth-interceptor", () => {
 				() => handler(req),
 				(err: unknown) => {
 					assertConnectError(err, Code.PermissionDenied);
+					// The guide: a ConnectError from the callback reaches the client with its text verbatim.
+					assert.strictEqual(err.rawMessage, "Custom session error");
 					return true;
 				},
 			);
 		});
+
+		// The default extractor reads only `Authorization: Bearer <token>`: the scheme name is
+		// case-insensitive (RFC 9110 section 11.1), whitespace separates it from the token
+		// (RFC 6750 section 2.1), and any other scheme or no token means no credentials.
+		const extractionCases: Array<{ header: string; token: string | null }> = [
+			{ header: "Bearer abc.def.ghi", token: "abc.def.ghi" },
+			{ header: "bearer abc.def.ghi", token: "abc.def.ghi" },
+			{ header: "Basic dXNlcjpwYXNz", token: null },
+			{ header: "Bearer", token: null },
+			{ header: "Bearerabc.def.ghi", token: null },
+		];
+		for (const { header, token } of extractionCases) {
+			it(`should ${token === null ? "treat as missing credentials" : "extract the token from"} the header "${header}"`, async () => {
+				const seen: string[] = [];
+				const handler = createSessionAuthInterceptor({
+					verifySession: async (credentials: string) => {
+						seen.push(credentials);
+						return MOCK_SESSION;
+					},
+					mapSession: MOCK_MAP_SESSION,
+				})(createMockNext());
+				const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+				req.header.set("authorization", header);
+
+				if (token === null) {
+					await assert.rejects(
+						() => handler(req),
+						(err: unknown) => {
+							assertConnectError(err, Code.Unauthenticated);
+							return true;
+						},
+					);
+					assert.deepStrictEqual(seen, [], "the backend must not be asked when there is no bearer token");
+				} else {
+					await handler(req);
+					assert.deepStrictEqual(seen, [token]);
+				}
+			});
+		}
 
 		it("should skip auth for matching skipMethods", async () => {
 			const verifySession = mock.fn(async () => MOCK_SESSION);

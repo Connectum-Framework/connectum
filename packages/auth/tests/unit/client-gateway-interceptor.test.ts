@@ -7,8 +7,12 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { createMockNext, createMockRequest } from "@connectum/testing";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError, createMockNext, createMockRequest } from "@connectum/testing";
 import { createClientGatewayInterceptor } from "../../src/client-gateway-interceptor.ts";
+import { getAuthContext } from "../../src/context.ts";
+import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
+import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
 const MOCK_REQUEST_DEFAULTS = { service: "test.Service", method: "Method" } as const;
@@ -28,10 +32,60 @@ describe("client-gateway-interceptor", () => {
 
             await handler(req);
 
+            // The client guide's header table spells the names and the roles encoding out.
             assert.strictEqual(req.header.get("x-gateway-secret"), "gateway-secret-123");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.SUBJECT), "order-service");
-            assert.strictEqual(req.header.get(AUTH_HEADERS.ROLES), JSON.stringify(["service", "order-writer"]));
+            assert.strictEqual(req.header.get("x-auth-subject"), "order-service");
+            assert.strictEqual(req.header.get("x-auth-roles"), '["service","order-writer"]');
             assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        // The guide pairs this client interceptor with createGatewayAuthInterceptor on the server and
+        // warns that the server mapping must name the client's fixed headers (x-auth-subject,
+        // x-auth-roles). The request the client prepares is handed to a real server interceptor here.
+        describe("paired with createGatewayAuthInterceptor", () => {
+            const SECRET = "pairing-secret";
+            const serverFor = (headerMapping: { subject: string; roles: string }) =>
+                createGatewayAuthInterceptor({ headerMapping, trustSource: { header: "x-gateway-secret", expectedValues: [SECRET] } });
+
+            /** Send one request through the client interceptor into the server interceptor. */
+            async function send(secret: string, serverMapping: { subject: string; roles: string }): Promise<AuthContext | undefined> {
+                let seen: AuthContext | undefined;
+                const server = serverFor(serverMapping)(async () => {
+                    seen = getAuthContext();
+                    return { message: {} } as never;
+                });
+                const client = createClientGatewayInterceptor({ secret, subject: "order-service", roles: ["service", "order-writer"] })((req) => server(req));
+                await client(createMockRequest(MOCK_REQUEST_DEFAULTS));
+                return seen;
+            }
+
+            it("admits the caller and hands its subject and roles to the handler when the mapping matches", async () => {
+                const context = await send(SECRET, { subject: "x-auth-subject", roles: "x-auth-roles" });
+
+                assert.strictEqual(context?.subject, "order-service");
+                assert.deepStrictEqual(context?.roles, ["service", "order-writer"]);
+            });
+
+            it("is refused by the server when the secret is wrong", async () => {
+                await assert.rejects(
+                    () => send("another-secret", { subject: "x-auth-subject", roles: "x-auth-roles" }),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+            });
+
+            it("is refused by the server when the mapping names other headers than the client sends", async () => {
+                // The guide's warning: a server mapped to x-user-id never sees the client's x-auth-subject.
+                await assert.rejects(
+                    () => send(SECRET, { subject: "x-user-id", roles: "x-user-roles" }),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated);
+                        return true;
+                    },
+                );
+            });
         });
 
         it("should JSON.stringify the roles array", async () => {

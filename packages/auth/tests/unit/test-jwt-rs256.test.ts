@@ -11,8 +11,10 @@ import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createMockRequest } from "@connectum/testing";
+import { decodeJwt } from "jose";
 import { getAuthContext } from "../../src/context.ts";
 import { createJwtAuthInterceptor } from "../../src/jwt-auth-interceptor.ts";
+import { createTestJwt } from "../../src/testing/test-jwt.ts";
 import { createTestJwtRS256, generateRsaTestKeypair, type RsaTestKeypair, startTestJwksServer, TEST_JWT_KID, type TestJwksServer } from "../../src/testing/test-jwt-rs256.ts";
 
 const REQ = { service: "test.Service", method: "Method" } as const;
@@ -105,6 +107,30 @@ describe("testing/test-jwt-rs256", () => {
         req.header.set("authorization", `Bearer ${token}`);
         // biome-ignore lint/suspicious/noExplicitAny: mock request
         await assert.rejects(handler(req as any), (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated);
+    });
+
+    it("rejects a token whose kid names no published key even though the published key signed it", async () => {
+        // A valid signature is not enough: the verifier selects the key by kid (RFC 7515 section 4.1.4),
+        // and a kid that the JWKS does not list leaves it with no key to verify against.
+        const handler = jwtInterceptor()((async () => ({ message: {} })) as never);
+        const token = await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: "unlisted-kid", issuer: ISSUER, audience: AUDIENCE });
+        const req = createMockRequest(REQ);
+        req.header.set("authorization", `Bearer ${token}`);
+        await assert.rejects(handler(req), (err: unknown) => err instanceof ConnectError && err.code === Code.Unauthenticated);
+    });
+
+    it("mints tokens that expire in one hour unless another lifetime is asked for", async () => {
+        // The helpers' documented default for `expiresIn` is "1h".
+        const lifetimeOf = (token: string): number => {
+            const { exp, iat } = decodeJwt(token);
+            assert.ok(exp !== undefined && iat !== undefined, "the minted token carries exp and iat");
+            return exp - iat;
+        };
+
+        assert.strictEqual(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid })), 3600);
+        assert.strictEqual(lifetimeOf(await createTestJwtRS256(keypair.privateKey, { sub: "u" }, { kid: keypair.kid, expiresIn: "2h" })), 7200);
+        assert.strictEqual(lifetimeOf(await createTestJwt({ sub: "u" })), 3600);
+        assert.strictEqual(lifetimeOf(await createTestJwt({ sub: "u" }, { expiresIn: "2h" })), 7200);
     });
 
     it("rejects a token signed by an unpublished key (kid mismatch / bad signature)", async () => {
