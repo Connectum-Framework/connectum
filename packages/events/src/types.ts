@@ -277,7 +277,11 @@ export type EventMiddleware = (event: RawEvent, ctx: EventContext, next: EventMi
  * Retry middleware options
  */
 export interface RetryOptions {
-    /** Maximum retry attempts (default: 3) */
+    /**
+     * Maximum number of retries after the first attempt: an integer of at least 0 (default: 3).
+     * `0` runs the handler once. Any other value (negative, fractional, `NaN`, infinite) makes
+     * `retryMiddleware` throw when it is created.
+     */
     maxRetries?: number;
     /** Backoff strategy */
     backoff?: "exponential" | "linear" | "fixed";
