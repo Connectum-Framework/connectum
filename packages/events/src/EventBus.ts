@@ -17,7 +17,7 @@ import { dlqMiddleware } from "./middleware/dlq.ts";
 import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
 import { resolveTopicName } from "./topic.ts";
-import type { EventBus, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
+import type { EventBus, EventBusObserverEvent, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
 
 /**
@@ -79,6 +79,22 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let startPromise: Promise<void> | null = null;
     let stopPromise: Promise<void> | null = null;
     const drainTimeout = options.drainTimeout ?? 30_000;
+    const drainAbortGrace = options.drainAbortGrace;
+    if (drainAbortGrace !== undefined && !(drainAbortGrace >= 0)) {
+        throw new RangeError(`createEventBus: drainAbortGrace must be a non-negative number of milliseconds, got ${String(drainAbortGrace)}`);
+    }
+    const observer = options.observer;
+    // Reporting must never stop the shutdown: a throw or a rejected promise is dropped.
+    const notify = (event: EventBusObserverEvent): void => {
+        if (observer === undefined) {
+            return;
+        }
+        try {
+            void Promise.resolve(observer(event)).catch(() => undefined);
+        } catch {
+            // dropped, see above
+        }
+    };
     // Opt-in (#196): undefined or <= 0 disables publish tracking entirely —
     // default behavior stays bit-for-bit.
     const drainPublishTimeout = options.drainPublishTimeout !== undefined && options.drainPublishTimeout > 0 ? options.drainPublishTimeout : undefined;
@@ -337,8 +353,19 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                         //    drainTimeout abort contract would break.
                         if (inFlight.size > 0) {
                             drainController.abort("Drain timeout exceeded");
-                            // Brief settle window for abort handlers
-                            await Promise.allSettled([...inFlight]);
+                            // Settle window for handlers that react to the abort: unbounded
+                            // unless `drainAbortGrace` is set, then the handlers still running
+                            // when it ends are abandoned (and reported below).
+                            if (drainAbortGrace === undefined) {
+                                await Promise.allSettled([...inFlight]);
+                            } else {
+                                const graceDeadline = Date.now() + drainAbortGrace;
+                                while (inFlight.size > 0) {
+                                    const remaining = graceDeadline - Date.now();
+                                    if (remaining <= 0) break;
+                                    await raceSettled(inFlight, remaining);
+                                }
+                            }
                         }
                     };
                     const drainPublishes = async (): Promise<void> => {
@@ -356,6 +383,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     await Promise.all([unsubscribed, drainHandlers(), drainPublishes()]);
                     subscriptions.length = 0;
 
+                    if (inFlight.size > 0 || inFlightPublishes.size > 0) {
+                        notify({ type: "abandoned", handlers: inFlight.size, publishes: inFlightPublishes.size });
+                    }
                     inFlight.clear();
                     inFlightPublishes.clear();
                     await adapter.disconnect();

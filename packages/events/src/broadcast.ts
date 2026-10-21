@@ -17,7 +17,7 @@
 
 import type { EventBusLike } from "@connectum/core";
 import { createEventBus } from "./EventBus.ts";
-import type { EventAdapter, EventAdapterFactory, EventBus, EventRoute, MiddlewareConfig } from "./types.ts";
+import type { EventAdapter, EventAdapterFactory, EventBus, EventBusObserver, EventRoute, MiddlewareConfig } from "./types.ts";
 
 /** One independent broadcast reactor: its consumer group + routes. */
 export interface BroadcastReactor {
@@ -44,6 +44,10 @@ export interface BroadcastSubscribersOptions {
     readonly handlerTimeout?: number;
     /** Shared per-bus drain timeout (ms). */
     readonly drainTimeout?: number;
+    /** Shared per-bus wait after the drain abort (ms); unbounded when unset. */
+    readonly drainAbortGrace?: number;
+    /** Shared observer of what each bus's shutdown gave up on. */
+    readonly observer?: EventBusObserver;
     /** Shared per-bus opt-in publish drain budget at `stop()` (ms). Since 1.3.0. */
     readonly drainPublishTimeout?: number;
     /** Shared abort signal for graceful shutdown. */
@@ -95,6 +99,8 @@ export function createBroadcastSubscribers(options: BroadcastSubscribersOptions)
             ...(options.handlerTimeout !== undefined ? { handlerTimeout: options.handlerTimeout } : {}),
             ...(options.drainTimeout !== undefined ? { drainTimeout: options.drainTimeout } : {}),
             ...(options.drainPublishTimeout !== undefined ? { drainPublishTimeout: options.drainPublishTimeout } : {}),
+            ...(options.drainAbortGrace !== undefined ? { drainAbortGrace: options.drainAbortGrace } : {}),
+            ...(options.observer !== undefined ? { observer: options.observer } : {}),
             ...(options.signal !== undefined ? { signal: options.signal } : {}),
         }),
     );
