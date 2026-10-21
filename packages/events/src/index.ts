@@ -35,7 +35,7 @@ export { retryMiddleware } from "./middleware/retry.ts";
 export { composeMiddleware } from "./middleware.ts";
 // Subscription pattern validation shared by adapters
 export type { SubscriptionPatternRule } from "./subscriptionPatterns.ts";
-export { assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
+export { assertPublishTopic, assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
 // Topic resolution
 export { resolveTopicName } from "./topic.ts";
 // Types

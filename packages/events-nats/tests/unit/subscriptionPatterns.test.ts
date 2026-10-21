@@ -34,3 +34,30 @@ describe("NatsAdapter subscription patterns", () => {
         }
     });
 });
+
+// The same proof for publishing: on an adapter that was never connected, the topic error (and not
+// "not connected") shows the topic was refused before the adapter touched the broker.
+describe("NatsAdapter publish topics", () => {
+    for (const [label, topic] of [
+        ["the empty string", ""],
+        ["an empty segment between dots", "a..b"],
+        ["a leading dot", ".a"],
+        ["a trailing dot", "a."],
+        ["a lone dot", "."],
+    ] as const) {
+        it(`rejects ${label} before reaching the broker`, async () => {
+            const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
+
+            await assert.rejects(
+                adapter.publish(topic, new Uint8Array([1])),
+                (error: unknown) => error instanceof TypeError && error.message.startsWith(`NatsAdapter: publish topic "${topic}" has an empty segment (`),
+            );
+        });
+    }
+
+    it("reaches the connection check with a well-formed topic", async () => {
+        const adapter = NatsAdapter({ servers: "nats://localhost:4222" });
+
+        await assert.rejects(adapter.publish("a.b", new Uint8Array([1])), { message: "NatsAdapter: not connected" });
+    });
+});
