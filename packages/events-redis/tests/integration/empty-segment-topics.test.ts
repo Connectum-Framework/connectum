@@ -26,8 +26,10 @@ describe("Redis adapter topics with an empty segment", { skip: REDIS_TEST_URL ==
         it(`subscribes to a topic with ${label} and receives what is published to it`, async () => {
             const observer = new Redis(url);
             const adapter = RedisAdapter({ url });
-            await adapter.connect({ serviceName: "integration-empty-segment-topics" });
+            // Setup sits inside the cleanup boundary and every disconnect has its own `finally`, so a
+            // failed connect or a failed cleanup call never leaves a client retrying in the background.
             try {
+                await adapter.connect({ serviceName: "integration-empty-segment-topics" });
                 const received: string[] = [];
                 const subscription = await adapter.subscribe([topic], async (event, ack) => {
                     received.push(`${event.eventType}:${Buffer.from(event.payload).toString()}`);
@@ -44,9 +46,15 @@ describe("Redis adapter topics with an empty segment", { skip: REDIS_TEST_URL ==
                 assert.deepEqual(received, [`${topic}:hello`]);
                 await subscription.unsubscribe();
             } finally {
-                await observer.del(`events:${topic}`);
-                await adapter.disconnect();
-                observer.disconnect();
+                try {
+                    await observer.del(`events:${topic}`);
+                } finally {
+                    try {
+                        await adapter.disconnect();
+                    } finally {
+                        observer.disconnect();
+                    }
+                }
             }
         });
     }
