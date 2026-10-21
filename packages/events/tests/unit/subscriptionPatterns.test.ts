@@ -146,9 +146,9 @@ describe("MemoryAdapter publishing to a topic with an empty segment", () => {
         });
     }
 
-    it("rejects a malformed topic before it checks the connection", async () => {
+    it("reports a missing connection before it examines the topic, as subscribe() does", async () => {
         const adapter = MemoryAdapter();
-        await assert.rejects(adapter.publish("a..b", new Uint8Array([1])), TypeError);
+        await assert.rejects(adapter.publish("a..b", new Uint8Array([1])), (error: unknown) => error instanceof Error && error.message === "MemoryAdapter: not connected");
     });
 });
 

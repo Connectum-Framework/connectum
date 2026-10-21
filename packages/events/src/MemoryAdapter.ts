@@ -38,13 +38,13 @@ export function MemoryAdapter(): EventAdapter {
         },
 
         async publish(eventType: string, payload: Uint8Array, options?: PublishOptions): Promise<void> {
-            // Same rule as subscribe(): a topic no subscription pattern can name is not delivered
-            // to wildcard subscribers either.
-            assertPublishTopic({ adapter: "MemoryAdapter", topic: eventType });
-
             if (!connected) {
                 throw new Error("MemoryAdapter: not connected");
             }
+
+            // Same rule as subscribe(): a topic no subscription pattern can name is not delivered
+            // to wildcard subscribers either.
+            assertPublishTopic({ adapter: "MemoryAdapter", topic: eventType });
 
             const event: RawEvent = {
                 eventId: randomUUID(),
