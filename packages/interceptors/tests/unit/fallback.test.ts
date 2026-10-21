@@ -26,6 +26,50 @@ describe("fallback interceptor", () => {
         assert.strictEqual(fallbackHandler.mock.calls.length, 0);
     });
 
+    // A fallback value stands in for a failed dependency, never for a refusal of access.
+    for (const code of [Code.Unauthenticated, Code.PermissionDenied]) {
+        it(`should rethrow a ${Code[code]} failure as it is and not ask the fallback handler`, async () => {
+            const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+            const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
+            const refusal = new ConnectError("refused", code);
+            const handler = interceptor((async () => {
+                throw refusal;
+            }) as any);
+
+            await assert.rejects(
+                () => handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } })),
+                (err: unknown) => err === refusal,
+            );
+            assert.strictEqual(fallbackHandler.mock.calls.length, 0);
+        });
+    }
+
+    for (const code of [Code.Canceled, Code.Unknown, Code.InvalidArgument, Code.DeadlineExceeded, Code.NotFound, Code.Internal, Code.Unavailable]) {
+        it(`should still ask the fallback handler for a ${Code[code]} failure`, async () => {
+            const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+            const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
+            const handler = interceptor(createMockNextError(code, "failed") as any);
+
+            const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+
+            assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+            assert.deepStrictEqual(result.message, { fallback: "value" });
+        });
+    }
+
+    it("should still ask the fallback handler for an error that is not a ConnectError", async () => {
+        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
+        const handler = interceptor((async () => {
+            throw new Error("plain failure");
+        }) as any);
+
+        const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
+
+        assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+        assert.deepStrictEqual(result.message, { fallback: "value" });
+    });
+
     it("should call handler on failure", async () => {
         let handlerCalled = false;
         const interceptor = createFallbackInterceptor({
