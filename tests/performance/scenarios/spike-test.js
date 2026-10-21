@@ -81,8 +81,12 @@ function getPhase(elapsed, _vus) {
 // Test Scenario
 // ============================================================================
 
-export default function () {
-    const elapsed = Math.floor(__ENV.K6_ELAPSED || 0); // Seconds since test start
+export default function (data) {
+    // Seconds since the test started. k6 provides no elapsed-time variable in
+    // __ENV, so the phase is derived from the start time that setup() returns.
+    // Without it every request fell into the "baseline" phase, the
+    // recovery_latency metric stayed empty, and its threshold passed vacuously.
+    const elapsed = Math.floor((Date.now() - data.startTime) / 1000);
     const phase = getPhase(elapsed, __VU);
 
     // ConnectRPC unary call payload
