@@ -263,6 +263,23 @@ describe("readMaxBytes — server default on both transports", () => {
         }
     });
 
+    // Without the option the server adds no limit of its own: a message above the 4 MiB that gRPC
+    // implementations commonly default to is still accepted, over both transports.
+    it("applies no hidden limit when readMaxBytes is not set: a 5 MiB message is accepted, over HTTP and in-process", async () => {
+        const calls = { count: 0 };
+        const { server, transport } = await startH2c({ services: [makeEchoRoutes(calls)] });
+        const large = create(EchoRequestSchema, { message: "x".repeat(5 * 1024 * 1024) });
+        try {
+            const viaHttp = await createClient(EchoService, transport).echo(large);
+            const viaLocal = await server.localClient(EchoService).echo(large);
+            assert.strictEqual(viaHttp.message.length, "echo:".length + 5 * 1024 * 1024);
+            assert.strictEqual(viaLocal.message.length, "echo:".length + 5 * 1024 * 1024);
+            assert.strictEqual(calls.count, 2);
+        } finally {
+            await server.stop();
+        }
+    });
+
     // A limit that is not a whole number of bytes in Connect's range must fail
     // at createServer(), naming the option. Left to Connect, NaN passes its
     // range check (every comparison with NaN is false) and silently disables

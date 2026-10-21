@@ -264,4 +264,50 @@ describe("drainPublishTimeout (#196)", () => {
         pending[0]?.resolve();
         await publishSettled;
     });
+
+    it("a negative value disables waiting, like 0 and unset", async () => {
+        const order: string[] = [];
+        const { adapter, pending } = makeControlledAdapter(order);
+        const bus = createEventBus({ adapter, drainPublishTimeout: -1 });
+        await bus.start();
+
+        const publishSettled = bus.publish(EventOptionsSchema, eventMsg()).catch(() => undefined);
+        await sleep(10);
+
+        // A negative budget read as "wait" would hold stop() for the whole pending publish: a bounded
+        // race tells "returns promptly" from "waits" without a long test.
+        let guard: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+            bus.stop().then(() => "stopped" as const),
+            new Promise<"still waiting">((resolve) => {
+                guard = setTimeout(() => resolve("still waiting"), 1_000);
+            }),
+        ]);
+        clearTimeout(guard);
+        const orderAtOutcome = [...order];
+        pending[0]?.resolve();
+        await publishSettled;
+
+        assert.equal(outcome, "stopped", "stop() must not wait for the pending publish under a negative budget");
+        assert.deepEqual(orderAtOutcome, ["disconnect"], "a negative budget must not enable tracking or waiting");
+    });
+
+    it("a publish that settled before stop() does not hold stop() for the budget", async () => {
+        const order: string[] = [];
+        const { adapter, pending } = makeControlledAdapter(order);
+        const bus = createEventBus({ adapter, drainPublishTimeout: 5_000 });
+        await bus.start();
+
+        const publishSettled = bus.publish(EventOptionsSchema, eventMsg());
+        await sleep(10);
+        pending[0]?.resolve();
+        await publishSettled;
+        await sleep(10); // let the bus observe the settled publish
+
+        const startedAt = Date.now();
+        await bus.stop();
+        const took = Date.now() - startedAt;
+
+        assert.ok(took < 1_000, `a settled publish must have left the in-flight set, so stop() returns at once (took ${took}ms of a 5000ms budget)`);
+    });
 });

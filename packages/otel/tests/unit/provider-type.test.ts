@@ -39,4 +39,18 @@ describe("OtelProvider type", () => {
         assert.strictEqual(typeof provider.shutdown, "function");
         assert.deepStrictEqual([sameTypeFromBothEntries, getProviderReturnsIt, rootGetProviderReturnsIt, members], [true, true, true, true]);
     });
+
+    // The package keeps exactly one provider per process; a public constructor would let a caller
+    // build a second one that competes for OpenTelemetry's global registration.
+    it("has no public constructor: the implementation class is exported from neither entry", async () => {
+        const root: Record<string, unknown> = await import("../../src/index.ts");
+        const subpath: Record<string, unknown> = await import("../../src/provider.ts");
+
+        for (const [entry, exports] of [
+            ["the root", root],
+            ["the provider subpath", subpath],
+        ] as const) {
+            assert.strictEqual("OtelProviderImpl" in exports, false, `${entry} must not export the provider implementation class`);
+        }
+    });
 });
