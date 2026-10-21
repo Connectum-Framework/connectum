@@ -197,6 +197,11 @@ function countFromEnv(options: { readonly name: string; readonly fallback: numbe
  * Uses OTEL_SERVICE_NAME, then npm_package_name, then "unknown-service" for the name.
  * The version comes from npm_package_version, falling back to "0.0.0".
  *
+ * This reads the process environment only. The service name the provider reports is resolved
+ * separately and also honours the `serviceName` option and the `service.name` entry of
+ * `OTEL_RESOURCE_ATTRIBUTES` (between `OTEL_SERVICE_NAME` and `npm_package_name`), so for a
+ * service configured that way the name returned here is not the one on its telemetry.
+ *
  * @returns Service name and version
  */
 export function getServiceMetadata(): { name: string; version: string } {
