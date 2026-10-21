@@ -30,18 +30,27 @@ export function getTLSPath(): string {
 /**
  * Read TLS certificates from configuration
  *
- * Explicit keyPath and certPath are used only when both are non-empty.
- * Otherwise both files come from dirPath or getTLSPath(); a lone explicit
- * path does not override either directory-based file.
+ * Explicit keyPath and certPath are used when both are non-empty. When neither
+ * is, both files come from dirPath or getTLSPath(). Exactly one of them is a
+ * configuration error: falling back to the directory would start the server
+ * with a certificate other than the one the operator named.
  *
  * @param options - TLS options
  * @returns TLS key and cert buffers
+ * @throws {Error} When only one of keyPath and certPath is non-empty; thrown before any file is read
  */
 export function readTLSCertificates(options: TLSOptions = {}): {
     key: Buffer;
     cert: Buffer;
 } {
     const { keyPath, certPath, dirPath } = options;
+
+    if (keyPath && !certPath) {
+        throw new Error('TLS configuration is incomplete: "keyPath" is set but "certPath" is not. Set both, or neither to read server.key and server.crt from the directory.');
+    }
+    if (certPath && !keyPath) {
+        throw new Error('TLS configuration is incomplete: "certPath" is set but "keyPath" is not. Set both, or neither to read server.key and server.crt from the directory.');
+    }
 
     // If explicit paths provided, use them (resolve to absolute paths)
     if (keyPath && certPath) {

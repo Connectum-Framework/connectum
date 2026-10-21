@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
+import { assertSubscriptionPatterns } from "@connectum/events";
 import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
@@ -247,6 +248,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
+            // Before a consumer is created and connected: Kafka refuses these topic names and the
+            // broker's answer ("invalid topic") does not name the pattern.
+            assertSubscriptionPatterns({ adapter: "KafkaAdapter", patterns, rule: "kafka-topic-name" });
+
             if (!connected) {
                 throw new Error("KafkaAdapter: not connected");
             }

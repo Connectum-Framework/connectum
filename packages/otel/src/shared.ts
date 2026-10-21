@@ -9,7 +9,7 @@
 
 import { ConnectError } from "@connectrpc/connect";
 import type { Attributes, Context, Span } from "@opentelemetry/api";
-import { context, SpanStatusCode } from "@opentelemetry/api";
+import { context } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
@@ -29,6 +29,7 @@ import {
     RPC_MESSAGE_EVENT,
     RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
+import { recordFailure } from "./failure.ts";
 import type { OtelAttributeFilter } from "./types.ts";
 
 /**
@@ -89,6 +90,9 @@ export async function* wrapAsyncIterable<T>(
     endSpanOnComplete = false,
 ): AsyncGenerator<T> {
     let sequence = 1;
+    // Whether the stream raised is tracked apart from the raised value: the value
+    // may be falsy (`null`, `0`, `""`) and must still count as a failure.
+    let failed = false;
     let streamError: unknown;
     try {
         for await (const message of iterable) {
@@ -103,14 +107,13 @@ export async function* wrapAsyncIterable<T>(
             yield message;
         }
     } catch (error) {
+        failed = true;
         streamError = error;
         throw error;
     } finally {
         if (endSpanOnComplete) {
-            if (streamError) {
-                span.recordException(streamError as Error);
-                const message = streamError instanceof Error ? streamError.message : String(streamError);
-                span.setStatus({ code: SpanStatusCode.ERROR, message });
+            if (failed) {
+                recordFailure(span, streamError);
             }
             // Normal completion and an early exit of the consumer both leave the
             // status unset: the instrumentation never reports OK, and a consumer

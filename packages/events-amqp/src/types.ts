@@ -221,7 +221,9 @@ export interface AmqpAdapterOptions {
      * internal error `541`, resource locked `405`, a mid-setup connection
      * drop) stay in normal recovery. Only replies that name a condition which
      * cannot heal without a configuration or topology change are fatal:
-     * - `404` "no queue" / "no exchange" (the object is missing);
+     * - `404` with `no queue '<name>'` / `no exchange '<name>'` in the reply
+     *   text (the object is missing; the name in single quotes is part of the
+     *   match, so a text that merely contains "no queue" is not fatal);
      * - `406` "inequivalent arg" (redeclare with different arguments),
      *   "invalid arg", "unknown exchange type" / "invalid exchange type".
      *
@@ -517,6 +519,10 @@ export interface AmqpRecoveryOptions {
      *   yourself (`Math.min(cap, …)`). `0` is valid and retries at once. The
      *   `reconnecting` event reports this applied delay; the adapter never
      *   calls the hook a second time to fill it.
+     * - A thrown value that is not an `Error` is wrapped: the `cause` of the
+     *   error described below is then an `Error` whose message is
+     *   `recovery.backoff threw <value>`, and the thrown value itself is that
+     *   `Error`'s own `cause`. A thrown `Error` is the `cause` as is.
      * - The hook MUST be synchronous. A throw, a return that is not a finite
      *   number ≥ 0 (`NaN`, `Infinity`, a negative number, a numeric string)
      *   or a Promise (an `async` function) ends recovery for good — there is
@@ -595,6 +601,11 @@ export interface AmqpRecoveryOptions {
  *   promise that rejected. The failure is already isolated; the event only
  *   makes it visible. A failure while handling a `lifecycle-error` is dropped.
  *   Union-only (no flat callback).
+ *
+ * Readiness: `connected` is delivered only after the adapter accepts `publish()`
+ * and `subscribe()` on that connection, for the initial connect and for every
+ * recovery (after the recovery's topology setup and consumer replay). A
+ * callback may therefore call them from `onLifecycle`.
  *
  * Disconnect cause: `disconnected.error` is the error amqplib reports for the
  * close with `recovery` enabled and disabled alike (so a broker-forced close

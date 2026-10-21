@@ -188,8 +188,13 @@ export class TransportManager {
      */
     async close(): Promise<void> {
         this._closingState.closing = true;
+        const server = this._server;
+        // No server (never listened, or already disposed): there is no callback to wait for.
+        if (server === null) {
+            return;
+        }
         const closed = new Promise<void>((resolve, reject) => {
-            this._server?.close((err) => {
+            server.close((err) => {
                 if (err) reject(err);
                 else resolve();
             });

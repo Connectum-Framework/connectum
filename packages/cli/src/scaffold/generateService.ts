@@ -107,12 +107,17 @@ export const ${routesConst}: EventRoute = (events) => {
 `;
 }
 
+/** Relative path of the service module `generate service` emits for `name`. */
+export function serviceModulePath(name: string): string {
+    return `src/services/${camelCase(name)}Service.ts`;
+}
+
 /** Build the file map `generate service` emits (relative paths). */
 export function buildServiceFiles(name: string, withEvents: boolean): Map<string, string> {
     const pkg = packageName(name);
     const files = new Map<string, string>([
         [`proto/${pkg}/v1/${pkg}.proto`, generateServiceProto(name, withEvents)],
-        [`src/services/${camelCase(name)}Service.ts`, generateServiceImpl(name, withEvents)],
+        [serviceModulePath(name), generateServiceImpl(name, withEvents)],
     ]);
     if (withEvents) {
         // The event proto imports the vendored option proto; emit it (skipped if present).

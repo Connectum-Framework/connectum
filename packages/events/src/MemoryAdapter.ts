@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
 
@@ -67,6 +68,8 @@ export function MemoryAdapter(): EventAdapter {
             if (!connected) {
                 throw new Error("MemoryAdapter: not connected");
             }
+
+            assertSubscriptionPatterns({ adapter: "MemoryAdapter", patterns });
 
             const sub: MemorySubscription = { patterns, handler };
             subscriptions.push(sub);

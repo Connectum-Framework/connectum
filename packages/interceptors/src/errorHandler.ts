@@ -24,6 +24,18 @@ function clientMessageFor(code: Code): string {
 }
 
 /**
+ * Whether a thrown value's `code` can be sent to the client as a Connect code.
+ *
+ * Only the integers from `Canceled` (1) to `Unauthenticated` (16) are failure codes.
+ * Anything else (`0` is "OK" in gRPC, `17`, a fraction, `NaN`, an HTTP status, a system
+ * errno) is rewritten or rejected by the wire layer, so the client would see an
+ * unrelated code, a protocol error or an `invalid grpc-status` text instead of a failure.
+ */
+function isConnectCode(value: unknown): value is Code {
+    return typeof value === "number" && Number.isInteger(value) && value >= Code.Canceled && value <= Code.Unauthenticated;
+}
+
+/**
  * Create error handler interceptor
  *
  * Catches rejections from awaiting next(req) and transforms them into
@@ -35,7 +47,8 @@ function clientMessageFor(code: Code): string {
  *   chose to send them.
  * - `SanitizableError`: its `clientMessage` and code only; `serverDetails` stay on the server.
  * - Anything else (`Error`, a thrown string, an object with a numeric `code`): the code is
- *   the numeric `code` when there is one and `Internal` otherwise. The text of the failure
+ *   the numeric `code` when it is an integer from 1 to 16 (a Connect failure code) and
+ *   `Internal` otherwise (no code, a non-number, or a number outside 1..16). The text of the failure
  *   is NOT sent: `Internal` carries the fixed text `"internal error"`, any other code carries
  *   an empty text. A message such as a connection string or a query would otherwise leak
  *   to every caller (CWE-209). Set `exposeErrorMessages: true` to send the original text.
@@ -101,7 +114,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
 
             // Non-sanitizable errors
             const errWithCode = err as { code?: unknown };
-            const code = typeof errWithCode?.code === "number" ? errWithCode.code : Code.Internal;
+            const code = isConnectCode(errWithCode?.code) ? errWithCode.code : Code.Internal;
             // `full` keeps the original text and cause: it is for the server side only.
             // `client` is what leaves the process. A ConnectError is sent as its author built
             // it (text, details and metadata included). For any other failure, unless the
@@ -111,9 +124,11 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
             const client = exposeErrorMessages || err instanceof ConnectError ? full : new ConnectError(clientMessageFor(full.code), full.code, undefined, undefined, err);
 
             if (onError) {
+                // The code the client receives: `ConnectError.from` may map the error to a different
+                // code than the one picked above (an `AbortError` becomes `Canceled`).
                 const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
                     error: full,
-                    code,
+                    code: full.code,
                 };
                 if (includeStackTrace && full.stack) info.stack = full.stack;
                 onError(info);

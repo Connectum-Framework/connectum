@@ -62,6 +62,10 @@ export function defaultFailurePredicate(error: unknown): boolean {
  * server's inbound stack it degenerates into error-rate load shedding —
  * prefer timeout + bulkhead for inbound protection.
  *
+ * Every call creates one breaker, and that single breaker counts the failures of
+ * every request it covers (streaming calls are skipped by default) that passes
+ * through the returned interceptor, whatever the service or method. Calls to different upstreams need one interceptor each.
+ *
  * `threshold` must be an integer of at least 1 and `halfOpenAfter` an integer from
  * 0 to 2147483647 milliseconds; anything else throws at construction (`TypeError`
  * for a non-number, `RangeError` otherwise).
