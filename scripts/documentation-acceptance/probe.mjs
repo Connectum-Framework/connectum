@@ -74,8 +74,9 @@ try {
         if (auth) await assert.rejects(client.sayHello({ name: "Reader" }), (error) => error.code === Code.Unauthenticated);
         const response = await client.sayHello({ name: "Reader" }, options);
         assert.equal(response.message, "Hello, Reader!");
-        if (quickstart) await assert.rejects(client.sayHello({ name: "" }, options), (error) => error.code === Code.InvalidArgument);
-        else assert.equal((await client.sayHello({ name: "" }, options)).message, "Hello, world!");
+        // Both the Quickstart and the example's own greeter reject an empty name; a handler that
+        // substituted a default would let an unchecked input through unnoticed.
+        await assert.rejects(client.sayHello({ name: "" }, options), (error) => error.code === Code.InvalidArgument);
         // No schema argument: buf must discover Health through server reflection.
         const args = ["curl", "--protocol", "grpc", "--http2-prior-knowledge", "--data", "{}"];
         // The health call carries no credential: the README leaves it open with `skipMethods`, and a
