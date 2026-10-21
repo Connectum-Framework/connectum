@@ -9,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Kafka, logLevel } from "kafkajs";
@@ -31,10 +32,23 @@ describe("Kafka subscribe with an over-long topic pattern", { skip: KAFKA_TEST_U
 
         await adapter.connect();
         await admin.connect();
+
+        // Every client socket the process opens while the subscription is refused: a pattern that
+        // is too long is an argument error, so it must be refused before a consumer connects.
+        let socketsOpenedDuringRefusal = 0;
+        const countSocket = (): void => {
+            socketsOpenedDuringRefusal++;
+        };
         try {
             const socketsBefore = openSockets();
 
-            await assert.rejects(adapter.subscribe(["a".repeat(257)], async () => undefined, { group }), /Topic pattern exceeds maximum length \(256\): 257/);
+            subscribe("net.client.socket", countSocket);
+            try {
+                await assert.rejects(adapter.subscribe(["a".repeat(257)], async () => undefined, { group }), /Topic pattern exceeds maximum length \(256\): 257/);
+            } finally {
+                unsubscribe("net.client.socket", countSocket);
+            }
+            assert.equal(socketsOpenedDuringRefusal, 0, "the refused subscription opened a connection to the broker before it was refused");
 
             // The release is awaited by subscribe() itself; the pause only lets the sockets' close events reach the loop.
             await sleep(500);
