@@ -23,7 +23,7 @@ function watchNoDelay(port: number): { readonly values: boolean[]; readonly rest
     const original = net.Socket.prototype.setNoDelay;
     const values: boolean[] = [];
     net.Socket.prototype.setNoDelay = function patched(this: net.Socket, noDelay?: boolean) {
-        if (this.remotePort === port || this.connecting) {
+        if (this.remotePort === port) {
             values.push(noDelay ?? true);
         }
         return original.call(this, noDelay);
@@ -38,7 +38,8 @@ function watchNoDelay(port: number): { readonly values: boolean[]; readonly rest
 
 describe("AMQP adapter socket options on a real broker", { skip: AMQP_URL === undefined ? "AMQP_TEST_URL not set" : false, concurrency: 1 }, () => {
     const url = AMQP_URL as string;
-    const brokerPort = Number(new URL(url).port || 5672);
+    const brokerUrl = new URL(url);
+    const brokerPort = Number(brokerUrl.port || (brokerUrl.protocol === "amqps:" ? 5671 : 5672));
     const run = randomUUID().slice(0, 8);
     let restore: (() => void) | undefined;
 
