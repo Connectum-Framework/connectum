@@ -47,7 +47,7 @@ export function MemoryAdapter(): EventAdapter {
     async function deliver(sub: MemorySubscription, event: RawEvent): Promise<void> {
         const noopAck = async (): Promise<void> => {};
         const nack = async (requeue?: boolean): Promise<void> => {
-            if (requeue === false || !subscriptions.includes(sub)) {
+            if (requeue === false) {
                 return;
             }
             const timer = setTimeout(() => {
