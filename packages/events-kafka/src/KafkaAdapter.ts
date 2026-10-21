@@ -259,6 +259,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 throw new Error("KafkaAdapter: not connected");
             }
 
+            // A pattern that is too long is an argument error: refuse it here, before a consumer is
+            // created and connected, so the refusal costs the broker nothing.
+            const topics: (string | RegExp)[] = patterns.map(patternToKafkaTopicMatcher);
+
             const groupId = subOptions?.group ?? `connectum-${randomUUID()}`;
             const sessionTimeout = options.consumerOptions?.sessionTimeout;
             const consumer = kafka.consumer({
@@ -292,8 +296,6 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             let stopDiscovery: (() => Promise<void>) | undefined;
 
             try {
-                // Convert patterns to Kafka topic subscriptions
-                const topics: (string | RegExp)[] = patterns.map(patternToKafkaTopicMatcher);
                 const wildcards = topics.filter((topic): topic is RegExp => topic instanceof RegExp);
                 const fromBeginning = options.consumerOptions?.fromBeginning ?? false;
 
