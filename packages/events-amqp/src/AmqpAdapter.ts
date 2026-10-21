@@ -927,7 +927,7 @@ export function handleDelivery(params: {
     readonly handler: RawEventHandler;
     readonly decode: ((data: Uint8Array) => Uint8Array) | undefined;
     readonly lifecycle: AmqpLifecycleCallbacks | undefined;
-}): void {
+}): Promise<void> {
     const { channel, message: msg, queue, handler, decode, lifecycle } = params;
     const delivery = { queue, message: msg };
 
@@ -978,7 +978,7 @@ export function handleDelivery(params: {
         } catch (error) {
             reportSettlementFailure("reject", error);
         }
-        return;
+        return Promise.resolve();
     }
 
     // Attempt: redelivered = at least 2nd delivery
@@ -1008,8 +1008,9 @@ export function handleDelivery(params: {
     // The handler runs inside a promise executor so a synchronous throw is a
     // rejection like any other: amqplib's channel has no `handler-error`
     // listener, so a throw escaping this callback closes the channel with 541
-    // and the subscription silently stops consuming.
-    new Promise<void>((resolve) => {
+    // and the subscription silently stops consuming. The returned promise settles when the handler
+    // has finished and any requeue after its failure is done; it never rejects.
+    return new Promise<void>((resolve) => {
         resolve(handler(rawEvent, ack, nack));
     }).catch(() => {
         // Handler error — requeue for redelivery unless the handler already
@@ -1031,6 +1032,12 @@ interface SubscriptionRecord extends RestorableSubscription {
     /** Channel of the CURRENT incarnation (replaced on recovery). */
     channel: amqp.Channel | null;
     isAutoGroup: boolean;
+    /**
+     * Deliveries whose handler has not finished yet. `unsubscribe()` keeps the consumer channel
+     * open until they have, because the acknowledgement travels on that channel: closing it first
+     * makes the broker take the message back and deliver it again.
+     */
+    readonly inFlight: Set<Promise<void>>;
 }
 
 /** A timer handle the restorer can hold without keeping the process alive. */
@@ -1928,7 +1935,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         return;
                     }
 
-                    handleDelivery({ channel: ch, message: msg, queue: queueName, handler: record.handler, decode, lifecycle });
+                    const delivery = handleDelivery({ channel: ch, message: msg, queue: queueName, handler: record.handler, decode, lifecycle });
+                    record.inFlight.add(delivery);
+                    void delivery.then(() => record.inFlight.delete(delivery));
                 },
                 { noAck: false },
             );
@@ -2716,6 +2725,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 consumerTag: null,
                 queueName: "",
                 isAutoGroup: !subOptions?.group,
+                inFlight: new Set(),
                 active: true,
                 generation: 0,
                 restore: { attempt: 0, timer: null, stabilityTimer: null, pending: false },
@@ -2758,7 +2768,21 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         // and shared across multiple consumers. Unbinding would break
                         // delivery to other active consumers on the same group.
 
-                        await ch.close().catch(() => undefined);
+                        // The channel carries the acknowledgements of the deliveries whose handlers are
+                        // still running (`EventBus.stop()` unsubscribes first and drains afterwards).
+                        // Closing it now would make the broker return those messages to the queue, so
+                        // they would be delivered again after their handlers had finished. It is closed
+                        // when the last of them has settled; the consumer is already cancelled, so no
+                        // new delivery starts, and unsubscribe() itself does not wait for a slow handler.
+                        const closeWhenIdle = async (): Promise<void> => {
+                            await Promise.allSettled([...record.inFlight]);
+                            await ch.close().catch(() => undefined);
+                        };
+                        if (record.inFlight.size === 0) {
+                            await closeWhenIdle();
+                        } else {
+                            void closeWhenIdle();
+                        }
                     }
                     record.channel = null;
                     record.consumerTag = null;
