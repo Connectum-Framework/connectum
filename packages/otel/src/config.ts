@@ -151,32 +151,42 @@ export function getHttpExporterOptions(collector: CollectorOptions, signal: OTLP
  *
  * A value that is not an integer, or is negative, is ignored with a process warning and the
  * default is used, as the OpenTelemetry specification asks for invalid numeric
- * variables. The provider is created lazily on the first traced call, so throwing here
+ * variables. `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` and `OTEL_BSP_MAX_QUEUE_SIZE` must also be at
+ * least 1: a queue of size 0 drops every span without a trace, and a batch of size 0 makes the
+ * span processor allocate until the process runs out of memory (both measured with
+ * `@opentelemetry/sdk-trace-node`), so 0 is treated as invalid for them. The two durations
+ * accept 0. The provider is created lazily on the first traced call, so throwing here
  * would fail that user call.
  *
  * @returns Batch span processor options
  */
 export function getBatchSpanProcessorOptions(): BatchSpanProcessorOptions {
     return {
-        maxExportBatchSize: countFromEnv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 100),
-        maxQueueSize: countFromEnv("OTEL_BSP_MAX_QUEUE_SIZE", 1000),
-        scheduledDelayMillis: countFromEnv("OTEL_BSP_SCHEDULE_DELAY", 1000),
-        exportTimeoutMillis: countFromEnv("OTEL_BSP_EXPORT_TIMEOUT", 10000),
+        maxExportBatchSize: countFromEnv({ name: "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", fallback: 100, minimum: 1 }),
+        maxQueueSize: countFromEnv({ name: "OTEL_BSP_MAX_QUEUE_SIZE", fallback: 1000, minimum: 1 }),
+        scheduledDelayMillis: countFromEnv({ name: "OTEL_BSP_SCHEDULE_DELAY", fallback: 1000, minimum: 0 }),
+        exportTimeoutMillis: countFromEnv({ name: "OTEL_BSP_EXPORT_TIMEOUT", fallback: 10000, minimum: 0 }),
     };
 }
 
 /**
- * Reads a non-negative integer from the environment; an invalid value yields a warning
+ * Reads an integer of at least `minimum` from the environment; an invalid value yields a warning
  * and `fallback`.
  *
  * The warning goes through `process.emitWarning` rather than the OpenTelemetry
  * diagnostic channel: the provider sets that channel to ERROR level, which would hide it.
  */
-function countFromEnv(name: string, fallback: number): number {
+function countFromEnv(options: { readonly name: string; readonly fallback: number; readonly minimum: 0 | 1 }): number {
+    const { name, fallback, minimum } = options;
     try {
-        return env.get(name).default(fallback).asIntPositive();
+        const value = env.get(name).default(fallback).asIntPositive();
+        if (value < minimum) {
+            throw new RangeError(`${name} is below ${minimum}`);
+        }
+        return value;
     } catch {
-        process.emitWarning(`${name}="${process.env[name]}" is not a valid non-negative integer; using the default ${fallback}.`, { code: "CONNECTUM_OTEL_INVALID_ENV" });
+        const kind = minimum === 1 ? "positive" : "non-negative";
+        process.emitWarning(`${name}="${process.env[name]}" is not a valid ${kind} integer; using the default ${fallback}.`, { code: "CONNECTUM_OTEL_INVALID_ENV" });
         return fallback;
     }
 }

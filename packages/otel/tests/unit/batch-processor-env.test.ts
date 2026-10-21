@@ -7,6 +7,7 @@
 
 import assert from "node:assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { BasicTracerProvider, BatchSpanProcessor, InMemorySpanExporter } from "@opentelemetry/sdk-trace-node";
 import { getBatchSpanProcessorOptions } from "../../src/config.ts";
 import { getProvider, shutdownProvider } from "../../src/provider.ts";
 
@@ -53,6 +54,10 @@ describe("batch span processor environment", () => {
 		{ variable: "OTEL_BSP_MAX_QUEUE_SIZE", bad: "abc", field: "maxQueueSize", fallback: 1000 },
 		{ variable: "OTEL_BSP_SCHEDULE_DELAY", bad: "-5", field: "scheduledDelayMillis", fallback: 1000 },
 		{ variable: "OTEL_BSP_EXPORT_TIMEOUT", bad: "10s", field: "exportTimeoutMillis", fallback: 10000 },
+		// A queue of size 0 drops every span silently and a batch of size 0 exhausts the heap, so
+		// zero is invalid for these two even though it is an integer.
+		{ variable: "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", bad: "0", field: "maxExportBatchSize", fallback: 100 },
+		{ variable: "OTEL_BSP_MAX_QUEUE_SIZE", bad: "0", field: "maxQueueSize", fallback: 1000 },
 	];
 
 	for (const { variable, bad, field, fallback } of cases) {
@@ -76,6 +81,34 @@ describe("batch span processor environment", () => {
 			assert.strictEqual((await warningsAbout("OTEL_BSP_MAX_QUEUE_SIZE")).length, 1);
 		});
 	}
+
+	it("accepts 0 for the two durations, which the span processor handles", async () => {
+		process.env.OTEL_BSP_SCHEDULE_DELAY = "0";
+		process.env.OTEL_BSP_EXPORT_TIMEOUT = "0";
+
+		const options = getBatchSpanProcessorOptions();
+
+		assert.strictEqual(options.scheduledDelayMillis, 0);
+		assert.strictEqual(options.exportTimeoutMillis, 0);
+		assert.strictEqual((await warningsAbout("OTEL_BSP_")).length, 0);
+	});
+
+	it("still exports spans when the queue size variable is 0, because the default replaces it", async () => {
+		process.env.OTEL_BSP_MAX_QUEUE_SIZE = "0";
+		const exporter = new InMemorySpanExporter();
+		const processor = new BatchSpanProcessor(exporter, getBatchSpanProcessorOptions());
+		const provider = new BasicTracerProvider({ spanProcessors: [processor] });
+
+		for (let i = 0; i < 5; i++) {
+			provider.getTracer("t").startSpan(`s${i}`).end();
+		}
+		await provider.forceFlush();
+		// Read before shutdown: shutting the in-memory exporter down clears what it holds.
+		const exported = exporter.getFinishedSpans().length;
+		await provider.shutdown();
+
+		assert.strictEqual(exported, 5, "with a queue of size 0 the processor drops all five");
+	});
 
 	it("keeps the valid variables when another one is invalid", async () => {
 		process.env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "50";
