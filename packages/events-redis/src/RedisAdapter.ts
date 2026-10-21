@@ -321,6 +321,12 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             }
             readers.push(blockingRedis);
 
+            // Acknowledgements go through the adapter's shared connection, not the blocking one:
+            // unsubscribe() closes the blocking connection at once, but a handler that was running
+            // at that moment (EventBus.stop() unsubscribes first and drains afterwards) must still be
+            // able to XACK its message. The shared connection stays open until disconnect().
+            const ackRedis = redis;
+
             /**
              * Process a single stream message entry through the handler.
              */
@@ -346,13 +352,13 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
                 // Real ack/nack wired through to EventBus (C-1)
                 const ack = async (): Promise<void> => {
-                    await blockingRedis.xack(streamKeyForAck, group, entryId);
+                    await ackRedis.xack(streamKeyForAck, group, entryId);
                 };
                 const nack = async (requeue?: boolean): Promise<void> => {
                     if (requeue === false) {
                         // "Reject without requeue" — XACK the message so it leaves the PEL
                         // and won't be redelivered. DLQ middleware already saved a copy. (M-4)
-                        await blockingRedis.xack(streamKeyForAck, group, entryId);
+                        await ackRedis.xack(streamKeyForAck, group, entryId);
                     }
                     // When requeue is true/undefined: don't XACK — message stays in PEL
                     // and XAUTOCLAIM will reclaim it for redelivery.
