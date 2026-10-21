@@ -67,29 +67,6 @@ Reading a red result:
 
 Results of this scenario are not comparable with the earlier closed-model runs: those never measured throughput, and their latency values were taken at a different load.
 
-## Measured results
-
-Measured on 2026-10-21; the raw k6 summaries are kept with the change records, outside this repository. Absolute numbers are indicative; the setup is below.
-
-- Host: Intel Core Ultra 7 165U (14 logical CPUs), 62 GB RAM, Linux 6.12, a shared developer workstation with other applications running (the load average was between 2.6 and 12.3 at the start of the runs). k6 v1.4.2 (`grafana/k6:latest` in Docker, `--network host`), Node.js v26.11.1, the example `performance-test-server` over TLS on the host.
-- Target: port 8080 of the server (the full interceptor chain, including the opt-in resilience interceptors the example enables), `TARGET_RATE` = 1,000 req/s. Baseline: published `@connectum/*` 1.2.0. Candidate: packages built from commit 5c77117. Five runs of each, alternating.
-
-Sustained stage, five runs per version (min / median / max):
-
-| | Baseline 1.2.0 | Candidate 5c77117 |
-| --- | --- | --- |
-| Completed requests per second (sustained stage) | 921 / 984 / 999 | 951 / 970 / 999 |
-| `dropped_iterations` (sustained stage) | 390 / 4,791 / 23,594 | 222 / 8,893 / 14,592 |
-| `http_req_duration` p50, whole run | 0.80 / 0.89 / 1.13 ms | 0.79 / 0.88 / 1.28 ms |
-| `http_req_duration` p95, whole run | 41 / 188 / 946 ms | 62 / 432 / 503 ms |
-| `http_req_duration` p99, whole run | 220 / 525 / 1,721 ms | 271 / 848 / 1,251 ms |
-
-Findings:
-
-- The throughput threshold (`dropped_iterations` == 0) was red in all ten runs, and so was p99 < 150 ms. p95 < 100 ms passed in 3 of the 10 runs (baseline run 5, candidate runs 1 and 3). The run-to-run spread is larger than any difference between the two versions, so these runs do not show a difference between baseline and candidate. The median request is fast (p50 about 1 ms); the failures come from a tail of slow requests.
-- The same scenario against port 8081 (no interceptors), one run at a host load average of 2.6: no dropped iterations, 300,001 completed requests in the sustained stage, p95 0.94 ms, p99 9.3 ms; every threshold green. So the load generator and the host can carry 1,000 req/s; whether the tail on port 8080 comes from the interceptor chain or from the shared host was not separated (the full chain was not re-run at the same low host load).
-- `TARGET_RATE=10000` against port 8081, one run: red. 1,274,425 requests completed in the sustained stage (about 4,250 req/s) and 1,725,576 iterations were dropped.
-
 ## Related documentation
 
 - [Performance benchmarking ADR](https://connectum.dev/en/contributing/adr/008-performance-benchmarking)
