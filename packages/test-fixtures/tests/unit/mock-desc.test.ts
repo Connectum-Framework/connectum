@@ -528,6 +528,16 @@ describe("createMockDescField", () => {
     assert.strictEqual((field as any).scalar, 9);
   });
 
+  // `type` is an arbitrary string; a name that is not a protobuf scalar falls back to the same STRING
+  // scalar as an omitted type, as the mapping function's own comment states.
+  it("a type name that is not a scalar falls back to string (9), like an omitted type", () => {
+    for (const type of ["unknown", "Int32", ""]) {
+      const field = createMockDescField("x", { type });
+
+      assert.strictEqual((field as any).scalar, 9, `type ${JSON.stringify(type)}`);
+    }
+  });
+
   it("custom type maps correctly: bool -> 8", () => {
     const field = createMockDescField("active", { type: "bool" });
 

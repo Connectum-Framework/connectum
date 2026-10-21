@@ -158,6 +158,25 @@ describe("AmqpTopologyError.object at every declaration site", () => {
             const object = await connectFailureObject({ topology: { bindings: [{ source: EXCHANGE, exchange: "orders.audit", routingKey: "#" }] } }, { method: "bindExchange" });
             assert.deepEqual(object, { kind: "binding", source: EXCHANGE, destination: "orders.audit", destinationType: "exchange", routingKey: "#" });
         });
+
+        // The one adapter-thrown AmqpTopologyError without an identity: the missing destination is
+        // exactly what an identity would need, so the error must not carry an own `object` key.
+        it("a binding with neither queue nor exchange: no own 'object' key, and the message names the source", async () => {
+            activeModel = makeModel(null).model;
+            const adapter = adapterFor({ topology: { bindings: [{ source: EXCHANGE, routingKey: "k" }] } });
+            try {
+                const error = await adapter.connect().then(
+                    () => undefined,
+                    (err: unknown) => err,
+                );
+                assert.ok(error instanceof AmqpTopologyError, `expected AmqpTopologyError, got ${String(error)}`);
+                assert.equal(Object.hasOwn(error, "object"), false, "a missing destination leaves nothing to identify");
+                assert.equal(error.object, undefined);
+                assert.match(String((error.cause as Error | undefined)?.message), new RegExp(`Binding for source '${EXCHANGE}' must declare either 'queue' or 'exchange'`));
+            } finally {
+                await adapter.disconnect();
+            }
+        });
     });
 
     describe("check mode, applied at connect()", () => {

@@ -513,7 +513,9 @@ export interface AmqpRecoveryOptions {
      * - `attempt` is 1-based and restarts at 1 after every successful connect.
      * - Covers every reconnect attempt: steady-state recovery and the retries
      *   of the initial connect (with or without `initialConnectMaxRetries`).
-     *   It does NOT cover `publishRetry`, which keeps its own numeric backoff.
+     *   It does NOT cover `publishRetry`, which keeps its own numeric backoff, nor the
+     *   retries that restore a lost consumer, which follow the numeric options
+     *   (`initialDelay`, `maxDelay`, `factor`, `jitter`).
      * - The return value must be a finite number ≥ 0. It is rounded to whole
      *   milliseconds and applied as is — NOT clamped to `maxDelay`; cap it
      *   yourself (`Math.min(cap, …)`). `0` is valid and retries at once. The

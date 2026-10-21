@@ -44,6 +44,8 @@ function harness(options: {
     /** Commit strategy handed to the consumer; per-message by default. */
     commitStrategy?: "per-message" | "per-batch";
     commitFails?: number;
+    /** How long each commit takes to complete; its offsets are recorded only when it completes. */
+    commitDelayMs?: number;
     runningWhile?: (call: number) => boolean;
     resumeTimers?: Set<NodeJS.Timeout>;
     /** Heartbeat interval handed to the consumer; large by default so short tests see no timer beat. */
@@ -117,6 +119,7 @@ function harness(options: {
                         commits.push({ partition: -1, offset: "failed" });
                         throw new Error("commit failed");
                     }
+                    if (options.commitDelayMs !== undefined) await sleep(options.commitDelayMs);
                     for (const t of offsets?.topics ?? []) {
                         assert.equal(t.topic, "orders.created");
                         commits.push(...t.partitions);
@@ -408,6 +411,21 @@ describe("createBatchConsumer", () => {
         });
         await h.run();
         assert.deepEqual(h.commits, [{ partition: 3, offset: "11" }]);
+    });
+
+    // A commit that takes time: the handler returns at once, so only a batch that waits for the commit
+    // started by the un-awaited ack can see the message as committed when it decides the outcome.
+    it("an un-awaited ack whose commit is still running is waited for, and the message counts as committed", async () => {
+        const h = harness({
+            messages: [{ offset: "10", value: "a" }],
+            commitDelayMs: 60,
+            handler: async (_event, ack) => {
+                void ack();
+            },
+        });
+        await h.run();
+        assert.deepEqual(h.commits, [{ partition: 3, offset: "11" }], "the batch returned before the commit completed");
+        assert.deepEqual(h.resolved, ["10"], "a committed message is resolved");
     });
 
     it("a failed commit is rethrown to KafkaJS and stops the batch", async () => {
