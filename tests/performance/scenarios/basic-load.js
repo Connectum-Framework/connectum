@@ -3,11 +3,18 @@
  *
  * Purpose: Measure performance under normal sustained load
  * Duration: 7 minutes total
- * Target: 100 concurrent virtual users
- * SLA: p95 < 100ms, throughput > 1000 req/sec, error rate < 1%
+ * Load model: open (fixed arrival rate). k6 starts a new request at the
+ *   configured rate no matter how slow the server is, so a server that falls
+ *   behind shows up as dropped iterations instead of silently lowering the
+ *   measured request rate (which is what a fixed number of looping virtual
+ *   users does).
+ * Shape: warm-up (to half of the target rate), ramp-up, sustained stage at the
+ *   target rate (TARGET_RATE, default 1000 req/s), ramp-down.
+ * SLA: p95 < 100ms, the server sustains 1000 req/sec (no dropped iterations in
+ *   the sustained stage), error rate < 1%
  */
 
-import { check, sleep } from "k6";
+import { check } from "k6";
 import http from "k6/http";
 import { Counter, Rate, Trend } from "k6/metrics";
 
@@ -23,13 +30,58 @@ const successRate = new Rate("success_rate");
 // Test Configuration
 // ============================================================================
 
+// Arrival rate (requests per second) of the sustained stage. The SLA is 1000;
+// the variable exists so the throughput threshold can be shown to fail by
+// asking for more than the server sustains.
+const TARGET_RATE = Number(__ENV.TARGET_RATE || 1000);
+const SUSTAINED_SECONDS = 300;
+
+// Virtual users are only the carriers of in-flight requests: at the p95 target
+// of 100ms and 1000 req/s about 1000 x 0.1 = 100 requests are in flight at
+// once. The pool is sized well above that so the load generator itself is not
+// the limit; if it is reached anyway, k6 reports it as dropped iterations.
+const PRE_ALLOCATED_VUS = 200;
+const MAX_VUS = 600;
+
 export const options = {
-    stages: [
-        { duration: "30s", target: 50 }, // Warm-up to 50 VUs
-        { duration: "1m", target: 100 }, // Ramp-up to 100 VUs
-        { duration: "5m", target: 100 }, // Sustained load (100 VUs)
-        { duration: "30s", target: 0 }, // Ramp-down
-    ],
+    // Three consecutive scenarios instead of one list of stages, because k6
+    // can apply a threshold to a scenario but not to a single stage. The
+    // throughput threshold must see the sustained stage only; a whole-run
+    // average would mix in the ramps and could never reach the target rate.
+    scenarios: {
+        // Warm-up and ramp-up: 0 -> half of the target rate in 30s, then to the
+        // target rate in 1m.
+        ramp_up: {
+            executor: "ramping-arrival-rate",
+            startRate: 0,
+            timeUnit: "1s",
+            preAllocatedVUs: PRE_ALLOCATED_VUS,
+            maxVUs: MAX_VUS,
+            stages: [
+                { duration: "30s", target: TARGET_RATE / 2 },
+                { duration: "1m", target: TARGET_RATE },
+            ],
+        },
+        // Sustained stage: a constant arrival rate for 5 minutes.
+        sustained: {
+            executor: "constant-arrival-rate",
+            rate: TARGET_RATE,
+            timeUnit: "1s",
+            duration: `${SUSTAINED_SECONDS}s`,
+            preAllocatedVUs: PRE_ALLOCATED_VUS,
+            maxVUs: MAX_VUS,
+            startTime: "90s",
+        },
+        ramp_down: {
+            executor: "ramping-arrival-rate",
+            startRate: TARGET_RATE,
+            timeUnit: "1s",
+            preAllocatedVUs: PRE_ALLOCATED_VUS,
+            maxVUs: MAX_VUS,
+            stages: [{ duration: "30s", target: 0 }],
+            startTime: "6m30s",
+        },
+    },
 
     // SLA Thresholds (CRITICAL - must pass)
     thresholds: {
@@ -43,8 +95,16 @@ export const options = {
             "p(99)<150", // p99 < 150ms
         ],
 
-        // Throughput: > 1000 req/sec during sustained phase
-        http_reqs: ["rate>1000"],
+        // Throughput: the server sustains the target rate during the sustained
+        // stage. k6 starts one iteration (one request) per arrival; when the
+        // server falls behind, k6 cannot start it and counts it as dropped.
+        "dropped_iterations{scenario:sustained}": ["count==0"],
+
+        // At least 99% of the scheduled arrivals of the sustained stage completed.
+        // The count is checked instead of a rate because k6 computes a counter
+        // rate over the whole test duration, not over the duration of one
+        // scenario.
+        "http_reqs{scenario:sustained}": [`count>=${Math.floor(TARGET_RATE * SUSTAINED_SECONDS * 0.99)}`],
 
         // Error rate: < 1%
         http_req_failed: ["rate<0.01"],
@@ -130,13 +190,8 @@ export default function () {
     successRate.add(success);
     requestDuration.add(response.timings.duration);
 
-    // ============================================================================
-    // Think Time (simulate real user behavior)
-    // ============================================================================
-
-    // Small random sleep between 50-150ms to simulate user think time
-    const thinkTime = 0.05 + Math.random() * 0.1; // 50-150ms
-    sleep(thinkTime);
+    // No think time: with a fixed arrival rate the pause would only keep a
+    // virtual user busy without changing the request rate.
 }
 
 // ============================================================================
@@ -147,13 +202,13 @@ export function setup() {
     console.log("\n🚀 Starting Basic Load Test");
     console.log(`   Target: ${BASE_URL}`);
     console.log(`   Service: ${SERVICE_PATH}`);
-    console.log("   Max VUs: 100");
+    console.log(`   Sustained arrival rate: ${TARGET_RATE} req/s for ${SUSTAINED_SECONDS}s (open model, up to ${MAX_VUS} VUs)`);
     console.log("   Duration: 7 minutes");
     console.log("\n📊 Performance Targets:");
     console.log("   - p50 latency: < 50ms");
     console.log("   - p95 latency: < 100ms (PRIMARY SLA)");
     console.log("   - p99 latency: < 150ms");
-    console.log("   - Throughput: > 1000 req/sec");
+    console.log("   - Throughput: sustained stage keeps up with the arrival rate (no dropped iterations)");
     console.log("   - Error rate: < 1%");
     console.log("\n");
 
