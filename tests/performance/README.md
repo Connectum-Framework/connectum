@@ -63,7 +63,7 @@ Reading a red result:
 - Only `dropped_iterations` is red: the server (or the load generator, see below) did not keep up with the arrival rate. The count is the number of requests that were never sent.
 - `http_req_duration` and `request_duration` are red as well: requests were sent but answered late, so requests queued on the server.
 - `http_req_failed` is red: the server answered with errors or timed out.
-- Dropped iterations can also come from the load generator when k6 is short of CPU or the pool is exhausted. Check `vus_max` against 600 and the k6 process's CPU use before blaming the server.
+- Dropped iterations can also come from the load generator when k6 is short of CPU or the pool is exhausted. Look for k6's `Insufficient VUs, reached 600 active VUs and cannot initialize more` warning for the `sustained` scenario (the limit of 600 applies to each of the three scenarios separately, so the run-wide `vus_max` does not show it) and at the k6 process's CPU use before blaming the server.
 
 Results of this scenario are not comparable with the earlier closed-model runs: those never measured throughput, and their latency values were taken at a different load.
 

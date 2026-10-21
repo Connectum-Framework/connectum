@@ -34,6 +34,10 @@ const successRate = new Rate("success_rate");
 // the variable exists so the throughput threshold can be shown to fail by
 // asking for more than the server sustains.
 const TARGET_RATE = Number(__ENV.TARGET_RATE || 1000);
+// k6 takes the rate and the ramp targets of the arrival-rate executors as whole numbers.
+if (!Number.isInteger(TARGET_RATE) || TARGET_RATE < 2) {
+    throw new Error(`TARGET_RATE must be a whole number of at least 2 requests per second, got "${__ENV.TARGET_RATE}"`);
+}
 const SUSTAINED_SECONDS = 300;
 
 // Virtual users are only the carriers of in-flight requests: at the p95 target
@@ -58,7 +62,7 @@ export const options = {
             preAllocatedVUs: PRE_ALLOCATED_VUS,
             maxVUs: MAX_VUS,
             stages: [
-                { duration: "30s", target: TARGET_RATE / 2 },
+                { duration: "30s", target: Math.floor(TARGET_RATE / 2) },
                 { duration: "1m", target: TARGET_RATE },
             ],
         },
