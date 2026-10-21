@@ -36,7 +36,22 @@ describe("AMQP adapter: acknowledging after unsubscribe()", { skip: AMQP_URL ===
         it(`${grouped ? "a named group" : "an automatic group"}: a handler that finishes after unsubscribe() acknowledges its message, which is not redelivered`, { timeout: 40_000 }, async () => {
             const exchange = `ack.after.unsub.${randomUUID().slice(0, 8)}`;
             const group = `g-${randomUUID().slice(0, 8)}`;
-            const adapter = AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false });
+            // ack() of this adapter never rejects: an acknowledgement on a closed channel is reported
+            // as a `settlement-skipped` lifecycle event, which is therefore what the test must watch.
+            const skipped: string[] = [];
+            const adapter = AmqpAdapter({
+                url,
+                exchange,
+                exchangeType: "topic",
+                recovery: false,
+                lifecycle: {
+                    onLifecycle: (event) => {
+                        if (event.type === "settlement-skipped") {
+                            skipped.push(event.action);
+                        }
+                    },
+                },
+            });
             // A second raw consumer on the same named queue: it receives the message again if the
             // broker took the first delivery back (a closed channel returns unacknowledged messages).
             const raw = await connect(url);
@@ -89,6 +104,7 @@ describe("AMQP adapter: acknowledging after unsubscribe()", { skip: AMQP_URL ===
                 await sleep(500);
 
                 assert.equal(ackError, undefined, `ack() after unsubscribe() must not fail (got ${String(ackError)})`);
+                assert.deepEqual(skipped, [], "the acknowledgement must reach an open channel, not be skipped");
                 if (grouped) {
                     assert.deepEqual(redelivered, [], "the acknowledged message must not be delivered again to another consumer of the group");
                 }
