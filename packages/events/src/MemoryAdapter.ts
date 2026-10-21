@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
+import { assertPublishTopic, assertSubscriptionPatterns } from "./subscriptionPatterns.ts";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
 
@@ -38,6 +38,10 @@ export function MemoryAdapter(): EventAdapter {
         },
 
         async publish(eventType: string, payload: Uint8Array, options?: PublishOptions): Promise<void> {
+            // Same rule as subscribe(): a topic no subscription pattern can name is not delivered
+            // to wildcard subscribers either.
+            assertPublishTopic({ adapter: "MemoryAdapter", topic: eventType });
+
             if (!connected) {
                 throw new Error("MemoryAdapter: not connected");
             }

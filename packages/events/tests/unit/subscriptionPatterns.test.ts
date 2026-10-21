@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MemoryAdapter } from "../../src/MemoryAdapter.ts";
-import { assertSubscriptionPatterns } from "../../src/subscriptionPatterns.ts";
+import { assertPublishTopic, assertSubscriptionPatterns } from "../../src/subscriptionPatterns.ts";
 
 /** A rejection is a TypeError whose message names the adapter, the offending pattern, where the empty segment is, and the rule. */
 function rejection(adapter: string, pattern: string, reason: string): (error: unknown) => boolean {
@@ -78,6 +78,77 @@ describe("assertSubscriptionPatterns with the kafka-topic-name rule", () => {
 
     it("keeps the empty-segment rule when no rule is given", () => {
         assert.throws(() => assertSubscriptionPatterns({ adapter: "TestAdapter", patterns: ["a..b"] }), rejection("TestAdapter", "a..b", 'it contains ".."'));
+    });
+});
+
+describe("assertPublishTopic", () => {
+    /** The message names the adapter and the topic and, unlike a subscription, calls the name a topic. */
+    function topicRejection(adapter: string, topic: string, reason: string): (error: unknown) => boolean {
+        const message = `${adapter}: publish topic "${topic}" has an empty segment (${reason}). Every dot-separated segment of a topic must be non-empty.`;
+        return (error) => error instanceof TypeError && error.message === message;
+    }
+
+    for (const [topic, reason] of [
+        ["", "the topic is empty"],
+        ["a..b", 'it contains ".."'],
+        [".a", 'it starts with "."'],
+        ["a.", 'it ends with "."'],
+        [".", 'it starts with "."'],
+    ] as const) {
+        it(`rejects ${JSON.stringify(topic)}`, () => {
+            assert.throws(() => assertPublishTopic({ adapter: "TestAdapter", topic }), topicRejection("TestAdapter", topic, reason));
+        });
+    }
+
+    it("accepts topics whose every segment has content", () => {
+        for (const topic of ["a", "a.b", "a.b.c", "a_b.c-d", "trips.v1.TripCompleted"]) {
+            assert.doesNotThrow(() => assertPublishTopic({ adapter: "TestAdapter", topic }), topic);
+        }
+    });
+
+    it("refuses only the names Kafka reserves under the kafka-topic-name rule", () => {
+        const kafkaRejection = (topic: string) => (error: unknown) =>
+            error instanceof TypeError && error.message === `KafkaAdapter: publish topic "${topic}" is not a valid Kafka topic name. Kafka reserves the names "", "." and "..".`;
+        for (const topic of ["", ".", ".."]) {
+            assert.throws(() => assertPublishTopic({ adapter: "KafkaAdapter", topic, rule: "kafka-topic-name" }), kafkaRejection(topic));
+        }
+        for (const topic of ["a..b", ".a", "a.", "...", "a.b"]) {
+            assert.doesNotThrow(() => assertPublishTopic({ adapter: "KafkaAdapter", topic, rule: "kafka-topic-name" }), topic);
+        }
+    });
+});
+
+describe("MemoryAdapter publishing to a topic with an empty segment", () => {
+    for (const [label, topic, reason] of [
+        ["the empty string", "", "the topic is empty"],
+        ["an empty segment between dots", "a..b", 'it contains ".."'],
+        ["a leading dot", ".a", 'it starts with "."'],
+        ["a trailing dot", "a.", 'it ends with "."'],
+        ["a lone dot", ".", 'it starts with "."'],
+    ] as const) {
+        it(`rejects ${label} and delivers nothing to a wildcard subscriber`, async () => {
+            const adapter = MemoryAdapter();
+            await adapter.connect();
+            const received: string[] = [];
+            await adapter.subscribe([">"], async (event) => {
+                received.push(event.eventType);
+            });
+
+            await assert.rejects(
+                adapter.publish(topic, new Uint8Array([1])),
+                (error: unknown) => error instanceof TypeError && error.message === `MemoryAdapter: publish topic "${topic}" has an empty segment (${reason}). Every dot-separated segment of a topic must be non-empty.`,
+            );
+
+            // Control: the same adapter and subscriber do deliver a well-formed topic.
+            await adapter.publish("a.b", new Uint8Array([1]));
+            assert.deepEqual(received, ["a.b"]);
+            await adapter.disconnect();
+        });
+    }
+
+    it("rejects a malformed topic before it checks the connection", async () => {
+        const adapter = MemoryAdapter();
+        await assert.rejects(adapter.publish("a..b", new Uint8Array([1])), TypeError);
     });
 });
 

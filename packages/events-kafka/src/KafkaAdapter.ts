@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
-import { assertSubscriptionPatterns } from "@connectum/events";
+import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
@@ -216,6 +216,9 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         },
 
         async publish(eventType: string, payload: Uint8Array, publishOptions?: PublishOptions): Promise<void> {
+            // The broker's answer to a reserved name does not name the topic.
+            assertPublishTopic({ adapter: "KafkaAdapter", topic: eventType, rule: "kafka-topic-name" });
+
             if (!connected || !producer) {
                 throw new Error("KafkaAdapter: not connected");
             }

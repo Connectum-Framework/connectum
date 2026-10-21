@@ -10,7 +10,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
-import { assertSubscriptionPatterns } from "@connectum/events";
+import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -191,6 +191,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
         },
 
         async publish(eventType: string, payload: Uint8Array, publishOptions?: PublishOptions): Promise<void> {
+            // NATS has no empty subject token and answers one with "jetstream is not enabled".
+            assertPublishTopic({ adapter: "NatsAdapter", topic: eventType });
+
             if (!js) {
                 throw new Error("NatsAdapter: not connected");
             }
