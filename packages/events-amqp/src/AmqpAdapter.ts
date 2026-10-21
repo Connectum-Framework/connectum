@@ -185,7 +185,7 @@ export function topologyOwnsSubscriptionBindings(options: {
  * matches but the error text indicates a close.
  */
 export function isConnectionLostError(err: unknown): boolean {
-    return err instanceof Error && /channel closed|connection closed|closed unexpectedly/i.test(err.message);
+    return err instanceof Error && /channel closed|connection closed/i.test(err.message);
 }
 
 /**
@@ -1143,7 +1143,12 @@ export interface ConsumerLoss<R extends RestorableSubscription> {
 export interface ConsumerRestorer<R extends RestorableSubscription> {
     /** The broker ended a consumer: report it once and schedule the restoration. */
     lost(loss: ConsumerLoss<R>): void;
-    /** Forget the restoration of one subscription: no pending attempt, no stability timer, a fresh backoff series. */
+    /**
+     * Forget the restoration of one subscription: no pending attempt, no stability timer, a fresh backoff series.
+     * The adapter calls it when connection recovery re-creates the subscription's consumer
+     * (the counter then restarts without waiting for the stability window), when a dead
+     * recovery cycle drops the subscription, and on unsubscribe and disconnect.
+     */
     stop(record: R): void;
     /** The connection is live again: restore the consumers lost while it was not. */
     resume(records: Iterable<R>): void;

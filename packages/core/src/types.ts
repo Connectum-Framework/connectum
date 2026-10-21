@@ -149,7 +149,8 @@ export interface ProtocolRegistration {
 /**
  * TLS configuration options.
  * Supply both explicit key and certificate paths or use a directory pair.
- * A single explicit path is ignored: both files are then read from the directory.
+ * A single explicit path is a configuration error: it is rejected before any
+ * file is read instead of being replaced by the directory files.
  */
 export interface TLSOptions {
     /**
