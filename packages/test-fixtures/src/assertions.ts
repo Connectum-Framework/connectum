@@ -61,6 +61,11 @@ export function assertConnectError(error: unknown, expectedCode: Code, messagePa
     if (typeof messagePattern === "string") {
         assert.ok(haystack.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
     } else if (messagePattern instanceof RegExp) {
-        assert.ok(messagePattern.test(haystack), `ConnectError message "${error.message}" does not match ${messagePattern}`);
+        // `g` and `y` make test() read and move `lastIndex`, so the caller's pattern would answer
+        // differently on the second use. A fresh copy starts at offset 0 on every call, so the
+        // verdict depends on the message only and the caller's object is left untouched. The copy
+        // keeps every flag: `y` still means "match exactly at the start".
+        const fresh = new RegExp(messagePattern.source, messagePattern.flags);
+        assert.ok(fresh.test(haystack), `ConnectError message "${error.message}" does not match ${messagePattern}`);
     }
 }

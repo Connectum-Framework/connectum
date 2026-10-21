@@ -18,9 +18,10 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import type { Meter, SpanOptions } from "@opentelemetry/api";
-import { context, propagation, SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { context, propagation, SpanKind } from "@opentelemetry/api";
 
 import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
+import { recordFailure } from "./failure.ts";
 import { getMeter } from "./meter.ts";
 import type { RpcClientMetrics } from "./metrics.ts";
 import { createRpcClientMetrics } from "./metrics.ts";
@@ -212,8 +213,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                 const duration = (performance.now() - startTime) / 1000;
                 const errorAttrs = buildErrorAttributes(error);
 
-                span.recordException(error as Error);
-                span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+                recordFailure(span, error);
 
                 // Set error attributes on span
                 for (const [key, value] of Object.entries(errorAttrs)) {

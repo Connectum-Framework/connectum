@@ -33,7 +33,19 @@ describe("isConnectionLostError", () => {
         // amqplib rejects outstanding confirms with Error("channel closed") on drop
         assert.equal(isConnectionLostError(new Error("channel closed")), true);
         assert.equal(isConnectionLostError(new Error("Connection closed: 320")), true);
-        assert.equal(isConnectionLostError(new Error("Socket closed unexpectedly")), true);
+    });
+
+    // amqplib 2.2.0 has no "closed unexpectedly" wording anywhere in lib/; a socket that drops
+    // surfaces as "Unexpected close" (inside "Connection closed (...)" when it reaches the
+    // connection's close). A text that merely resembles a drop is therefore not a connection loss:
+    // the decision belongs to the structural signals of classifyConfirmError.
+    it("does NOT classify a text amqplib never raises ('closed unexpectedly') as connection loss", () => {
+        assert.equal(isConnectionLostError(new Error("Socket closed unexpectedly")), false);
+        assert.equal(isConnectionLostError(new Error("closed unexpectedly")), false);
+    });
+
+    it("does NOT classify a bare 'Unexpected close' as connection loss", () => {
+        assert.equal(isConnectionLostError(new Error("Unexpected close")), false);
     });
 
     // The texts amqplib 2.2.0 itself puts on the errors it raises when a connection or a
@@ -644,6 +656,16 @@ describe("classifyConfirmError", () => {
 
     it("still classifies the legacy text fallback as connection loss", () => {
         assert.ok(classifyConfirmError({ ...base, err: new Error("channel closed") }) instanceof AmqpConnectionError);
+    });
+
+    it("keeps classifying the texts amqplib raises on a close, and the structural flags, exactly as before", () => {
+        assert.ok(classifyConfirmError({ ...base, err: new Error("Connection closed: 320 (CONNECTION-FORCED)") }) instanceof AmqpConnectionError);
+        assert.ok(classifyConfirmError({ ...base, err: new Error("Connection closed (Error: Unexpected close)") }) instanceof AmqpConnectionError);
+        assert.ok(classifyConfirmError({ ...base, channelClosed: true, err: new Error("Socket closed unexpectedly") }) instanceof AmqpConnectionError);
+    });
+
+    it("leaves a text amqplib never raises ('closed unexpectedly') to the structural flags: no flag, no connection loss", () => {
+        assert.ok(classifyConfirmError({ ...base, err: new Error("Socket closed unexpectedly") }) instanceof AmqpPublishNackError);
     });
 });
 

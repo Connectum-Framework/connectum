@@ -6,7 +6,7 @@
  * @module traced
  */
 
-import { SpanStatusCode } from "@opentelemetry/api";
+import { recordArgsAttribute, recordFailure } from "./failure.ts";
 import { getTracer } from "./tracer.ts";
 import type { TracedOptions } from "./types.ts";
 
@@ -43,19 +43,23 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
 
                 // Record arguments if enabled
                 if (recordArgs !== false) {
-                    let argsToRecord = args;
+                    recordArgsAttribute(span, () => {
+                        // A copy, as in traceAll: a filter that masks in place must not change
+                        // the arguments the wrapped function receives.
+                        let argsToRecord = [...args];
 
-                    // Whitelist filtering by name/index
-                    if (Array.isArray(recordArgs)) {
-                        argsToRecord = args.filter((_, i) => recordArgs.includes(String(i)));
-                    }
+                        // Whitelist filtering by name/index
+                        if (Array.isArray(recordArgs)) {
+                            argsToRecord = args.filter((_, i) => recordArgs.includes(String(i)));
+                        }
 
-                    // Apply args filter for masking
-                    if (argsFilter) {
-                        argsToRecord = argsFilter(argsToRecord);
-                    }
+                        // Apply args filter for masking
+                        if (argsFilter) {
+                            argsToRecord = argsFilter(argsToRecord);
+                        }
 
-                    span.setAttribute("function.args", JSON.stringify(argsToRecord));
+                        return argsToRecord;
+                    });
                 }
 
                 const result = fn.apply(this, args);
@@ -69,11 +73,7 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                             return value;
                         },
                         (error) => {
-                            span.recordException(error as Error);
-                            span.setStatus({
-                                code: SpanStatusCode.ERROR,
-                                message: (error as Error).message,
-                            });
+                            recordFailure(span, error);
                             span.end();
                             throw error;
                         },
@@ -84,11 +84,7 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                 span.end();
                 return result;
             } catch (error) {
-                span.recordException(error as Error);
-                span.setStatus({
-                    code: SpanStatusCode.ERROR,
-                    message: (error as Error).message,
-                });
+                recordFailure(span, error);
                 span.end();
                 throw error;
             }
