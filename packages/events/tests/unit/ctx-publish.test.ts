@@ -345,6 +345,38 @@ describe("ctx.publish while the bus stops", () => {
         assert.deepEqual(order.at(-1), "disconnect");
         assert.deepEqual(events, [{ type: "admitted", topic: "out.hang" }, { type: "abandoned", handlers: 0, publishes: 1 }]);
     });
+
+    it("an abandoned handler with a relay publish that never settles does not hold stop() on the subscription close", async () => {
+        let release: () => void = () => undefined;
+        const hold = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const timer = setTimeout(release, 5_000);
+        try {
+            const { bus, deliver, events, order } = makeBus(
+                async (ctx) => {
+                    await sleep(40);
+                    void ctx.publish(EventOptionsSchema, msg(), { topic: "out.hang" }).catch(() => undefined);
+                    await new Promise<void>(() => undefined);
+                },
+                { drainAbortGrace: 100 },
+                { holdUnsubscribe: hold },
+            );
+            await bus.start();
+            void deliver();
+            await sleep(10);
+
+            const startedAt = Date.now();
+            await bus.stop();
+
+            assert.ok(Date.now() - startedAt < 2_000, "stop() must go on to disconnect instead of waiting for the subscription close of a stuck handler");
+            assert.equal(order.at(-1), "disconnect");
+            assert.deepEqual(events, [{ type: "admitted", topic: "out.hang" }, { type: "abandoned", handlers: 1, publishes: 1 }]);
+        } finally {
+            clearTimeout(timer);
+            release();
+        }
+    });
 });
 
 describe("the dead-letter republish while the bus stops", () => {
