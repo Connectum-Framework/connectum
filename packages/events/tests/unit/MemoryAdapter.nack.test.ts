@@ -135,6 +135,38 @@ describe("MemoryAdapter nack", () => {
         await adapter.disconnect();
     });
 
+    it("the pending redelivery keeps the process alive until it runs, so it is not lost at exit", async () => {
+        const adapter = MemoryAdapter();
+        await adapter.connect();
+        const original = globalThis.setTimeout;
+        const created: ReturnType<typeof setTimeout>[] = [];
+        let attempts = 0;
+        await adapter.subscribe(["t"], async (_event, ack, nack) => {
+            attempts++;
+            if (attempts === 1) {
+                globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+                    const timer = original(...args);
+                    created.push(timer);
+                    return timer;
+                }) as typeof setTimeout;
+                try {
+                    await nack(true);
+                } finally {
+                    globalThis.setTimeout = original;
+                }
+            } else {
+                await ack();
+            }
+        });
+
+        await adapter.publish("t", payload);
+
+        assert.equal(created.length, 1, "nack(true) schedules exactly one timer");
+        assert.equal(created[0]?.hasRef(), true, "an unref'd timer lets a process with nothing else pending exit before the redelivery");
+        await until(() => attempts >= 2);
+        assert.equal(attempts, 2);
+    });
+
     it("unsubscribe() drops a redelivery that is still waiting", async () => {
         const adapter = MemoryAdapter();
         await adapter.connect();

@@ -58,7 +58,6 @@ export function MemoryAdapter(): EventAdapter {
                 // A redelivery has no caller to throw to, so a failing handler only ends that attempt.
                 void deliver(sub, { ...event, attempt: event.attempt + 1 }).catch(() => undefined);
             }, 0);
-            timer.unref();
             sub.pendingRedeliveries.add(timer);
         };
         await sub.handler(event, noopAck, nack);
