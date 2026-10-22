@@ -80,8 +80,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let stopPromise: Promise<void> | null = null;
     const drainTimeout = options.drainTimeout ?? 30_000;
     const drainAbortGrace = options.drainAbortGrace;
-    if (drainAbortGrace !== undefined && !(drainAbortGrace >= 0)) {
-        throw new RangeError(`createEventBus: drainAbortGrace must be a non-negative number of milliseconds, got ${String(drainAbortGrace)}`);
+    if (drainAbortGrace !== undefined && !(Number.isFinite(drainAbortGrace) && drainAbortGrace >= 0)) {
+        throw new RangeError(`createEventBus: drainAbortGrace must be a finite, non-negative number of milliseconds, got ${String(drainAbortGrace)}`);
     }
     const observer = options.observer;
     // Reporting must never stop the shutdown: a throw or a rejected promise is dropped.
@@ -380,7 +380,17 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             await raceSettled(inFlightPublishes, remaining);
                         }
                     };
-                    await Promise.all([unsubscribed, drainHandlers(), drainPublishes()]);
+                    // The Redis, Kafka and NATS adapters finish closing a subscription only when the
+                    // handler that is running returns. Once `drainAbortGrace` has abandoned a handler,
+                    // that close can never finish, so it is not waited for: the disconnect below ends it.
+                    const handlersThenClose = async (): Promise<void> => {
+                        await drainHandlers();
+                        if (drainAbortGrace !== undefined && inFlight.size > 0) {
+                            return;
+                        }
+                        await unsubscribed;
+                    };
+                    await Promise.all([handlersThenClose(), drainPublishes()]);
                     subscriptions.length = 0;
 
                     if (inFlight.size > 0 || inFlightPublishes.size > 0) {

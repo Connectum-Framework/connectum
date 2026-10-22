@@ -37,19 +37,26 @@ const rawEvent: RawEvent = {
 };
 
 /** A bus whose handler runs `body`; the raw handler is captured so the test can deliver an event. */
-function makeBus(body: (ctx: { signal: AbortSignal }) => Promise<void>, extra: Partial<EventBusOptions>) {
+function makeBus(body: (ctx: { signal: AbortSignal }) => Promise<void>, extra: Partial<EventBusOptions>, options: { closeWaitsForDisconnect?: boolean } = {}) {
     let captured: RawEventHandler | null = null;
     const disconnects: number[] = [];
+    // Like the Redis, Kafka and NATS adapters: closing the subscription finishes only when the
+    // running handler returns. Here the stuck handler never returns, so only the disconnect ends it.
+    let closed: () => void = () => undefined;
+    const closing = new Promise<void>((resolve) => {
+        closed = resolve;
+    });
     const adapter: EventAdapter = {
         name: "grace",
         connect: async () => undefined,
         disconnect: async () => {
             disconnects.push(Date.now());
+            closed();
         },
         publish: () => new Promise<void>(() => undefined),
         subscribe: async (_patterns, handler): Promise<EventSubscription> => {
             captured = handler;
-            return { unsubscribe: async () => undefined };
+            return { unsubscribe: async () => (options.closeWaitsForDisconnect === true ? closing : undefined) };
         },
     };
     const bus = createEventBus({
@@ -87,6 +94,27 @@ describe("drainAbortGrace", () => {
         assert.ok(took >= 230, `stop() must wait drainTimeout + drainAbortGrace (took ${took}ms)`);
         assert.ok(took < 1_000, `stop() must not wait for a handler that never returns (took ${took}ms)`);
         assert.equal(disconnects.length, 1, "the adapter is disconnected once");
+        assert.deepEqual(events, [{ type: "abandoned", handlers: 1, publishes: 0 }]);
+    });
+
+    it("does not wait for an adapter that closes the subscription only when the stuck handler returns", async () => {
+        const events: EventBusObserverEvent[] = [];
+        const { bus, deliver, disconnects } = makeBus(stuck, { drainAbortGrace: 100, observer: (event) => void events.push(event) }, { closeWaitsForDisconnect: true });
+        await bus.start();
+        void deliver();
+        await sleep(10);
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+            bus.stop().then(() => "stopped" as const),
+            new Promise<"hung">((resolve) => {
+                timer = setTimeout(() => resolve("hung"), 3_000);
+            }),
+        ]);
+        clearTimeout(timer);
+
+        assert.equal(outcome, "stopped", "stop() must go on to disconnect instead of waiting for the subscription close of a stuck handler");
+        assert.equal(disconnects.length, 1);
         assert.deepEqual(events, [{ type: "abandoned", handlers: 1, publishes: 0 }]);
     });
 
@@ -192,7 +220,7 @@ describe("drainAbortGrace", () => {
         }
     });
 
-    for (const bad of [-1, Number.NaN]) {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
         it(`rejects ${String(bad)} at creation`, () => {
             assert.throws(() => makeBus(stuck, { drainAbortGrace: bad }), RangeError);
         });

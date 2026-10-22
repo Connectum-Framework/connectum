@@ -336,7 +336,9 @@ export interface MiddlewareConfig {
  * `abandoned` is reported once per `stop()`, only when something was left: `handlers` is the
  * number of handlers still running when `drainAbortGrace` ran out (all of them were aborted, none
  * returned), `publishes` the number of `publish()` calls still unsettled when `drainPublishTimeout`
- * ran out. Their messages are not acknowledged by `stop()`: the broker redelivers them.
+ * ran out. The event reports work that was still unsettled when `stop()` abandoned it; it does not
+ * say that a message was left unacknowledged (a handler may have acknowledged before it got stuck)
+ * or that the broker will redeliver it.
  */
 export type EventBusObserverEvent = {
     readonly type: "abandoned";
@@ -405,9 +407,11 @@ export interface EventBusOptions {
     /**
      * Maximum time in milliseconds `stop()` keeps waiting for handlers that are still running
      * AFTER `drainTimeout` expired and they were force-aborted. A handler that ignores the abort
-     * signal is then abandoned: `stop()` goes on to disconnect the adapter, the observer is told
-     * (`abandoned`), and the abandoned handler's later acknowledgement fails, so the broker
-     * redelivers the message.
+     * signal is then abandoned: `stop()` goes on to disconnect the adapter without waiting for
+     * the adapter to close the subscription of a handler that is still running, and the observer
+     * is told (`abandoned`). The abandoned handler's later acknowledgement fails; whether its
+     * message is delivered again is up to the broker and to whether the handler had already
+     * acknowledged it.
      *
      * Total shutdown budget of the bus: `drainTimeout` + `drainAbortGrace` (the handler phase;
      * the publish drain runs concurrently with it), plus whatever the transport phase of
@@ -417,7 +421,8 @@ export interface EventBusOptions {
      * Default: `undefined` — the wait after the abort has no limit, as before: a handler that
      * never returns holds `stop()` forever. There is no default number because the time handlers
      * need to finish after an abort has not been measured. `0` abandons at once after the abort.
-     * Must be a non-negative number; anything else throws a `RangeError` from `createEventBus`.
+     * Must be a finite, non-negative number; anything else (negative, `NaN`, `Infinity`) throws a
+     * `RangeError` from `createEventBus`; leave it unset for an unbounded wait.
      */
     drainAbortGrace?: number;
     /**
