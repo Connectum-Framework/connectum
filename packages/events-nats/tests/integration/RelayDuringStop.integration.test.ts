@@ -15,7 +15,9 @@ import { describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createEventBus } from "@connectum/events";
 import { EventOptionsSchema } from "@connectum/events/gen/connectum/events/v1/options_pb.js";
-import { NatsAdapter } from "../../src/NatsAdapter.ts";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
+import { consumerName, NatsAdapter } from "../../src/NatsAdapter.ts";
 
 const NATS_TEST_URL = process.env.NATS_TEST_URL;
 
@@ -40,6 +42,25 @@ function gate(): { wait: Promise<void>; release: () => void } {
         release = resolve;
     });
     return { wait, release };
+}
+
+/**
+ * The handler's own delivery count cannot see a redelivery that happens after the bus has stopped
+ * (nobody is listening any more), so the durable consumer that outlives the bus is asked what the
+ * broker itself recorded: nothing waits for an acknowledgement, nothing is left to deliver and
+ * nothing was redelivered.
+ */
+async function assertConsumerSettled(servers: string, stream: string, group: string, topic: string): Promise<void> {
+    const connection = await connect({ servers });
+    try {
+        const manager = await jetstreamManager(connection);
+        const info = await manager.consumers.info(stream, consumerName(group, topic));
+        assert.equal(info.num_ack_pending, 0, "the input message must not wait for an acknowledgement");
+        assert.equal(info.num_pending, 0, "no input message may be left for the group to deliver");
+        assert.equal(info.num_redelivered, 0, "the input message must not have been redelivered");
+    } finally {
+        await connection.close();
+    }
 }
 
 describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undefined ? "NATS_TEST_URL not set" : false, concurrency: 1 }, () => {
@@ -110,6 +131,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             await sleep(500);
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
+            await assertConsumerSettled(servers, stream, group, inTopic);
         } finally {
             handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
@@ -180,6 +202,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             assert.equal(dead.length, 1, `the failed event must be dead-lettered exactly once (got ${dead.length})`);
             assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
             assert.equal(deliveries, 1, "the failed input message must not be delivered to the handler again");
+            await assertConsumerSettled(servers, stream, group, inTopic);
         } finally {
             handlerGate.release();
             await bus.stop().catch(() => undefined);
