@@ -15,6 +15,8 @@ import { matchPattern } from "./wildcard.ts";
 interface MemorySubscription {
     readonly patterns: string[];
     readonly handler: RawEventHandler;
+    /** Redeliveries of this subscription that have been scheduled but have not run yet. */
+    readonly pendingRedeliveries: Set<NodeJS.Timeout>;
 }
 
 /**
@@ -25,6 +27,42 @@ export function MemoryAdapter(): EventAdapter {
     const subscriptions: MemorySubscription[] = [];
     let connected = false;
 
+    function cancelRedeliveries(sub: MemorySubscription): void {
+        for (const timer of sub.pendingRedeliveries) {
+            clearTimeout(timer);
+        }
+        sub.pendingRedeliveries.clear();
+    }
+
+    /**
+     * Hand one event to one subscription. `ack` is a no-op (nothing is persisted). `nack(true)` (the
+     * default) puts the event back to the SAME subscription, as a broker returns it to the queue of
+     * the consumer group: the redelivery runs as a later macrotask with `attempt` raised, never
+     * synchronously, so a handler that always nacks yields to timers and I/O between attempts
+     * instead of starving them. `nack(false)` discards the event, like a rejection without a
+     * dead-letter exchange. A redelivery still waiting when the subscription is removed (or the
+     * adapter disconnected) is dropped: that is what keeps a bus that is stopping from looping
+     * nack, redeliver, nack while it drains.
+     */
+    async function deliver(sub: MemorySubscription, event: RawEvent): Promise<void> {
+        const noopAck = async (): Promise<void> => {};
+        const nack = async (requeue?: boolean): Promise<void> => {
+            if (requeue === false) {
+                return;
+            }
+            const timer = setTimeout(() => {
+                sub.pendingRedeliveries.delete(timer);
+                if (!subscriptions.includes(sub)) {
+                    return;
+                }
+                // A redelivery has no caller to throw to, so a failing handler only ends that attempt.
+                void deliver(sub, { ...event, attempt: event.attempt + 1 }).catch(() => undefined);
+            }, 0);
+            sub.pendingRedeliveries.add(timer);
+        };
+        await sub.handler(event, noopAck, nack);
+    }
+
     return {
         name: "memory",
 
@@ -33,6 +71,9 @@ export function MemoryAdapter(): EventAdapter {
         },
 
         async disconnect(): Promise<void> {
+            for (const sub of subscriptions) {
+                cancelRedeliveries(sub);
+            }
             subscriptions.length = 0;
             connected = false;
         },
@@ -58,13 +99,9 @@ export function MemoryAdapter(): EventAdapter {
             // Deliver to matching subscribers
             const matchingSubs = subscriptions.filter((sub) => sub.patterns.some((pattern) => matchPattern(pattern, eventType)));
 
-            // No-op ack/nack for in-memory adapter (no persistence layer)
-            const noopAck = async (): Promise<void> => {};
-            const noopNack = async (_requeue?: boolean): Promise<void> => {};
-
             // Deliver sequentially (memory adapter is synchronous)
             for (const sub of matchingSubs) {
-                await sub.handler(event, noopAck, noopNack);
+                await deliver(sub, event);
             }
         },
 
@@ -75,7 +112,7 @@ export function MemoryAdapter(): EventAdapter {
 
             assertSubscriptionPatterns({ adapter: "MemoryAdapter", patterns });
 
-            const sub: MemorySubscription = { patterns, handler };
+            const sub: MemorySubscription = { patterns, handler, pendingRedeliveries: new Set() };
             subscriptions.push(sub);
 
             return {
@@ -84,6 +121,7 @@ export function MemoryAdapter(): EventAdapter {
                     if (idx !== -1) {
                         subscriptions.splice(idx, 1);
                     }
+                    cancelRedeliveries(sub);
                 },
             };
         },
