@@ -29,6 +29,19 @@ async function until(condition: () => boolean, label: string, timeoutMs = 60_000
     }
 }
 
+/**
+ * Holds the handler until the test lets it go, so the handler provably runs while `stop()` is
+ * draining: a timer could expire first on a slow machine and the test would pass without ever
+ * exercising a publish during shutdown.
+ */
+function gate(): { wait: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { wait, release };
+}
+
 describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === undefined ? "KAFKA_TEST_URL not set" : false, concurrency: 1 }, () => {
     const brokers = (KAFKA_TEST_URL as string).split(",").map((b) => b.trim());
 
@@ -54,6 +67,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
             });
         const publisher = newAdapter();
         const sink = newAdapter();
+        const handlerGate = gate();
         let handlerStarted = false;
         let relayed: Promise<void> | undefined;
         const received: string[] = [];
@@ -67,7 +81,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
                     router.service(service, {
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             handlerStarted = true;
-                            await sleep(500); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -94,7 +108,9 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -106,6 +122,174 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
             const offset = committed?.partitions[0]?.offset;
             assert.equal(offset, "1", `the input offset must be committed past the message (got ${String(offset)})`);
         } finally {
+            handlerGate.release();
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+            await admin.deleteTopics({ topics: [inTopic, outTopic] }).catch(() => undefined);
+            await admin.disconnect();
+        }
+    });
+
+    it("a handler that fails while stop() runs is dead-lettered once, the republish is awaited, and the input offset is committed", { timeout: 180_000 }, async () => {
+        const id = randomUUID().replaceAll("-", "");
+        const inTopic = `it.relay.dlq.in.${id}`;
+        const dlqTopic = `it.relay.dlq.out.${id}`;
+        const group = `relay-dlq-${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayDlqService", methods: [method] } as any;
+
+        const admin = new Kafka({ clientId: "integration-relay-dlq-control", brokers, logLevel: logLevel.ERROR }).admin();
+        const newAdapter = () =>
+            KafkaAdapter({
+                brokers,
+                clientId: `integration-relay-dlq-${randomUUID()}`,
+                logLevel: "error",
+                consumerOptions: { fromBeginning: true, redeliveryDelay: 0 },
+            });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+        const handlerGate = gate();
+        let handlerStarted = false;
+        const dead: Array<ReadonlyMap<string, string>> = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            group,
+            drainTimeout: 20_000,
+            middleware: { dlq: { topic: dlqTopic } },
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async () => {
+                            handlerStarted = true;
+                            await handlerGate.wait; // released once stop() has begun
+                            throw new Error("handler failed during shutdown");
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await admin.connect();
+            await createTopicWithLeader(admin, inTopic);
+            await createTopicWithLeader(admin, dlqTopic);
+            await publisher.connect({ serviceName: "integration-relay-dlq-publisher" });
+            await sink.connect({ serviceName: "integration-relay-dlq-sink" });
+            await sink.subscribe(
+                [dlqTopic],
+                async (event, ack) => {
+                    dead.push(event.metadata);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "failing handler start");
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
+
+            await until(() => dead.length >= 1, "dead-letter delivery");
+            await sleep(1_000);
+            assert.equal(dead.length, 1, `the failed event must be dead-lettered exactly once (got ${dead.length})`);
+            assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
+
+            const [committed] = await admin.fetchOffsets({ groupId: group, topics: [inTopic] });
+            const offset = committed?.partitions[0]?.offset;
+            assert.equal(offset, "1", `the failed input offset must be committed after the dead-letter publish (got ${String(offset)})`);
+        } finally {
+            handlerGate.release();
+            await bus.stop().catch(() => undefined);
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+            await admin.deleteTopics({ topics: [inTopic, dlqTopic] }).catch(() => undefined);
+            await admin.disconnect();
+        }
+    });
+
+    it("a bus without a group relays through ctx.publish while stop() runs and delivers the relayed event once", { timeout: 180_000 }, async () => {
+        const id = randomUUID().replaceAll("-", "");
+        const inTopic = `it.relay.nogroup.in.${id}`;
+        const outTopic = `it.relay.nogroup.out.${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayNoGroupService", methods: [method] } as any;
+
+        const admin = new Kafka({ clientId: "integration-relay-nogroup-control", brokers, logLevel: logLevel.ERROR }).admin();
+        const newAdapter = () =>
+            KafkaAdapter({
+                brokers,
+                clientId: `integration-relay-nogroup-${randomUUID()}`,
+                logLevel: "error",
+                consumerOptions: { fromBeginning: true, redeliveryDelay: 0 },
+            });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+        const handlerGate = gate();
+        let handlerStarted = false;
+        let deliveries = 0;
+        let relayed: Promise<void> | undefined;
+        const received: string[] = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            drainTimeout: 20_000,
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
+                            deliveries++;
+                            handlerStarted = true;
+                            await handlerGate.wait; // released once stop() has begun
+                            relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
+                            await relayed;
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await admin.connect();
+            await createTopicWithLeader(admin, inTopic);
+            await createTopicWithLeader(admin, outTopic);
+            await publisher.connect({ serviceName: "integration-relay-publisher" });
+            await sink.connect({ serviceName: "integration-relay-sink" });
+            await sink.subscribe(
+                [outTopic],
+                async (event, ack) => {
+                    received.push(event.eventId);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "relay handler start");
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
+            assert.ok(relayed, "the handler must have reached ctx.publish");
+            await relayed;
+
+            await until(() => received.length >= 1, "relayed event delivery");
+            await sleep(1_000);
+            assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
+            assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
+        } finally {
+            handlerGate.release();
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await admin.deleteTopics({ topics: [inTopic, outTopic] }).catch(() => undefined);

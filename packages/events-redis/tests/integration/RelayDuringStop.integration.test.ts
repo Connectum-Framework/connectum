@@ -27,6 +27,19 @@ async function until(condition: () => boolean | Promise<boolean>, label: string,
     }
 }
 
+/**
+ * Holds the handler until the test lets it go, so the handler provably runs while `stop()` is
+ * draining: a timer could expire first on a slow machine and the test would pass without ever
+ * exercising a publish during shutdown.
+ */
+function gate(): { wait: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { wait, release };
+}
+
 describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === undefined ? "REDIS_TEST_URL not set" : false, concurrency: 1 }, () => {
     const url = REDIS_TEST_URL as string;
 
@@ -45,6 +58,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
         const sink = newAdapter();
         const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         let relayed: Promise<void> | undefined;
         const received: string[] = [];
@@ -58,7 +72,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
                     router.service(service, {
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             handlerStarted = true;
-                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -79,7 +93,9 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -91,6 +107,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(pending[0], 0, "the input entry must have been acknowledged during the shutdown");
             await sinkSubscription.unsubscribe();
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await control.quit().catch(() => undefined);
@@ -112,6 +129,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
         const sink = newAdapter();
         const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         const dead: Array<ReadonlyMap<string, string>> = [];
 
@@ -125,7 +143,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
                     router.service(service, {
                         simpleEvent: async () => {
                             handlerStarted = true;
-                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             throw new Error("handler failed during shutdown");
                         },
                         // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
@@ -149,7 +167,9 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "failing handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
 
             await until(() => dead.length >= 1, "dead-letter delivery");
             await new Promise((resolve) => globalThis.setTimeout(resolve, 300));
@@ -160,9 +180,78 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(pending[0], 0, "the failed input entry must have been acknowledged after the dead-letter publish");
             await sinkSubscription.unsubscribe();
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await control.quit().catch(() => undefined);
+        }
+    });
+
+    it("a bus without a group relays through ctx.publish while stop() runs and delivers the relayed event once", { timeout: 60_000 }, async () => {
+        const inTopic = `it.relay.nogroup.in.${randomUUID().replaceAll("-", "")}`;
+        const outTopic = `it.relay.nogroup.out.${randomUUID().replaceAll("-", "")}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayNoGroupService", methods: [method] } as any;
+
+        const newAdapter = () => RedisAdapter({ url, brokerOptions: { blockMs: 20, count: 5 } });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+
+        const handlerGate = gate();
+        let handlerStarted = false;
+        let deliveries = 0;
+        let relayed: Promise<void> | undefined;
+        const received: string[] = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            drainTimeout: 10_000,
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
+                            deliveries++;
+                            handlerStarted = true;
+                            await handlerGate.wait; // released once stop() has begun
+                            relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
+                            await relayed;
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect({ serviceName: "integration-relay-publisher" });
+            await sink.connect({ serviceName: "integration-relay-sink" });
+            const sinkSubscription = await sink.subscribe([outTopic], async (event, ack) => {
+                received.push(event.eventId);
+                await ack();
+            }, { group: `sink-${randomUUID()}` });
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "relay handler start");
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
+            assert.ok(relayed, "the handler must have reached ctx.publish");
+            await relayed;
+
+            await until(() => received.length >= 1, "relayed event delivery");
+            await new Promise((resolve) => globalThis.setTimeout(resolve, 300));
+            assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
+            assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
+            await sinkSubscription.unsubscribe();
+        } finally {
+            handlerGate.release();
+            await bus.stop().catch(() => undefined);
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
         }
     });
 });
