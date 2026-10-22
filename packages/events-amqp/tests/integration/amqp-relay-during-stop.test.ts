@@ -115,4 +115,84 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             await raw.close().catch(() => undefined);
         }
     });
+
+    it("a handler that fails while stop() runs is dead-lettered once, the republish is awaited, and the input is not redelivered", { timeout: 60_000 }, async () => {
+        const id = randomUUID().slice(0, 8);
+        const exchange = `relay.dlq.stop.${id}`;
+        const inTopic = `relay.dlq.in.${id}`;
+        const dlqTopic = `relay.dlq.out.${id}`;
+        const group = `relay-dlq-${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayDlqService", methods: [method] } as any;
+
+        const newAdapter = () => AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+        const raw = await connect(url);
+        const rawChannel = await raw.createChannel();
+
+        let handlerStarted = false;
+        const dead: Array<ReadonlyMap<string, string>> = [];
+        const again: string[] = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            group,
+            drainTimeout: 10_000,
+            middleware: { dlq: { topic: dlqTopic } },
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async () => {
+                            handlerStarted = true;
+                            await sleep(400); // stop() begins meanwhile
+                            throw new Error("handler failed during shutdown");
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect();
+            await sink.connect();
+            await sink.subscribe(
+                [dlqTopic],
+                async (event, ack) => {
+                    dead.push(event.metadata);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+            // A second raw consumer on the input queue receives the message again if the broker took it back.
+            await rawChannel.consume(`${exchange}.${group}`, (msg) => {
+                if (msg !== null) {
+                    again.push(msg.fields.redelivered ? "redelivered" : "first");
+                    rawChannel.nack(msg, false, false);
+                }
+            });
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await waitFor(() => handlerStarted, "failing handler start");
+            await bus.stop();
+
+            await waitFor(() => dead.length >= 1, "dead-letter delivery");
+            await sleep(500);
+            assert.equal(dead.length, 1, `the failed event must be dead-lettered exactly once (got ${dead.length})`);
+            assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
+            assert.deepEqual(again, [], "the failed input message must not be delivered again after the dead-letter publish");
+        } finally {
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+            await rawChannel.deleteQueue(`${exchange}.${group}`).catch(() => undefined);
+            await rawChannel.deleteExchange(exchange).catch(() => undefined);
+            await rawChannel.close().catch(() => undefined);
+            await raw.close().catch(() => undefined);
+        }
+    });
 });

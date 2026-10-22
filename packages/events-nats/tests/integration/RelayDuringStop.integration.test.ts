@@ -99,4 +99,70 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             await sink.disconnect().catch(() => undefined);
         }
     });
+
+    it("a handler that fails while stop() runs is dead-lettered once, the republish is awaited, and the input is not redelivered", { timeout: 120_000 }, async () => {
+        const id = randomUUID().replaceAll("-", "");
+        const inTopic = `it.relay.dlq.in.${id}`;
+        const dlqTopic = `it.relay.dlq.out.${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayDlqService", methods: [method] } as any;
+
+        const stream = `itrelaydlq${id.slice(0, 12)}`;
+        const group = `relay-dlq-${id}`;
+        const publisher = NatsAdapter({ servers, stream });
+        const sink = NatsAdapter({ servers, stream });
+        let handlerStarted = false;
+        let deliveries = 0;
+        const dead: Array<ReadonlyMap<string, string>> = [];
+
+        const bus = createEventBus({
+            adapter: NatsAdapter({ servers, stream }),
+            group,
+            drainTimeout: 10_000,
+            middleware: { dlq: { topic: dlqTopic } },
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async () => {
+                            deliveries++;
+                            handlerStarted = true;
+                            await sleep(400); // stop() begins meanwhile
+                            throw new Error("handler failed during shutdown");
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect({ serviceName: "integration-relay-dlq-publisher" });
+            await sink.connect({ serviceName: "integration-relay-dlq-sink" });
+            await sink.subscribe(
+                [dlqTopic],
+                async (event, ack) => {
+                    dead.push(event.metadata);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "failing handler start");
+            await bus.stop();
+
+            await until(() => dead.length >= 1, "dead-letter delivery");
+            await sleep(500);
+            assert.equal(dead.length, 1, `the failed event must be dead-lettered exactly once (got ${dead.length})`);
+            assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
+            assert.equal(deliveries, 1, "the failed input message must not be delivered to the handler again");
+        } finally {
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+        }
+    });
 });
