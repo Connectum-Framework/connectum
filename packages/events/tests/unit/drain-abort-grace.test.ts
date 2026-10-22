@@ -184,6 +184,19 @@ describe("drainAbortGrace", () => {
         assert.deepEqual(events, [{ type: "abandoned", handlers: 0, publishes: 1 }]);
     });
 
+    it("still reports a handler abandoned at its own deadline when it settles while the publish drain goes on", async () => {
+        const events: EventBusObserverEvent[] = [];
+        const { bus, deliver } = makeBus(() => sleep(250), { drainTimeout: 30, drainAbortGrace: 0, drainPublishTimeout: 600, observer: (event) => void events.push(event) });
+        await bus.start();
+        void deliver();
+        void bus.publish(EventOptionsSchema, create(EventOptionsSchema, {})).catch(() => undefined);
+        await sleep(10);
+
+        await bus.stop();
+
+        assert.deepEqual(events, [{ type: "abandoned", handlers: 1, publishes: 1 }], "the handler was given up on at its deadline although it returned later");
+    });
+
     it("an observer that throws does not stop the shutdown", async () => {
         const { bus, deliver, disconnects } = makeBus(stuck, {
             drainAbortGrace: 0,

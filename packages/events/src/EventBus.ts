@@ -336,7 +336,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             }
                         }
                     };
-                    const drainHandlers = async (): Promise<void> => {
+                    // Both drains return what was still unsettled when their own budget ended: a
+                    // handler or publish that settles while the other drain goes on is still
+                    // reported as abandoned.
+                    const drainHandlers = async (): Promise<number> => {
                         if (inFlight.size > 0 && drainTimeout > 0) {
                             const deadline = Date.now() + drainTimeout;
 
@@ -367,10 +370,12 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                 }
                             }
                         }
+                        // Without `drainAbortGrace` the wait above was unbounded, so nothing is left.
+                        return drainAbortGrace === undefined ? 0 : inFlight.size;
                     };
-                    const drainPublishes = async (): Promise<void> => {
+                    const drainPublishes = async (): Promise<number> => {
                         if (drainPublishTimeout === undefined || inFlightPublishes.size === 0) {
-                            return;
+                            return 0;
                         }
                         const deadline = Date.now() + drainPublishTimeout;
 
@@ -379,22 +384,26 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             if (remaining <= 0) break;
                             await raceSettled(inFlightPublishes, remaining);
                         }
+                        return inFlightPublishes.size;
                     };
                     // The Redis, Kafka and NATS adapters finish closing a subscription only when the
                     // handler that is running returns. Once `drainAbortGrace` has abandoned a handler,
                     // that close can never finish, so it is not waited for: the disconnect below ends it.
-                    const handlersThenClose = async (): Promise<void> => {
-                        await drainHandlers();
-                        if (drainAbortGrace !== undefined && inFlight.size > 0) {
-                            return;
+                    const handlersThenClose = async (): Promise<number> => {
+                        const abandoned = await drainHandlers();
+                        if (abandoned === 0) {
+                            await unsubscribed;
                         }
-                        await unsubscribed;
+                        return abandoned;
                     };
-                    await Promise.all([handlersThenClose(), drainPublishes()]);
+                    const [abandonedHandlers, publishesLeftAtDeadline] = await Promise.all([handlersThenClose(), drainPublishes()]);
                     subscriptions.length = 0;
+                    // Without `drainPublishTimeout` publishes have no budget of their own: whatever is
+                    // still pending when the handlers are done is what is given up on.
+                    const abandonedPublishes = drainPublishTimeout === undefined ? inFlightPublishes.size : publishesLeftAtDeadline;
 
-                    if (inFlight.size > 0 || inFlightPublishes.size > 0) {
-                        notify({ type: "abandoned", handlers: inFlight.size, publishes: inFlightPublishes.size });
+                    if (abandonedHandlers > 0 || abandonedPublishes > 0) {
+                        notify({ type: "abandoned", handlers: abandonedHandlers, publishes: abandonedPublishes });
                     }
                     inFlight.clear();
                     inFlightPublishes.clear();

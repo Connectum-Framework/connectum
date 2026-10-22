@@ -409,9 +409,9 @@ export interface EventBusOptions {
      * AFTER `drainTimeout` expired and they were force-aborted. A handler that ignores the abort
      * signal is then abandoned: `stop()` goes on to disconnect the adapter without waiting for
      * the adapter to close the subscription of a handler that is still running, and the observer
-     * is told (`abandoned`). The abandoned handler's later acknowledgement fails; whether its
-     * message is delivered again is up to the broker and to whether the handler had already
-     * acknowledged it.
+     * is told (`abandoned`). The abandoned handler's later acknowledgement may fail (the
+     * adapter contract does not say); whether its message is delivered again is up to the
+     * broker and to whether the handler had already acknowledged it.
      *
      * Total shutdown budget of the bus: `drainTimeout` + `drainAbortGrace` (the handler phase;
      * the publish drain runs concurrently with it), plus whatever the transport phase of
