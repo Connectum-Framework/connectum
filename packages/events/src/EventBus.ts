@@ -100,10 +100,41 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     const drainPublishTimeout = options.drainPublishTimeout !== undefined && options.drainPublishTimeout > 0 ? options.drainPublishTimeout : undefined;
     const inFlight = new Set<Promise<void>>();
     const inFlightPublishes = new Set<Promise<void>>();
+    // Publishes admitted through `ctx.publish` (and republishes of the built-in dead-letter
+    // middleware) while the bus is stopping: `stop()` waits for them before it disconnects.
+    const relayPublishes = new Set<Promise<void>>();
+    // Raised when a stop() finishes; a `ctx.publish` of an earlier cycle is refused with it.
+    let generation = 0;
     let drainController = new AbortController();
     let draining = false;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
+
+    const trackRelay = (publish: Promise<void>): void => {
+        relayPublishes.add(publish);
+        // Swallowed on purpose: the caller awaits the original promise and gets the rejection;
+        // this observer only removes the entry, and must not surface as an unhandled rejection.
+        const forget = (): void => {
+            relayPublishes.delete(publish);
+        };
+        publish.then(forget, forget);
+    };
+    const trackPublish = (publish: Promise<void>): void => {
+        if (drainPublishTimeout === undefined) {
+            return;
+        }
+        inFlightPublishes.add(publish);
+        // Removal observer with swallowed outcomes: a publish that
+        // settles after the drain deadline (or after the caller
+        // dropped its promise) must never surface as an
+        // unhandledRejection. The caller awaits the ORIGINAL promise,
+        // so rejections still propagate to it unchanged.
+        const forget = (): void => {
+            inFlightPublishes.delete(publish);
+        };
+        publish.then(forget, forget);
+    };
+    const STOPPING_MESSAGE = "EventBus is stopping: it accepts no new events while it drains. Wait for stop() to finish, then call start() again to publish.";
 
     // Build routes
     const router = new EventRouterImpl();
@@ -123,9 +154,23 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
         middlewares.push(...mwConfig.custom);
     }
 
-    // DLQ middleware (outermost of built-in — catches after retry exhaustion)
+    // DLQ middleware (outermost of built-in — catches after retry exhaustion). Its republish is
+    // counted among the publishes `stop()` waits for while the bus is stopping, so a failed event
+    // that is dead-lettered during shutdown is not cut off by the disconnect.
     if (mwConfig?.dlq) {
-        middlewares.push(dlqMiddleware(mwConfig.dlq, adapter));
+        const dlqTopic = mwConfig.dlq.topic;
+        middlewares.push(
+            dlqMiddleware(mwConfig.dlq, {
+                publish: (topic, payload, publishOptions) => {
+                    const republish = adapter.publish(topic, payload, publishOptions);
+                    if (stopping) {
+                        notify({ type: "dlq-republish", topic: dlqTopic });
+                        trackRelay(republish);
+                    }
+                    return republish;
+                },
+            }),
+        );
     }
 
     // Retry middleware (innermost of built-in — retries before DLQ sees error)
@@ -225,9 +270,38 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
                                 // Track settlement to auto-ack if handler doesn't call ack/nack (C-1)
                                 let settled = false;
+                                // The right to publish through `ctx.publish` belongs to this delivery
+                                // and this start/stop cycle, and lasts while the handler runs.
+                                let alive = true;
+                                const deliveryGeneration = generation;
+                                const deliveryDrain = drainController;
+                                const ctxPublish: EventContext["publish"] = async (schema, data, publishOptions) => {
+                                    if (!alive || deliveryGeneration !== generation) {
+                                        if (stopping) {
+                                            notify({ type: "rejected", reason: "not-in-flight" });
+                                            throw new Error(STOPPING_MESSAGE);
+                                        }
+                                        throw new Error(
+                                            "ctx.publish was called after its handler returned or after the bus stopped: the right to publish ends with the handler. Publish through the bus instead.",
+                                        );
+                                    }
+                                    if (deliveryDrain.signal.aborted) {
+                                        notify({ type: "rejected", reason: "aborted" });
+                                        throw new Error(STOPPING_MESSAGE);
+                                    }
+                                    if (!stopping) {
+                                        await publishToAdapter(schema, data, publishOptions, trackPublish);
+                                        return;
+                                    }
+                                    await publishToAdapter(schema, data, publishOptions, (publish) => {
+                                        notify({ type: "admitted", topic: publishOptions?.topic ?? publishTopicMap.get(schema.typeName) ?? schema.typeName });
+                                        trackRelay(publish);
+                                    });
+                                };
                                 const ctx = createEventContext({
                                     raw: rawEvent,
                                     signal: eventSignal,
+                                    publish: ctxPublish,
                                     onAck: async () => {
                                         settled = true;
                                         await ack();
@@ -244,6 +318,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                         await handler(rawEvent, ctx);
                                         completed = true;
                                     } finally {
+                                        alive = false;
                                         // Auto-ack fallback for backward compatibility (C-1)
                                         if (!settled && completed) {
                                             try {
@@ -339,6 +414,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     // Both drains return what was still unsettled when their own budget ended: a
                     // handler or publish that settles while the other drain goes on is still
                     // reported as abandoned.
+                    // End of the grace window that starts at the abort; the relay wait shares it, so the
+                    // bus budget stays `drainTimeout` + `drainAbortGrace`.
+                    let graceDeadline: number | undefined;
                     const drainHandlers = async (): Promise<number> => {
                         if (inFlight.size > 0 && drainTimeout > 0) {
                             const deadline = Date.now() + drainTimeout;
@@ -362,7 +440,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             if (drainAbortGrace === undefined) {
                                 await Promise.allSettled([...inFlight]);
                             } else {
-                                const graceDeadline = Date.now() + drainAbortGrace;
+                                graceDeadline = Date.now() + drainAbortGrace;
                                 while (inFlight.size > 0) {
                                     const remaining = graceDeadline - Date.now();
                                     if (remaining <= 0) break;
@@ -386,30 +464,53 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                         }
                         return inFlightPublishes.size;
                     };
+                    // Publishes admitted through ctx.publish (and dead-letter republishes) while stopping
+                    // can start until the last handler has returned, so they are awaited after the
+                    // handler drain. Bounded by `drainAbortGrace` when set, otherwise unbounded, as
+                    // the wait for the handlers themselves is. Returns what was still unsettled.
+                    const drainRelay = async (): Promise<number> => {
+                        if (drainAbortGrace === undefined) {
+                            while (relayPublishes.size > 0) {
+                                await Promise.allSettled([...relayPublishes]);
+                            }
+                            return 0;
+                        }
+                        // Without an abort there was no grace window yet, so the relay gets its own.
+                        const relayDeadline = graceDeadline ?? Date.now() + drainAbortGrace;
+                        while (relayPublishes.size > 0) {
+                            const remaining = relayDeadline - Date.now();
+                            if (remaining <= 0) break;
+                            await raceSettled(relayPublishes, remaining);
+                        }
+                        return relayPublishes.size;
+                    };
                     // The Redis, Kafka and NATS adapters finish closing a subscription only when the
                     // handler that is running returns. Once `drainAbortGrace` has abandoned a handler,
                     // that close can never finish, so it is not waited for: the disconnect below ends it.
-                    const handlersThenClose = async (): Promise<number> => {
-                        const abandoned = await drainHandlers();
-                        if (abandoned === 0) {
+                    const handlersThenClose = async (): Promise<{ handlers: number; relay: number }> => {
+                        const handlers = await drainHandlers();
+                        const relay = await drainRelay();
+                        if (handlers === 0) {
                             await unsubscribed;
                         }
-                        return abandoned;
+                        return { handlers, relay };
                     };
-                    const [abandonedHandlers, publishesLeftAtDeadline] = await Promise.all([handlersThenClose(), drainPublishes()]);
+                    const [{ handlers: abandonedHandlers, relay: relayLeftAtDeadline }, publishesLeftAtDeadline] = await Promise.all([handlersThenClose(), drainPublishes()]);
                     subscriptions.length = 0;
                     // Without `drainPublishTimeout` publishes have no budget of their own: whatever is
                     // still pending when the handlers are done is what is given up on.
-                    const abandonedPublishes = drainPublishTimeout === undefined ? inFlightPublishes.size : publishesLeftAtDeadline;
+                    const abandonedPublishes = (drainPublishTimeout === undefined ? inFlightPublishes.size : publishesLeftAtDeadline) + relayLeftAtDeadline;
 
                     if (abandonedHandlers > 0 || abandonedPublishes > 0) {
                         notify({ type: "abandoned", handlers: abandonedHandlers, publishes: abandonedPublishes });
                     }
                     inFlight.clear();
                     inFlightPublishes.clear();
+                    relayPublishes.clear();
                     await adapter.disconnect();
                 } finally {
                     started = false;
+                    generation++;
                     shutdownSignal = undefined;
                     stopping = false;
                     draining = false;
@@ -425,42 +526,37 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             // The two causes read differently: a bus that is draining for stop() is not a bus that
             // was never started, and the remedy differs.
             if (stopping) {
-                throw new Error("EventBus is stopping: it accepts no new events while it drains. Wait for stop() to finish, then call start() again to publish.");
+                throw new Error(STOPPING_MESSAGE);
             }
             if (!started) {
                 throw new Error("EventBus not started. Call start() first.");
             }
 
-            // Create message instance and serialize
-            const message = create(schema, data);
-            const payload = toBinary(schema, message);
-            const declaredTopic = publishOptions?.topic ?? publishTopicMap.get(schema.typeName);
-            if (strictTopics && declaredTopic === undefined) {
-                throw new Error(
-                    `Cannot resolve a topic for "${schema.typeName}" (strictTopics is enabled): it is covered by neither a subscriber route nor the publishes option, and no publishOptions.topic was given. ` +
-                        `Register the event service in routes/publishes so its (connectum.events.v1.event).topic is used, or pass publishOptions.topic explicitly.`,
-                );
-            }
-            const eventType = declaredTopic ?? schema.typeName;
-
-            const publishPromise = adapter.publish(eventType, payload, publishOptions);
-            if (drainPublishTimeout !== undefined) {
-                inFlightPublishes.add(publishPromise);
-                // Removal observer with swallowed outcomes: a publish that
-                // settles after the drain deadline (or after the caller
-                // dropped its promise) must never surface as an
-                // unhandledRejection. The caller awaits the ORIGINAL promise
-                // below, so rejections still propagate to it unchanged.
-                publishPromise.then(
-                    () => {
-                        inFlightPublishes.delete(publishPromise);
-                    },
-                    () => {
-                        inFlightPublishes.delete(publishPromise);
-                    },
-                );
-            }
-            await publishPromise;
+            await publishToAdapter(schema, data, publishOptions, trackPublish);
         },
     };
+
+    /** Serialize, resolve the topic and hand the event to the adapter; `track` sees the adapter's promise. */
+    async function publishToAdapter<Desc extends DescMessage>(
+        schema: Desc,
+        data: MessageShape<Desc>,
+        publishOptions: PublishOptions | undefined,
+        track: (publish: Promise<void>) => void,
+    ): Promise<void> {
+        // Create message instance and serialize
+        const message = create(schema, data);
+        const payload = toBinary(schema, message);
+        const declaredTopic = publishOptions?.topic ?? publishTopicMap.get(schema.typeName);
+        if (strictTopics && declaredTopic === undefined) {
+            throw new Error(
+                `Cannot resolve a topic for "${schema.typeName}" (strictTopics is enabled): it is covered by neither a subscriber route nor the publishes option, and no publishOptions.topic was given. ` +
+                    `Register the event service in routes/publishes so its (connectum.events.v1.event).topic is used, or pass publishOptions.topic explicitly.`,
+            );
+        }
+        const eventType = declaredTopic ?? schema.typeName;
+
+        const publishPromise = adapter.publish(eventType, payload, publishOptions);
+        track(publishPromise);
+        await publishPromise;
+    }
 }

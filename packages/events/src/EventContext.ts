@@ -37,5 +37,12 @@ export function createEventContext(init: EventContextInit): EventContext {
             settled = true;
             await init.onNack(requeue);
         },
+
+        async publish(schema, data, options): Promise<void> {
+            if (init.publish === undefined) {
+                throw new Error("ctx.publish is unavailable: this EventContext was created without a bus. Use the context a running EventBus passes to the handler.");
+            }
+            await init.publish(schema, data, options);
+        },
     };
 }
