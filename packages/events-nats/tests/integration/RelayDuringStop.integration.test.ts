@@ -165,4 +165,70 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             await sink.disconnect().catch(() => undefined);
         }
     });
+
+    it("a bus without a group relays through ctx.publish while stop() runs and delivers the relayed event once", { timeout: 120_000 }, async () => {
+        const id = randomUUID().replaceAll("-", "");
+        const inTopic = `it.relay.nogroup.in.${id}`;
+        const outTopic = `it.relay.nogroup.out.${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayNoGroupService", methods: [method] } as any;
+
+        const stream = `itrelayng${id.slice(0, 12)}`;
+        const publisher = NatsAdapter({ servers, stream });
+        const sink = NatsAdapter({ servers, stream });
+        let handlerStarted = false;
+        let deliveries = 0;
+        let relayed: Promise<void> | undefined;
+        const received: string[] = [];
+
+        const bus = createEventBus({
+            adapter: NatsAdapter({ servers, stream }),
+            drainTimeout: 10_000,
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
+                            deliveries++;
+                            handlerStarted = true;
+                            await sleep(400); // stop() begins meanwhile
+                            relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
+                            await relayed;
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect({ serviceName: "integration-relay-publisher" });
+            await sink.connect({ serviceName: "integration-relay-sink" });
+            await sink.subscribe(
+                [outTopic],
+                async (event, ack) => {
+                    received.push(event.eventId);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "relay handler start");
+            await bus.stop();
+            assert.ok(relayed, "the handler must have reached ctx.publish");
+            await relayed;
+
+            await until(() => received.length >= 1, "relayed event delivery");
+            await sleep(500);
+            assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
+            assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
+        } finally {
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+        }
+    });
 });

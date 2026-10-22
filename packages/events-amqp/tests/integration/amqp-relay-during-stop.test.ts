@@ -195,4 +195,77 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             await raw.close().catch(() => undefined);
         }
     });
+
+    it("a bus without a group relays through ctx.publish while stop() runs and delivers the relayed event once", { timeout: 60_000 }, async () => {
+        const id = randomUUID().slice(0, 8);
+        const exchange = `relay.nogroup.stop.${id}`;
+        const inTopic = `relay.nogroup.in.${id}`;
+        const outTopic = `relay.nogroup.out.${id}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayNoGroupService", methods: [method] } as any;
+
+        const newAdapter = () => AmqpAdapter({ url, exchange, exchangeType: "topic", recovery: false });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+        const raw = await connect(url);
+        const rawChannel = await raw.createChannel();
+
+        let handlerStarted = false;
+        let deliveries = 0;
+        let relayed: Promise<void> | undefined;
+        const received: string[] = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            drainTimeout: 10_000,
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
+                            deliveries++;
+                            handlerStarted = true;
+                            await sleep(400); // stop() begins meanwhile
+                            relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
+                            await relayed;
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect();
+            await sink.connect();
+            await sink.subscribe(
+                [outTopic],
+                async (event, ack) => {
+                    received.push(event.eventId);
+                    await ack();
+                },
+                { group: `sink-${id}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await waitFor(() => handlerStarted, "relay handler start");
+            await bus.stop();
+            assert.ok(relayed, "the handler must have reached ctx.publish");
+            await relayed;
+
+            await waitFor(() => received.length >= 1, "relayed event delivery");
+            await sleep(500);
+            assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
+            assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
+        } finally {
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+            await rawChannel.deleteExchange(exchange).catch(() => undefined);
+            await rawChannel.close().catch(() => undefined);
+            await raw.close().catch(() => undefined);
+        }
+    });
 });
