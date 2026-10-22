@@ -96,4 +96,73 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             await control.quit().catch(() => undefined);
         }
     });
+
+    it("a handler that fails while stop() runs is dead-lettered once, the republish is awaited, and the input entry is acknowledged", { timeout: 60_000 }, async () => {
+        const inTopic = `it.relay.dlq.in.${randomUUID().replaceAll("-", "")}`;
+        const dlqTopic = `it.relay.dlq.out.${randomUUID().replaceAll("-", "")}`;
+        const group = `relay-dlq-${randomUUID()}`;
+        const input = Object.create(EventOptionsSchema, { typeName: { value: inTopic, enumerable: true } });
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const method = { localName: "simpleEvent", input, proto: { options: undefined } } as any;
+        // biome-ignore lint/suspicious/noExplicitAny: minimal fake descriptor for route registration
+        const service = { typeName: "integration.v1.RelayDlqService", methods: [method] } as any;
+
+        const newAdapter = () => RedisAdapter({ url, brokerOptions: { blockMs: 20, count: 5 } });
+        const publisher = newAdapter();
+        const sink = newAdapter();
+        const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
+
+        let handlerStarted = false;
+        const dead: Array<ReadonlyMap<string, string>> = [];
+
+        const bus = createEventBus({
+            adapter: newAdapter(),
+            group,
+            drainTimeout: 10_000,
+            middleware: { dlq: { topic: dlqTopic } },
+            routes: [
+                (router) => {
+                    router.service(service, {
+                        simpleEvent: async () => {
+                            handlerStarted = true;
+                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            throw new Error("handler failed during shutdown");
+                        },
+                        // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
+                    } as any);
+                },
+            ],
+        });
+
+        try {
+            await publisher.connect({ serviceName: "integration-relay-dlq-publisher" });
+            await sink.connect({ serviceName: "integration-relay-dlq-sink" });
+            const sinkSubscription = await sink.subscribe(
+                [dlqTopic],
+                async (event, ack) => {
+                    dead.push(event.metadata);
+                    await ack();
+                },
+                { group: `sink-${randomUUID()}` },
+            );
+            await bus.start();
+
+            await publisher.publish(inTopic, new Uint8Array());
+            await until(() => handlerStarted, "failing handler start");
+            await bus.stop();
+
+            await until(() => dead.length >= 1, "dead-letter delivery");
+            await new Promise((resolve) => globalThis.setTimeout(resolve, 300));
+            assert.equal(dead.length, 1, `the failed event must be dead-lettered exactly once (got ${dead.length})`);
+            assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
+
+            const pending = (await control.xpending(`events:${inTopic}`, group)) as [number, ...unknown[]];
+            assert.equal(pending[0], 0, "the failed input entry must have been acknowledged after the dead-letter publish");
+            await sinkSubscription.unsubscribe();
+        } finally {
+            await publisher.disconnect().catch(() => undefined);
+            await sink.disconnect().catch(() => undefined);
+            await control.quit().catch(() => undefined);
+        }
+    });
 });
