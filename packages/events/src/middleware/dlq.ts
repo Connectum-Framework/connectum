@@ -26,7 +26,7 @@ function defaultErrorSerializer(error: unknown): string {
  * Create a DLQ middleware that catches errors from inner middleware
  * (retry), publishes to DLQ topic, and acks the original.
  */
-export function dlqMiddleware(options: DlqOptions, adapter: EventAdapter): EventMiddleware {
+export function dlqMiddleware(options: DlqOptions, adapter: Pick<EventAdapter, "publish">): EventMiddleware {
     const serializeError = options.errorSerializer ?? defaultErrorSerializer;
 
     return async (event, ctx, next) => {

@@ -183,6 +183,21 @@ export interface EventContext {
     ack(): Promise<void>;
     /** Negative acknowledge -- request redelivery or send to DLQ */
     nack(requeue?: boolean): Promise<void>;
+    /**
+     * Publish an event on behalf of this delivery: the way a relay handler (consume, transform,
+     * publish) hands its result on.
+     *
+     * While the bus is stopping, `bus.publish` is refused, but this call is still admitted as long
+     * as the handler of this delivery has not returned and the drain has not been aborted, and
+     * `stop()` waits for it before the adapter is disconnected. The right belongs to this one
+     * delivery, this bus and this start/stop cycle: it ends when the handler's promise settles,
+     * when the drain is aborted, and when the bus stops; a call after that is rejected. Await the
+     * result inside the handler, so a failed publish fails the handler and the message is retried.
+     *
+     * Handlers that publish through an injected bus instead of `ctx` keep being refused during
+     * `stop()`; rewrite them to use `ctx.publish` to relay during shutdown.
+     */
+    publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, options?: PublishOptions): Promise<void>;
 }
 
 /**
@@ -193,6 +208,8 @@ export interface EventContextInit {
     readonly signal: AbortSignal;
     readonly onAck: () => Promise<void>;
     readonly onNack: (requeue: boolean) => Promise<void>;
+    /** Implementation of `ctx.publish`; a context built without one rejects every publish. */
+    readonly publish?: EventContext["publish"];
 }
 
 // =============================================================================
@@ -340,11 +357,22 @@ export interface MiddlewareConfig {
  * say that a message was left unacknowledged (a handler may have acknowledged before it got stuck)
  * or that the broker will redeliver it.
  */
-export type EventBusObserverEvent = {
-    readonly type: "abandoned";
-    readonly handlers: number;
-    readonly publishes: number;
-};
+export type EventBusObserverEvent =
+    | {
+          readonly type: "abandoned";
+          readonly handlers: number;
+          readonly publishes: number;
+      }
+    /** A `ctx.publish` made while the bus was stopping was admitted. */
+    | { readonly type: "admitted"; readonly topic: string }
+    /**
+     * A `ctx.publish` made while the bus was stopping was refused: `aborted` (the drain was
+     * aborted), `not-in-flight` (its handler had already returned, or the context belongs to an
+     * earlier start/stop cycle).
+     */
+    | { readonly type: "rejected"; readonly reason: "aborted" | "not-in-flight" }
+    /** The built-in dead-letter middleware republished a failed event while the bus was stopping. */
+    | { readonly type: "dlq-republish"; readonly topic: string };
 
 /** Callback for {@link EventBusObserverEvent}; see `EventBusOptions.observer`. */
 export type EventBusObserver = (event: EventBusObserverEvent) => void | Promise<void>;
