@@ -31,6 +31,19 @@ async function waitFor(cond: () => boolean, label: string, timeoutMs = 10_000): 
     }
 }
 
+/**
+ * Holds the handler until the test lets it go, so the handler provably runs while `stop()` is
+ * draining: a timer could expire first on a slow machine and the test would pass without ever
+ * exercising a publish during shutdown.
+ */
+function gate(): { wait: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { wait, release };
+}
+
 describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefined ? "AMQP_TEST_URL not set" : false, concurrency: 1 }, () => {
     const url = AMQP_URL as string;
 
@@ -52,6 +65,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
         const raw = await connect(url);
         const rawChannel = await raw.createChannel();
 
+        const handlerGate = gate();
         let handlerStarted = false;
         let relayed: Promise<void> | undefined;
         const received: string[] = [];
@@ -66,7 +80,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
                     router.service(service, {
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -98,7 +112,9 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
 
             await publisher.publish(inTopic, new Uint8Array());
             await waitFor(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -107,6 +123,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.deepEqual(again, [], "the acknowledged input message must not be delivered again");
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await rawChannel.deleteQueue(`${exchange}.${group}`).catch(() => undefined);
@@ -137,6 +154,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             throw error;
         });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         const dead: Array<ReadonlyMap<string, string>> = [];
         const again: string[] = [];
@@ -151,7 +169,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
                     router.service(service, {
                         simpleEvent: async () => {
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             throw new Error("handler failed during shutdown");
                         },
                         // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
@@ -182,7 +200,9 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
 
             await publisher.publish(inTopic, new Uint8Array());
             await waitFor(() => handlerStarted, "failing handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
 
             await waitFor(() => dead.length >= 1, "dead-letter delivery");
             await sleep(500);
@@ -190,6 +210,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
             assert.deepEqual(again, [], "the failed input message must not be delivered again after the dead-letter publish");
         } finally {
+            handlerGate.release();
             await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
@@ -220,6 +241,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             throw error;
         });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         let deliveries = 0;
         let relayed: Promise<void> | undefined;
@@ -234,7 +256,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             deliveries++;
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -259,7 +281,9 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
 
             await publisher.publish(inTopic, new Uint8Array());
             await waitFor(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -268,6 +292,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
         } finally {
+            handlerGate.release();
             await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);

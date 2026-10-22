@@ -29,6 +29,19 @@ async function until(condition: () => boolean, label: string, timeoutMs = 20_000
     }
 }
 
+/**
+ * Holds the handler until the test lets it go, so the handler provably runs while `stop()` is
+ * draining: a timer could expire first on a slow machine and the test would pass without ever
+ * exercising a publish during shutdown.
+ */
+function gate(): { wait: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { wait, release };
+}
+
 describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undefined ? "NATS_TEST_URL not set" : false, concurrency: 1 }, () => {
     const servers = NATS_TEST_URL as string;
 
@@ -46,6 +59,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
         const group = `relay-${id}`;
         const publisher = NatsAdapter({ servers, stream });
         const sink = NatsAdapter({ servers, stream });
+        const handlerGate = gate();
         let handlerStarted = false;
         let deliveries = 0;
         let relayed: Promise<void> | undefined;
@@ -61,7 +75,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             deliveries++;
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -86,7 +100,9 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -95,6 +111,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
         }
@@ -114,6 +131,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
         const group = `relay-dlq-${id}`;
         const publisher = NatsAdapter({ servers, stream });
         const sink = NatsAdapter({ servers, stream });
+        const handlerGate = gate();
         let handlerStarted = false;
         let deliveries = 0;
         const dead: Array<ReadonlyMap<string, string>> = [];
@@ -129,7 +147,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
                         simpleEvent: async () => {
                             deliveries++;
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             throw new Error("handler failed during shutdown");
                         },
                         // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
@@ -153,7 +171,9 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "failing handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
 
             await until(() => dead.length >= 1, "dead-letter delivery");
             await sleep(500);
@@ -161,6 +181,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
             assert.equal(deliveries, 1, "the failed input message must not be delivered to the handler again");
         } finally {
+            handlerGate.release();
             await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
@@ -180,6 +201,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
         const stream = `itrelayng${id.slice(0, 12)}`;
         const publisher = NatsAdapter({ servers, stream });
         const sink = NatsAdapter({ servers, stream });
+        const handlerGate = gate();
         let handlerStarted = false;
         let deliveries = 0;
         let relayed: Promise<void> | undefined;
@@ -194,7 +216,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             deliveries++;
                             handlerStarted = true;
-                            await sleep(400); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -219,7 +241,9 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -228,6 +252,7 @@ describe("EventBus relay during stop() on NATS", { skip: NATS_TEST_URL === undef
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
         } finally {
+            handlerGate.release();
             await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);

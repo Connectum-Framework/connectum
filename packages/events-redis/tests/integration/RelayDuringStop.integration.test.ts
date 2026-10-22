@@ -27,6 +27,19 @@ async function until(condition: () => boolean | Promise<boolean>, label: string,
     }
 }
 
+/**
+ * Holds the handler until the test lets it go, so the handler provably runs while `stop()` is
+ * draining: a timer could expire first on a slow machine and the test would pass without ever
+ * exercising a publish during shutdown.
+ */
+function gate(): { wait: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { wait, release };
+}
+
 describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === undefined ? "REDIS_TEST_URL not set" : false, concurrency: 1 }, () => {
     const url = REDIS_TEST_URL as string;
 
@@ -45,6 +58,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
         const sink = newAdapter();
         const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         let relayed: Promise<void> | undefined;
         const received: string[] = [];
@@ -58,7 +72,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
                     router.service(service, {
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             handlerStarted = true;
-                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -79,7 +93,9 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -91,6 +107,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(pending[0], 0, "the input entry must have been acknowledged during the shutdown");
             await sinkSubscription.unsubscribe();
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await control.quit().catch(() => undefined);
@@ -112,6 +129,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
         const sink = newAdapter();
         const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
 
+        const handlerGate = gate();
         let handlerStarted = false;
         const dead: Array<ReadonlyMap<string, string>> = [];
 
@@ -125,7 +143,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
                     router.service(service, {
                         simpleEvent: async () => {
                             handlerStarted = true;
-                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             throw new Error("handler failed during shutdown");
                         },
                         // biome-ignore lint/suspicious/noExplicitAny: route map against a fake descriptor
@@ -149,7 +167,9 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "failing handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
 
             await until(() => dead.length >= 1, "dead-letter delivery");
             await new Promise((resolve) => globalThis.setTimeout(resolve, 300));
@@ -160,6 +180,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(pending[0], 0, "the failed input entry must have been acknowledged after the dead-letter publish");
             await sinkSubscription.unsubscribe();
         } finally {
+            handlerGate.release();
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await control.quit().catch(() => undefined);
@@ -179,6 +200,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
         const publisher = newAdapter();
         const sink = newAdapter();
 
+        const handlerGate = gate();
         let handlerStarted = false;
         let deliveries = 0;
         let relayed: Promise<void> | undefined;
@@ -193,7 +215,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
                         simpleEvent: async (_message: unknown, ctx: { publish: (schema: typeof EventOptionsSchema, data: unknown, options: { topic: string }) => Promise<void> }) => {
                             deliveries++;
                             handlerStarted = true;
-                            await new Promise((resolve) => globalThis.setTimeout(resolve, 400)); // stop() begins meanwhile
+                            await handlerGate.wait; // released once stop() has begun
                             relayed = ctx.publish(EventOptionsSchema, {}, { topic: outTopic });
                             await relayed;
                         },
@@ -214,7 +236,9 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
 
             await publisher.publish(inTopic, new Uint8Array());
             await until(() => handlerStarted, "relay handler start");
-            await bus.stop();
+            const stopping = bus.stop();
+            handlerGate.release();
+            await stopping;
             assert.ok(relayed, "the handler must have reached ctx.publish");
             await relayed;
 
@@ -224,6 +248,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
             await sinkSubscription.unsubscribe();
         } finally {
+            handlerGate.release();
             await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
