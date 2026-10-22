@@ -125,7 +125,6 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
         const service = { typeName: "integration.v1.RelayDlqService", methods: [method] } as any;
 
         const admin = new Kafka({ clientId: "integration-relay-dlq-control", brokers, logLevel: logLevel.ERROR }).admin();
-        await admin.connect();
         const newAdapter = () =>
             KafkaAdapter({
                 brokers,
@@ -158,6 +157,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
         });
 
         try {
+            await admin.connect();
             await createTopicWithLeader(admin, inTopic);
             await createTopicWithLeader(admin, dlqTopic);
             await publisher.connect({ serviceName: "integration-relay-dlq-publisher" });
@@ -204,7 +204,6 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
         const service = { typeName: "integration.v1.RelayNoGroupService", methods: [method] } as any;
 
         const admin = new Kafka({ clientId: "integration-relay-nogroup-control", brokers, logLevel: logLevel.ERROR }).admin();
-        await admin.connect();
         const newAdapter = () =>
             KafkaAdapter({
                 brokers,
@@ -239,6 +238,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
         });
 
         try {
+            await admin.connect();
             await createTopicWithLeader(admin, inTopic);
             await createTopicWithLeader(admin, outTopic);
             await publisher.connect({ serviceName: "integration-relay-publisher" });

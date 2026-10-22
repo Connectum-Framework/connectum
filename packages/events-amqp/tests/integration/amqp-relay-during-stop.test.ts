@@ -132,7 +132,10 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
         const publisher = newAdapter();
         const sink = newAdapter();
         const raw = await connect(url);
-        const rawChannel = await raw.createChannel();
+        const rawChannel = await raw.createChannel().catch(async (error: unknown) => {
+            await raw.close().catch(() => undefined);
+            throw error;
+        });
 
         let handlerStarted = false;
         const dead: Array<ReadonlyMap<string, string>> = [];
@@ -212,7 +215,10 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
         const publisher = newAdapter();
         const sink = newAdapter();
         const raw = await connect(url);
-        const rawChannel = await raw.createChannel();
+        const rawChannel = await raw.createChannel().catch(async (error: unknown) => {
+            await raw.close().catch(() => undefined);
+            throw error;
+        });
 
         let handlerStarted = false;
         let deliveries = 0;
