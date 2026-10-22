@@ -414,6 +414,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     // Both drains return what was still unsettled when their own budget ended: a
                     // handler or publish that settles while the other drain goes on is still
                     // reported as abandoned.
+                    // End of the grace window that starts at the abort; the relay wait shares it, so the
+                    // bus budget stays `drainTimeout` + `drainAbortGrace`.
+                    let graceDeadline: number | undefined;
                     const drainHandlers = async (): Promise<number> => {
                         if (inFlight.size > 0 && drainTimeout > 0) {
                             const deadline = Date.now() + drainTimeout;
@@ -437,7 +440,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             if (drainAbortGrace === undefined) {
                                 await Promise.allSettled([...inFlight]);
                             } else {
-                                const graceDeadline = Date.now() + drainAbortGrace;
+                                graceDeadline = Date.now() + drainAbortGrace;
                                 while (inFlight.size > 0) {
                                     const remaining = graceDeadline - Date.now();
                                     if (remaining <= 0) break;
@@ -472,7 +475,8 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                             }
                             return 0;
                         }
-                        const relayDeadline = Date.now() + drainAbortGrace;
+                        // Without an abort there was no grace window yet, so the relay gets its own.
+                        const relayDeadline = graceDeadline ?? Date.now() + drainAbortGrace;
                         while (relayPublishes.size > 0) {
                             const remaining = relayDeadline - Date.now();
                             if (remaining <= 0) break;

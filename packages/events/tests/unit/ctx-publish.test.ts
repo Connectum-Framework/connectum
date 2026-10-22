@@ -346,6 +346,27 @@ describe("ctx.publish while the bus stops", () => {
         assert.deepEqual(events, [{ type: "admitted", topic: "out.hang" }, { type: "abandoned", handlers: 0, publishes: 1 }]);
     });
 
+    it("the wait for a relay publish shares the grace window of the handlers: the budget is drainTimeout plus one grace", async () => {
+        const { bus, deliver } = makeBus(
+            async (ctx) => {
+                await sleep(40);
+                void ctx.publish(EventOptionsSchema, msg(), { topic: "out.hang" }).catch(() => undefined);
+                await new Promise<void>(() => undefined);
+            },
+            { drainAbortGrace: 400 },
+        );
+        await bus.start();
+        void deliver();
+        await sleep(10);
+
+        const startedAt = Date.now();
+        await bus.stop();
+        const took = Date.now() - startedAt;
+
+        assert.ok(took >= 500, `stop() must wait drainTimeout plus the grace (took ${took}ms)`);
+        assert.ok(took < 800, `stop() must not start a second grace window for the relay (took ${took}ms)`);
+    });
+
     it("an abandoned handler with a relay publish that never settles does not hold stop() on the subscription close", async () => {
         let release: () => void = () => undefined;
         const hold = new Promise<void>((resolve) => {
