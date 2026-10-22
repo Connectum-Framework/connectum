@@ -45,6 +45,8 @@ export type {
     EventAdapter,
     EventAdapterFactory,
     EventBus,
+    EventBusObserver,
+    EventBusObserverEvent,
     EventBusOptions,
     EventContext,
     EventContextInit,
