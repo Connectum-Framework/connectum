@@ -238,6 +238,36 @@ describe("ctx.publish while the bus stops", () => {
         await bus.stop();
     });
 
+    it("an abandoned handler that wakes up after a new start has no right to publish", async () => {
+        let wake: () => void = () => undefined;
+        const asleep = new Promise<void>((resolve) => {
+            wake = resolve;
+        });
+        let late: Promise<void> | undefined;
+        // Ignores the abort, so it is still `alive` when the grace ends and the bus is started again.
+        const { bus, deliver, order, events } = makeBus(
+            async (ctx) => {
+                await asleep;
+                late = ctx.publish(EventOptionsSchema, msg(), { topic: "out.abandoned" });
+                late.catch(() => undefined);
+            },
+            { drainAbortGrace: 0 },
+        );
+        await bus.start();
+        const handled = deliver();
+        await sleep(5);
+        await bus.stop();
+        await bus.start();
+        wake();
+        await handled;
+
+        assert.ok(late, "the abandoned handler must have tried to publish");
+        await assert.rejects(() => late as Promise<void>, /ctx\.publish was called after its handler returned or after the bus stopped/);
+        assert.ok(!order.includes("publish:out.abandoned"), "nothing reached the adapter");
+        assert.deepEqual(events, [{ type: "abandoned", handlers: 1, publishes: 0 }]);
+        await bus.stop();
+    });
+
     it("the publish of a context reaches only the adapter of its own bus", async () => {
         const other = makeBus(async () => undefined);
         const { bus } = makeBus(async () => undefined);
@@ -338,6 +368,26 @@ describe("the dead-letter republish while the bus stops", () => {
 
         assert.deepEqual(order, ["publish:dead.letters", "settled:dead.letters", "disconnect"]);
         assert.deepEqual(events, [{ type: "dlq-republish", topic: "dead.letters" }]);
+    });
+
+    it("counts as unfinished publish work when it never settles and the grace ends", async () => {
+        const { bus, deliver, events } = makeBus(
+            async () => {
+                await sleep(30);
+                throw new Error("handler failed");
+            },
+            { middleware: { dlq: { topic: "dead.letters" } }, drainAbortGrace: 100 },
+        );
+        await bus.start();
+        void deliver();
+        await sleep(5);
+
+        await bus.stop();
+
+        assert.deepEqual(events, [
+            { type: "dlq-republish", topic: "dead.letters" },
+            { type: "abandoned", handlers: 1, publishes: 1 },
+        ]);
     });
 
     it("is not tracked or reported while the bus runs", async () => {
