@@ -185,6 +185,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
             const offset = committed?.partitions[0]?.offset;
             assert.equal(offset, "1", `the failed input offset must be committed after the dead-letter publish (got ${String(offset)})`);
         } finally {
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await admin.deleteTopics({ topics: [inTopic, dlqTopic] }).catch(() => undefined);
@@ -263,6 +264,7 @@ describe("EventBus relay during stop() on Kafka", { skip: KAFKA_TEST_URL === und
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
         } finally {
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await admin.deleteTopics({ topics: [inTopic, outTopic] }).catch(() => undefined);

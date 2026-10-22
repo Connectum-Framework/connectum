@@ -187,6 +187,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             assert.equal(dead[0]?.get("dlq.original-topic"), inTopic);
             assert.deepEqual(again, [], "the failed input message must not be delivered again after the dead-letter publish");
         } finally {
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await rawChannel.deleteQueue(`${exchange}.${group}`).catch(() => undefined);
@@ -261,6 +262,7 @@ describe("EventBus relay during stop() on RabbitMQ", { skip: AMQP_URL === undefi
             assert.equal(received.length, 1, `the relayed event must be delivered exactly once (got ${received.length})`);
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
         } finally {
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
             await rawChannel.deleteExchange(exchange).catch(() => undefined);

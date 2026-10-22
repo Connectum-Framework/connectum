@@ -224,6 +224,7 @@ describe("EventBus relay during stop() on Redis", { skip: REDIS_TEST_URL === und
             assert.equal(deliveries, 1, "the input message must not be delivered to the handler again");
             await sinkSubscription.unsubscribe();
         } finally {
+            await bus.stop().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await sink.disconnect().catch(() => undefined);
         }
