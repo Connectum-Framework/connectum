@@ -272,7 +272,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             // If start() is in progress, wait for it to complete, then stop
             if (starting && startPromise) {
                 await startPromise.catch(() => {});
-                // After start completes (or fails), re-check state
+                // After start completes (or fails), re-check state. Another stop() that waited
+                // for the same start may have begun the shutdown while this one was waiting:
+                // share it, or the adapter would be disconnected twice.
+                if (stopPromise) return stopPromise;
                 if (!started) return;
             }
 
@@ -370,7 +373,12 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
         },
 
         async publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, publishOptions?: PublishOptions): Promise<void> {
-            if (!started || stopping) {
+            // The two causes read differently: a bus that is draining for stop() is not a bus that
+            // was never started, and the remedy differs.
+            if (stopping) {
+                throw new Error("EventBus is stopping: it accepts no new events while it drains. Wait for stop() to finish, then call start() again to publish.");
+            }
+            if (!started) {
                 throw new Error("EventBus not started. Call start() first.");
             }
 

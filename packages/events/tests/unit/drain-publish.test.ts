@@ -159,7 +159,7 @@ describe("drainPublishTimeout (#196)", () => {
         const stopping = bus.stop();
         await assert.rejects(
             () => bus.publish(EventOptionsSchema, eventMsg()),
-            /not started/i,
+            /EventBus is stopping/,
             "the stopping gate is unchanged — new publishes are rejected during stop()",
         );
         await stopping;
