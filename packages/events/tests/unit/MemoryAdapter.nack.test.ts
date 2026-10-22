@@ -12,6 +12,17 @@ import type { RawEvent } from "../../src/types.ts";
 
 const payload = new Uint8Array([1]);
 
+/**
+ * Wait until something that must happen has happened. Never throws: on a timeout the assertion after
+ * it reports the actual values. A fixed sleep is used only where nothing is expected to happen.
+ */
+async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition() && Date.now() < deadline) {
+        await sleep(5);
+    }
+}
+
 describe("MemoryAdapter nack", () => {
     it("nack(true) redelivers to the same subscription with a raised attempt, and ack ends it", async () => {
         const adapter = MemoryAdapter();
@@ -29,7 +40,8 @@ describe("MemoryAdapter nack", () => {
         });
 
         await adapter.publish("t", payload);
-        await sleep(50);
+        await until(() => attempts.length >= 3);
+        await sleep(30); // a wrongly extra redelivery would show up now
 
         assert.deepEqual(attempts, [1, 2, 3]);
         assert.equal(ids.size, 1, "a redelivery is the same event, not a new one");
@@ -45,7 +57,8 @@ describe("MemoryAdapter nack", () => {
         });
 
         await adapter.publish("t", payload);
-        await sleep(50);
+        await until(() => attempts.length >= 2);
+        await sleep(30);
 
         assert.deepEqual(attempts, [1, 2]);
     });
@@ -79,7 +92,8 @@ describe("MemoryAdapter nack", () => {
         });
 
         await adapter.publish("t", payload);
-        await sleep(50);
+        await until(() => first.length >= 2);
+        await sleep(30);
 
         assert.deepEqual(first, [1, 2]);
         assert.deepEqual(second, [1]);
@@ -96,7 +110,7 @@ describe("MemoryAdapter nack", () => {
 
         await adapter.publish("t", payload);
         assert.deepEqual(attempts, [1], "the second attempt must not have run inside publish()");
-        await sleep(50);
+        await until(() => attempts.length >= 2);
         assert.deepEqual(attempts, [1, 2]);
     });
 
@@ -114,7 +128,7 @@ describe("MemoryAdapter nack", () => {
         setTimeout(() => {
             timerRan = true;
         }, 20);
-        await sleep(60);
+        await until(() => timerRan && attempts >= 2);
 
         assert.ok(timerRan, "a 20 ms timer must run while the handler keeps nacking");
         assert.ok(attempts >= 2);
