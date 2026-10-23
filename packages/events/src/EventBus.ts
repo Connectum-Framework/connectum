@@ -109,6 +109,15 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let draining = false;
     const defaultSignal = options.signal;
     let shutdownSignal: AbortSignal | undefined;
+    // Ends the subscriptions once per start/stop cycle. The abort of the shutdown signal and
+    // `stop()` both need it, and an adapter is not required to tolerate a second `unsubscribe()`,
+    // so both share the one promise. It never rejects.
+    let receptionEnded: Promise<unknown> | null = null;
+    const endReception = (): Promise<unknown> => {
+        receptionEnded ??= Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
+        return receptionEnded;
+    };
+    let removeAbortListener: (() => void) | undefined;
 
     const trackRelay = (publish: Promise<void>): void => {
         relayPublishes.add(publish);
@@ -188,6 +197,21 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
 
             // Accept shutdown signal from server integration (C-2)
             shutdownSignal = startOptions?.signal ?? defaultSignal;
+            // An abort ends reception at once: a delivery that starts a handler with an already
+            // aborted `ctx.signal` is neither retried nor safe, while a delivery returned to the
+            // broker is handled after the restart. Handlers that are running are not touched, and
+            // `stop()` still drains them and disconnects. Before `started` the subscriptions do not
+            // exist yet: `start()` applies the abort itself once they do.
+            const abortSignal = shutdownSignal;
+            if (abortSignal) {
+                const onAbort = (): void => {
+                    if (started) {
+                        void endReception();
+                    }
+                };
+                abortSignal.addEventListener("abort", onAbort, { once: true });
+                removeAbortListener = () => abortSignal.removeEventListener("abort", onAbort);
+            }
 
             startPromise = (async () => {
                 try {
@@ -257,8 +281,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                                     return;
                                 }
 
-                                // Gate: nack new messages during drain
-                                if (draining) {
+                                // Gate: nack new messages during drain, and after the shutdown signal
+                                // aborted (a delivery buffered before the subscriptions ended)
+                                if (draining || shutdownSignal?.aborted) {
                                     await nack(true);
                                     return;
                                 }
@@ -343,7 +368,12 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     }
 
                     started = true;
+                    if (shutdownSignal?.aborted) {
+                        void endReception();
+                    }
                 } catch (error) {
+                    removeAbortListener?.();
+                    removeAbortListener = undefined;
                     await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
                     await adapter.disconnect();
@@ -384,7 +414,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     //    drain starts would leave `handlerTimeout` as the only
                     //    limit and the `drainTimeout` force-abort could never
                     //    fire; the drain below is what lets that handler end.
-                    const unsubscribed = Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
+                    const unsubscribed = endReception();
 
                     // 2. Drain in-flight handlers and (opt-in, #196) in-flight
                     //    publishes CONCURRENTLY with the unsubscribe above —
@@ -511,6 +541,9 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                 } finally {
                     started = false;
                     generation++;
+                    removeAbortListener?.();
+                    removeAbortListener = undefined;
+                    receptionEnded = null;
                     shutdownSignal = undefined;
                     stopping = false;
                     draining = false;
