@@ -53,15 +53,19 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
                 brokerOptions: { blockMs: 20, count: 5 },
             });
             const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
-            let monitor: { on(event: "monitor", listener: (time: string, args: string[]) => void): void; disconnect(): void } | undefined;
+            // The recorder is built here, not with `control.monitor()`: that call hides the client it creates until
+            // MONITOR is acknowledged, so a rejected MONITOR would leave a client nobody can disconnect.
+            const recorder = control.duplicate({ monitor: true, lazyConnect: false });
             /** The `min-idle-time` argument of every XAUTOCLAIM of this group: XAUTOCLAIM key group consumer min-idle-time start. */
             const minIdleTimes: string[] = [];
 
             try {
-                // `monitor()` resolves once the broker has acknowledged MONITOR, so every command that follows is recorded.
-                const recorder = (await control.monitor()) as unknown as NonNullable<typeof monitor>;
-                monitor = recorder;
-                recorder.on("monitor", (_time, args) => {
+                // Every command that follows the acknowledgement of MONITOR is recorded.
+                await new Promise<void>((resolve, reject) => {
+                    recorder.once("error", reject);
+                    recorder.once("monitoring", () => resolve());
+                });
+                recorder.on("monitor", (_time: string, args: string[]) => {
                     if (!args.includes(group)) return;
                     if (String(args[0]).toUpperCase() === "XAUTOCLAIM") {
                         minIdleTimes.push(String(args[4]));
@@ -77,7 +81,7 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
 
                 assert.deepEqual(new Set(minIdleTimes), new Set(["30000"]), "XAUTOCLAIM must ask for entries idle for 30 s (30000 ms)");
             } finally {
-                monitor?.disconnect();
+                recorder.disconnect();
                 await adapter.disconnect().catch(() => undefined);
                 await control.del(streamKey).catch(() => undefined);
                 await control.quit().catch(() => undefined);
