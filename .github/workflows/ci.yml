@@ -130,9 +130,8 @@ jobs:
       - name: GOAWAY and force-close on Node 22
         working-directory: packages/core
         run: |
-          echo "node on PATH: $(node --version)"
-          echo "node seen by pnpm exec: $(pnpm exec node --version 2>&1)"
-          test "$(node --version)" = "v22.13.0"
+          # pnpm prints its engine warning on stdout before the version, so only the last line counts.
+          test "$(pnpm exec node --version | tail -n 1)" = "v22.13.0"
           pnpm exec exodus-test --typescript tests/unit/TransportManager.goaway.test.ts tests/unit/TransportManager.forceClose.test.ts
 
   # ── AMQP broker integration (happy path) ───────────────────────────────
