@@ -178,21 +178,28 @@ describe("provider: OTLP/gRPC exporters", () => {
 	});
 
 	afterEach(async () => {
-		await shutdownProvider();
-		// The global registrations survive shutdownProvider() and refuse a second
-		// registration, so a later test would otherwise record into a dead provider.
-		context.disable();
-		propagation.disable();
-		trace.disable();
-		metrics.disable();
-		logs.disable();
-		await stopCollector(collector);
-		for (const key of ENV_KEYS) {
-			const value = saved.get(key);
-			if (value === undefined) {
-				delete process.env[key];
-			} else {
-				process.env[key] = value;
+		// Every step runs even when an earlier one rejects: a leaked collector or environment would leak into the next test.
+		try {
+			await shutdownProvider();
+		} finally {
+			// The global registrations survive shutdownProvider() and refuse a second
+			// registration, so a later test would otherwise record into a dead provider.
+			context.disable();
+			propagation.disable();
+			trace.disable();
+			metrics.disable();
+			logs.disable();
+			try {
+				await stopCollector(collector);
+			} finally {
+				for (const key of ENV_KEYS) {
+					const value = saved.get(key);
+					if (value === undefined) {
+						delete process.env[key];
+					} else {
+						process.env[key] = value;
+					}
+				}
 			}
 		}
 	});
