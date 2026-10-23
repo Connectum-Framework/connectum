@@ -4,7 +4,7 @@
  *
  * Package managers do not all stop an out-of-range peer: npm refuses the install, but
  * pnpm only warns, Bun stays silent when another in-range copy exists anywhere in the
- * tree, and Yarn leaves peers to the application. A too-old `@bufbuild/protobuf` or
+ * tree. A too-old `@bufbuild/protobuf` or
  * Connect then surfaces much later as mismatched generated types or a broken runtime.
  * `createServer()` runs this check so the mismatch fails at startup, naming the package,
  * the version that was loaded, the required range and the fix.
@@ -21,7 +21,7 @@
  *
  * Lockstep is checked too: `@connectrpc/connect-node` declares ONE exact
  * `@connectrpc/connect` version as its peer, and a pair out of step is not reported at
- * install time by Bun or Yarn. The `connect` that connect-node itself loads is resolved
+ * install time by Bun. The `connect` that connect-node itself loads is resolved
  * from connect-node's own location and must be that exact version — and the same copy
  * core loads.
  *
@@ -96,7 +96,7 @@ function formatProblems(problems: readonly PeerVersionProblem[]): string {
         ...lines,
         "Generated code and the framework must share one in-range copy of each library; an older copy breaks generated types and Connect at runtime.",
         ...(lockstep ? ["@connectrpc/connect-node works only with the exact @connectrpc/connect version it declares: keep both on the same version, with a single copy."] : []),
-        `Fix: raise your pins to the required ranges${installs ? ` (npm install ${installs}, or the pnpm / bun / yarn equivalent)` : ""}, or force one in-range version with "overrides" (npm, Bun), pnpm "overrides" or Yarn "resolutions", then reinstall.`,
+        `Fix: raise your pins to the required ranges${installs ? ` (npm install ${installs}, or the pnpm / bun equivalent)` : ""}, or force one in-range version with "overrides" (npm, Bun) or pnpm "overrides", then reinstall.`,
     ].join("\n");
 }
 
