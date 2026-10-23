@@ -133,8 +133,15 @@ describe("process exit after stop() of a TLS server with a client that never clo
             // A connection with no request under way is idle and closed by the graceful phase, which
             // would hide the case under test: stop only once the server certainly serves this one.
             const serving = reply(scenario.readyOn);
+            // A child that exits before it reports readiness would leave `serving` pending until the
+            // test timeout; failing at once names the exit status instead of a generic timeout.
+            const exitedEarly = new Promise<never>((_resolve, reject) => {
+                void exited.then(([code, signal]) => reject(new Error(`the child exited (code ${code}, signal ${signal}) before it reported "${scenario.readyOn}"`)));
+            });
+            // Observed on purpose: when readiness wins the race, a later exit must not surface as an unhandled rejection.
+            exitedEarly.catch(() => undefined);
             clients.push(await scenario.connect(port ?? 0));
-            await serving;
+            await Promise.race([serving, exitedEarly]);
 
             const stopped = reply("stopped");
             child.send({ type: "stop" });
