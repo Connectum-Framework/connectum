@@ -3,7 +3,7 @@
  *
  * createServer() refuses to start when the protobuf / Connect copy core actually loaded
  * is outside core's peer ranges, because package managers do not all stop that at
- * install time (pnpm only warns, Bun can stay silent, Yarn leaves peers to the app).
+ * install time (pnpm only warns, Bun can stay silent).
  * These tests pin three things:
  * - the decision: which loaded versions fail, with the package, loaded version, required
  *   range and fix in the message;
@@ -239,7 +239,7 @@ describe("checkPeerVersions — connect / connect-node lockstep", () => {
 
     it("fails when connect-node declares another exact connect, although both are inside core's ranges", () => {
         // connect-node 2.2.5 requires connect exactly 2.2.5; core's ^2.2.0 accepts both,
-        // so only the lockstep check sees this pair — the case Bun and Yarn install silently.
+        // so only the lockstep check sees this pair — the case Bun installs silently.
         const report = checkPeerVersions({
             selfUrl: CORE_SELF,
             resolve: resolverFor({ ...IN_RANGE, "@connectrpc/connect-node": "connect-node-2.2.5" }),
