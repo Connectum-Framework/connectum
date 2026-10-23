@@ -24,7 +24,7 @@
     "lint": "turbo run lint",
     "lint:rules": "node --test lint/*.test.mjs",
     "format": "turbo run format",
-    "biome": "biome check --write .",
+    "biome": "biome check --write --error-on-warnings .",
     "scaffold:check": "node scripts/scaffold-check.mjs",
     "dependency-contract:check": "node scripts/dependency-contract/check.mjs",
     "release:gate": "node scripts/release-gate/run.mjs --mode pack",
@@ -40,7 +40,7 @@
     "docs:api": "typedoc && node scripts/stabilize-api-source-links.mjs",
     "docs:check": "node scripts/documentation-acceptance.mjs",
     "prepare": "husky",
-    "lint:repo": "biome check ."
+    "lint:repo": "biome check --error-on-warnings ."
   },
   "keywords": [
     "grpc",

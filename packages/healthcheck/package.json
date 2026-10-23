@@ -39,7 +39,7 @@
     "test:bun": "exodus-test --engine bun:pure tests/**/*.test.ts",
     "test:interop": "exodus-test --typescript tests/interop/*.interop.ts",
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
-    "lint": "biome check src",
+    "lint": "biome check --error-on-warnings src",
     "format": "biome check --write src",
     "build": "tsup",
     "clean": "rm -rf coverage dist gen gen-ts"

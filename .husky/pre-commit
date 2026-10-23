@@ -6,6 +6,9 @@ if git status --short | grep --quiet '^MM'; then
   exit 1;
 fi
 
+# Biome judges the biome-ignore suppressions against the generated sources: without
+# gen/ it cannot resolve them and reports them as unused.
+pnpm exec turbo run build:proto
 pnpm run biome
 
 git update-index --again

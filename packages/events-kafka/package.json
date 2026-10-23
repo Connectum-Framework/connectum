@@ -29,7 +29,7 @@
     "test:lifecycle": "exodus-test --typescript tests/lifecycle/**/*.test.ts",
     "test:bun": "exodus-test --engine bun:pure tests/unit/**/*.test.ts",
     "test:esbuild": "exodus-test --esbuild tests/unit/**/*.test.ts",
-    "lint": "biome check src",
+    "lint": "biome check --error-on-warnings src",
     "format": "biome check --write src",
     "build": "tsup",
     "clean": "rm -rf coverage dist"
