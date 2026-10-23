@@ -37,6 +37,10 @@ net.Server.prototype.emit = function (this: net.Server, event: string | symbol, 
     } else if (event === "secureConnection" && this instanceof tls.Server) {
         // The decrypted socket of a completed handshake; the HTTP/1.1 parser of a TLS server reads from it.
         (args[0] as net.Socket).once("data", () => process.send?.({ type: "data" }));
+    } else if (event === "session") {
+        // An HTTP/2 session announces a request stream once its HEADERS frame has been read: the
+        // connection then has a request under way, which the client's SETTINGS exchange does not show.
+        (args[0] as import("node:http2").Http2Session).once("stream", () => process.send?.({ type: "stream" }));
     }
     return handled;
 };

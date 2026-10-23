@@ -100,13 +100,7 @@ export async function stubbornClient(options: { port: number; payload: Buffer | 
  * Trusts exactly the given self-signed certificate. Resolves once the payload
  * is flushed to the kernel.
  */
-export async function stubbornTlsClient(options: {
-    port: number;
-    ca: Buffer;
-    alpn: "h2" | "http/1.1";
-    payload: Buffer | string;
-    onHttp2Frame?: (type: number) => void;
-}): Promise<Socket> {
+export async function stubbornTlsClient(options: { port: number; ca: Buffer; alpn: "h2" | "http/1.1"; payload: Buffer | string }): Promise<Socket> {
     // `allowHalfOpen` reaches the TLS socket at runtime but is missing from the `ConnectionOptions` typings.
     const connectOptions: ConnectionOptions & { allowHalfOpen: boolean } = {
         port: options.port,
@@ -118,7 +112,6 @@ export async function stubbornTlsClient(options: {
     };
     const socket = tlsConnect(connectOptions);
     socket.on("error", () => {});
-    if (options.onHttp2Frame) watchHttp2Frames(socket, options.onHttp2Frame);
     socket.resume();
     await once(socket, "secureConnect");
     await new Promise<void>((resolve, reject) => socket.write(options.payload, (err) => (err ? reject(err) : resolve())));

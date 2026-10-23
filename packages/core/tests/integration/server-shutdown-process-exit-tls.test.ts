@@ -18,27 +18,42 @@ import assert from "node:assert";
 import { type ChildProcess, execFileSync, fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import type { Socket } from "node:net";
+import { connect as http2Connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { HTTP2_FRAME_SETTINGS, HTTP2_PREFACE, stubbornClient, stubbornTlsClient } from "../helpers/rawClients.ts";
+import { stubbornClient, stubbornTlsClient } from "../helpers/rawClients.ts";
 
 const SERVER_SCRIPT = fileURLToPath(new URL("../fixtures/shutdown/stubbornClientServer.ts", import.meta.url));
 const TIMEOUT_MS = 400;
 /** After the timeout only socket destruction and process teardown remain; 5 s absorbs a loaded host and a slow runtime start. */
 const EXIT_SLACK_MS = 5000;
 
-/** An HTTP/2 HEADERS frame (POST, https, `/`; END_HEADERS set, END_STREAM not) on stream 1: a request whose body never ends. */
-const HTTP2_OPEN_POST_REQUEST = Buffer.from([0, 0, 3, 0x1, 0x4, 0, 0, 0, 1, 0x83, 0x87, 0x84]);
+/**
+ * A real HTTP/2 client that opens a POST stream, writes part of the body and never ends it. The
+ * server announces the stream to the parent once it has read the HEADERS frame, so the parent knows
+ * the connection has a request under way.
+ */
+function openUnfinishedHttp2Request(port: number, ca: Buffer): Destroyable {
+    const session = http2Connect(`https://127.0.0.1:${port}`, { ca, servername: "localhost" });
+    session.on("error", () => {});
+    const request = session.request({ ":method": "POST", ":path": "/" });
+    request.on("error", () => {});
+    request.write("the body never ends");
+    return { destroy: () => session.destroy() };
+}
+
+interface Destroyable {
+    destroy(): void;
+}
 
 describe("process exit after stop() of a TLS server with a client that never closes", () => {
     let tlsDir: string;
     let tls: { keyPath: string; certPath: string };
     let ca: Buffer;
     const children: ChildProcess[] = [];
-    const clients: Socket[] = [];
+    const clients: Destroyable[] = [];
 
     before(() => {
         // A throwaway self-signed pair per run: no key material is committed.
@@ -66,27 +81,17 @@ describe("process exit after stop() of a TLS server with a client that never clo
     interface Scenario {
         name: string;
         allowHTTP1: boolean;
-        /** Connect the stubborn client; `ready` must settle once the server certainly counts the connection as in use. */
-        connect(port: number, ready: () => void): Promise<Socket>;
-        /** The child message, or `"settings"` for the HTTP/2 SETTINGS frame, that proves the server is serving the connection. */
-        readyOn: "data" | "accepted" | "settings";
+        connect(port: number): Promise<Destroyable> | Destroyable;
+        /** The child message that proves the server counts the connection as in use. */
+        readyOn: "data" | "accepted" | "stream";
     }
 
     const scenarios: Scenario[] = [
         {
             name: "an HTTP/2 stream whose request body never ends",
             allowHTTP1: false,
-            readyOn: "settings",
-            connect: (port, ready) =>
-                stubbornTlsClient({
-                    port,
-                    ca,
-                    alpn: "h2",
-                    payload: Buffer.concat([HTTP2_PREFACE, HTTP2_OPEN_POST_REQUEST]),
-                    onHttp2Frame: (type) => {
-                        if (type === HTTP2_FRAME_SETTINGS) ready();
-                    },
-                }),
+            readyOn: "stream",
+            connect: (port) => openUnfinishedHttp2Request(port, ca),
         },
         {
             name: "an HTTP/1.1 request cut off in its headers",
@@ -127,13 +132,9 @@ describe("process exit after stop() of a TLS server with a client that never clo
 
             // A connection with no request under way is idle and closed by the graceful phase, which
             // would hide the case under test: stop only once the server certainly serves this one.
-            const serving = scenario.readyOn === "settings" ? undefined : reply(scenario.readyOn);
-            let sawSettings: () => void = () => {};
-            const settings = new Promise<void>((resolve) => {
-                sawSettings = resolve;
-            });
-            clients.push(await scenario.connect(port ?? 0, sawSettings));
-            await (serving ?? settings);
+            const serving = reply(scenario.readyOn);
+            clients.push(await scenario.connect(port ?? 0));
+            await serving;
 
             const stopped = reply("stopped");
             child.send({ type: "stop" });
