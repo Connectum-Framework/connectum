@@ -53,17 +53,20 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
                 brokerOptions: { blockMs: 20, count: 5 },
             });
             const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
-            const monitor = (await control.monitor()) as unknown as { on(event: "monitor", listener: (time: string, args: string[]) => void): void; disconnect(): void };
+            let monitor: { on(event: "monitor", listener: (time: string, args: string[]) => void): void; disconnect(): void } | undefined;
             /** The `min-idle-time` argument of every XAUTOCLAIM of this group: XAUTOCLAIM key group consumer min-idle-time start. */
             const minIdleTimes: string[] = [];
-            monitor.on("monitor", (_time, args) => {
-                if (!args.includes(group)) return;
-                if (String(args[0]).toUpperCase() === "XAUTOCLAIM") {
-                    minIdleTimes.push(String(args[4]));
-                }
-            });
 
             try {
+                // `monitor()` resolves once the broker has acknowledged MONITOR, so every command that follows is recorded.
+                const recorder = (await control.monitor()) as unknown as NonNullable<typeof monitor>;
+                monitor = recorder;
+                recorder.on("monitor", (_time, args) => {
+                    if (!args.includes(group)) return;
+                    if (String(args[0]).toUpperCase() === "XAUTOCLAIM") {
+                        minIdleTimes.push(String(args[4]));
+                    }
+                });
                 await adapter.connect({ serviceName: `integration-reclaim-window-${mode.protocol}-${mode.replyMapping}` });
                 const subscription = await adapter.subscribe([eventType], async (_event, ack) => ack(), { group });
                 try {
@@ -74,7 +77,7 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
 
                 assert.deepEqual(new Set(minIdleTimes), new Set(["30000"]), "XAUTOCLAIM must ask for entries idle for 30 s (30000 ms)");
             } finally {
-                monitor.disconnect();
+                monitor?.disconnect();
                 await adapter.disconnect().catch(() => undefined);
                 await control.del(streamKey).catch(() => undefined);
                 await control.quit().catch(() => undefined);
