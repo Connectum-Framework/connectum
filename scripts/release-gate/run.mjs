@@ -130,6 +130,7 @@ const checks = [
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
     ["packed resilience cancellation", ["node", "--test", "checks/resilience-cancellation.mjs"]],
+    ["generated EventBus type-check", ["node", "checks/generated-eventbus.mjs"]],
     // Node 22.13 supports native type stripping behind an explicit flag. Keep
     // the consumer-floor cell on the exact documented version instead of
     // relying on the later Node 22 release that enabled it by default.
