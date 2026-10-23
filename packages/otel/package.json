@@ -71,7 +71,7 @@
     "test:unit": "exodus-test --typescript tests/unit/**/*.test.ts",
     "test:bun": "echo 'SKIP: OpenTelemetry SDK is Node-specific'",
     "test:esbuild": "exodus-test --esbuild tests/**/*.test.ts",
-    "lint": "biome check src",
+    "lint": "biome check --error-on-warnings src",
     "format": "biome check --write src",
     "build": "tsup",
     "clean": "rm -rf coverage dist"
