@@ -131,6 +131,12 @@ const COMBOS = [
     // the documented path from a config-only project to a type-checked, tested one.
     { name: "no-sample", pm: "npm", args: ["--no-sample"], generateService: "billing" },
     { name: "no-sample-modules", pm: "npm", args: ["--no-sample", "--otel", "--catalog"], generateService: "billing" },
+    // `generate service --with-events` adds a second event-handler service (its own proto, an
+    // `EventRoute`, the vendored option proto that `init --events` already wrote) to a project that
+    // has the EventBus module. The cell proves the pair end to end: generated protos of both event
+    // services together, type-check of the new module against the packed `@connectum/events`, and
+    // the project's own tests.
+    { name: "events-generate-service", pm: "npm", args: ["--events", "nats"], generateService: "billing", generateServiceWithEvents: true, pack: true },
     // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
     // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
     // It proves compatibility, not the floor — an install resolves the highest version in
@@ -332,7 +338,7 @@ function checkCombo(combo, workdir, pack) {
         run(combo.pm, ["install"], target);
         if (pack) assertPackedInstall(target, pack.manifests);
         if (combo.generateService !== undefined) {
-            run(process.execPath, [CLI_ENTRY, "generate", "service", combo.generateService], target);
+            run(process.execPath, [CLI_ENTRY, "generate", "service", combo.generateService, ...(combo.generateServiceWithEvents === true ? ["--with-events"] : [])], target);
         }
         run(combo.pm, ["run", "typecheck"], target);
         run(combo.pm, ["run", "test"], target);
