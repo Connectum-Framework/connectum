@@ -249,7 +249,7 @@ describe("the shutdown signal ends reception", () => {
         await rig.bus.stop();
     });
 
-    it("stays started after the abort until stop() releases it, and carries nothing into the next cycle", async () => {
+    it("stays started after the abort until stop() releases it, and ends the next cycle by its own signal", async () => {
         const first = new AbortController();
         const rig = makeRig(async () => undefined);
         await rig.bus.start({ signal: first.signal });
@@ -265,14 +265,28 @@ describe("the shutdown signal ends reception", () => {
         await rig.deliver();
         assert.deepEqual(rig.handled, ["evt-after-abort"], "a fresh cycle with a live signal handles deliveries");
 
-        first.abort();
-        await sleep(0);
-        assert.equal(rig.unsubscribeCalls(), 1, "the earlier signal no longer reaches the bus");
-
         second.abort();
         await sleep(0);
         assert.equal(rig.unsubscribeCalls(), 2, "the new signal ends the new cycle's subscriptions");
         await rig.bus.stop();
         assert.equal(rig.unsubscribeCalls(), 2);
+    });
+
+    it("does not let the signal of an earlier cycle end the next cycle", async () => {
+        const first = new AbortController();
+        const rig = makeRig(async () => undefined);
+        await rig.bus.start({ signal: first.signal });
+        await rig.bus.stop();
+        assert.equal(rig.unsubscribeCalls(), 1);
+
+        const second = new AbortController();
+        await rig.bus.start({ signal: second.signal });
+        // The first signal is still live when the second cycle runs: only a listener left behind by the first cycle could react to it.
+        first.abort();
+        await sleep(0);
+        assert.equal(rig.unsubscribeCalls(), 1, "the earlier signal no longer reaches the bus");
+        await rig.deliver();
+        assert.deepEqual(rig.handled, ["evt-after-abort"], "the next cycle still receives");
+        await rig.bus.stop();
     });
 });
