@@ -142,6 +142,7 @@ async function startCollector(): Promise<Collector> {
 			const body = Buffer.concat(chunks);
 			assert.strictEqual(body[0], 0, "the exporters under test send uncompressed messages");
 			const length = body.readUInt32BE(1);
+			assert.strictEqual(body.length, 5 + length, "a unary call is exactly one complete gRPC message: no truncated frame, no trailing bytes");
 			calls.push({ path: String(headers[":path"]), contentType: String(headers["content-type"]), message: body.subarray(5, 5 + length) });
 			stream.respond({ ":status": 200, "content-type": "application/grpc" }, { waitForTrailers: true });
 			stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
