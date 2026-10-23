@@ -9,7 +9,9 @@
  * connection in `MONITOR` mode records the commands the broker receives, in the
  * order it executes them, so the period is observed on the wire instead of
  * read from the adapter's own state: four reads, then the first reclaim, and
- * after that one reclaim per five reads.
+ * after that one reclaim per five reads. The same recording shows the idle
+ * window each reclaim asks for: 30 s, the time after which a nack'd entry is
+ * delivered again.
  */
 
 import assert from "node:assert/strict";
@@ -41,7 +43,7 @@ describe("Redis adapter reclaim interval", { skip: REDIS_TEST_URL === undefined 
     const url = REDIS_TEST_URL as string;
 
     for (const mode of modes) {
-        it(`${mode.name}: stale pending entries are looked for on every fifth loop iteration`, async () => {
+        it(`${mode.name}: entries idle for 30 s are looked for on every fifth loop iteration`, async () => {
             const eventType = `integration.redis.reclaim.interval.${randomUUID()}`;
             const streamKey = `events:${eventType}`;
             const group = `group-${randomUUID()}`;
@@ -56,11 +58,17 @@ describe("Redis adapter reclaim interval", { skip: REDIS_TEST_URL === undefined 
             const monitor = (await control.monitor()) as unknown as { on(event: "monitor", listener: (time: string, args: string[]) => void): void; disconnect(): void };
             /** The consume loop's commands of this group, in the broker's execution order. */
             const commands: Array<"read" | "reclaim"> = [];
+            /** The `min-idle-time` argument of every XAUTOCLAIM: XAUTOCLAIM key group consumer min-idle-time start. */
+            const minIdleTimes: string[] = [];
             monitor.on("monitor", (_time, args) => {
                 if (!args.includes(group)) return;
                 const name = String(args[0]).toUpperCase();
-                if (name === "XREADGROUP") commands.push("read");
-                else if (name === "XAUTOCLAIM") commands.push("reclaim");
+                if (name === "XREADGROUP") {
+                    commands.push("read");
+                } else if (name === "XAUTOCLAIM") {
+                    commands.push("reclaim");
+                    minIdleTimes.push(String(args[4]));
+                }
             });
 
             try {
@@ -88,6 +96,15 @@ describe("Redis adapter reclaim interval", { skip: REDIS_TEST_URL === undefined 
                     readsBefore.slice(0, OBSERVED_RECLAIMS),
                     [4, 5, 5, 5],
                     `a reclaim must precede every fifth read of the loop (reads before each reclaim; commands seen: ${commands.slice(0, 24).join(" ")})`,
+                );
+                // A nack'd entry is redelivered once it has been idle for 30 s. The redelivery tests cannot tell
+                // 30 s from a slightly longer window (their 8 s wait absorbs it), so the window the broker is asked
+                // for is read from the command itself.
+                assert.ok(minIdleTimes.length >= OBSERVED_RECLAIMS);
+                assert.deepEqual(
+                    new Set(minIdleTimes),
+                    new Set(["30000"]),
+                    "XAUTOCLAIM must ask for entries idle for 30 s (30000 ms)",
                 );
             } finally {
                 monitor.disconnect();
