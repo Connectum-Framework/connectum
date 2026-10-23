@@ -12,6 +12,7 @@
 import { once } from "node:events";
 import net, { type Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { type ConnectionOptions, connect as tlsConnect } from "node:tls";
 
 /** HTTP/2 connection preface followed by an empty SETTINGS frame. */
 export const HTTP2_PREFACE = Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), Buffer.from([0, 0, 0, 4, 0, 0, 0, 0, 0])]);
@@ -90,6 +91,30 @@ export async function stubbornClient(options: { port: number; payload: Buffer | 
     if (options.payload.length > 0) {
         await new Promise<void>((resolve, reject) => socket.write(options.payload, (err) => (err ? reject(err) : resolve())));
     }
+    return socket;
+}
+
+/**
+ * TLS counterpart of `stubbornClient`: completes the handshake (offering only
+ * `alpn`), writes `payload` and then never closes, ignoring the server's FIN.
+ * Trusts exactly the given self-signed certificate. Resolves once the payload
+ * is flushed to the kernel.
+ */
+export async function stubbornTlsClient(options: { port: number; ca: Buffer; alpn: "h2" | "http/1.1"; payload: Buffer | string }): Promise<Socket> {
+    // `allowHalfOpen` reaches the TLS socket at runtime but is missing from the `ConnectionOptions` typings.
+    const connectOptions: ConnectionOptions & { allowHalfOpen: boolean } = {
+        port: options.port,
+        host: "127.0.0.1",
+        servername: "localhost",
+        ca: options.ca,
+        ALPNProtocols: [options.alpn],
+        allowHalfOpen: true,
+    };
+    const socket = tlsConnect(connectOptions);
+    socket.on("error", () => {});
+    socket.resume();
+    await once(socket, "secureConnect");
+    await new Promise<void>((resolve, reject) => socket.write(options.payload, (err) => (err ? reject(err) : resolve())));
     return socket;
 }
 
