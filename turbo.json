@@ -72,6 +72,7 @@
     },
     "docs:api": {
       "dependsOn": ["build:proto"],
+      "env": ["CONNECTUM_DOCS_DIR"],
       "outputs": ["../docs/en/api/**"],
       "cache": false
     }

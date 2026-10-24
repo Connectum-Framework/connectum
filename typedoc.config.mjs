@@ -6,6 +6,13 @@
 // `packageOptions` (plus each package's own `typedoc.json`) apply there. That is
 // why the exclusion and link options below live in `packageOptions`.
 
+// The documentation checkout the reference is written into. By default the
+// sibling `../docs`; from a git worktree of this repository that sibling is not
+// the documentation repository, so set CONNECTUM_DOCS_DIR to the checkout you
+// mean (an absolute path, or one relative to this directory). The script
+// `scripts/stabilize-api-source-links.mjs` reads the same variable.
+const docsDir = process.env.CONNECTUM_DOCS_DIR ?? "../docs";
+
 /**
  * Links for symbols that are referenced by the documented API but not part of
  * it (third-party types, and one generated enum). They are needed at both
@@ -61,8 +68,8 @@ export default {
     ],
     entryPointStrategy: "packages",
     plugin: ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
-    docsRoot: "../docs",
-    out: "../docs/en/api",
+    docsRoot: docsDir,
+    out: `${docsDir}/en/api`,
     name: "Connectum API Reference",
     readme: "none",
     externalSymbolLinkMappings,
