@@ -1,5 +1,144 @@
 # @connectum/interceptors
 
+## 1.3.0
+
+### Minor Changes
+
+- [#378](https://github.com/Connectum-Framework/connectum/pull/378) [`9b29b71`](https://github.com/Connectum-Framework/connectum/commit/9b29b7134ea499ccd420c2b19d3f7ad4cc958d6c) Thanks [@intech](https://github.com/intech)! - fix: `createErrorHandlerInterceptor` (the first interceptor of `createDefaultInterceptors()`) no longer sends the text of a failure that is not a `ConnectError` or a `SanitizableError` to the client over gRPC, Connect and `server.localClient()`. Such text often carries a connection string, a query or a request value (CWE-209). A thrown `Error` or string now reaches the client as code `Internal` with the text `internal error`; an error with a numeric `code` keeps that code and reaches the client with an empty text. The original failure stays on the server: as `cause` of the thrown `ConnectError` (it is never serialized), as `info.error` of `onError` with its original text, and in the console log.
+  
+  **BREAKING** behaviour correction for clients that read the text of such an error. Shipped as minor on purpose: the `@connectum/*` packages are one fixed version group, so a major here would release every package as 2.0.0. A `ConnectError` (text, details, metadata) and a `SanitizableError` (`clientMessage`) are unchanged. To send the original text again, set the new `exposeErrorMessages: true` on the error handler (`createDefaultInterceptors({ errorHandler: { exposeErrorMessages: true } })` or `createErrorHandlerInterceptor({ exposeErrorMessages: true })`); use it only for trusted internal callers or while debugging. The option is server-side, defaults to `false` and does not depend on `NODE_ENV`. To send a message deliberately, throw a `ConnectError` or a `SanitizableError`.
+
+- [#395](https://github.com/Connectum-Framework/connectum/pull/395) [`c17d85c`](https://github.com/Connectum-Framework/connectum/commit/c17d85caba4bda9700463b3b19ada4e23f4a7562) Thanks [@intech](https://github.com/intech)! - fix: the resilience interceptors and `createDefaultInterceptors` refuse option values that used to run with silently different behaviour, and the bulkhead refusal text states its limits.
+  
+  **BREAKING** (shipped as minor on purpose: the `@connectum/*` packages are one fixed version group, so a major here would release every package as 2.0.0):
+  
+  - **Numeric options are validated when the factory is called.** `createTimeoutInterceptor` `duration` is an integer from 1 to 2147483647 ms; `createBulkheadInterceptor` `capacity` is an integer >= 1 and `queueSize` an integer >= 0; `createCircuitBreakerInterceptor` `threshold` is an integer >= 1 and `halfOpenAfter` an integer from 0 to 2147483647 ms; `createRetryInterceptor` `initialDelay` and `maxDelay` are integers from 0 to 2147483647 ms. A fractional value, or a delay above 2147483647 ms (the platform timer fires such a timer after 1 ms, so a "very long" timeout used to expire at once), now throws. A value that is not a number throws `TypeError`; a number outside the rule throws `RangeError`; the message names the factory, the option, the rule and the received value. Before, every refusal was a plain `Error`. `maxRetries` keeps accepting the same values (a fraction such as `0.5` is still valid); only the error class for an invalid one changes to `RangeError` / `TypeError`.
+  - **`createDefaultInterceptors({ fallback: true })` throws `TypeError`** instead of being ignored; the type of `fallback` is now `false | FallbackOptions`. `createFallbackInterceptor` without a `handler` throws `TypeError` instead of `Error`.
+  - **A value that is not understood no longer disables an interceptor.** For every key of `createDefaultInterceptors` except `validation`, only `true`, `false`, `undefined` or an options object is accepted; `validation` accepts only a boolean. `null`, a number, a string, an array or a function throws `TypeError` naming the key (`timeout must be true, false or an options object, got null`).
+  - **`connectum init --resilience fallback` is refused** with the existing `invalid --resilience` message and a hint: a fallback needs an application-specific handler, so add `createFallbackInterceptor({ handler })` to `src/server.ts`. The accepted values are `timeout`, `bulkhead`, `circuitBreaker` and `retry`. Before, the flag scaffolded `fallback: true`, which did nothing.
+  
+  Also changed, not a contract: the bulkhead refusal text is now `Bulkhead capacity exceeded (capacity: N, queueSize: M)` with the configured limits; it used to print the policy's free slots under the label `active`, so a full bulkhead read as idle. The code stays `ResourceExhausted`; branch on the code, not on the text.
+  
+  **Migration.** Round fractional values and cap long delays at 2147483647 ms (about 24.8 days); for "no time limit" omit `timeout` instead of passing a huge number. Replace `fallback: true` with `fallback: { handler }` or remove it, and replace `null`, `0` and other non-object values of a `createDefaultInterceptors` key with `false` (disabled), `true` (defaults) or an options object. Remove `fallback` from `--resilience` and add the interceptor by hand. If anything matches on the old bulkhead text, match the `ResourceExhausted` code. See the interceptor options migration guide.
+
+- [#320](https://github.com/Connectum-Framework/connectum/pull/320) [`7243ba4`](https://github.com/Connectum-Framework/connectum/commit/7243ba49a4784e2b5c6d283607c086e5f360ed6e) Thanks [@intech](https://github.com/intech)! - feat!: the logger interceptor no longer logs request and response bodies unless `includeBodies: true` is set
+  
+  **BREAKING.** `createLoggerInterceptor` used to hand the request and response message of every call (and the JSON form of every streamed response message) to the log sink. Bodies carry credentials, tokens and personal data, so they are now off by default. The log lines keep their text (`RPC <path> request`, `RPC <path> response`, `STREAM <path> request|response`, completion, failure); only the extra body argument is gone, and streamed response messages are no longer converted to JSON when bodies are off.
+  
+  To get the previous output, set the new option:
+  
+  ```typescript
+  createLoggerInterceptor({ includeBodies: true });
+  ```
+  
+  See the migration guide for details.
+
+- [#272](https://github.com/Connectum-Framework/connectum/pull/272) [`0d98fbd`](https://github.com/Connectum-Framework/connectum/commit/0d98fbd1dd304a362d446996c5d433bea7ffb664) Thanks [@intech](https://github.com/intech)! - feat: opt-in `includeTransport` on `createLoggerInterceptor`
+  
+  With `includeTransport: true` every log line of a call is tagged with the
+  transport that carried it, right after the `RPC` / `STREAM` prefix:
+  `[in-process]` for calls made through `server.localClient()` /
+  `createLocalTransport()` of `@connectum/core`, `[http]` for every other call.
+  A forged in-process marker on an inbound HTTP request is stripped by the
+  server, so such a call is still logged as `[http]`.
+  
+  The tag is telemetry only — do not base authorization or other security
+  decisions on it; use `req.service.typeName` and `req.method.name`.
+  
+  Off by default: without the option the log lines are unchanged.
+
+- [#282](https://github.com/Connectum-Framework/connectum/pull/282) [`36ce828`](https://github.com/Connectum-Framework/connectum/commit/36ce828cd36d84285e657b843b65ddbf28111107) Thanks [@intech](https://github.com/intech)! - feat: declare protobuf and Connect as peer dependencies, so an application runs with one copy of each
+  
+  `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` were regular dependencies. An application that pinned its own version could end up with a second copy that nothing reported: message and service types generated against one copy then stopped type-checking against the other, and a `connect-node` next to a different `connect` formed a pair `connect-node` does not support (it requires one exact `connect` version).
+  
+  - `@connectum/core`, `auth`, `events`, `healthcheck`, `interceptors`, `otel`, `reflection`, `testing` and `test-fixtures` now declare `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0` in `peerDependencies`; `core` and `testing` also declare `@connectrpc/connect-node` `^2.2.0`.
+  - `auth`, `events` and `interceptors` declare `@connectum/core` as a peer dependency instead of a dependency, so they use the application's own `@connectum/core`.
+  - `@connectum/interceptors` now depends on `@bufbuild/protovalidate` directly. The validation interceptor imports it whether or not validation is enabled; it used to install only because npm, pnpm and Bun add missing peers of `@connectrpc/validate`.
+  - `@connectum/cli` and `@connectum/protoc-gen-catalog` are unchanged: they are executables, and `@bufbuild/protoplugin` pins `@bufbuild/protobuf` exactly, so they keep their own copy and are outside the single-copy guarantee.
+  
+  With pins inside these ranges, or no pins at all, npm, pnpm and Bun now install exactly one copy of each library for the application and every Connectum runtime package. This includes `@connectum/reflection`, which now serves gRPC Server Reflection with Connectum's own implementation instead of a third-party library that kept its own protobuf / Connect copy.
+  
+  `createServer()` now checks the `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` that `@connectum/core` actually loaded against these ranges, and throws `PeerDependencyVersionError` (exported from `@connectum/core`) naming the package, the loaded version and its location, the required range and the fix. Lockstep is checked at startup too: the `@connectrpc/connect` that `@connectrpc/connect-node` itself loads must be the exact version connect-node declares, and the same copy `@connectum/core` loads. This makes an out-of-range version a visible startup failure on every package manager, including the ones that only warn at install time. When the version cannot be determined — `@connectum/core` bundled into the application, or a runtime without `import.meta.resolve` — the check is skipped rather than guessed.
+  
+  **BREAKING (installation and startup):** an install or a start that worked before can now fail.
+  
+  - npm refuses an application whose `@bufbuild/protobuf`, `@connectrpc/connect` or `@connectrpc/connect-node` pin is outside the ranges above, with `ERESOLVE unable to resolve dependency tree`. pnpm prints `Issues with peer dependencies found` (`pnpm peers check` names the library) and keeps the application's too-old copy; Bun warns in the same way, but stays silent about a too-old `@bufbuild/protobuf` when a code generator such as `protoc-gen-es` brings its own in-range copy. On pnpm and Bun the application then stops at `createServer()` with `PeerDependencyVersionError`.
+  
+  Under strict Semantic Versioning this is a major change, and Connectum's breaking-changes strategy does not plan breaking changes for minor versions. It ships in 1.3.0 as an explicit, recorded exception, so that applications get the single-copy fix now rather than with 2.0.
+  
+  Migration: raise any pin of `@bufbuild/protobuf` to `^2.16.0` and of `@connectrpc/connect` / `@connectrpc/connect-node` to `^2.2.0`, keeping `connect` and `connect-node` on the same version — or remove the pins and let npm, pnpm or Bun install the peers. Do not work around a conflict with `--legacy-peer-deps` or `--force`: that reinstates the duplicate copies. Generate code with `protoc-gen-es` 2.16 or later.
+
+- [#330](https://github.com/Connectum-Framework/connectum/pull/330) [`7f5317a`](https://github.com/Connectum-Framework/connectum/commit/7f5317a80c262048acefbb3eb3562704b4c95d3d) Thanks [@intech](https://github.com/intech)! - fix!: timeout now cancels downstream work and retry stops on cancellation, so a timed-out or cancelled call no longer retries or returns a late success
+  
+  **Behaviour change.** Before, the timeout interceptor only stopped the caller from waiting: the downstream chain and the handler received no signal and kept running, and retry could start another attempt or return a late success after the caller had already been told the call failed. Now:
+  
+  - When the timeout expires, `req.signal` (and `ctx.signal` in the handler) is aborted with a `DeadlineExceeded` `ConnectError` ("Request timeout after Nms"). Caller cancellation is forwarded the same way. The first cancellation cause decides the error: an existing caller `ConnectError` keeps its code, message, metadata and details; any other caller reason becomes `Canceled`.
+  - Retry interrupts a pending backoff, never starts another attempt after cancellation, and turns a late success of cancelled work into a cancellation error. Retry still waits for a running signal-unaware handler to settle, so a surrounding bulkhead keeps counting that work as active.
+  - Code that relied on a late successful response, or on one more retry after a timeout or cancellation, now receives `DeadlineExceeded` or `Canceled`. Handlers and I/O must observe the signal to stop work; cancellation does not roll back side effects of code that ignores it.
+  
+  **Timeout and circuit breaker.** With the default order (`timeout` outside `circuitBreaker`, which wraps `retry`), an expired timeout now reaches the breaker as a `DeadlineExceeded` failure, and `DeadlineExceeded` is one of the codes the default failure predicate counts. Repeated timeouts of a cooperative handler therefore open the circuit; before, the breaker never saw the timeout and only saw whatever the abandoned handler eventually returned. For a handler that ignores the signal, the failure is recorded when that handler settles (not when the caller gets its deadline error), and only because `retry` turns the late result into the cancellation error. A caller cancellation with the default `Canceled` code is not a circuit failure; a caller `ConnectError` reason that carries an infrastructure code (for example `Unavailable`) is counted under its own code. If timeouts must not trip the breaker, pass a `failurePredicate` that excludes `DeadlineExceeded`.
+  
+  Public options, defaults and chain order are unchanged. Streaming stays skipped by default; with `skipStreaming: false` the timeout and retry cover opening the response only, and caller cancellation still reaches an opened stream. See "Cancellation behavior in 1.3" in the interceptors README for migration notes.
+  
+  `@connectum/test-fixtures`: mock requests now carry an independent, non-aborted `signal`, as the ConnectRPC request contract requires.
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Clear the remaining dependency advisories, and keep one `@bufbuild/protobuf` in the
+  workspace.
+  
+  `@bufbuild/buf` moves to 1.72.0. `@bufbuild/protoplugin` now moves together with
+  `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` under the single-instance pin: it
+  had lagged one release behind and pinned a second copy of `@bufbuild/protobuf`, which
+  is exactly the split the pin exists to prevent -- two instances break
+  `@connectrpc/connect`'s protobuf peer and the reflection DTS build. The protobuf-es and
+  connect-es versions this release requires are in the protobuf-es 2.16 / Connect 2.2
+  entry.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#417](https://github.com/Connectum-Framework/connectum/pull/417) [`93b125f`](https://github.com/Connectum-Framework/connectum/commit/93b125fe672a49219ce20491fdfde41cf09f4f32) Thanks [@intech](https://github.com/intech)! - fix: `errorHandler` adopts the numeric `code` of a thrown value that is not a `ConnectError` only when it is an integer from 1 to 16 (`Canceled` to `Unauthenticated`). Any other number (`0`, `17`, a fraction, `NaN`, an HTTP status, a system errno) now counts as no code: every client (gRPC, Connect, gRPC-Web, `localClient()`) receives `Internal` with the text `internal error`, and `onError` receives `Internal`; the original error keeps its own `code`. `onError` now always gets the code the client receives: for an `AbortError` (a `DOMException` with the numeric code 20) that is `Canceled`, as Connect maps it, not `Internal`.
+  
+  Behaviour change for handlers that threw an object with such a number: the client used to get a transport-dependent result (over gRPC and gRPC-Web `0` became a protocol error with `Unimplemented`, `17` or `404` became `Internal` with the text `invalid grpc-status: N`, `1.5` or `1e21` became `Canceled`; over Connect and in-process every one of them became `Unknown`). To send a specific code, throw a `ConnectError`.
+
+- [#419](https://github.com/Connectum-Framework/connectum/pull/419) [`c718907`](https://github.com/Connectum-Framework/connectum/commit/c718907f2cf444d88d55e7fb2f8b4054310d63cd) Thanks [@intech](https://github.com/intech)! - fix: `createFallbackInterceptor` no longer answers a refusal of access with the fallback value. A failure with the code `Unauthenticated` or `PermissionDenied` is rethrown as it is and the fallback handler is not called for it, wherever the authentication or authorization interceptor stands relative to the fallback interceptor. Failures with other codes, and errors that are not `ConnectError`, keep using the fallback. A configuration whose fallback handler used to answer a refusal of its own service now returns the refusal to the caller. Put the authentication and authorization interceptors in front of the default interceptors, as the guides show.
+
+- [#407](https://github.com/Connectum-Framework/connectum/pull/407) [`7d9e22f`](https://github.com/Connectum-Framework/connectum/commit/7d9e22fd682bf144214baa3fe0e0adf2560599be) Thanks [@intech](https://github.com/intech)! - fix: the response synthesised by the fallback interceptor carries only the protocol headers it needs. Its header holds the request `content-type` and, for gRPC and gRPC-web, its trailer holds `grpc-status: 0`; no other header of the request is copied into it. Connect, gRPC and gRPC-web clients now accept the response over HTTP/2 and HTTP/1.1. Code that read its own request headers back from a fallback response, on a server chain or on a client transport, no longer finds them there; metadata the caller needs belongs in the message the `handler` returns.
+  
+  Why: until now the interceptor answered with a copy of the live request header object and an empty trailer. That had two effects.
+  
+  - **Request headers came back to the caller.** The copy contained every header of the call at that point of the chain, including the `x-auth-*` identity headers that the authentication interceptors write with `propagateHeaders: true` (the documented order puts authentication outside the default interceptors, so they were already there) and the request's own `authorization` and cookie headers. They were returned to the caller in the response header. The interceptor did not forward these headers to another backend, but the response carrying them went back to the caller through whatever sits on the path (proxies, caches, client-side logging), and a header that exists to reach downstream services should not travel back to the client at all.
+  - **Most clients rejected the response.** The copied request headers and the empty trailer replaced what the protocol layer had prepared: the response lost its own `content-type` handling and, for gRPC and gRPC-web, `grpc-status`, so those clients reported a missing status, and Connect over chunked HTTP/1.1 failed as well. Measured with six client configurations (Connect over HTTP/2 with JSON and with protobuf, gRPC over HTTP/2, gRPC-web over HTTP/2, Connect over HTTP/1.1 with a chunked request body, gRPC-web over HTTP/1.1), four of them got a protocol error from the old response.
+  
+  The fix is an allow-list of what the response needs, not a copy: `content-type`, and `grpc-status: 0` for `application/grpc*` content types (matched case-insensitively). A Connect GET request carries no `content-type`, so it is taken from the `encoding` query parameter (`json` or `proto`). The interceptor is opt-in (it needs a `handler`), and streaming calls are still skipped unless configured otherwise.
+
+- [#315](https://github.com/Connectum-Framework/connectum/pull/315) [`698db2a`](https://github.com/Connectum-Framework/connectum/commit/698db2a04a34f087600747bfe8e34e55e6ae537a) Thanks [@intech](https://github.com/intech)! - fix: the logger interceptor can no longer change the outcome of a call, and it now logs failures and stream ends correctly
+  
+  - A log sink that throws, or returns a promise that rejects (an `async` function), no longer turns a successful response into `Internal`, replaces the real error of a failed call or surfaces as an unhandled rejection. The first sink failure is reported once on the console; later ones are dropped, and a console that throws while reporting changes nothing either.
+  - A failed call is logged as `RPC <path> failed with <Code>` (the Connect code name, `Unknown` for a plain error); the original error reaches the caller unchanged.
+  - For a streamed response the `completed in N ms` line is written when the stream ends (fully read, failed midway, or abandoned by the reader), so the duration covers the stream. Before, it was written when the stream was created, ahead of the first message.
+  - A streamed message that cannot be converted to JSON is logged as a marker instead of ending the stream with an error.
+  
+  What is printed for a call by default is unchanged apart from the new failure line and the position of the completion line of streams.
+
+- [#325](https://github.com/Connectum-Framework/connectum/pull/325) [`3591014`](https://github.com/Connectum-Framework/connectum/commit/35910149aa614a388cfadbb11968b3deb57aad13) Thanks [@intech](https://github.com/intech)! - docs: the package READMEs are short entry points (install, a runnable start, constraints, links) and the long reference tables now live on the documentation site and in the API reference. The facts that exist only in a README stay there: the cancellation migration notes of `@connectum/interceptors`, the request initializer migration of `@connectum/protoc-gen-catalog`, the dependency injection and testing section of `@connectum/events`, the verified RabbitMQ and Kafka broker lines and the integration-suite instructions of the AMQP and Kafka adapters. Examples in the READMEs of eight packages and the Quickstart are executed against the packed packages by `pnpm docs:check`. JSDoc of a few exports was corrected to match the code; no runtime behavior changes.
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
+- [#292](https://github.com/Connectum-Framework/connectum/pull/292) [`b555978`](https://github.com/Connectum-Framework/connectum/commit/b5559789145656d823b9277f0406e51a14c6251a) Thanks [@intech](https://github.com/intech)! - Each package now evaluates its modules once, whichever subpath you import.
+  
+  These packages were built with one bundle per subpath, and every bundle carried its own copy of the modules it used. In `@connectum/otel` that meant one provider singleton per subpath: `getProvider()` from `@connectum/otel` and from `@connectum/otel/provider` returned different providers, and the second one's global registration failed with `Attempted duplicate registration of API: trace`, so a tracer or meter taken through a subpath belonged to a provider OpenTelemetry was not using. Likewise `ServerState` from `@connectum/core` and `@connectum/core/types` were two objects, and collectors created by `@connectum/testing/parity` were not `instanceof` the classes exported by `@connectum/testing`.
+  
+  The builds now share modules between subpaths, so every subpath hands out the same provider, classes and functions. The `exports` maps are unchanged; `dist` gains shared chunk files.
+
 ## 1.2.0
 
 ### Patch Changes
