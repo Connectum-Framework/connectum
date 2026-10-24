@@ -6,13 +6,14 @@
  *
  * A message whose handler did not acknowledge it stays pending and is delivered again once it has
  * been idle for 30 s. The redelivery tests cannot tell 30 s from a slightly longer window (their
- * 8 s wait absorbs it), so a control connection in `MONITOR` mode records the commands the broker
+ * 8 s wait absorbs it), so a connection in `MONITOR` mode records the commands the broker
  * receives and the window each reclaim (`XAUTOCLAIM`) asks for is read from the command itself.
  * How often the loop looks is an internal detail and is not asserted; that it keeps looking is.
  */
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { connect } from "node:net";
 import { describe, it } from "node:test";
 import { Redis } from "ioredis";
 import { RedisAdapter } from "../../src/RedisAdapter.ts";
@@ -26,6 +27,46 @@ const modes = [
 
 /** Reclaim passes to wait for: enough to show that the loop keeps reclaiming, not just once. */
 const OBSERVED_RECLAIMS = 4;
+
+interface MonitorRecorder {
+    /** Settles once the server has acknowledged MONITOR; rejects with the server's error (for example `NOPERM`). */
+    readonly ready: Promise<void>;
+    close(): void;
+}
+
+/**
+ * Records every command the server receives, through a plain socket in MONITOR mode (an inline command, RESP2).
+ * The MONITOR client of ioredis switches its state only after the reply was handled, and a command line that
+ * arrives in the same chunk as the reply makes it throw "Command queue state error" (seen on Valkey 9.1.1 in
+ * CI while the previous test's adapter was still shutting down); a socket has no such state machine.
+ */
+function recordMonitor(url: string, onCommand: (args: string[]) => void): MonitorRecorder {
+    const { hostname, port } = new URL(url);
+    const socket = connect({ host: hostname, port: Number(port || 6379) });
+    socket.on("error", () => undefined);
+    let buffered = "";
+    let acknowledged = false;
+    const ready = new Promise<void>((resolve, reject) => {
+        socket.once("error", reject);
+        socket.once("connect", () => socket.write("MONITOR\r\n"));
+        socket.on("data", (chunk: Buffer) => {
+            const lines = (buffered + chunk.toString("utf8")).split("\r\n");
+            buffered = lines.pop() ?? "";
+            for (const line of lines) {
+                if (line.startsWith("-")) {
+                    reject(new Error(`MONITOR was refused: ${line}`));
+                } else if (!acknowledged) {
+                    acknowledged = true;
+                    resolve();
+                } else if (line.startsWith("+")) {
+                    // +<time> [<db> <client>] "command" "argument" ...
+                    onCommand([...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? ""));
+                }
+            }
+        });
+    });
+    return { ready, close: () => void socket.destroy() };
+}
 
 async function until(condition: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
@@ -53,24 +94,19 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
                 brokerOptions: { blockMs: 20, count: 5 },
             });
             const control = new Redis(url, { protocol: 2, replyMapping: "legacy" });
-            // The recorder is built here, not with `control.monitor()`: that call hides the client it creates until
-            // MONITOR is acknowledged, so a rejected MONITOR would leave a client nobody can disconnect.
-            const recorder = control.duplicate({ monitor: true, lazyConnect: false });
             /** The `min-idle-time` argument of every XAUTOCLAIM of this group: XAUTOCLAIM key group consumer min-idle-time start. */
             const minIdleTimes: string[] = [];
+            // Created before the `try` so that `finally` can always close it, whatever happens to MONITOR.
+            const recorder = recordMonitor(url, (args) => {
+                if (!args.includes(group)) return;
+                if (String(args[0]).toUpperCase() === "XAUTOCLAIM") {
+                    minIdleTimes.push(String(args[4]));
+                }
+            });
 
             try {
                 // Every command that follows the acknowledgement of MONITOR is recorded.
-                await new Promise<void>((resolve, reject) => {
-                    recorder.once("error", reject);
-                    recorder.once("monitoring", () => resolve());
-                });
-                recorder.on("monitor", (_time: string, args: string[]) => {
-                    if (!args.includes(group)) return;
-                    if (String(args[0]).toUpperCase() === "XAUTOCLAIM") {
-                        minIdleTimes.push(String(args[4]));
-                    }
-                });
+                await recorder.ready;
                 await adapter.connect({ serviceName: `integration-reclaim-window-${mode.protocol}-${mode.replyMapping}` });
                 const subscription = await adapter.subscribe([eventType], async (_event, ack) => ack(), { group });
                 try {
@@ -81,7 +117,7 @@ describe("Redis adapter reclaim window", { skip: REDIS_TEST_URL === undefined ? 
 
                 assert.deepEqual(new Set(minIdleTimes), new Set(["30000"]), "XAUTOCLAIM must ask for entries idle for 30 s (30000 ms)");
             } finally {
-                recorder.disconnect();
+                recorder.close();
                 await adapter.disconnect().catch(() => undefined);
                 await control.del(streamKey).catch(() => undefined);
                 await control.quit().catch(() => undefined);
