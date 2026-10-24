@@ -48,6 +48,8 @@ function recordMonitor(url: string, onCommand: (args: string[]) => void): Monito
     let acknowledged = false;
     const ready = new Promise<void>((resolve, reject) => {
         socket.once("error", reject);
+        // A connection closed before the server acknowledged MONITOR would leave `ready` pending until the test timeout.
+        socket.once("close", () => reject(new Error("the connection closed before the server acknowledged MONITOR")));
         socket.once("connect", () => socket.write("MONITOR\r\n"));
         socket.on("data", (chunk: Buffer) => {
             const lines = (buffered + chunk.toString("utf8")).split("\r\n");
