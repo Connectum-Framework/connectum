@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import { Kafka, logLevel } from "kafkajs";
 import { KafkaAdapter } from "../../src/KafkaAdapter.ts";
+import { createTopicWithLeader } from "./createTopic.ts";
 
 const KAFKA_TEST_URL = process.env.KAFKA_TEST_URL;
 
@@ -27,7 +28,9 @@ describe("topic discovery with skewed intervals", { skip: KAFKA_TEST_URL === und
         const admin = kafka.admin();
         await admin.connect();
         const root = `skew.${randomUUID().slice(0, 8)}`;
-        await admin.createTopics({ waitForLeaders: true, topics: [{ topic: `${root}.early`, numPartitions: 2, replicationFactor: 1 }] });
+        // `createTopics({ waitForLeaders: true })` can return before the broker answers metadata for the topic
+        // (`UNKNOWN_TOPIC_OR_PARTITION`); the helper polls until every partition has a leader.
+        await createTopicWithLeader(admin, `${root}.early`, 2);
         const group = `skew-${randomUUID().slice(0, 8)}`;
         const fast = KafkaAdapter({ brokers, clientId: "skew-fast", logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 1_000 } });
         const slow = KafkaAdapter({ brokers, clientId: "skew-slow", logLevel: "nothing", consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: 20_000 } });
@@ -45,7 +48,7 @@ describe("topic discovery with skewed intervals", { skip: KAFKA_TEST_URL === und
         try {
             await sleep(6_000);
             const created = Date.now() - t0;
-            await admin.createTopics({ waitForLeaders: true, topics: [{ topic: `${root}.late`, numPartitions: 4, replicationFactor: 1 }] });
+            await createTopicWithLeader(admin, `${root}.late`, 4);
             for (let i = 0; i < 12; i++) {
                 await fast.publish(`${root}.late`, new Uint8Array(Buffer.from(`m${i}`)), { key: `k${i}` });
             }
@@ -56,6 +59,8 @@ describe("topic discovery with skewed intervals", { skip: KAFKA_TEST_URL === und
             const last = Math.max(...arrivals.values());
             console.log(`skew: topic created at ${created} ms; all 12 delivered: ${delivered().size === 12}; last arrival at ${last} ms (${last - created} ms after creation); per member ${JSON.stringify(byMember)}; total deliveries ${arrivals.size}`);
             assert.equal(delivered().size, 12, "every message of the late topic delivered");
+            // `delivered()` drops the member prefix, so it alone would pass if one member received everything.
+            assert.ok(byMember.fast > 0 && byMember.slow > 0, `both members must receive late-topic messages (fast=${byMember.fast}, slow=${byMember.slow})`);
         } finally {
             await subFast.unsubscribe();
             await subSlow.unsubscribe();
