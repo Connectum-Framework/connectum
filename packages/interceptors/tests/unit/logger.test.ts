@@ -26,7 +26,9 @@ describe('logger interceptor', () => {
         const next = mock.fn(async () => mockRes);
         const handler = interceptor(next as any);
 
-        await handler(mockReq);
+        // The interceptor observes the call: the caller receives the very response `next` produced.
+        const result = await handler(mockReq);
+        assert.strictEqual(result, mockRes, "the response of next must be returned as it is");
 
         // A unary call writes exactly three lines, in this order: request, response, completion.
         // With bodies off (the default) no line carries an argument.

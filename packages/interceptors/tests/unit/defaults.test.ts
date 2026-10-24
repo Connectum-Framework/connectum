@@ -18,12 +18,41 @@ import { EchoRequestSchema, EchoResponseSchema } from '../../../testing/tests/fi
 import { createDefaultInterceptors } from '../../src/defaults.ts';
 
 describe('createDefaultInterceptors', () => {
-    it('should create default chain with only errorHandler and validation', () => {
+    it('should create exactly two interceptors by default, and the two are errorHandler then validation', async () => {
         const interceptors = createDefaultInterceptors();
 
         // Only structural interceptors enabled by default; resilience
         // (timeout, bulkhead, circuitBreaker, retry) is opt-in
         assert.strictEqual(interceptors.length, 2);
+
+        // The count alone would stay green if validation were replaced by another interceptor.
+        // The first one must hide the text of an unexpected failure, the second must refuse
+        // an invalid request before the handler (the validated fixture requires 3+ characters).
+        const SECRET = 'db-password-hunter2';
+        const failing = mock.fn(async () => {
+            throw new Error(SECRET);
+        });
+        const [errorHandler, validation] = interceptors as [Interceptor, Interceptor];
+        await assert.rejects(
+            () => errorHandler(failing as any)(createMockRequest({ service: 'test.Service', method: 'Method', message: {} })),
+            (err: unknown) => {
+                assertConnectError(err, Code.Internal);
+                assert.ok(!(err as ConnectError).message.includes(SECRET), 'the text of an unexpected failure must not reach the client');
+                return true;
+            },
+        );
+
+        const reached = createMockNext();
+        const invalid = createMockRequest({ service: 'test.Service', method: 'Method', message: create(EchoRequestSchema, { message: 'ab' }) });
+        invalid.method = { name: 'Echo', input: EchoRequestSchema, output: EchoResponseSchema };
+        await assert.rejects(
+            async () => validation(reached as any)(invalid),
+            (err: unknown) => {
+                assertConnectError(err, Code.InvalidArgument);
+                return true;
+            },
+        );
+        assert.strictEqual(reached.mock.calls.length, 0, 'an invalid request must not reach the handler');
     });
 
     it('should not include resilience interceptors unless explicitly enabled', () => {
