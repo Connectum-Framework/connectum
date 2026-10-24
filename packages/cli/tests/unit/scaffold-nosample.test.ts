@@ -111,7 +111,8 @@ describe("generateServer / generateReadme: --no-sample", () => {
         const s = generateServer({ ...configOnly, modules: { otel: true, resilience: ["retry"] } });
         assert.match(s, /createOtelInterceptor/);
         assert.match(s, /retry: true/);
-        assert.match(s, /Healthcheck/);
+        // The call, not only the import: an import line alone also contains the word.
+        assert.match(s, /protocols: \[Healthcheck\(\{ httpEnabled: true \}\), Reflection\(\)\]/);
     });
 
     it("names `generate service` as the first step after install, before start, and never the sample", () => {
