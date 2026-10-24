@@ -151,6 +151,36 @@ describe("drainAbortGrace", () => {
         assert.deepEqual(events, [], "nothing was left, so nothing is reported");
     });
 
+    it("a restart after a drain abort gives handlers a signal that is not aborted", async () => {
+        // The drain abort ends cycle one. A bus that kept its aborted controller across stop()/start()
+        // would hand cycle two a signal that is aborted before the handler runs.
+        let cycle = 0;
+        const seenAborted: boolean[] = [];
+        const { bus, deliver } = makeBus(
+            async (ctx) => {
+                cycle++;
+                if (cycle === 1) {
+                    await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
+                    return;
+                }
+                seenAborted.push(ctx.signal.aborted);
+            },
+            { drainAbortGrace: 2_000 },
+        );
+        await bus.start();
+        const first = deliver();
+        await sleep(10);
+        await bus.stop();
+        await first;
+        assert.equal(cycle, 1);
+
+        await bus.start();
+        await deliver();
+        await bus.stop();
+
+        assert.deepEqual(seenAborted, [false], "the handler of the second cycle must see a live signal");
+    });
+
     it("without drainAbortGrace the wait after the abort has no limit (a slow handler is waited for)", async () => {
         const events: EventBusObserverEvent[] = [];
         const { bus, deliver } = makeBus(
