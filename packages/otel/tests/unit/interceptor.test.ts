@@ -711,6 +711,7 @@ describe("createOtelInterceptor", () => {
 				[[semconv.ATTR_SERVER_PORT, 5000]],
 			);
 			assert.ok(!(semconv.ATTR_SERVER_PORT in onlySpan(observed).attributes), "a refused server.port must not reach the span");
+			assert.ok(observed.durationPoints.length > 0, "the duration metric must be recorded");
 			assert.ok(!(semconv.ATTR_SERVER_PORT in (observed.durationPoints[0] ?? {})), "a refused server.port must not reach the metric");
 		});
 
