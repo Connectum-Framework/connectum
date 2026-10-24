@@ -690,6 +690,30 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_SERVER_PORT], 5000);
 		});
 
+		// The base attributes are built before attributeFilter runs, so the filter is the
+		// one place that shows whether serverPort took part in them at all.
+		it("should hand server.port to attributeFilter, and drop it from the span and the metric when the filter refuses it", async () => {
+			const received: Array<[string, string | number | boolean]> = [];
+			const handler = createOtelInterceptor({
+				serverPort: 5000,
+				attributeFilter: (key, value) => {
+					received.push([key, value]);
+					return key !== semconv.ATTR_SERVER_PORT;
+				},
+			})(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
+
+			const observed = await observe(async () => {
+				await handler(greeterRequest());
+			});
+
+			assert.deepStrictEqual(
+				received.filter(([key]) => key === semconv.ATTR_SERVER_PORT),
+				[[semconv.ATTR_SERVER_PORT, 5000]],
+			);
+			assert.ok(!(semconv.ATTR_SERVER_PORT in onlySpan(observed).attributes), "a refused server.port must not reach the span");
+			assert.ok(!(semconv.ATTR_SERVER_PORT in (observed.durationPoints[0] ?? {})), "a refused server.port must not reach the metric");
+		});
+
 		it("should leave server.port off the span and the metric when serverPort is not given", async () => {
 			const handler = createOtelInterceptor({ serverAddress: "my-host.example.com" })(createMockNext({ message: OTEL_RESPONSE_MESSAGE }));
 
