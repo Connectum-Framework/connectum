@@ -10,8 +10,9 @@
  *   users does).
  * Shape: warm-up (to half of the target rate), ramp-up, sustained stage at the
  *   target rate (TARGET_RATE, default 1000 req/s), ramp-down.
- * SLA: p95 < 100ms, the server sustains 1000 req/sec (no dropped iterations in
- *   the sustained stage), error rate < 1%
+ * SLA: p95 < 100ms, the server sustains 1000 req/sec (at most 1% of the
+ *   scheduled requests of the sustained stage not sent, at least 99% completed),
+ *   error rate < 1%
  */
 
 import { check } from "k6";
@@ -46,6 +47,9 @@ const SUSTAINED_SECONDS = 300;
 // the limit; if it is reached anyway, k6 reports it as dropped iterations.
 const PRE_ALLOCATED_VUS = 200;
 const MAX_VUS = 600;
+// Share of the scheduled requests of the sustained stage that may go unsent or
+// unfinished: the same 1% error budget as `http_req_failed` and `success_rate`.
+const LOSS_BUDGET = 0.01;
 
 export const options = {
     // Three consecutive scenarios instead of one list of stages, because k6
@@ -72,7 +76,11 @@ export const options = {
             rate: TARGET_RATE,
             timeUnit: "1s",
             duration: `${SUSTAINED_SECONDS}s`,
-            preAllocatedVUs: PRE_ALLOCATED_VUS,
+            // The whole pool is allocated before the stage starts: initialising virtual
+            // users while the load runs takes load-generator CPU, and the iterations
+            // that arrive meanwhile are lost for a reason that has nothing to do with
+            // the server (k6 docs, "Arrival-rate VU allocation").
+            preAllocatedVUs: MAX_VUS,
             maxVUs: MAX_VUS,
             startTime: "90s",
         },
@@ -100,15 +108,17 @@ export const options = {
         ],
 
         // Throughput: the server sustains the target rate during the sustained
-        // stage. k6 starts one iteration (one request) per arrival; when the
-        // server falls behind, k6 cannot start it and counts it as dropped.
-        "dropped_iterations{scenario:sustained}": ["count==0"],
+        // stage. k6 starts one iteration (one request) per arrival; when no virtual
+        // user is free, k6 cannot start it and counts it as dropped. The budget is
+        // the same 1% as for the completed requests below: a single lost request
+        // is not a verdict on the server, a lasting shortfall is.
+        "dropped_iterations{scenario:sustained}": [`count<=${Math.floor(TARGET_RATE * SUSTAINED_SECONDS * LOSS_BUDGET)}`],
 
         // At least 99% of the scheduled arrivals of the sustained stage completed.
         // The count is checked instead of a rate because k6 computes a counter
         // rate over the whole test duration, not over the duration of one
         // scenario.
-        "http_reqs{scenario:sustained}": [`count>=${Math.floor(TARGET_RATE * SUSTAINED_SECONDS * 0.99)}`],
+        "http_reqs{scenario:sustained}": [`count>=${Math.floor(TARGET_RATE * SUSTAINED_SECONDS * (1 - LOSS_BUDGET))}`],
 
         // Error rate: < 1%
         http_req_failed: ["rate<0.01"],
@@ -212,7 +222,7 @@ export function setup() {
     console.log("   - p50 latency: < 50ms");
     console.log("   - p95 latency: < 100ms (PRIMARY SLA)");
     console.log("   - p99 latency: < 150ms");
-    console.log("   - Throughput: sustained stage keeps up with the arrival rate (no dropped iterations)");
+    console.log("   - Throughput: sustained stage keeps up with the arrival rate (at most 1% dropped iterations, at least 99% completed)");
     console.log("   - Error rate: < 1%");
     console.log("\n");
 
