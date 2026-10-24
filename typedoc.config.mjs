@@ -11,7 +11,7 @@
 // the documentation repository, so set CONNECTUM_DOCS_DIR to the checkout you
 // mean (an absolute path, or one relative to this directory). The script
 // `scripts/stabilize-api-source-links.mjs` reads the same variable.
-const docsDir = process.env.CONNECTUM_DOCS_DIR ?? "../docs";
+const docsDir = process.env.CONNECTUM_DOCS_DIR || "../docs";
 
 /**
  * Links for symbols that are referenced by the documented API but not part of

@@ -22,7 +22,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_ROOT = resolve(SCRIPT_DIR, "..");
 // The same checkout `typedoc.config.mjs` writes into: CONNECTUM_DOCS_DIR (absolute, or relative to the
 // framework root), else the sibling `../docs`.
-const API_DIR = join(resolve(FRAMEWORK_ROOT, process.env.CONNECTUM_DOCS_DIR ?? join("..", "docs")), "en", "api");
+const API_DIR = join(resolve(FRAMEWORK_ROOT, process.env.CONNECTUM_DOCS_DIR || join("..", "docs")), "en", "api");
 
 /** Volatile source-link revision: `/blob/<40 hex>/` → stable `/blob/main/`. */
 const SHA_LINK = /\/blob\/[0-9a-f]{40}\//g;
