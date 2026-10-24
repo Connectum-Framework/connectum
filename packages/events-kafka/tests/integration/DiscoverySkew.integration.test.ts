@@ -59,6 +59,8 @@ describe("topic discovery with skewed intervals", { skip: KAFKA_TEST_URL === und
             const last = Math.max(...arrivals.values());
             console.log(`skew: topic created at ${created} ms; all 12 delivered: ${delivered().size === 12}; last arrival at ${last} ms (${last - created} ms after creation); per member ${JSON.stringify(byMember)}; total deliveries ${arrivals.size}`);
             assert.equal(delivered().size, 12, "every message of the late topic delivered");
+            // `delivered()` drops the member prefix, so it alone would pass if one member received everything.
+            assert.ok(byMember.fast > 0 && byMember.slow > 0, `both members must receive late-topic messages (fast=${byMember.fast}, slow=${byMember.slow})`);
         } finally {
             await subFast.unsubscribe();
             await subSlow.unsubscribe();
