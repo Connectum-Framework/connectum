@@ -326,13 +326,17 @@ describe("Auth Chain (AUTH -> AUTHZ) — Integration", () => {
             const next = mock.fn(async () => ({ message: {} }));
             const handler = buildChainedHandler(authInterceptor, authzInterceptor, next);
 
+            // The authorization interceptor behind it would also answer Unauthenticated for a
+            // request without an identity, so the code alone cannot tell which layer refused.
+            // "Missing credentials" is the authentication layer's own refusal.
             await assert.rejects(
                 () => handler(req),
                 (err: unknown) => {
-                    assertConnectError(err, Code.Unauthenticated);
+                    assertConnectError(err, Code.Unauthenticated, "Missing credentials");
                     return true;
                 },
             );
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         it("should skip authz only for authz-skipped methods while still requiring auth", async () => {
