@@ -39,11 +39,17 @@ the behavioral smoke and a single-copy check:
 8. **packed resilience cancellation** ([`checks/resilience-cancellation.mjs`](./fixture/checks/resilience-cancellation.mjs)) — verifies own deadline propagation,
    structured caller errors, interruptible retry backoff, waiting for active work
    and independent mock request signals through installed main/subpath exports.
-9. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
+9. **generated EventBus type-check** ([`checks/generated-eventbus.mjs`](./fixture/checks/generated-eventbus.mjs)) —
+   runs the packed CLI (`connectum init --events <adapter>`) for the NATS, Kafka, Redis and AMQP
+   adapter packages, generates the protos with the consumer's `buf`, and `tsc --noEmit`s each
+   generated project against the packed packages. This is the only check that compiles the
+   generated `<name>EventBus.ts` and event-handler service; it needs network access, because the
+   CLI downloads its base project from a pinned `examples` tag.
+10. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
    public functions not covered by the example e2e (catalog key-validation,
    resolvers, `defaultFailurePredicate` classification, opt-in interceptors, otel
    getters, auth helpers, healthcheck, events helpers, testing mocks, real `ctx.call`).
-10. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
+11. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
    fixture pins `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node`
    inside the framework's peer ranges, and the consumer has no workspace override, so
    every runtime participant must resolve one copy of each. In `pack` mode each installed
