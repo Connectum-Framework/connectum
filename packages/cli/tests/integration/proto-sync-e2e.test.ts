@@ -56,7 +56,10 @@ function runCli(args: string[], options: { cwd: string; tmpdir: string; path: st
     });
 }
 
-const PLUGIN_TEMPLATE = (out: string): string => ["version: v2", "plugins:", "  - local: protoc-gen-es", `    out: ${out}`, "    opt: target=ts", ""].join("\n");
+/** A privileged port below the ephemeral range: nothing in this test run can listen on it. */
+const UNBINDABLE_PORT = 1;
+
+const PLUGIN_TEMPLATE =(out: string): string => ["version: v2", "plugins:", "  - local: protoc-gen-es", `    out: ${out}`, "    opt: target=ts", ""].join("\n");
 
 describe("proto sync as a process, with real buf", () => {
     let server: Server;
@@ -88,11 +91,12 @@ describe("proto sync as a process, with real buf", () => {
         port = server.address?.port as number;
         assert.ok(port, "the server must have an assigned port");
 
-        // A port nobody listens on: a second server that is started and stopped at once.
-        const spare = createServer({ services: [], port: 0, interceptors: [], protocols: [Reflection()], allowHTTP1: false });
-        await spare.start();
-        closedPort = spare.address?.port as number;
-        await spare.stop();
+        // A port nobody listens on and nobody can take in the meantime. A port freed by stopping a
+        // server is not that: the files of this package run in parallel, and an ephemeral bind of
+        // another test can receive the very number just released, so the CLI would reach a live
+        // server and print an "unimplemented" error instead of a refusal. Port 1 lies below the
+        // ephemeral range and, being privileged, cannot be bound by an unprivileged test process.
+        closedPort = UNBINDABLE_PORT;
 
         mkdirSync(scratchRoot, { recursive: true });
         workdir = mkdtempSync(join(scratchRoot, "proto-sync-e2e-"));
