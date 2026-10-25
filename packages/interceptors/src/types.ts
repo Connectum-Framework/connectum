@@ -291,7 +291,11 @@ export interface FallbackOptions<T = unknown> {
     handler: (error: Error) => T | Promise<T>;
 
     /**
-     * Skip fallback for streaming calls
+     * Skip fallback for streaming calls. If false, the fallback covers a streaming
+     * call whose opening fails, and the `handler`'s message becomes the call's only
+     * message (the single response of a client-streaming call). A failure after the
+     * response has opened, while its messages are being read, is not replaced and
+     * reaches the caller as it is.
      * @default true
      */
     skipStreaming?: boolean;

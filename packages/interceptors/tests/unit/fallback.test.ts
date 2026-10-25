@@ -185,14 +185,19 @@ describe("fallback interceptor", () => {
         assert.strictEqual(fallbackHandler.mock.calls.length, 0);
     });
 
-    // With skipStreaming: false a failing streaming call gets the substitute response.
-    it("should replace a failing streaming call when skipStreaming=false", async () => {
+    // With skipStreaming: false a failing streaming call gets a streaming response whose only message is the substitute.
+    it("should replace a failing streaming call when skipStreaming=false, with a streaming response of one message", async () => {
         const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "value" }), skipStreaming: false });
         const next = createMockNextError(Code.Internal, "Service error");
 
         const result = await interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true }));
 
-        assert.deepStrictEqual(result.message, { fallback: "value" });
+        assert.strictEqual(result.stream, true);
+        const messages: unknown[] = [];
+        for await (const message of result.message as AsyncIterable<unknown>) {
+            messages.push(message);
+        }
+        assert.deepStrictEqual(messages, [{ fallback: "value" }]);
     });
 
     it("should preserve original error context", async () => {

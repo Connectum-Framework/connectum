@@ -6,7 +6,7 @@
  * @module fallback
  */
 
-import type { Interceptor, StreamRequest, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
+import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { FallbackOptions } from "./types.ts";
 
@@ -74,6 +74,11 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * it, so the response is accepted by Connect, gRPC and gRPC-web clients over HTTP/2
  * and HTTP/1.1 and does not hand request headers back to the caller. Metadata the
  * caller needs belongs in the message the `handler` returns.
+ *
+ * Streaming calls are skipped by default. With `skipStreaming: false` the fallback covers a
+ * streaming call whose opening fails: the `handler`'s message is then the only message of
+ * the call (the single response of a client-streaming call). A failure after the response
+ * has opened, while its messages are being read, is not replaced.
  *
  * @param options - Fallback options
  * @returns ConnectRPC interceptor
@@ -152,6 +157,22 @@ export function createFallbackInterceptor<T = unknown>(options: FallbackOptions<
             // Media types are case-insensitive, and Connect matches the gRPC content types that way.
             if (contentType?.toLowerCase().startsWith("application/grpc")) {
                 trailer.set("grpc-status", "0");
+            }
+
+            // A streaming call is answered with a streaming response: the fallback message is its only
+            // message (the single response of a client-streaming call). A unary-shaped response for it
+            // reaches the caller as `Internal: internal error` with no message.
+            if (req.stream) {
+                return {
+                    stream: true,
+                    service: req.service,
+                    method: req.method,
+                    message: (async function* () {
+                        yield fallbackValue;
+                    })(),
+                    header,
+                    trailer,
+                } as unknown as StreamResponse;
             }
 
             return {
