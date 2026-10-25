@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -59,6 +60,22 @@ function runCli(args: string[], options: { cwd: string; tmpdir: string; path: st
 /** A privileged port below the ephemeral range: nothing in this test run can listen on it. */
 const UNBINDABLE_PORT = 1;
 
+/**
+ * Resolves with the error code of a connection attempt to `127.0.0.1:port`, or `"connected"`.
+ * The tests below rely on port 1 refusing connections; checking it once up front turns a host
+ * that happens to serve something there into a clear failure instead of a puzzling mismatch.
+ */
+function probeLoopbackPort(port: number): Promise<string> {
+    return new Promise((resolve) => {
+        const socket = connect({ host: "127.0.0.1", port });
+        socket.once("connect", () => {
+            socket.destroy();
+            resolve("connected");
+        });
+        socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? error.message));
+    });
+}
+
 const PLUGIN_TEMPLATE =(out: string): string => ["version: v2", "plugins:", "  - local: protoc-gen-es", `    out: ${out}`, "    opt: target=ts", ""].join("\n");
 
 describe("proto sync as a process, with real buf", () => {
@@ -97,6 +114,7 @@ describe("proto sync as a process, with real buf", () => {
         // server and print an "unimplemented" error instead of a refusal. Port 1 lies below the
         // ephemeral range and, being privileged, cannot be bound by an unprivileged test process.
         closedPort = UNBINDABLE_PORT;
+        assert.equal(await probeLoopbackPort(closedPort), "ECONNREFUSED", `127.0.0.1:${closedPort} must refuse connections for the "nobody listens" cases; something on this host serves it`);
 
         mkdirSync(scratchRoot, { recursive: true });
         workdir = mkdtempSync(join(scratchRoot, "proto-sync-e2e-"));
