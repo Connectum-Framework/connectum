@@ -28,7 +28,7 @@ export type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientS
 // Service registration
 export type { ServiceDefinition, ServiceOptions } from "./defineService.ts";
 export { defineLazyService, defineService } from "./defineService.ts";
-export { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./enabledServices.ts";
+export { enabledServicesFromEnv, matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "./enabledServices.ts";
 // In-process transport
 //
 // NOTE: `LOCAL_TRANSPORT_HEADER` and `LOCAL_TRANSPORT_VALUE` are intentionally

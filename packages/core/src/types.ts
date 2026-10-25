@@ -531,9 +531,11 @@ export interface CreateServerOptions {
      * Proto `typeName`s to mount **locally** from `services`. A service in
      * `services` whose `typeName` is not listed is treated as remote (resolved
      * via {@link CreateServerOptions.remoteResolver}). `undefined` mounts every
-     * provided service locally.
+     * provided service locally, whether the property is omitted or set to
+     * `undefined`, so `enabledServicesFromEnv(process.env.X)` can be passed as is.
+     * An empty list mounts none of them.
      */
-    enabledServices?: readonly string[];
+    enabledServices?: readonly string[] | undefined;
 
     /**
      * Resolves a service that is not mounted locally to a `Transport`. Consulted

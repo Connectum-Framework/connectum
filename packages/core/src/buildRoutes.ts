@@ -62,7 +62,7 @@ export interface BuildRoutesOptions {
      * Proto `typeName`s to mount locally. A service whose `typeName` is not in
      * the set is skipped (treated as remote). `undefined` mounts every service.
      */
-    enabledServices?: readonly string[];
+    enabledServices?: readonly string[] | undefined;
 }
 
 /**
