@@ -67,10 +67,15 @@ const UNBINDABLE_PORT = 1;
  */
 function probeLoopbackPort(port: number): Promise<string> {
     return new Promise((resolve) => {
-        const socket = connect({ host: "127.0.0.1", port });
+        // A host that drops packets to the port would otherwise leave the attempt pending forever.
+        const socket = connect({ host: "127.0.0.1", port, timeout: 5_000 });
         socket.once("connect", () => {
             socket.destroy();
             resolve("connected");
+        });
+        socket.once("timeout", () => {
+            socket.destroy();
+            resolve("timeout");
         });
         socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? error.message));
     });
