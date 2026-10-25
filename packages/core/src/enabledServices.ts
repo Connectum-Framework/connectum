@@ -13,6 +13,11 @@
  * Parse a comma-separated env value into a list of proto `typeName`s, trimming
  * whitespace and dropping empty entries. Returns `[]` for an empty/undefined value.
  *
+ * An empty list is not the server's default: `createServer({ enabledServices: [] })`
+ * mounts none of the supplied services, while an omitted `enabledServices` mounts all
+ * of them. To configure `enabledServices` straight from a variable that may be unset,
+ * use {@link enabledServicesFromEnv}, which keeps `undefined` for that case.
+ *
  * @example
  * ```ts
  * import { createServer, parseServicesEnv } from "@connectum/core";
@@ -32,6 +37,33 @@ export function parseServicesEnv(value: string | undefined | null): string[] {
         .split(",")
         .map((entry) => entry.trim())
         .filter((entry) => entry.length > 0);
+}
+
+/**
+ * Read `enabledServices` from a comma-separated env value, in one line.
+ *
+ * | value | result | what `createServer` does |
+ * |---|---|---|
+ * | unset, `null`, `""`, whitespace or only commas | `undefined` | mounts every supplied service (the default) |
+ * | `"a.v1.S"` or `" a.v1.S , b.v1.S "` | the named `typeName`s, trimmed | mounts only those |
+ *
+ * To mount none of the supplied services, pass `enabledServices: []` directly; an env
+ * value cannot ask for that. Use full proto `typeName`s, as for {@link parseServicesEnv}.
+ *
+ * @example
+ * ```ts
+ * import { createServer, enabledServicesFromEnv } from "@connectum/core";
+ * import { greeterService } from "./services/greeterService.ts";
+ *
+ * const server = createServer({
+ *   services: [greeterService],
+ *   enabledServices: enabledServicesFromEnv(process.env.CONNECTUM_SERVICES),
+ * });
+ * ```
+ */
+export function enabledServicesFromEnv(value: string | undefined | null): string[] | undefined {
+    const names = parseServicesEnv(value);
+    return names.length > 0 ? names : undefined;
 }
 
 /**

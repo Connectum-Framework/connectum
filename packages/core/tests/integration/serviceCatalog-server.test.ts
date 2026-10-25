@@ -9,6 +9,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 import { CatalogConfigError } from "../../src/catalogErrors.ts";
 import { defineService } from "../../src/defineService.ts";
+import { enabledServicesFromEnv } from "../../src/enabledServices.ts";
 import { singleTransportResolver } from "../../src/remoteResolver.ts";
 import { createServer } from "../../src/Server.ts";
 import { defineCatalog } from "../../src/serviceCatalog.ts";
@@ -46,6 +47,30 @@ describe("createServer enabledServices", () => {
         assert.equal(server.hasService(EchoService), true);
         // A second configured service that is not listed stays unmounted.
         assert.equal(server.hasService(StreamingService), false, "a service outside the list must not be local");
+    });
+
+    // The one-line configuration `enabledServices: enabledServicesFromEnv(process.env.X)`:
+    // an unset variable keeps the server's default (everything mounted), named services mount
+    // only themselves, and `[]` stays the way to mount none of the supplied services.
+    describe("enabledServices: enabledServicesFromEnv(value)", () => {
+        it("mounts every supplied service for an unset or empty variable", () => {
+            for (const value of [undefined, "", "  "]) {
+                const server = createServer({ services: [echo(), streaming()], enabledServices: enabledServicesFromEnv(value) });
+                assert.equal(server.hasService(EchoService), true, `value ${JSON.stringify(value)}`);
+                assert.equal(server.hasService(StreamingService), true, `value ${JSON.stringify(value)}`);
+            }
+        });
+
+        it("mounts only the services the variable names", () => {
+            const server = createServer({ services: [echo(), streaming()], enabledServices: enabledServicesFromEnv(` ${EchoService.typeName} `) });
+            assert.equal(server.hasService(EchoService), true);
+            assert.equal(server.hasService(StreamingService), false);
+        });
+
+        it("mounts none of the supplied services only for an explicit empty list", () => {
+            const server = createServer({ services: [echo()], enabledServices: [] });
+            assert.equal(server.hasService(EchoService), false);
+        });
     });
 
     // Service catalog guide: a service outside `enabledServices` is remote — it is not served

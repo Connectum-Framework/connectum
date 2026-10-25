@@ -5,7 +5,30 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "../../src/enabledServices.ts";
+import { enabledServicesFromEnv, matchServicesPattern, mergeEnabledServices, parseServicesEnv } from "../../src/enabledServices.ts";
+
+describe("enabledServicesFromEnv", () => {
+    // The value goes straight into `createServer({ enabledServices })`, where `undefined`
+    // mounts every supplied service and a list mounts only the listed ones, so a variable
+    // that names no service has to stay `undefined` instead of becoming an empty list.
+    it("returns undefined, the server's mount-everything default, when the variable names no service", () => {
+        assert.equal(enabledServicesFromEnv(undefined), undefined);
+        assert.equal(enabledServicesFromEnv(null), undefined);
+        assert.equal(enabledServicesFromEnv(""), undefined);
+        assert.equal(enabledServicesFromEnv("   "), undefined);
+        assert.equal(enabledServicesFromEnv(" , ,, "), undefined);
+    });
+
+    it("returns the named type names for a comma-separated value, trimmed and without empty entries", () => {
+        assert.deepEqual(enabledServicesFromEnv("a.v1.S"), ["a.v1.S"]);
+        assert.deepEqual(enabledServicesFromEnv(" a.v1.S , b.v1.S ,, c.v1.S "), ["a.v1.S", "b.v1.S", "c.v1.S"]);
+    });
+
+    it("leaves parseServicesEnv as it is: an empty value is still an empty list there", () => {
+        assert.deepEqual(parseServicesEnv(undefined), []);
+        assert.deepEqual(parseServicesEnv(""), []);
+    });
+});
 
 describe("parseServicesEnv", () => {
     it("splits, trims, and drops empties", () => {

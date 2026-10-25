@@ -104,6 +104,10 @@ check("core.parseServicesEnv parses a CSV list", () => {
     const r = core.parseServicesEnv("a.B,c.D");
     assert.ok(r);
 });
+check("core.enabledServicesFromEnv keeps undefined for an unset value and lists the named services", () => {
+    assert.equal(core.enabledServicesFromEnv(undefined), undefined);
+    assert.deepEqual(core.enabledServicesFromEnv(" a.v1.B , c.v1.D "), ["a.v1.B", "c.v1.D"]);
+});
 check("core.safeParseEnvConfig returns a result for minimal env", () => {
     const r = core.safeParseEnvConfig({ NODE_ENV: "production" } as never);
     assert.ok(r);
