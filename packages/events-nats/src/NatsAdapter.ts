@@ -9,11 +9,12 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
 import { ensureConsumer } from "./consumerSetup.ts";
 import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
@@ -280,7 +281,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 // Partial rollback: close all previously created message iterators
                 // to avoid leaked subscriptions when a later pattern fails.
                 for (const iter of messageIterators) {
-                    await iter.close().catch(() => undefined);
+                    await closeMessages(iter).catch(() => undefined);
                 }
                 // The durables of an auto-generated group belong to this call alone and are removed.
                 // Those of a named group are shared with every replica of the group, and this call
@@ -300,7 +301,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             const subscription: EventSubscription = {
                 async unsubscribe(): Promise<void> {
                     for (const iter of messageIterators) {
-                        await iter.close();
+                        await closeMessages(iter);
                     }
                     messageIterators.length = 0;
 
@@ -348,6 +349,39 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
         }
     }
     return map;
+}
+
+/**
+ * Longest wait for the server to confirm that a closing subscription is gone. It bounds the close
+ * when the connection is down or reconnecting and the confirmation cannot come.
+ */
+const CLOSE_CONFIRMATION_TIMEOUT_MS = 5_000;
+
+/**
+ * Close a consumer's message stream without stranding a delivery.
+ *
+ * `ConsumerMessages.close()` forgets the underlying subscription on the spot and only then tells
+ * the server. The server still holds the consumer's pull request until that message reaches it,
+ * and a message it dispatches in between arrives for a subscription the client no longer knows:
+ * it is dropped silently and stays awaiting an acknowledgement until `ack_wait` runs out, so the
+ * next consumer of the group does not get it for the whole of `ack_wait`. Draining the
+ * subscription first sends the unsubscribe, waits for the server to confirm it (a round trip
+ * over the same connection, so every message sent before it has arrived by then) and keeps
+ * receiving meanwhile: such a message reaches the consume loop and goes back through the handler,
+ * which returns it to the group at once.
+ *
+ * The subscription is reached through the implementation class (`sub`), since the public
+ * `ConsumerMessages` interface offers no draining close. Without it, or when the confirmation
+ * does not come in time, this is the plain `close()`.
+ */
+async function closeMessages(messages: ConsumerMessages): Promise<void> {
+    const subscription = (messages as { sub?: Subscription }).sub;
+    if (subscription !== undefined && !subscription.isClosed() && !subscription.isDraining()) {
+        const timer = new AbortController();
+        await Promise.race([subscription.drain().catch(() => undefined), sleep(CLOSE_CONFIRMATION_TIMEOUT_MS, undefined, { signal: timer.signal }).catch(() => undefined)]);
+        timer.abort();
+    }
+    await messages.close();
 }
 
 /**
