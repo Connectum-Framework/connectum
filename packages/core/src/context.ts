@@ -52,9 +52,14 @@ export type CallOptions = {
      */
     timeoutMs?: number;
     /**
-     * Extra request headers. Only these explicit headers are sent; no inbound
-     * headers are auto-propagated (trace context flows implicitly via the OTel
-     * client interceptor in `outgoingInterceptors`).
+     * Extra request headers. By default no inbound header is forwarded: only
+     * the inbound headers named in `createServer({ propagateHeaders })` (empty
+     * by default) are copied onto an outgoing `ctx.call` / `ctx.stream`. The
+     * headers given here are sent on top of them and win on a name conflict.
+     * A standalone `createCatalogClient` has no inbound request and sends
+     * these headers verbatim. Trace context is not carried by this option: the
+     * `@connectum/otel` client interceptor injects it when it is mounted in
+     * `outgoingInterceptors`.
      */
     headers?: HeadersInit;
     /**
