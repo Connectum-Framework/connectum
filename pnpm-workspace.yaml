@@ -21,7 +21,7 @@ catalog:
   '@connectrpc/connect': ^2.2.0
   '@connectrpc/connect-node': ^2.2.0
   '@connectrpc/validate': ^0.2.0
-  '@exodus/test': ^1.0.0-rc.116
+  '@exodus/test': ^1.0.0-rc.117
   '@opentelemetry/api': ^1.9.0
   '@opentelemetry/api-logs': ^0.219.0
   '@opentelemetry/context-async-hooks': ^2.8.0
