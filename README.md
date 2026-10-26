@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>gRPC/ConnectRPC framework for Node.js microservices</strong>
+  <strong>gRPC/ConnectRPC framework for TypeScript microservices</strong>
 </p>
 
 <p align="center">
