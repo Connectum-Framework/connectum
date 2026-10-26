@@ -20,9 +20,13 @@ This project adheres to the [Contributor Covenant Code of Conduct](./CODE_OF_CON
 
 ## How Can I Help?
 
+### Reporting Security Vulnerabilities
+
+Do not report a suspected vulnerability in a public issue. Use the private route described in [SECURITY.md](./SECURITY.md).
+
 ### Reporting Bugs
 
-If you found a bug:
+If you found a bug (use the bug report form when you open a new issue):
 
 1. **Check existing issues** - the problem may already be known
 2. **Create a detailed issue** with:

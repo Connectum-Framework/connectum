@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Connectum-Framework/connectum/security/advisories/new
+    about: Suspected vulnerabilities must be reported privately. Do not open a public issue.
+  - name: Ask a question or discuss an idea
+    url: https://github.com/Connectum-Framework/connectum/discussions
+    about: Usage questions and open-ended ideas belong in GitHub Discussions.
+  - name: Read the documentation
+    url: https://connectum.dev
+    about: Guides, package documentation and API reference.

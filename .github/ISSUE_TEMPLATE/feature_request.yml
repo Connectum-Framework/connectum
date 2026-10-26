@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an enhancement or a new capability.
+labels: ["type:feature", "status:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check existing issues first, then describe the problem you want solved.
+
+        **Do not paste secrets, tokens, credentials or your application's private
+        contracts.** Use placeholders instead.
+  - type: input
+    id: package
+    attributes:
+      label: Affected @connectum/* package
+      description: The package this request concerns, and the version you use.
+      placeholder: "@connectum/core 1.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case
+      description: What are you trying to do, and what blocks you?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A sketch of the API or behavior you have in mind.
+      render: typescript
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and trade-offs
+      description: Workarounds you tried or other approaches you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: proto
+    attributes:
+      label: Proto contract (only if relevant)
+      description: A small contract illustrating the request, only when it depends on one.
+      render: protobuf
+    validations:
+      required: false
