@@ -87,7 +87,9 @@ async function startRelay(target: URL): Promise<{ url: string; setHold: (hold: b
 describe("NatsAdapter subscription closed while the server still sends to it", { skip: NATS_TEST_URL === undefined ? "NATS_TEST_URL not set" : false, concurrency: 1 }, () => {
     const servers = NATS_TEST_URL as string;
 
-    it("hands a message that arrives during the close back to the group long before ack_wait", { timeout: 120_000 }, async () => {
+    // A second close that begins while the first still waits for the server must not cut it short.
+    for (const closeCalls of [1, 2]) {
+    it(`hands a message that arrives during the close back to the group long before ack_wait (${closeCalls} concurrent unsubscribe call${closeCalls === 1 ? "" : "s"})`, { timeout: 120_000 }, async () => {
         const id = randomUUID().replaceAll("-", "");
         const topic = `it.unsub.${id}`;
         const stream = `itunsub${id.slice(0, 12)}`;
@@ -130,9 +132,29 @@ describe("NatsAdapter subscription closed while the server still sends to it", {
             // The close is under way, but its UNSUB is held back: the server still has the
             // subscription's pull request and sends the next message to it.
             relay.setHold(true);
-            const closing = subscription.unsubscribe();
+            const closing = Promise.all(Array.from({ length: closeCalls }, () => subscription.unsubscribe()));
             await publisher.publish(topic, new Uint8Array());
-            await sleep(300);
+            // Both messages are out with the server and unacknowledged while the first handler is
+            // blocked: the second one was dispatched to the subscription that is closing.
+            const observer = await connect({ servers });
+            try {
+                const manager = await jetstreamManager(observer);
+                const durable = consumerName(group, topic);
+                let ackPending = 0;
+                const deadline = Date.now() + 10_000;
+                while (ackPending < 2) {
+                    ackPending = (await manager.consumers.info(stream, durable)).num_ack_pending;
+                    if (ackPending >= 2) {
+                        break;
+                    }
+                    if (Date.now() > deadline) {
+                        throw new Error(`the second message was not dispatched to the closing subscription within 10000ms (num_ack_pending ${ackPending}, expected 2)`);
+                    }
+                    await sleep(20);
+                }
+            } finally {
+                await observer.close();
+            }
             relay.setHold(false);
             release();
             await closing;
@@ -169,4 +191,5 @@ describe("NatsAdapter subscription closed while the server still sends to it", {
             await relay.close();
         }
     });
+    }
 });

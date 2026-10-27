@@ -374,15 +374,34 @@ const CLOSE_CONFIRMATION_TIMEOUT_MS = 5_000;
  * `ConsumerMessages` interface offers no draining close. Without it, or when the confirmation
  * does not come in time, this is the plain `close()`.
  */
-async function closeMessages(messages: ConsumerMessages): Promise<void> {
-    const subscription = (messages as { sub?: Subscription }).sub;
-    if (subscription !== undefined && !subscription.isClosed() && !subscription.isDraining()) {
-        const timer = new AbortController();
-        await Promise.race([subscription.drain().catch(() => undefined), sleep(CLOSE_CONFIRMATION_TIMEOUT_MS, undefined, { signal: timer.signal }).catch(() => undefined)]);
-        timer.abort();
+function closeMessages(messages: ConsumerMessages): Promise<void> {
+    // One close per message stream: a second caller (unsubscribe() twice, or disconnect()
+    // overlapping it) waits for the first drain to be confirmed. Closing at once, because the
+    // subscription is already draining, would forget it before the server confirmed the
+    // unsubscribe and reopen the window in which a delivery is dropped.
+    const running = closing.get(messages);
+    if (running !== undefined) {
+        return running;
     }
-    await messages.close();
+    const close = (async (): Promise<void> => {
+        const subscription = (messages as { sub?: Subscription }).sub;
+        if (subscription !== undefined && !subscription.isClosed() && !subscription.isDraining()) {
+            const timer = new AbortController();
+            await Promise.race([subscription.drain().catch(() => undefined), sleep(CLOSE_CONFIRMATION_TIMEOUT_MS, undefined, { signal: timer.signal }).catch(() => undefined)]);
+            timer.abort();
+        }
+        await messages.close();
+    })();
+    closing.set(messages, close);
+    const forget = (): void => {
+        closing.delete(messages);
+    };
+    close.then(forget, forget);
+    return close;
 }
+
+/** The close in progress of each message stream, shared by every caller of {@link closeMessages}. */
+const closing = new WeakMap<ConsumerMessages, Promise<void>>();
 
 /**
  * Async consume loop that processes JetStream messages and
