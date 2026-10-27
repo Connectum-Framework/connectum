@@ -189,6 +189,16 @@ describe("NatsAdapter subscription closed while the server still sends to it", {
             await second.disconnect().catch(() => undefined);
             await publisher.disconnect().catch(() => undefined);
             await relay.close();
+            // The stream is unique to this case and outlives its clients: remove it so repeated
+            // runs against a reused server do not accumulate streams and their durables.
+            const cleanup = await connect({ servers }).catch(() => undefined);
+            if (cleanup !== undefined) {
+                try {
+                    await (await jetstreamManager(cleanup)).streams.delete(stream).catch(() => undefined);
+                } finally {
+                    await cleanup.close().catch(() => undefined);
+                }
+            }
         }
     });
     }

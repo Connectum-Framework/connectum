@@ -280,9 +280,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             } catch (error) {
                 // Partial rollback: close all previously created message iterators
                 // to avoid leaked subscriptions when a later pattern fails.
-                for (const iter of messageIterators) {
-                    await closeMessages(iter).catch(() => undefined);
-                }
+                // Each close may wait up to CLOSE_CONFIRMATION_TIMEOUT_MS for an unresponsive server,
+                // so the iterators close together: the rollback waits once, not once per pattern.
+                await Promise.allSettled(messageIterators.map((iter) => closeMessages(iter)));
                 // The durables of an auto-generated group belong to this call alone and are removed.
                 // Those of a named group are shared with every replica of the group, and this call
                 // cannot tell the ones it created from the ones another replica created at the same
@@ -300,9 +300,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const subscription: EventSubscription = {
                 async unsubscribe(): Promise<void> {
-                    for (const iter of messageIterators) {
-                        await closeMessages(iter);
-                    }
+                    // Closed together: each close may wait for the server's confirmation, and a
+                    // subscription of several patterns must not wait once per pattern.
+                    await Promise.all(messageIterators.map((iter) => closeMessages(iter)));
                     messageIterators.length = 0;
 
                     // Delete auto-generated durable consumers to prevent broker-side leak.
