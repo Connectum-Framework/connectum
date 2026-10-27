@@ -22,6 +22,8 @@
  *                      (ERESOLVE); pnpm and Bun install but print a peer warning naming it.
  * - `connect-below`  — `@connectrpc/connect` pinned below the floor, `connect-node` left
  *                      to the manager: the same visible failure / warning.
+ * - `connect-previous-floor` — connect and connect-node both pinned to 2.2.0, the highest
+ *                      release of the line the floor moved away from: the same failure.
  * - `connect-node-below` — connect 2.3.0 next to connect-node 2.1.2, whose exact peer is
  *                      connect 2.1.2: out of lockstep. npm refuses the tree; on pnpm and
  *                      Bun `createServer()` must report the lockstep line
@@ -101,7 +103,11 @@ const SCENARIOS = {
     "peers-omitted": {},
     "protobuf-below": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.3.0", "@connectrpc/connect-node": "2.3.0" },
     "connect-below": { "@connectrpc/connect": "2.1.2" },
-    // connect / connect-node out of lockstep: connect-node 2.1.2 declares connect EXACTLY
+    // The previous floor: a consumer still on the 2.2.x line, in lockstep (connect-node 2.2.0
+    // declares connect EXACTLY 2.2.0). 2.2.0 is the highest published 2.2.x, so this cell
+    // fails if core ever accepts the line it dropped.
+    "connect-previous-floor": { "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.2.0" },
+    // connect /connect-node out of lockstep: connect-node 2.1.2 declares connect EXACTLY
     // 2.1.2 next to an in-range connect 2.3.0. No published pair is both inside core's
     // ranges and out of lockstep (2.3.0 is the only release in range), so connect-node is
     // also below core's floor here; the runtime assertion requires the lockstep line specifically.
@@ -115,6 +121,7 @@ const SCENARIOS = {
 const RUNTIME_FAILURE = {
     "protobuf-below": ["@bufbuild/protobuf: loaded 2.12.1", "@connectum/core requires ^2.16.0"],
     "connect-below": ["@connectrpc/connect: loaded 2.1.2", "@connectum/core requires ^2.3.0"],
+    "connect-previous-floor": ["@connectrpc/connect: loaded 2.2.0", "@connectum/core requires ^2.3.0"],
     "connect-node-below": ["@connectrpc/connect-node: loaded 2.1.2", "@connectrpc/connect: loaded 2.3.0", "@connectrpc/connect-node@2.1.2 requires 2.1.2"],
 };
 
@@ -165,6 +172,11 @@ const EXPECTATIONS = {
         bun: { install: "ok", complaintAbout: "@bufbuild/protobuf", complaintRequired: false, contract: false },
     },
     "connect-below": {
+        npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
+        pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+        bun: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+    },
+    "connect-previous-floor": {
         npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
         pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
         bun: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },

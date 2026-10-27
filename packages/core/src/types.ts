@@ -434,8 +434,10 @@ export interface CreateServerOptions {
      * decompressed, or parsed**. Return to admit the call; throw a
      * `ConnectError` to end it without parsing the body (on a kept-alive HTTP/1
      * connection `@connectrpc/connect-node` 2.3.0+ then discards up to 256 KiB of
-     * the unread remainder so the connection stays usable). It is the cheap place
-     * to reject, for example, a request without credentials.
+     * the unread remainder; the connection stays reusable only if that drain
+     * consumes the whole body, otherwise connect-node answers with
+     * `Connection: close` and closes the socket). It is the cheap place to
+     * reject, for example, a request without credentials.
      *
      * Contract:
      * - **Both transports, no exemption.** The gate runs identically for HTTP

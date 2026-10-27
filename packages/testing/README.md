@@ -17,8 +17,8 @@ pnpm add -D \
 Install version 1.3 or later to get the API documented in this README.
 
 The package requires Node.js `>=22.13.0`. Its peer dependencies are
-`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0`, and
-`@connectrpc/connect-node` `^2.2.0`; keep these shared with the application.
+`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.3.0`, and
+`@connectrpc/connect-node` `^2.3.0`; keep these shared with the application.
 See [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
 
 ## Start here
