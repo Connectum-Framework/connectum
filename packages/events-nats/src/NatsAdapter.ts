@@ -9,11 +9,12 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
 import { ensureConsumer } from "./consumerSetup.ts";
 import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
@@ -279,9 +280,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             } catch (error) {
                 // Partial rollback: close all previously created message iterators
                 // to avoid leaked subscriptions when a later pattern fails.
-                for (const iter of messageIterators) {
-                    await iter.close().catch(() => undefined);
-                }
+                // Each close may wait up to CLOSE_CONFIRMATION_TIMEOUT_MS for an unresponsive server,
+                // so the iterators close together: the rollback waits once, not once per pattern.
+                await Promise.allSettled(messageIterators.map((iter) => closeMessages(iter)));
                 // The durables of an auto-generated group belong to this call alone and are removed.
                 // Those of a named group are shared with every replica of the group, and this call
                 // cannot tell the ones it created from the ones another replica created at the same
@@ -299,9 +300,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const subscription: EventSubscription = {
                 async unsubscribe(): Promise<void> {
-                    for (const iter of messageIterators) {
-                        await iter.close();
-                    }
+                    // Closed together: each close may wait for the server's confirmation, and a
+                    // subscription of several patterns must not wait once per pattern.
+                    await Promise.all(messageIterators.map((iter) => closeMessages(iter)));
                     messageIterators.length = 0;
 
                     // Delete auto-generated durable consumers to prevent broker-side leak.
@@ -349,6 +350,58 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
     }
     return map;
 }
+
+/**
+ * Longest wait for the server to confirm that a closing subscription is gone. It bounds the close
+ * when the connection is down or reconnecting and the confirmation cannot come.
+ */
+const CLOSE_CONFIRMATION_TIMEOUT_MS = 5_000;
+
+/**
+ * Close a consumer's message stream without stranding a delivery.
+ *
+ * `ConsumerMessages.close()` forgets the underlying subscription on the spot and only then tells
+ * the server. The server still holds the consumer's pull request until that message reaches it,
+ * and a message it dispatches in between arrives for a subscription the client no longer knows:
+ * it is dropped silently and stays awaiting an acknowledgement until `ack_wait` runs out, so the
+ * next consumer of the group does not get it for the whole of `ack_wait`. Draining the
+ * subscription first sends the unsubscribe, waits for the server to confirm it (a round trip
+ * over the same connection, so every message sent before it has arrived by then) and keeps
+ * receiving meanwhile: such a message reaches the consume loop and goes back through the handler,
+ * which returns it to the group at once.
+ *
+ * The subscription is reached through the implementation class (`sub`), since the public
+ * `ConsumerMessages` interface offers no draining close. Without it, or when the confirmation
+ * does not come in time, this is the plain `close()`.
+ */
+function closeMessages(messages: ConsumerMessages): Promise<void> {
+    // One close per message stream: a second caller (unsubscribe() twice, or disconnect()
+    // overlapping it) waits for the first drain to be confirmed. Closing at once, because the
+    // subscription is already draining, would forget it before the server confirmed the
+    // unsubscribe and reopen the window in which a delivery is dropped.
+    const running = closing.get(messages);
+    if (running !== undefined) {
+        return running;
+    }
+    const close = (async (): Promise<void> => {
+        const subscription = (messages as { sub?: Subscription }).sub;
+        if (subscription !== undefined && !subscription.isClosed() && !subscription.isDraining()) {
+            const timer = new AbortController();
+            await Promise.race([subscription.drain().catch(() => undefined), sleep(CLOSE_CONFIRMATION_TIMEOUT_MS, undefined, { signal: timer.signal }).catch(() => undefined)]);
+            timer.abort();
+        }
+        await messages.close();
+    })();
+    closing.set(messages, close);
+    const forget = (): void => {
+        closing.delete(messages);
+    };
+    close.then(forget, forget);
+    return close;
+}
+
+/** The close in progress of each message stream, shared by every caller of {@link closeMessages}. */
+const closing = new WeakMap<ConsumerMessages, Promise<void>>();
 
 /**
  * Async consume loop that processes JetStream messages and
