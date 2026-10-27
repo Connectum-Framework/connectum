@@ -41,7 +41,7 @@ Use the feature request form when you open a new issue.
 
 1. **Check existing issues and the [ADRs](https://connectum.dev/en/contributing/adr/).** The
    idea may have been discussed already.
-2. **Fill in the form.** It asks for the affected package, the problem and use case, your
+2. **Fill in the form.** It asks for the affected package and the version you use, the problem and use case, your
    proposed solution, and the alternatives and trade-offs you considered.
 
 ## Contributing Code
