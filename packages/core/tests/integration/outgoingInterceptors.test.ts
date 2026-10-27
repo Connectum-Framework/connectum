@@ -541,12 +541,11 @@ describe("outgoingInterceptors — call context is preserved on a resolver route
                 return "unreachable";
             });
         });
-        // Connect's response wrapper short-circuits on abort without resuming a
-        // generator parked at `yield`, so a response wrapper does not reach its
-        // `finally` on a native transport either: the decorator must match that,
-        // not improve on it silently.
+        // Since @connectrpc/connect 2.3.0 an aborted call resumes a response wrapper
+        // parked at `yield`, so it reaches its `finally` on a native transport. The
+        // decorator must match that, not diverge from it silently.
         assert.strictEqual(native.calls, 1);
-        assert.strictEqual(native.completed, 0, "native Connect transport: a wrapper parked at yield is not resumed on abort");
+        assert.strictEqual(native.completed, 1, "native Connect transport: a wrapper parked at yield is resumed on abort");
         assert.deepStrictEqual(viaChain, native, "chain over a resolver route must match the native transport");
     });
 });

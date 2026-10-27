@@ -149,11 +149,13 @@ function asInternals(server: Server): ServerInternals {
  * boundary, providing mutation isolation between client and server.
  *
  * Cancellation: a streaming call is cancelled by the `AbortSignal` passed in
- * the call options, by its deadline, or by `server.stop()`. The handler's
- * `ctx.signal` aborts and its output generator is finished, so a handler
- * parked at `yield` runs its `finally`. Leaving a `for await` loop with
- * `break` is not a cancellation: the handler keeps running until one of the
- * above happens.
+ * the call options, by its deadline, by `server.stop()`, or by the caller
+ * leaving its `for await` loop early with `break` (the response iterator's
+ * `return()`, which ends the call as it does over HTTP; requires
+ * `@connectrpc/connect` 2.3.0 or later). The handler's `ctx.signal` aborts and
+ * its output generator is finished, so a handler parked at `yield` runs its
+ * `finally`. After a `break` the client-side interceptors see their response
+ * stream end without an error; only the handler sees the call cancelled.
  *
  * Request streams: the caller's request stream of a client-streaming or
  * bidirectional call is advanced in the caller's async context, below the

@@ -432,7 +432,9 @@ export interface CreateServerOptions {
      * The gate receives the call's `HandlerContext` after the request headers
      * are available and **before any request message is received,
      * decompressed, or parsed**. Return to admit the call; throw a
-     * `ConnectError` to end it without reading the body. It is the cheap place
+     * `ConnectError` to end it without parsing the body (on a kept-alive HTTP/1
+     * connection `@connectrpc/connect-node` 2.3.0+ then discards up to 256 KiB of
+     * the unread remainder so the connection stays usable). It is the cheap place
      * to reject, for example, a request without credentials.
      *
      * Contract:
@@ -789,9 +791,12 @@ export interface Server extends EventEmitter {
      * / `addProtocol` will throw.
      *
      * Cancellation: a streaming call is cancelled by the `AbortSignal` passed
-     * in the call options, by its deadline, or by `server.stop()`; the
-     * handler's `finally` then runs. Leaving a `for await` loop with `break`
-     * is not a cancellation.
+     * in the call options, by its deadline, by `server.stop()`, or by the
+     * caller leaving its `for await` loop early with `break` (the response
+     * iterator's `return()`; requires `@connectrpc/connect` 2.3.0 or later);
+     * the handler's `finally` then runs. A `break` ends the call for the
+     * client-side interceptors without an error, while the handler sees its
+     * `signal` aborted.
      *
      * @example
      * ```typescript
