@@ -179,7 +179,9 @@ const EXPECTATIONS = {
     "connect-previous-floor": {
         npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
         pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
-        bun: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+        // Bun 1.4.4 printed no peer warning for this pin (measured); the installed violation
+        // and the runtime createServer() failure are still asserted, and a Bun that warns passes.
+        bun: { install: "ok", complaintAbout: "@connectrpc/connect", complaintRequired: false, contract: false },
     },
     "connect-node-below": {
         // npm names the conflicting edge: `peer @connectrpc/connect@"2.1.2" from @connectrpc/connect-node@2.1.2`.
