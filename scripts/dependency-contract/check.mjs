@@ -22,7 +22,9 @@
  *                      (ERESOLVE); pnpm and Bun install but print a peer warning naming it.
  * - `connect-below`  — `@connectrpc/connect` pinned below the floor, `connect-node` left
  *                      to the manager: the same visible failure / warning.
- * - `connect-node-below` — connect 2.2.0 next to connect-node 2.1.2, whose exact peer is
+ * - `connect-previous-floor` — connect and connect-node both pinned to 2.2.0, the highest
+ *                      release of the line the floor moved away from: the same failure.
+ * - `connect-node-below` — connect 2.3.0 next to connect-node 2.1.2, whose exact peer is
  *                      connect 2.1.2: out of lockstep. npm refuses the tree; on pnpm and
  *                      Bun `createServer()` must report the lockstep line
  *                      (`@connectrpc/connect-node@2.1.2 requires 2.1.2`).
@@ -94,18 +96,22 @@ const MANAGERS = ["npm", "pnpm", "bun"];
 
 /**
  * Consumer pins per scenario. The floors mirror the published peer ranges
- * (`^2.16.0` / `^2.2.0`); "below" pins are the last releases under those floors.
+ * (`^2.16.0` / `^2.3.0`); "below" pins are the last releases under those floors.
  */
 const SCENARIOS = {
-    "in-range": { "@bufbuild/protobuf": "2.16.0", "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.2.0" },
+    "in-range": { "@bufbuild/protobuf": "2.16.0", "@connectrpc/connect": "2.3.0", "@connectrpc/connect-node": "2.3.0" },
     "peers-omitted": {},
-    "protobuf-below": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.2.0" },
+    "protobuf-below": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.3.0", "@connectrpc/connect-node": "2.3.0" },
     "connect-below": { "@connectrpc/connect": "2.1.2" },
-    // connect / connect-node out of lockstep: connect-node 2.1.2 declares connect EXACTLY
-    // 2.1.2 next to an in-range connect 2.2.0. No published pair is both inside core's
-    // ranges and out of lockstep (2.2.0 is the only 2.2.x), so connect-node is also below
-    // core's floor here; the runtime assertion requires the lockstep line specifically.
-    "connect-node-below": { "@bufbuild/protobuf": "2.16.0", "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.1.2" },
+    // The previous floor: a consumer still on the 2.2.x line, in lockstep (connect-node 2.2.0
+    // declares connect EXACTLY 2.2.0). 2.2.0 is the highest published 2.2.x, so this cell
+    // fails if core ever accepts the line it dropped.
+    "connect-previous-floor": { "@connectrpc/connect": "2.2.0", "@connectrpc/connect-node": "2.2.0" },
+    // connect /connect-node out of lockstep: connect-node 2.1.2 declares connect EXACTLY
+    // 2.1.2 next to an in-range connect 2.3.0. No published pair is both inside core's
+    // ranges and out of lockstep (2.3.0 is the only release in range), so connect-node is
+    // also below core's floor here; the runtime assertion requires the lockstep line specifically.
+    "connect-node-below": { "@bufbuild/protobuf": "2.16.0", "@connectrpc/connect": "2.3.0", "@connectrpc/connect-node": "2.1.2" },
 };
 
 /**
@@ -114,8 +120,9 @@ const SCENARIOS = {
  */
 const RUNTIME_FAILURE = {
     "protobuf-below": ["@bufbuild/protobuf: loaded 2.12.1", "@connectum/core requires ^2.16.0"],
-    "connect-below": ["@connectrpc/connect: loaded 2.1.2", "@connectum/core requires ^2.2.0"],
-    "connect-node-below": ["@connectrpc/connect-node: loaded 2.1.2", "@connectrpc/connect: loaded 2.2.0", "@connectrpc/connect-node@2.1.2 requires 2.1.2"],
+    "connect-below": ["@connectrpc/connect: loaded 2.1.2", "@connectum/core requires ^2.3.0"],
+    "connect-previous-floor": ["@connectrpc/connect: loaded 2.2.0", "@connectum/core requires ^2.3.0"],
+    "connect-node-below": ["@connectrpc/connect-node: loaded 2.1.2", "@connectrpc/connect: loaded 2.3.0", "@connectrpc/connect-node@2.1.2 requires 2.1.2"],
 };
 
 /**
@@ -168,6 +175,13 @@ const EXPECTATIONS = {
         npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
         pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
         bun: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+    },
+    "connect-previous-floor": {
+        npm: { install: "fail", complaintAbout: "@connectrpc/connect", contract: false },
+        pnpm: { install: "ok", complaintAbout: "@connectrpc/connect", contract: false },
+        // Bun 1.4.4 printed no peer warning for this pin (measured); the installed violation
+        // and the runtime createServer() failure are still asserted, and a Bun that warns passes.
+        bun: { install: "ok", complaintAbout: "@connectrpc/connect", complaintRequired: false, contract: false },
     },
     "connect-node-below": {
         // npm names the conflicting edge: `peer @connectrpc/connect@"2.1.2" from @connectrpc/connect-node@2.1.2`.

@@ -325,33 +325,27 @@ transportParityTest("parity 4.8: break followed by abort runs the handler's clea
     },
 });
 
-// Leaving a `for await` loop with `break` is not cancellation: without an abort the
-// handler's signal stays un-aborted on both transports.
+// Leaving a `for await` loop with `break` ends the call (`@connectrpc/connect` 2.3.0 and
+// later): with no abort by the caller, the handler's signal aborts and its cleanup runs on
+// both transports.
 const breakOnlyProbe = newProbe();
-transportParityTest("parity 4.9: break without abort does not abort the handler's signal", {
+transportParityTest("parity: break alone aborts the handler's signal and runs its cleanup", {
     services: [observableStreamRoutes(breakOnlyProbe)],
     scenario: async ({ transport }) => {
         resetProbe(breakOnlyProbe);
         const client = createClient(StreamingService, transport);
-        const ac = new AbortController();
         let seen = 0;
-        for await (const _m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: ac.signal })) {
+        // The caller's signal is never aborted: the loop exit is the only thing ending the call.
+        for await (const _m of client.server(create(ItemSchema, { value: "s", sequence: 0 }), { signal: new AbortController().signal })) {
             if (++seen === 2) {
                 break;
             }
         }
-        // Give a (wrongly) propagated cancellation time to reach the handler.
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        const signalAborted = breakOnlyProbe.signalAborted;
-        // The stream is still open on the server (that is the point); end it explicitly so
-        // that stopping the server does not wait for its shutdown timeout.
-        ac.abort();
-        await handlerOutcome(breakOnlyProbe, 2_000);
-        return { response: { signalAborted } };
+        return await handlerOutcome(breakOnlyProbe, 2_000);
     },
     compare: (http, local) => {
-        assert.deepStrictEqual(http.response, { signalAborted: false }, "HTTP transport must not treat break as cancellation");
-        assert.deepStrictEqual(local.response, { signalAborted: false }, "Local transport must not treat break as cancellation");
+        assert.deepStrictEqual(http.response, { finallyRan: true, signalAborted: true }, "HTTP transport must end the call on break");
+        assert.deepStrictEqual(local.response, { finallyRan: true, signalAborted: true }, "Local transport must end the call on break");
         defaultCompare(http, local);
     },
 });

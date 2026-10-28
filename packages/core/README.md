@@ -12,8 +12,8 @@ pnpm add @connectum/core
 ```
 
 The package requires Node.js `>=22.13.0`. Peer dependencies are
-`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0`, and
-`@connectrpc/connect-node` `^2.2.0`. Keep `connect` and `connect-node` on
+`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.3.0`, and
+`@connectrpc/connect-node` `^2.3.0`. Keep `connect` and `connect-node` on
 compatible versions and share the same protobuf and Connect copies across
 Connectum packages. Package managers handle peer installation differently;
 see [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).

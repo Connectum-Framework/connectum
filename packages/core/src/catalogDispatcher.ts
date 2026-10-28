@@ -257,10 +257,10 @@ export function openClientStream(resolve: ResolveStream, descMethod: DescMethodS
             const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, queue.iterable, frame.contextValues);
             // Drive the response stream to its terminal status instead of
             // returning at the first message: a failure (or a surplus message)
-            // that follows the response must reject, and a wrapping interceptor
-            // only finishes its span when the stream ends — the response wrapper
-            // Connect hands out has no `return()`, so abandoning the loop early
-            // would leave that span started and never ended.
+            // that follows the response must reject. Leaving the loop early
+            // would not do: the response iterator's `return()` ends the call as
+            // canceled, so the server would never be allowed to finish it and
+            // the caller would get a canceled call instead of the outcome.
             let single: unknown;
             let received = 0;
             for await (const message of response.message) {
