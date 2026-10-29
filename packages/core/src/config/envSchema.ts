@@ -52,11 +52,13 @@ export const BooleanFromStringSchema = z
  */
 export const ConnectumEnvSchema = z.object({
     /**
-     * Server port: a whole number from 1 to 65535 (a fraction is rejected here
-     * instead of failing later inside the network layer)
+     * Server port: a whole number from 1 to 65535 written in decimal digits. A
+     * fraction, or a form `Number()` would read (`0x50`, `1e3`, `+80`, padded with
+     * spaces), is rejected here instead of being read as another port or failing
+     * later inside the network layer.
      * @default 5000
      */
-    PORT: z.coerce.number().int().min(1).max(65535).default(5000),
+    PORT: z.string().regex(/^\d+$/, "PORT must be an integer from 1 to 65535 written in decimal digits").transform(Number).pipe(z.number().int().min(1).max(65535)).default(5000),
 
     /**
      * Listen address
@@ -108,9 +110,11 @@ export const ConnectumEnvSchema = z.object({
     OTEL_SERVICE_NAME: z.string().optional(),
 
     /**
-     * OpenTelemetry exporter endpoint
+     * OpenTelemetry exporter endpoint: an absolute `http:` or `https:` URL. A bare
+     * `host:port` such as `localhost:4318` parses as a URL with the scheme
+     * `localhost:`, so the scheme is checked explicitly.
      */
-    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.url({ protocol: /^https?$/ }).optional(),
 
     /**
      * Enable graceful shutdown
