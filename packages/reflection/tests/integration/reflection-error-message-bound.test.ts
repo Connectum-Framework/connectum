@@ -1,14 +1,12 @@
 /**
- * How much of a request a reflection response repeats, and how large a request
- * the reflection service reads.
+ * How much of a requested name a reflection error answer repeats.
  *
  * A reflection client sends names: a file path, a fully-qualified symbol, a
- * type. Nothing in the protocol makes them long, but nothing stopped a client
- * from sending megabytes: the server read the message, then answered with the
- * value twice, once in `error_message` and once in `original_request`.
- * `original_request` is part of the protocol (the response says which request
- * it answers) and stays complete; the message text repeats a bounded prefix,
- * and the service refuses requests no valid client sends.
+ * type. Nothing in the protocol makes them long, but a client could send
+ * megabytes, and the server answered an unknown one with the value twice, once
+ * in `error_message` and once in `original_request`. `original_request` is part
+ * of the response (it says which request it answers) and stays complete; the
+ * message text repeats a bounded prefix.
  */
 
 import assert from "node:assert";
@@ -17,14 +15,16 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createLocalTransport, createServer, type Server } from "@connectum/core";
-import { ServerReflectionRequestSchema, type ServerReflectionResponse, ServerReflection as V1 } from "#gen/grpc/reflection/v1/reflection_pb.js";
-import { ServerReflection as V1alpha, ServerReflectionRequestSchema as V1alphaRequestSchema } from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
+import { ServerReflectionRequestSchema, type ServerReflectionResponse, ServerReflectionResponseSchema, ServerReflection as V1 } from "#gen/grpc/reflection/v1/reflection_pb.js";
+import {
+    ServerReflection as V1alpha,
+    ServerReflectionRequestSchema as V1alphaRequestSchema,
+    ServerReflectionResponseSchema as V1alphaResponseSchema,
+} from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
 import { Reflection } from "../../src/Reflection.ts";
 
 /** Longest part of a requested name that an `error_message` repeats. */
 const ECHOED_NAME_LIMIT = 128;
-/** Largest request message the reflection service reads. */
-const REQUEST_LIMIT_BYTES = 64 * 1024;
 const NOT_FOUND = 5;
 
 type Version = "v1" | "v1alpha";
@@ -51,20 +51,7 @@ async function ask(transport: Transport, version: Version, message: ReturnType<t
     throw new Error("the reflection stream ended without a response");
 }
 
-/** The name length whose request message is exactly `bytes` long. */
-function nameForMessageOf(version: Version, bytes: number): string {
-    let length = bytes;
-    for (;;) {
-        const size = toBinary(version === "v1" ? ServerReflectionRequestSchema : V1alphaRequestSchema, request(version, "fileByFilename", "a".repeat(length)) as never).length;
-        if (size === bytes) {
-            return "a".repeat(length);
-        }
-        assert.ok(size > bytes, "no name length produces a message of exactly that size");
-        length -= size - bytes;
-    }
-}
-
-describe("reflection request bounds", () => {
+describe("reflection error message bound", () => {
     let server: Server;
     let baseUrl: string;
 
@@ -131,6 +118,16 @@ describe("reflection request bounds", () => {
                     assert.deepStrictEqual(response.originalRequest?.messageRequest, { case: "fileByFilename", value: name });
                 });
 
+                it("answers a 1 MiB name with a response only slightly larger than the request, not twice its size", async () => {
+                    const name = "n".repeat(1024 * 1024);
+                    const response = await ask(transport(), version, request(version, "fileByFilename", name));
+
+                    const schema = version === "v1" ? ServerReflectionResponseSchema : V1alphaResponseSchema;
+                    const size = toBinary(schema, response as never).length;
+                    assert.ok(size > name.length, "original_request still carries the name");
+                    assert.ok(size < name.length + 1024, `the response has ${size} bytes for a request of ${name.length}`);
+                });
+
                 it("does not cut a surrogate pair at the end of the echoed prefix", async () => {
                     // 127 characters, then a pair that would straddle the limit.
                     const name = `${"n".repeat(ECHOED_NAME_LIMIT - 1)}\u{1F600}${"n".repeat(50)}`;
@@ -143,45 +140,14 @@ describe("reflection request bounds", () => {
                     assert.doesNotMatch(message, /[\ud800-\udbff](?![\udc00-\udfff])/, "no lone high surrogate");
                     assert.doesNotMatch(message, /(?<![\ud800-\udbff])[\udc00-\udfff]/, "no lone low surrogate");
                 });
-
-                it(`reads a request of exactly ${REQUEST_LIMIT_BYTES} bytes`, async () => {
-                    const name = nameForMessageOf(version, REQUEST_LIMIT_BYTES);
-                    const response = await ask(transport(), version, request(version, "fileByFilename", name));
-
-                    assert.strictEqual(response.messageResponse.case, "errorResponse");
-                    assert.strictEqual(response.messageResponse.value.errorCode, NOT_FOUND);
-                });
-
-                it(`refuses a request of ${REQUEST_LIMIT_BYTES + 1} bytes with resource_exhausted`, async () => {
-                    const name = nameForMessageOf(version, REQUEST_LIMIT_BYTES + 1);
-                    await assert.rejects(ask(transport(), version, request(version, "fileByFilename", name)), (error: unknown) => {
-                        assert.ok(error instanceof ConnectError, String(error));
-                        assert.strictEqual(error.code, Code.ResourceExhausted, error.message);
-                        return true;
-                    });
-                });
-
-                it("refuses a request of 8 MiB instead of answering with 16 MiB", async () => {
-                    await assert.rejects(ask(transport(), version, request(version, "fileByFilename", "a".repeat(8 * 1024 * 1024))), (error: unknown) => {
-                        assert.ok(error instanceof ConnectError, String(error));
-                        assert.strictEqual(error.code, Code.ResourceExhausted, error.message);
-                        return true;
-                    });
-                });
             });
         }
     }
-
-    it("serves the next stream after one was refused", async () => {
-        await assert.rejects(ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "fileByFilename", "a".repeat(1024 * 1024))));
-        const response = await ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "listServices", ""));
-        assert.strictEqual(response.messageResponse.case, "listServicesResponse");
-    });
 });
 
-// A service's own readMaxBytes replaces the server-wide one, a smaller value included. The
-// README says so; this pins it, so the statement is what a client really gets.
-describe("reflection request limit next to a smaller server-wide readMaxBytes", () => {
+// Reflection has no request limit of its own, so the server-wide one is what bounds a request.
+// The README says so; this pins it, so the statement is what a client really gets.
+describe("reflection request next to a server-wide readMaxBytes", () => {
     let server: Server;
     let baseUrl: string;
 
@@ -195,13 +161,13 @@ describe("reflection request limit next to a smaller server-wide readMaxBytes", 
         await server?.stop();
     });
 
-    it("reads a request of 10 KiB although the server-wide limit is 1 KiB", async () => {
-        const response = await ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "fileByFilename", "a".repeat(10 * 1024)));
+    it("answers a request within the limit", async () => {
+        const response = await ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "fileByFilename", "a".repeat(512)));
         assert.strictEqual(response.messageResponse.case, "errorResponse");
         assert.strictEqual(response.messageResponse.value.errorCode, NOT_FOUND);
     });
 
-    it("still refuses a request beyond its own limit", async () => {
-        await assert.rejects(ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "fileByFilename", "a".repeat(REQUEST_LIMIT_BYTES + 1))), (error: unknown) => error instanceof ConnectError && error.code === Code.ResourceExhausted);
+    it("ends a request above the limit with resource_exhausted", async () => {
+        await assert.rejects(ask(createGrpcTransport({ baseUrl }), "v1", request("v1", "fileByFilename", "a".repeat(10 * 1024))), (error: unknown) => error instanceof ConnectError && error.code === Code.ResourceExhausted);
     });
 });

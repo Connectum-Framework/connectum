@@ -3,7 +3,7 @@
  *
  *   8.1 one bidi reflection stream carrying every request kind
  *   8.2 the reflection service describes itself by symbol, and stays out of the listing
- *   8.3 an unknown name is echoed in a bounded error message; an oversized request is refused
+ *   8.3 an unknown name is echoed in a bounded error message
  *
  * Reflection is a protocol registered by `@connectum/reflection`, not a user
  * service, and it keeps per-stream state (files already sent). The scenario
@@ -19,7 +19,7 @@
 import assert from "node:assert";
 import { create, fromBinary, type MessageInitShape, type MessageShape, toJson } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { type Client, Code, ConnectError, createClient } from "@connectrpc/connect";
+import { type Client, createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { Reflection } from "@connectum/reflection";
@@ -197,28 +197,25 @@ transportParityTest("parity 8.2: the reflection service describes itself by symb
 });
 
 // 8.3
-transportParityTest("parity 8.3: an unknown name is echoed in a bounded message; an oversized request is refused", {
+transportParityTest("parity 8.3: an unknown name is echoed in a bounded message", {
     services: [],
     protocols: [Reflection()],
     scenario: async ({ transport }) => {
         const client = createClient(ServerReflection, transport);
         const unknown = await askOnce(client, { case: "fileByFilename", value: "x".repeat(10_000) });
         const echoed = unknown.originalRequest?.messageRequest;
-        const errorMessage = unknown.messageResponse.case === "errorResponse" ? unknown.messageResponse.value.errorMessage : null;
-        try {
-            await askOnce(client, { case: "fileByFilename", value: "x".repeat(1024 * 1024) });
-        } catch (err) {
-            const error = ConnectError.from(err);
-            return { response: { errorMessage, echoedLength: echoed?.case === "fileByFilename" ? echoed.value.length : null }, error: { code: error.code, message: "refused" } };
-        }
-        throw new Error("a request of 1 MiB must be refused");
+        return {
+            response: {
+                errorMessage: unknown.messageResponse.case === "errorResponse" ? unknown.messageResponse.value.errorMessage : null,
+                echoedLength: echoed?.case === "fileByFilename" ? echoed.value.length : null,
+            },
+        };
     },
     compare: (http, local) => {
+        // error_message repeats 128 characters; original_request still carries all 10000.
         const expected = { errorMessage: `file not found: "${"x".repeat(128)}…"`, echoedLength: 10_000 };
         assert.deepStrictEqual(http.response, expected, "HTTP transport result");
         assert.deepStrictEqual(local.response, expected, "Local transport result");
-        assert.strictEqual(http.error?.code, Code.ResourceExhausted, "HTTP transport error");
-        assert.strictEqual(local.error?.code, Code.ResourceExhausted, "Local transport error");
         defaultCompare(http, local);
     },
 });

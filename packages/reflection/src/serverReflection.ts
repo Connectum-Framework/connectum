@@ -34,15 +34,6 @@ function error(code: Code, message: string): ReflectionAnswer {
 }
 
 /**
- * Largest request message the reflection services read, in bytes. A request
- * carries a file name, a symbol or a type name; no schema has one anywhere
- * near this long. Without a limit of its own a request would be read up to the
- * server-wide `readMaxBytes`, which is about 4 GiB unless the application
- * lowers it. Applies to each message of a stream.
- */
-const MAX_REQUEST_BYTES = 64 * 1024;
-
-/**
  * Longest part of a requested name that an error message repeats. The whole
  * request is already echoed in `original_request`; repeating the name in the
  * message as well would double the response for a name nobody can use.
@@ -191,36 +182,27 @@ async function* answerStream<Request, Response>(
 /**
  * Register `grpc.reflection.v1.ServerReflection` and
  * `grpc.reflection.v1alpha.ServerReflection` on `router`, both answering from
- * `pool`. Both read at most {@link MAX_REQUEST_BYTES} per request message and
- * end a stream when its call is aborted.
+ * `pool`. Both end a stream when its call is aborted.
  */
 export function registerServerReflection(router: ConnectRouter, pool: DescriptorPool): void {
-    router.service(
-        V1ServerReflection,
-        {
-            serverReflectionInfo: (requests, context) =>
-                answerStream(requests, context.signal, (request, sent) =>
-                    create(V1ResponseSchema, {
-                        validHost: request.host,
-                        originalRequest: request,
-                        messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                    }),
-                ),
-        },
-        { readMaxBytes: MAX_REQUEST_BYTES },
-    );
-    router.service(
-        V1alphaServerReflection,
-        {
-            serverReflectionInfo: (requests, context) =>
-                answerStream(requests, context.signal, (request, sent) =>
-                    create(V1alphaResponseSchema, {
-                        validHost: request.host,
-                        originalRequest: request,
-                        messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                    }),
-                ),
-        },
-        { readMaxBytes: MAX_REQUEST_BYTES },
-    );
+    router.service(V1ServerReflection, {
+        serverReflectionInfo: (requests, context) =>
+            answerStream(requests, context.signal, (request, sent) =>
+                create(V1ResponseSchema, {
+                    validHost: request.host,
+                    originalRequest: request,
+                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                }),
+            ),
+    });
+    router.service(V1alphaServerReflection, {
+        serverReflectionInfo: (requests, context) =>
+            answerStream(requests, context.signal, (request, sent) =>
+                create(V1alphaResponseSchema, {
+                    validHost: request.host,
+                    originalRequest: request,
+                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                }),
+            ),
+    });
 }

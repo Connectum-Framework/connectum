@@ -393,7 +393,7 @@ function reflectionFrame(tag: number, text: string): Buffer {
     return Buffer.concat([header, message]);
 }
 
-/** One reflection call over HTTP/2: what the server sent back and how the call ended. */
+/** One reflection call over HTTP/2: what the server sent back, and when the stream closed. */
 async function reflectionCall(port: number, frame: Buffer, options: { keepOpen: boolean }) {
     const { connect } = await import("node:http2");
     const session = connect(`http://127.0.0.1:${port}`);
@@ -402,20 +402,12 @@ async function reflectionCall(port: number, frame: Buffer, options: { keepOpen: 
     request.on("error", () => {});
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    let status: string | undefined;
-    request.on("response", (headers) => {
-        status = headers["grpc-status"]?.toString() ?? status;
-    });
-    request.on("trailers", (trailers) => {
-        status = trailers["grpc-status"]?.toString() ?? status;
-    });
     const closed = new Promise<void>((resolve) => request.once("close", () => resolve()));
     request.write(frame);
     if (!options.keepOpen) request.end();
     return {
         text: () => Buffer.concat(chunks).toString("latin1"),
         received: () => Buffer.concat(chunks).length,
-        status: () => status,
         closed,
         end() {
             request.close();
@@ -461,15 +453,10 @@ await checkAsync("reflection: file_containing_symbol describes the reflection se
     }
 });
 
-await checkAsync("reflection: a request above 64 KiB is refused with resource_exhausted, a long name is echoed in part", async () => {
+await checkAsync("reflection: an unknown long name is echoed in part in error_message", async () => {
     const server = core.createServer({ services: [], port: 0, allowHTTP1: false, protocols: [reflection.Reflection()] });
     await server.start();
     try {
-        const refused = await reflectionCall(server.address?.port ?? 0, reflectionFrame(FILE_BY_FILENAME, "a".repeat(100 * 1024)), { keepOpen: false });
-        await refused.closed;
-        assert.strictEqual(refused.status(), "8", `grpc-status ${refused.status()}`);
-        refused.end();
-
         const bounded = await reflectionCall(server.address?.port ?? 0, reflectionFrame(FILE_BY_FILENAME, "a".repeat(10_000)), { keepOpen: false });
         await bounded.closed;
         // original_request carries the 10000 characters once; error_message only a prefix.

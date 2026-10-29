@@ -60,15 +60,12 @@ buf curl --protocol grpc --http2-prior-knowledge http://localhost:5000 --list-me
   can reach the server. Restrict network access where that information must
   remain private.
 - A `ServerReflectionInfo` stream that a client keeps open ends when the server
-  stops (`server.stop()`), like the other in-flight calls; the client sees the
-  stream end without an error.
-- Each request message is read up to 64 KiB (65536 bytes); a larger one ends the
-  call with `resource_exhausted`. This limit is set on the reflection services
-  themselves, so it applies instead of the server-wide `readMaxBytes`, a
-  smaller one included.
+  stops (`server.stop()`), like the other in-flight calls; a stream that is
+  waiting for the client's next request ends without an error.
 - An `error_response` repeats at most the first 128 characters of the requested
   name, with `…` after a cut name. `original_request` always carries the whole
-  request, as the protocol requires.
+  request. Reflection has no request size limit of its own: a request is read up
+  to the server-wide `readMaxBytes` (set it on `createServer()` to bound it).
 - `grpcurl` and `buf` are external tools; they are not installed by this package.
 
 ## Learn and reference

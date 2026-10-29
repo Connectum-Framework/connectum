@@ -302,26 +302,6 @@ describe("reflection with external clients", () => {
                 assert.strictEqual(response?.errorResponse?.errorMessage, `file not found: "${"n".repeat(128)}…"`);
             });
 
-            it("refuses a request larger than the service reads, with resource_exhausted", async () => {
-                const result = await runTool(
-                    "grpcurl",
-                    [
-                        "-plaintext",
-                        "-import-path",
-                        PROTO_DIR,
-                        "-proto",
-                        `grpc/reflection/${version}/reflection.proto`,
-                        "-d",
-                        "@",
-                        address,
-                        `grpc.reflection.${version}.ServerReflection/ServerReflectionInfo`,
-                    ],
-                    { stdin: JSON.stringify({ fileByFilename: "a".repeat(1024 * 1024) }) },
-                );
-                assert.notStrictEqual(result.code, 0, "the oversized request must fail");
-                assert.match(result.stderr, /Code: ResourceExhausted/);
-            });
-
             it("answers extension queries", async () => {
                 const [byNumber, nested, numbers, unknownType] = await exchange([
                     { fileContainingExtension: { containingType: "google.protobuf.MethodOptions", extensionNumber: 50001 } },
