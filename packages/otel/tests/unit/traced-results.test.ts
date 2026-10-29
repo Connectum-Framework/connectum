@@ -307,6 +307,47 @@ describe("span lifetime of a traced generator", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
+            it("returns the very generator object the function returned, with the properties the function added to it", async () => {
+                const created: unknown[] = [];
+                const work = makeTraced(() => {
+                    const generator = Object.assign(
+                        (function* () {
+                            yield 1;
+                        })(),
+                        { cursor: 7, cancel: () => "canceled" },
+                    );
+                    created.push(generator);
+                    return generator;
+                });
+
+                const observed = await observe(async () => {
+                    const generator = work() as Generator<number> & { cursor: number; cancel(): string };
+                    assert.strictEqual(generator, created[0]);
+                    assert.strictEqual(generator.cursor, 7);
+                    assert.strictEqual(generator.cancel(), "canceled");
+                    assert.deepStrictEqual(Object.keys(generator).sort(), ["cancel", "cursor"], "the protocol methods are not enumerable");
+                    assert.deepStrictEqual([...generator], [1]);
+                });
+
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("returns a frozen generator as it is and ends the span at once, because it accepts no own methods", async () => {
+                const work = makeTraced(() =>
+                    Object.freeze(
+                        (function* () {
+                            yield 1;
+                        })(),
+                    ),
+                );
+
+                const observed = await observe(async () => {
+                    assert.deepStrictEqual([...(work() as Generator<number>)], [1]);
+                });
+
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
             it("returns an array, a Map and a Set untouched and ends the span at once", async () => {
                 const array = [1, 2, 3];
                 const map = new Map([[1, 2]]);

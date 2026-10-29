@@ -32,7 +32,7 @@ import {
     RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
 import { describeThrown, recordFailure } from "./failure.ts";
-import { getProvider } from "./provider.ts";
+import { hasProvider } from "./provider.ts";
 import type { OtelAttributeFilter, OtelFilter } from "./types.ts";
 
 /** Well-known `error.type` value for an error that the instrumentation cannot name better. */
@@ -380,14 +380,16 @@ export function createHookFailureReporter(owner: string): HookFailureReporter {
     const reported = new Set<string>();
     return (hook, error) => {
         if (reported.has(hook)) return;
-        reported.add(hook);
         const consequence = hook === "filter" ? "the call is instrumented" : "the attribute it was asked about is not recorded";
         try {
-            // The provider registers the diagnostics logger when it is created. The call is
-            // about to create it anyway (the callbacks run before the tracer and the meter
-            // are first used), so create it now: a report made before that goes nowhere,
-            // and a report is made once.
-            getProvider();
+            // The provider registers the diagnostics logger when it is created, and the
+            // callbacks run before the tracer and the meter are first used. A report made
+            // before the provider exists would go nowhere, and would count as made, so it
+            // waits: the callback fails again on the next call, by which time the call
+            // before it has created the provider. Creating the provider here would start
+            // the exporters of an application that has switched instrumentation off.
+            if (!hasProvider()) return;
+            reported.add(hook);
             diag.error(`@connectum/otel: the ${hook} option of ${owner} threw, ${consequence} (reported once per ${owner}): ${describeThrown(error)}`);
         } catch {
             // Intentionally empty: a failing diagnostics logger must not fail the call either.

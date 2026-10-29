@@ -43,20 +43,35 @@ function onceEnder(span: Span): (failure?: { error: unknown }) => void {
 }
 
 /**
- * The prototype that a generator object shares with every iterator of its kind
- * (`%IteratorPrototype%`, or `%AsyncIteratorPrototype%` for an async generator): three
- * links up its chain (the generator, its function's `prototype`, `%GeneratorPrototype%`,
- * then this one). An iterator built on it keeps what the platform puts there: it is its
- * own iterable, it has the iterator helpers (`map`, `toArray`, ...) and the disposal
- * methods (`using` / `await using`), all of which call the iterator's own `next` and
- * `return`.
+ * Replaces the three protocol methods of a generator object with versions that run through
+ * `step`. The methods are put on the generator itself, not on a new object: the caller
+ * keeps the very object the function returned, with its prototype (so it is still an
+ * `Iterator`, still its own iterable, and keeps the iterator helpers and the disposal
+ * methods, which call `next` and `return` on it) and with any property the function
+ * added to it. They are non-enumerable, so the shape of the object does not change.
+ *
+ * @returns `false` when the object does not accept own properties (it is frozen or sealed)
  */
-function iteratorPrototypeOf(generator: object): object {
-    return Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf(generator))) ?? Object.prototype;
+function interceptSteps(generator: object, step: (run: () => unknown) => unknown): boolean {
+    const target = generator as Record<"next" | "return" | "throw", (...args: unknown[]) => unknown>;
+    try {
+        for (const method of ["next", "return", "throw"] as const) {
+            const original = target[method];
+            Object.defineProperty(generator, method, {
+                value: (...args: unknown[]) => step(() => original.apply(generator, args)),
+                writable: true,
+                configurable: true,
+                enumerable: false,
+            });
+        }
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
- * A sync generator whose steps run in the span's context and whose span ends when the
+ * Makes the steps of a sync generator run in the span's context and ends the span when the
  * generator is exhausted, throws, or is closed with `return()` / `throw()`.
  */
 function traceGenerator(generator: Generator, scope: Context, end: ReturnType<typeof onceEnder>): Generator {
@@ -71,11 +86,8 @@ function traceGenerator(generator: Generator, scope: Context, end: ReturnType<ty
         if (result.done) end();
         return result;
     };
-    return Object.assign(Object.create(iteratorPrototypeOf(generator)), {
-        next: (...args: [] | [unknown]) => step(() => generator.next(...args)),
-        return: (value?: unknown) => step(() => generator.return(value)),
-        throw: (error?: unknown) => step(() => generator.throw(error)),
-    }) as Generator;
+    if (!interceptSteps(generator, (run) => step(run as () => IteratorResult<unknown, unknown>))) end();
+    return generator;
 }
 
 /** The async counterpart of {@link traceGenerator}. */
@@ -91,11 +103,8 @@ function traceAsyncGenerator(generator: AsyncGenerator, scope: Context, end: Ret
         if (result.done) end();
         return result;
     };
-    return Object.assign(Object.create(iteratorPrototypeOf(generator)), {
-        next: (...args: [] | [unknown]) => step(() => generator.next(...args)),
-        return: (value?: unknown) => step(() => generator.return(value)),
-        throw: (error?: unknown) => step(() => generator.throw(error)),
-    }) as AsyncGenerator;
+    if (!interceptSteps(generator, (run) => step(run as () => Promise<IteratorResult<unknown, unknown>>))) end();
+    return generator;
 }
 
 /**
@@ -107,7 +116,10 @@ function traceAsyncGenerator(generator: AsyncGenerator, scope: Context, end: Ret
  *   `async function*`): the function body has not run yet, so the span stays open until
  *   the generator is exhausted, throws, or is closed early. Each step runs with the span
  *   as the active span, so spans that the generator body starts are its children. The
- *   caller receives an iterator with the same protocol.
+ *   caller receives the same generator object: its `next`, `return` and `throw` are
+ *   replaced on the object itself, so its prototype and any property the function
+ *   added to it stay. A generator that accepts no own properties (it is frozen) is
+ *   returned as it is and its span ends at once.
  * - Anything else, including other iterables (arrays, `Map`, streams) and thenables
  *   that are not native promises: the call is over, the span ends now.
  *

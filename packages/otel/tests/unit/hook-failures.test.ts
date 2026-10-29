@@ -21,7 +21,7 @@ import { createMockNext, createMockRequest } from "@connectum/testing";
 import { DiagLogLevel, diag } from "@opentelemetry/api";
 import { createOtelClientInterceptor } from "../../src/client-interceptor.ts";
 import { createOtelInterceptor } from "../../src/interceptor.ts";
-import { getProvider, shutdownProvider } from "../../src/provider.ts";
+import { getProvider, hasProvider, shutdownProvider } from "../../src/provider.ts";
 import type { OtelAttributeFilter, OtelFilter } from "../../src/types.ts";
 import { observe, onlySpan, pointAttributes } from "./observe.ts";
 
@@ -29,7 +29,7 @@ const FULL_METHOD = "acme.greeter.v1.GreeterService/SayHello";
 
 interface Side {
     label: "server" | "client";
-    create(options: { filter?: OtelFilter; attributeFilter?: OtelAttributeFilter; withoutTracing?: boolean }): Interceptor;
+    create(options: { filter?: OtelFilter; attributeFilter?: OtelAttributeFilter; withoutTracing?: boolean; withoutMetrics?: boolean }): Interceptor;
     durationMetric: string;
 }
 
@@ -184,8 +184,9 @@ describe("a throwing user callback", () => {
 
             // The provider installs the diagnostics logger when it is created, and a callback
             // runs before the first use of the tracer: a report made before the provider
-            // exists would go nowhere, and it is made only once.
-            it("reports a throwing filter even when the provider does not exist yet", async () => {
+            // exists would go nowhere, so it waits for the next failure, which comes after the
+            // first call has created the provider.
+            it("reports a throwing filter once the provider exists, when the application did not create it first", async () => {
                 const handler = side.create({
                     filter: () => {
                         throw new Error("filterbug");
@@ -202,16 +203,35 @@ describe("a throwing user callback", () => {
                 try {
                     await observe(async () => {
                         await handler(request());
+                        await handler(request());
+                        await handler(request());
                     });
                 } finally {
                     process.stderr.write = originalWrite;
                     diag.disable();
                 }
 
-                assert.ok(
-                    printed.some((line) => line.includes("filterbug")),
-                    `printed: ${JSON.stringify(printed)}`,
-                );
+                assert.strictEqual(printed.filter((line) => line.includes("filterbug")).length, 1, `printed: ${JSON.stringify(printed)}`);
+            });
+
+            // Reporting must not start the exporters of an application that has switched
+            // instrumentation off.
+            it("does not create the provider when a throwing filter is met with instrumentation switched off", async () => {
+                const handler = side.create({
+                    withoutTracing: true,
+                    withoutMetrics: true,
+                    filter: () => {
+                        throw new Error("filterbug");
+                    },
+                })(createMockNext({ message: { ok: true } }));
+                let providerExisted = true;
+
+                await observe(async () => {
+                    await handler(request());
+                    providerExisted = hasProvider();
+                });
+
+                assert.strictEqual(providerExisted, false);
             });
 
             it("does not let a throw of a non-error value fail the call", async () => {
