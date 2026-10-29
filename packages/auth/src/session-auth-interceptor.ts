@@ -12,7 +12,7 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
-import { snapshotAuthContext, viewOfSnapshot } from "./cached-identity.ts";
+import { copyAuthContext } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
@@ -97,7 +97,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             if (propagateHeaders) {
                 propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await runWithAuthContext(viewOfSnapshot(cached), () => next(req));
+            return await runWithAuthContext(copyAuthContext(cached), () => next(req));
         }
 
         // Verify session — pass full headers for cookie-based auth
@@ -130,15 +130,10 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             propagateAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
-        // Cache the result as an immutable snapshot, and serve this request from that snapshot
-        // too, so the request that fills the cache sees what later ones will see.
-        let identity = authContext;
-        if (cache) {
-            const snapshot = snapshotAuthContext(authContext);
-            cache.set(token, snapshot);
-            identity = viewOfSnapshot(snapshot);
-        }
+        // Cache a private copy: this request keeps the mapper's own object, later requests get
+        // their own copies of the stored one, so no handler can change what another request sees.
+        cache?.set(token, copyAuthContext(authContext));
 
-        return await runWithAuthContext(identity, () => next(req));
+        return await runWithAuthContext(authContext, () => next(req));
     };
 }

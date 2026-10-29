@@ -12,7 +12,7 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
-import { snapshotAuthContext, viewOfSnapshot } from "./cached-identity.ts";
+import { copyAuthContext } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
@@ -119,7 +119,7 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             if (propagateHeaders) {
                 propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await runWithAuthContext(viewOfSnapshot(cached), () => next(req));
+            return await runWithAuthContext(copyAuthContext(cached), () => next(req));
         }
 
         // Verify credentials
@@ -146,16 +146,11 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             propagateAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
-        // Cache the verification result as an immutable snapshot, and serve this request from
-        // that snapshot too, so the request that fills the cache sees what later ones will see.
-        let identity = authContext;
-        if (cache) {
-            const snapshot = snapshotAuthContext(authContext);
-            cache.set(credentials, snapshot);
-            identity = viewOfSnapshot(snapshot);
-        }
+        // Cache a private copy: this request keeps the verifier's own object, later requests get
+        // their own copies of the stored one, so no handler can change what another request sees.
+        cache?.set(credentials, copyAuthContext(authContext));
 
         // Run downstream with auth context in AsyncLocalStorage
-        return await runWithAuthContext(identity, () => next(req));
+        return await runWithAuthContext(authContext, () => next(req));
     };
 }

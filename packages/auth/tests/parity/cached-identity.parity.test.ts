@@ -1,12 +1,12 @@
 /**
- * A cached identity cannot be changed by a handler, on both transports.
+ * A handler that changes its identity does not change the cached one, on both transports.
  *
  * With the `cache` option the verified identity is stored and handed to every later request
  * with the same credential. If that object were the one a handler receives, a handler (or a
  * library it calls) that pushes a role into `getAuthContext().roles` would grant that role to
  * every later request presenting the same token. The first request tries to mutate the
  * identity in every way a handler can reach it; the second request, with the same token, must
- * see exactly what the verifier returned. The shipped generic and session interceptors are
+ * see exactly what the verifier returned, while the mutating request still works on its own copy, as it does without a cache. The shipped generic and session interceptors are
  * used, with a verifier that counts calls so a cache that stopped working cannot hide the
  * result.
  */
@@ -75,14 +75,14 @@ function expectUntouched(http: ParityScenarioResult, local: ParityScenarioResult
         const response = result.response as { first: Record<string, unknown>; second: Record<string, unknown>; verifications: number };
         assert.strictEqual(response.verifications, 1, `${name}: the second request must be served from the cache`);
         assert.deepStrictEqual({ ...response.second, blocked: undefined }, { ...untouched, blocked: undefined }, `${name}: a later request must see what the verifier returned`);
-        assert.deepStrictEqual({ ...response.first, blocked: undefined }, { ...untouched, blocked: undefined }, `${name}: the mutating request must not see its own changes either`);
-        assert.deepStrictEqual(response.first.blocked, ["roles", "scopes", "claims", "nested claims", "subject"], `${name}: every mutation attempt must be refused`);
+        assert.deepStrictEqual(response.first.blocked, [], `${name}: the mutating request keeps working on its own copy`);
+        assert.deepStrictEqual(response.first.roles, ["user", "admin"], `${name}: the mutating request sees its own change`);
     }
     defaultCompare(http, local);
 }
 
 const genericVerifications = new Map<string, number>();
-transportParityTest("parity: a handler cannot change the identity cached by createAuthInterceptor, on both transports", {
+transportParityTest("parity: a handler does not change the identity cached by createAuthInterceptor, on both transports", {
     services: [routes()],
     interceptors: [
         createErrorHandlerInterceptor({ logErrors: false }),
@@ -99,7 +99,7 @@ transportParityTest("parity: a handler cannot change the identity cached by crea
 });
 
 const sessionVerifications = new Map<string, number>();
-transportParityTest("parity: a handler cannot change the identity cached by createSessionAuthInterceptor, on both transports", {
+transportParityTest("parity: a handler does not change the identity cached by createSessionAuthInterceptor, on both transports", {
     services: [routes()],
     interceptors: [
         createErrorHandlerInterceptor({ logErrors: false }),
