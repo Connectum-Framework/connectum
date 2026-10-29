@@ -280,6 +280,59 @@ describe("KafkaAdapter", () => {
         });
     });
 
+    describe("restartOnFailure of the application on a wildcard subscription", () => {
+        /** What the `retry.restartOnFailure` a wildcard subscription gives its consumer answers for a plain network error, while the subscription is open. */
+        async function answerFor(extra: Partial<Parameters<typeof KafkaAdapter>[0]>): Promise<boolean | undefined> {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
+            let given: ((error: Error) => Promise<boolean>) | undefined;
+            let answer: boolean | undefined;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = (config: { retry?: { restartOnFailure?: (error: Error) => Promise<boolean> } }) => {
+                given = config.retry?.restartOnFailure;
+                return {
+                    connect: async () => undefined,
+                    disconnect: async () => undefined,
+                    subscribe: async () => undefined,
+                    run: async () => undefined,
+                    stop: async () => undefined,
+                    events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                    on: () => () => undefined,
+                };
+            };
+            proto.admin = () => ({ connect: async () => undefined, disconnect: async () => undefined, listTopics: async () => ["orders.a"] });
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false }, ...extra });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(["orders.*"], async () => undefined);
+                answer = await given?.(new Error("network"));
+                await subscription.unsubscribe();
+            } finally {
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
+                await adapter.disconnect();
+            }
+            return answer;
+        }
+
+        it("is asked for every crash the subscription does not take over", async () => {
+            const asked: string[] = [];
+            const policy = async (error: Error): Promise<boolean> => {
+                asked.push(error.message);
+                return false;
+            };
+            assert.equal(await answerFor({ clientOptions: { retry: { restartOnFailure: policy } } }), false, "the application's answer stands for a crash the subscription leaves to the library");
+            assert.deepEqual(asked, ["network"]);
+        });
+
+        it("restarts a crash it does not take over when the application gave no policy", async () => {
+            assert.equal(await answerFor({}), true);
+        });
+    });
+
     describe("redeliveryDelay default", () => {
         type EachBatch = (payload: unknown) => Promise<void>;
 

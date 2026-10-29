@@ -46,7 +46,7 @@ interface FakeConsumer {
 }
 
 /** Builds the pieces a subscription gives the recovery, with consumers that record what is done to them. */
-function harness(options: { runCrash?: (consumerIndex: number) => Error | undefined; discover?: boolean; known: string[]; started?: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
+function harness(options: { listGate?: Promise<void>; runCrash?: (consumerIndex: number) => Error | undefined; discover?: boolean; known: string[]; started?: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
     const consumers: FakeConsumer[] = [];
     /** What the subscription reports for each crash: whether the subscription will recover. */
     const reported: { consumer: number; restart: boolean }[] = [];
@@ -105,7 +105,10 @@ function harness(options: { runCrash?: (consumerIndex: number) => Error | undefi
         discover: options.discover ?? true,
         runConfig,
         resumeTimers: options.resumeTimers ?? new Set(),
-        listTopics: async () => options.topicsOnBroker(),
+        listTopics: async () => {
+            await options.listGate;
+            return options.topicsOnBroker();
+        },
         subscribe: async (consumer, topics, fromBeginning) => {
             subscribed.push({ consumer: consumers.findIndex((c) => c.consumer === consumer), topics, fromBeginning });
         },
@@ -311,17 +314,37 @@ describe("createTopicRecovery", () => {
         await quietly(async () => {
             let calls = 0;
             // The first listing (the library's question) shows the topic gone; the second (the replacement's own) shows it back.
-            const { recovery, consumers } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => (++calls === 1 ? ["orders.a"] : ["orders.a", "orders.b"]) });
+            const { recovery, consumers, subscribed } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => (++calls === 1 ? ["orders.a"] : ["orders.a", "orders.b"]) });
             recovery.spawn();
             consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
             await waitFor(() => consumers[1]?.calls.includes("run") === true, "a replacement runs although nothing is gone any more");
+            assert.deepEqual(subscribed, [{ consumer: 1, topics: ["orders.a"], fromBeginning: false }], "the topic that was confirmed gone is not a surviving topic");
+            assert.ok(consumers[1]?.calls.includes("subscribe orders.b fromBeginning=true"), `a topic created again is new to the group and is read from its first message: ${String(consumers[1]?.calls)}`);
+        });
+    });
+
+    it("never lets the library restart a consumer after the subscription was closed while the question was being answered", async () => {
+        await quietly(async () => {
+            let open: () => void = () => undefined;
+            const listGate = new Promise<void>((resolve) => {
+                open = resolve;
+            });
+            const { recovery, consumers, decisions } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a"], listGate });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await sleep(20);
+            await recovery.close();
+            open();
+            await waitFor(() => decisions.length === 1, "the question is answered");
+            assert.deepEqual(decisions, [{ consumer: 0, restart: false }], "a restart scheduled now would start a closed subscription again");
+            assert.equal(consumers.length, 1, "no replacement is created for a closed subscription");
         });
     });
 
     it("does not treat a failed start of the replacement as a recovery: known topics stay, and the start is tried again", async () => {
         await quietly(async () => {
             const authorization = Object.assign(new Error("Not authorized to access group"), { name: "KafkaJSProtocolError", type: "GROUP_AUTHORIZATION_FAILED" });
-            const { recovery, consumers, known } = harness({
+            const { recovery, consumers, known, reported } = harness({
                 known: ["orders.a", "orders.b"],
                 topicsOnBroker: () => ["orders.a"],
                 retryDelay: 20,
@@ -331,6 +354,11 @@ describe("createTopicRecovery", () => {
             recovery.spawn();
             consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
             await waitFor(() => consumers.length === 3 && consumers[2]?.calls.includes("run") === true, "the start is tried again with a third consumer");
+            assert.deepEqual(
+                reported.filter((r) => r.consumer === 1),
+                [{ consumer: 1, restart: true }],
+                "the failed start is reported as one that will be tried again, because the subscription tries it again",
+            );
             assert.ok(consumers[1]?.calls.includes("disconnect"), "the consumer whose start failed is disconnected, which also cancels the library's restart of it");
             assert.deepEqual([...known].sort(), ["orders.a"], "known topics are updated only after the start that worked");
         });

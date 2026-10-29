@@ -324,6 +324,11 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             // topic that was deleted from one that never existed, so it is taken whether or not topic
             // discovery runs.
             const known = new Set<string>();
+            /**
+             * A `restartOnFailure` the application passed in `clientOptions.retry`. A consumer inherits it from the client; the
+             * recovery's own answer replaces it on a wildcard subscription, so it is asked for every crash the recovery leaves alone.
+             */
+            const userRestartPolicy = (options.clientOptions?.retry as { restartOnFailure?: (error: Error) => Promise<boolean> } | undefined)?.restartOnFailure;
             /** The same list, frozen at the start: tells a topic the consumer began with from one found later. */
             const started = new Set<string>();
 
@@ -335,7 +340,13 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                         heartbeatInterval: defaultHeartbeatIntervalMs,
                         ...(sessionTimeout !== undefined && { sessionTimeout }),
                         // Only a wildcard subscription can be replaced. 5 is the client's own default for a consumer's retries, which giving `retry` would otherwise replace.
-                        ...(wildcards.length > 0 && { retry: { retries: 5, restartOnFailure } }),
+                        ...(wildcards.length > 0 && {
+                            retry: {
+                                retries: 5,
+                                restartOnFailure:
+                                    userRestartPolicy === undefined ? restartOnFailure : async (error: Error) => (await restartOnFailure(error)) && userRestartPolicy(error),
+                            },
+                        }),
                     });
                     // Attached before the consumer runs, so a crash of the first run is not missed. Without a lifecycle callback and without wildcards no listener exists.
                     if (tracker !== undefined || wildcards.length > 0) {

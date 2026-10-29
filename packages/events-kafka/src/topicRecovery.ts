@@ -119,11 +119,24 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
     /** The last crash of each consumer, read right after a replacement was started to see whether its start failed. */
     const lastCrash = new WeakMap<Consumer, Error>();
 
+    /**
+     * Topics the question to the library found gone. The replacement lists the topics again, and a topic
+     * that was created again in between must still count as deleted: it is a new topic to the group.
+     */
+    const confirmedGone = new Set<string>();
+
+    /** Consumers whose start the recovery is waiting for; their start failures are retried by the recovery, not final. */
+    const starting = new WeakSet<Consumer>();
+
     /** Whether the broker's topic list shows that a topic a wildcard had matched is gone. A failed listing counts as no. */
     async function matchedTopicIsGone(): Promise<boolean> {
         try {
             const existing = new Set(await listTopics());
-            return [...known].some((name) => matchesWildcard(name) && !existing.has(name));
+            const gone = [...known].filter((name) => matchesWildcard(name) && !existing.has(name));
+            for (const name of gone) {
+                confirmedGone.add(name);
+            }
+            return gone.length > 0;
         } catch (err) {
             // The consumer is restarted by the library, crashes again and asks again.
             console.error("[KafkaAdapter] topic recovery: listing topics failed:", err);
@@ -136,13 +149,22 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
         let takenOver = false;
         const created: Consumer = createConsumer({
             restartOnFailure: async (error) => {
-                if (created !== consumer || closed || wildcards.length === 0 || !isUnknownTopicError(error)) {
+                // A consumer of a closed subscription, or one that has been replaced, is never started again.
+                if (created !== consumer || closed) {
+                    return false;
+                }
+                if (wildcards.length === 0 || !isUnknownTopicError(error)) {
                     return true;
                 }
                 // Decided before the library schedules anything: a restart that was already scheduled
                 // could fire while the topics are being listed, and a consumer that is still starting
                 // ignores a stop, so it would run on beside its replacement.
-                if (!(await matchedTopicIsGone()) || created !== consumer || closed) {
+                const gone = await matchedTopicIsGone();
+                // The listing took time: the subscription may have been closed or the consumer replaced meanwhile.
+                if (created !== consumer || closed) {
+                    return false;
+                }
+                if (!gone) {
                     return true;
                 }
                 takenOver = true;
@@ -150,6 +172,10 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
             },
             onCrash: (payload) => {
                 lastCrash.set(created, payload.error);
+                // A start that fails while the recovery waits for it is tried again by the recovery, whatever the library will do.
+                if (starting.has(created)) {
+                    return { ...payload, restart: true };
+                }
                 if (!takenOver) {
                     return payload;
                 }
@@ -219,13 +245,14 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
         }
 
         const matching = names.filter(matchesWildcard);
-        for (const name of gone) {
+        for (const name of [...gone, ...confirmedGone]) {
             started.delete(name);
         }
         const survivors = matching.filter((name) => known.has(name) && started.has(name));
         // Found after the start (by discovery or an earlier recovery) or created meanwhile: read from the first message.
         const fresh = matching.filter((name) => (known.has(name) ? !started.has(name) : options.discover) && !literals.includes(name));
         const next = spawn();
+        starting.add(next);
         try {
             await next.connect();
             await subscribe(next, [...new Set([...literals, ...survivors])], fromBeginning);
@@ -244,7 +271,10 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
             await next.disconnect().catch(() => undefined);
             scheduleRetry(next);
             return;
+        } finally {
+            starting.delete(next);
         }
+        confirmedGone.clear();
         // Updated only now: a recovery that failed half-way must still see the deleted topics as gone.
         // Topics left out of the subscription (new ones, with discovery off) stay unknown.
         const unsubscribed = new Set(options.discover ? [] : matching.filter((name) => !known.has(name)));
