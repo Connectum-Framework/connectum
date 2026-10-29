@@ -139,6 +139,10 @@ function throwMissingSubject(): never {
  * JWT extraction from Authorization header, verification via jose,
  * and standard claim mapping to AuthContext.
  *
+ * A token is accepted only with a `sub` (or the claim named by `claimsMapping.subject`)
+ * that is a non-empty string; otherwise the call ends with `Unauthenticated: JWT missing
+ * subject claim`.
+ *
  * @param options - JWT authentication options
  * @returns ConnectRPC interceptor
  *
@@ -197,8 +201,15 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
             const mapped = mapClaimsToContext(payload, claimsMapping);
             const claims = payload as Record<string, unknown>;
 
+            // The identity needs a subject that is a non-empty string. `sub` is whatever the token
+            // carries (an empty string, a number, an object), and AuthContext.subject is a string.
+            const subject = mapped.subject ?? payload.sub;
+            if (typeof subject !== "string" || subject.length === 0) {
+                throwMissingSubject();
+            }
+
             return {
-                subject: mapped.subject ?? payload.sub ?? throwMissingSubject(),
+                subject,
                 name: mapped.name ?? (typeof claims.name === "string" ? claims.name : undefined),
                 roles: mapped.roles ?? [],
                 scopes: mapped.scopes ?? (typeof payload.scope === "string" ? payload.scope.split(" ").filter(Boolean) : []),
