@@ -111,7 +111,7 @@ export function assertWatchInterval(value: unknown): asserts value is number {
 }
 
 /** The manager methods `Healthcheck()` and the HTTP handler call. */
-const MANAGER_METHODS = ["initialize", "getStatus", "getAllStatuses", "areAllHealthy"] as const;
+const MANAGER_METHODS = ["initialize", "getStatus", "getAllStatuses", "areAllHealthy", "subscribe"] as const;
 
 /**
  * Require the `options` argument of `Healthcheck()` to be a plain options

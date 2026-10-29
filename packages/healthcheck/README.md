@@ -56,6 +56,10 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - `update()`, `register()` and `set()` accept only the four `ServingStatus`
   values (0 to 3) and string names. Anything else throws `TypeError` or
   `RangeError` and leaves the registry unchanged.
+- `Health.Watch` sends a message for every change of the watched status, in
+  order, as soon as the manager reports it (`HealthcheckManager.subscribe()`).
+  A status that goes down and back up inside one `watchInterval` is delivered
+  as two messages. The interval only paces a periodic re-check.
 - `watchInterval` must be an integer from 1 to 2147483647 milliseconds;
   `Healthcheck()` throws otherwise.
 - `Healthcheck()` throws when `options` is `null`, `manager` is not a

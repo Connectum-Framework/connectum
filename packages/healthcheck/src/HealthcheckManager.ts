@@ -82,6 +82,64 @@ export class HealthcheckManager {
     private entries: Map<string, HealthEntry> = new Map();
 
     /**
+     * Wrapped so the same function subscribed twice is two subscriptions that
+     * unsubscribe independently.
+     */
+    private subscribers: Set<{ listener: () => void }> = new Set();
+
+    /**
+     * Be told about every change of the registry.
+     *
+     * The listener runs synchronously, after the new state is in place, once
+     * per `update`, `register` (of a new name), `set`, `unregister` (of a
+     * registered name), `initialize` and `clear`. It receives no payload:
+     * read the state you care about with `getStatus()` or `getAllStatuses()`.
+     * A mutation that is refused (invalid status, unknown service) does not
+     * notify. `Health.Watch` is built on this, which is why a status that
+     * changes and changes back between two polls still reaches watchers.
+     *
+     * A listener that throws does not stop the others: every listener runs,
+     * then the first error is rethrown to the caller of the mutation. The
+     * mutation itself is not undone.
+     *
+     * @param listener - Function called after each change
+     * @returns Function that removes the listener; calling it again does nothing
+     * @throws {TypeError} when `listener` is not a function
+     */
+    subscribe(listener: () => void): () => void {
+        if (typeof listener !== "function") {
+            throw new TypeError(`HealthcheckManager.subscribe(): listener must be a function, got ${typeof listener}`);
+        }
+        const subscription = { listener };
+        this.subscribers.add(subscription);
+        return () => {
+            this.subscribers.delete(subscription);
+        };
+    }
+
+    /**
+     * Call every current subscriber. A subscriber removed by an earlier one
+     * during this call is skipped; one added during it waits for the next
+     * change.
+     */
+    private notify(): void {
+        let failure: { error: unknown } | undefined;
+        for (const subscription of [...this.subscribers]) {
+            if (!this.subscribers.has(subscription)) {
+                continue;
+            }
+            try {
+                subscription.listener();
+            } catch (error) {
+                failure ??= { error };
+            }
+        }
+        if (failure !== undefined) {
+            throw failure.error;
+        }
+    }
+
+    /**
      * Update service health status
      *
      * When called without a service name, updates ALL registered entries
@@ -102,6 +160,7 @@ export class HealthcheckManager {
             for (const [key, entry] of this.entries) {
                 this.entries.set(key, { status, kind: entry.kind });
             }
+            this.notify();
             return;
         }
 
@@ -114,6 +173,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(service, { status, kind: existing.kind });
+        this.notify();
     }
 
     /**
@@ -144,6 +204,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(component, { status: initialStatus, kind: EntryKind.COMPONENT });
+        this.notify();
     }
 
     /**
@@ -169,6 +230,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(component, { status, kind: EntryKind.COMPONENT });
+        this.notify();
     }
 
     /**
@@ -186,6 +248,7 @@ export class HealthcheckManager {
             throw new Error(`Name '${component}' is a registered RPC service, not a component`);
         }
         this.entries.delete(component);
+        this.notify();
     }
 
     /**
@@ -260,6 +323,7 @@ export class HealthcheckManager {
             // name: unreachable in practice (typeNames are dotted, component
             // names are dot-free) — left untouched rather than failing start.
         }
+        this.notify();
     }
 
     /**
@@ -267,6 +331,7 @@ export class HealthcheckManager {
      */
     clear(): void {
         this.entries.clear();
+        this.notify();
     }
 }
 

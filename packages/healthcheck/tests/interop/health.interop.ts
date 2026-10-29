@@ -118,6 +118,36 @@ describe("health with external clients", () => {
             assert.deepStrictEqual(parseJsonStream(result.stdout), [serving, notServing, serving], "no message without a status change");
         });
 
+        // health.proto: "send a new message whenever the service's serving
+        // status changes". A status set down and back up in the same tick is
+        // two changes; a watcher that samples would see neither.
+        it("delivers both changes of a status that goes down and up at once", async () => {
+            manager.update(ServingStatus.SERVING);
+            const watch = startTool("grpcurl", [...UPSTREAM_HEALTH, "-max-time", "10", "-d", `{"service":"${EchoService.typeName}"}`, address, "grpc.health.v1.Health/Watch"]);
+            const serving = { status: "SERVING" };
+            const notServing = { status: "NOT_SERVING" };
+            try {
+                assert.deepStrictEqual(await watch.messages(1, 15_000), [serving]);
+                manager.update(ServingStatus.NOT_SERVING, EchoService.typeName);
+                manager.update(ServingStatus.SERVING, EchoService.typeName);
+                assert.deepStrictEqual(await watch.messages(3, 15_000), [serving, notServing, serving]);
+            } finally {
+                manager.update(ServingStatus.SERVING);
+            }
+            await watch.done;
+        });
+
+        // A request name far past an HTTP/2 frame used to be repeated in the
+        // NotFound message, which broke the stream; grpc-go must now get a
+        // plain NotFound.
+        it("answers NotFound with a short message for a 70000-character service name", async () => {
+            const name = "x".repeat(70_000);
+            const result = await runTool("grpcurl", [...UPSTREAM_HEALTH, "-d", "@", address, "grpc.health.v1.Health/Check"], { stdin: JSON.stringify({ service: name }) });
+            assert.notStrictEqual(result.code, 0);
+            assert.match(result.stderr, /Code: NotFound/);
+            assert.ok(result.stderr.length < 1000, `the error must stay short, was ${result.stderr.length} characters`);
+        });
+
         // health.proto: for an unknown service the server sends SERVICE_UNKNOWN
         // and keeps the call open, then sends the status once the service is known.
         it("keeps watching a service that is not known yet and reports it once it is", async () => {

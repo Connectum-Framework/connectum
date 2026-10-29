@@ -31,6 +31,7 @@ describe("Healthcheck() manager", () => {
         ["null", null],
         ["an empty object", {}],
         ["an object missing methods", { initialize() {}, getStatus() {} }],
+        ["an object that cannot announce changes", { initialize() {}, getStatus() {}, getAllStatuses() {}, areAllHealthy() {} }],
         ["a number", 5],
     ] as Array<[string, unknown]>) {
         it(`throws TypeError naming manager for ${label}`, () => {

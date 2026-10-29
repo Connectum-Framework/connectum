@@ -8,7 +8,6 @@
  * @module @connectum/healthcheck/Healthcheck
  */
 
-import { setTimeout } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
 import type { ConnectRouter } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -193,30 +192,66 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                  *
                  * Per gRPC spec:
                  * - Sends initial status immediately
-                 * - Sends updates only when status changes
+                 * - Sends a message for every change of the status, in order,
+                 *   and nothing while it holds
                  * - For unknown services: sends SERVICE_UNKNOWN (does not terminate the call)
                  * - Terminates when client disconnects (AbortSignal)
+                 *
+                 * Changes come from the manager's change notifications, so one
+                 * that is made and reverted between two ticks still reaches the
+                 * client, and nothing waits for `watchInterval`. That interval
+                 * only paces a periodic re-check of the status, which also
+                 * covers a manager whose state changes without announcing it.
+                 *
+                 * A client that stops reading while its status keeps flapping
+                 * makes the call hold one pending message per change; dropping
+                 * them would reintroduce the lost transitions.
                  */
                 async *watch({ service }, context) {
-                    let currentStatus = resolveServiceStatus(manager, service);
+                    const { signal } = context;
+                    // Statuses queued by the manager's notifications and not yet sent.
+                    const pending: ServingStatus[] = [];
+                    let lastObserved = resolveServiceStatus(manager, service);
+                    let wake: (() => void) | undefined;
 
-                    yield create(HealthCheckResponseSchema, { status: currentStatus });
+                    const observe = (): void => {
+                        const status = resolveServiceStatus(manager, service);
+                        if (status !== lastObserved) {
+                            lastObserved = status;
+                            pending.push(status);
+                            wake?.();
+                        }
+                    };
 
-                    while (!context.signal.aborted) {
-                        try {
-                            await setTimeout(watchInterval, undefined, { signal: context.signal });
-                        } catch (err) {
-                            if (err instanceof Error && err.name === "AbortError") {
+                    // Subscribed before the first message is built so no change slips in between.
+                    const unsubscribe = manager.subscribe(observe);
+                    try {
+                        yield create(HealthCheckResponseSchema, { status: lastObserved });
+
+                        while (!signal.aborted) {
+                            for (let next = pending.shift(); next !== undefined; next = pending.shift()) {
+                                yield create(HealthCheckResponseSchema, { status: next });
+                            }
+                            if (signal.aborted) {
                                 break;
                             }
-                            throw err;
-                        }
 
-                        const newStatus = resolveServiceStatus(manager, service);
-                        if (newStatus !== currentStatus) {
-                            currentStatus = newStatus;
-                            yield create(HealthCheckResponseSchema, { status: currentStatus });
+                            // Sleep until a notification, the re-check interval or the end of the call.
+                            await new Promise<void>((resolve) => {
+                                const done = (): void => {
+                                    clearTimeout(timer);
+                                    signal.removeEventListener("abort", done);
+                                    wake = undefined;
+                                    resolve();
+                                };
+                                const timer = setTimeout(done, watchInterval);
+                                signal.addEventListener("abort", done, { once: true });
+                                wake = done;
+                            });
+                            observe();
                         }
+                    } finally {
+                        unsubscribe();
                     }
                 },
             });
