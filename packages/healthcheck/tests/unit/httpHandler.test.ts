@@ -389,4 +389,20 @@ describe("createHttpHealthHandler — additional scenarios", () => {
         assert.strictEqual(res.statusCode, 200);
         assert.strictEqual(JSON.parse(res.getBody()).status, "SERVING");
     });
+
+    // The documented contract: `?service=` behaves as if the parameter were
+    // absent, and a request without it names the scope "overall" in the body.
+    it("should name the scope 'overall' in the body for an empty service value, as without the parameter", () => {
+        manager.update(ServingStatus.SERVING);
+        const handler = createHttpHealthHandler(manager);
+        const bare = createMockResponse();
+        const empty = createMockResponse();
+
+        handler(createMockRequest("/healthz") as any, bare as any);
+        handler(createMockRequest("/healthz?service=") as any, empty as any);
+
+        assert.strictEqual(JSON.parse(bare.getBody()).service, "overall");
+        assert.strictEqual(JSON.parse(empty.getBody()).service, "overall");
+        assert.strictEqual(empty.statusCode, bare.statusCode);
+    });
 });

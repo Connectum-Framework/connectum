@@ -3,7 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { Healthcheck, healthcheckManager } from "../../src/Healthcheck.ts";
-import { createHealthcheckManager } from "../../src/HealthcheckManager.ts";
+import { createHealthcheckManager, HealthcheckManager } from "../../src/HealthcheckManager.ts";
 import { ServingStatus } from "../../src/types.ts";
 
 /**
@@ -316,9 +316,9 @@ describe("Healthcheck Watch handler", () => {
 	 * Install the protocol on a mock router and return its Watch handler, the
 	 * isolated manager and the abort controller standing for the client call.
 	 */
-	function startWatch(options: { watchInterval?: number } = {}) {
-		const manager = createHealthcheckManager();
-		const protocol = Healthcheck({ manager, ...options });
+	function startWatch(options: { watchInterval?: number; manager?: HealthcheckManager } = {}) {
+		const { manager = createHealthcheckManager(), ...rest } = options;
+		const protocol = Healthcheck({ manager, ...rest });
 		let handlers: Record<string, Function> = {};
 		protocol.setup?.({ services: [{ typeName: "svc.v1.Foo" }], registry: [] } as any);
 		protocol.register({
@@ -340,38 +340,51 @@ describe("Healthcheck Watch handler", () => {
 		return Promise.race([pending, delay(ms, "silent" as const)]);
 	}
 
-	// The documented polling cadence: a change is noticed within the
-	// configured interval, not within the 500 ms default.
-	it("notices a status change within a custom watchInterval", async () => {
-		const { manager, controller, stream } = startWatch({ watchInterval: 20 });
+	// A change the manager announces reaches the client at once. It used to wait
+	// for the next tick, up to the whole interval (500 ms by default).
+	for (const [label, options] of [
+		["a long watchInterval", { watchInterval: 60_000 }],
+		["the default watchInterval", {}],
+	] as const) {
+		it(`reports an announced status change at once with ${label}`, async () => {
+			const { manager, controller, stream } = startWatch(options);
+			try {
+				assert.strictEqual((await stream.next()).value?.status, ServingStatus.UNKNOWN);
+
+				manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+				const second = await within(stream.next(), 250);
+
+				assert.notStrictEqual(second, "silent", "the change must not wait for the interval");
+				assert.strictEqual((second as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.SERVING);
+			} finally {
+				controller.abort();
+			}
+		});
+	}
+
+	// The interval still paces a re-check. A manager that changes state without
+	// announcing it (here by overriding the read) is noticed on the next tick:
+	// not before the interval, and within a few intervals after it.
+	it("re-checks the status every watchInterval for a change the manager did not announce", async () => {
+		class SilentManager extends HealthcheckManager {
+			forced: ServingStatus | undefined;
+			override getStatus(service: string) {
+				return this.forced === undefined ? super.getStatus(service) : { status: this.forced };
+			}
+		}
+		const manager = new SilentManager();
+		const { controller, stream } = startWatch({ watchInterval: 100, manager });
 		try {
 			assert.strictEqual((await stream.next()).value?.status, ServingStatus.UNKNOWN);
 
-			manager.update(ServingStatus.SERVING, "svc.v1.Foo");
-			const second = await within(stream.next(), 400);
-
-			assert.notStrictEqual(second, "silent", "a 20 ms interval must report the change well before the 500 ms default");
-			assert.strictEqual((second as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.SERVING);
-		} finally {
-			controller.abort();
-		}
-	});
-
-	// Without the option the cadence is 500 ms: nothing within 250 ms, the
-	// change within 1500 ms.
-	it("polls every 500 ms when watchInterval is not given", async () => {
-		const { manager, controller, stream } = startWatch();
-		try {
-			await stream.next();
-
-			manager.update(ServingStatus.SERVING, "svc.v1.Foo");
+			manager.forced = ServingStatus.NOT_SERVING;
 			const pending = stream.next();
-			const early = await within(pending, 250);
-			assert.strictEqual(early, "silent", "the default interval must not report the change after 250 ms");
-			const late = await within(pending, 1250);
+			const early = await within(pending, 40);
+			assert.strictEqual(early, "silent", "nothing announced the change, so it waits for the tick");
+			const late = await within(pending, 900);
 
-			assert.notStrictEqual(late, "silent", "the change must be reported within 1500 ms of the update");
-			assert.strictEqual((late as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.SERVING);
+			assert.notStrictEqual(late, "silent", "the periodic re-check must find the change");
+			assert.strictEqual((late as IteratorResult<{ status: ServingStatus }>).value?.status, ServingStatus.NOT_SERVING);
 		} finally {
 			controller.abort();
 		}

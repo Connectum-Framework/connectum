@@ -308,13 +308,27 @@ export interface RetryOptions {
      * `retryMiddleware` throw when it is created.
      */
     maxRetries?: number;
-    /** Backoff strategy */
+    /**
+     * Backoff strategy (default: `"exponential"`). Any other name throws a `RangeError` from
+     * `retryMiddleware`, and a non-string a `TypeError`; an unknown name used to behave as `"fixed"`.
+     */
     backoff?: "exponential" | "linear" | "fixed";
-    /** Initial delay in ms (default: 1000) */
+    /**
+     * Initial delay in ms (default: 1000): a finite number from 0 to 2147483647 (the longest delay
+     * a timer keeps). `NaN`, a negative number, `Infinity`, a larger number or a non-number throws
+     * when the middleware is created.
+     */
     initialDelay?: number;
-    /** Maximum delay in ms (default: 30000) */
+    /**
+     * Maximum delay in ms (default: 30000): a finite number from 1 to 2147483647. Every pause is
+     * capped at it, so `0` or a negative value (which would remove the pause), `NaN`, `Infinity`
+     * and a non-number throw when the middleware is created.
+     */
     maxDelay?: number;
-    /** Multiplier for exponential backoff (default: 2) */
+    /**
+     * Multiplier for exponential backoff (default: 2): a finite number of at least 1. A smaller
+     * number (`0` included), `NaN`, `Infinity` and a non-number throw when the middleware is created.
+     */
     multiplier?: number;
     /** Filter: only retry for these error types */
     retryableErrors?: (error: unknown) => boolean;
@@ -324,7 +338,12 @@ export interface RetryOptions {
  * Dead letter queue middleware options
  */
 export interface DlqOptions {
-    /** DLQ topic name */
+    /**
+     * DLQ topic name: a non-empty string. Anything else (a missing or empty value, a non-string)
+     * makes `createEventBus` and `dlqMiddleware` throw when they are created, because every failed
+     * event would otherwise be lost. Whether the broker accepts the name is decided by the adapter
+     * at the first publish; a rejected publish is reported as a `dlq-failed` observer event.
+     */
     topic: string;
     /**
      * Custom error serializer for DLQ metadata.
@@ -372,7 +391,15 @@ export type EventBusObserverEvent =
      */
     | { readonly type: "rejected"; readonly reason: "aborted" | "not-in-flight" }
     /** The built-in dead-letter middleware republished a failed event while the bus was stopping. */
-    | { readonly type: "dlq-republish"; readonly topic: string };
+    | { readonly type: "dlq-republish"; readonly topic: string }
+    /**
+     * The built-in dead-letter middleware could not publish a failed event to its topic, at any
+     * time, not only during a stop. The original is nacked without requeue and, unless the broker
+     * has its own dead-letter policy, lost. `topic` is the dead-letter topic, `eventType` and
+     * `eventId` identify the event, `error` is what the publish rejected with (it can carry broker
+     * details, so redact it before logging it outside your service).
+     */
+    | { readonly type: "dlq-failed"; readonly topic: string; readonly eventType: string; readonly eventId: string; readonly error: unknown };
 
 /** Callback for {@link EventBusObserverEvent}; see `EventBusOptions.observer`. */
 export type EventBusObserver = (event: EventBusObserverEvent) => void | Promise<void>;
@@ -422,6 +449,11 @@ export interface EventBusOptions {
      *
      * Each event handler invocation gets an AbortSignal that fires after
      * this duration. Default: 30000 (30 seconds).
+     *
+     * Must be an integer from 1 to 4294967295 (the range `AbortSignal.timeout()` accepts, and `0`
+     * would abort every signal before the handler runs). Anything else (`NaN`, negative, `0`,
+     * fractional, `Infinity`, a non-number) makes `createEventBus` throw a `RangeError` or
+     * `TypeError` naming the option.
      */
     handlerTimeout?: number;
     /**
@@ -430,6 +462,10 @@ export interface EventBusOptions {
      * are force-aborted via AbortSignal.
      *
      * Default: 30000 (30 seconds). Set to 0 for immediate abort.
+     *
+     * Must be a finite number from 0 to 2147483647 (the longest delay a timer keeps). `NaN`, a
+     * negative number, `Infinity`, a larger number or a non-number makes `createEventBus` throw a
+     * `RangeError` or `TypeError` naming the option; leave it unset for the default.
      */
     drainTimeout?: number;
     /**
@@ -454,9 +490,11 @@ export interface EventBusOptions {
      */
     drainAbortGrace?: number;
     /**
-     * Receives what the shutdown could not finish, see {@link EventBusObserverEvent}. Called
-     * synchronously by `stop()`; an error thrown by it (or a promise it returns that rejects)
-     * is swallowed, because reporting must never prevent the adapter from being disconnected.
+     * Receives what the shutdown could not finish and a failed dead-letter publish, see
+     * {@link EventBusObserverEvent}. Called synchronously by the code that reports (`stop()`, or
+     * the dead-letter middleware); an error thrown by it (or a promise it returns that rejects)
+     * is swallowed, because reporting must never prevent the adapter from being disconnected or
+     * change what happens to the event.
      */
     observer?: EventBusObserver;
     /**

@@ -34,6 +34,30 @@ function error(code: Code, message: string): ReflectionAnswer {
 }
 
 /**
+ * Longest part of a requested name that an error message repeats. The whole
+ * request is already echoed in `original_request`; repeating the name in the
+ * message as well would double the response for a name nobody can use.
+ */
+const MAX_ECHOED_NAME_LENGTH = 128;
+
+/**
+ * Cut a client-supplied name to {@link MAX_ECHOED_NAME_LENGTH} UTF-16 code
+ * units for use in a message, marking the cut with an ellipsis. A name that
+ * fits is returned unchanged. A cut never leaves half of a surrogate pair.
+ */
+function boundedName(name: string): string {
+    if (name.length <= MAX_ECHOED_NAME_LENGTH) {
+        return name;
+    }
+    let end = MAX_ECHOED_NAME_LENGTH;
+    const last = name.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) {
+        end -= 1;
+    }
+    return `${name.slice(0, end)}…`;
+}
+
+/**
  * Answer one reflection request.
  *
  * @param pool - Descriptors of the server
@@ -49,26 +73,26 @@ export function answerReflectionQuery(pool: DescriptorPool, query: ReflectionQue
         case "fileByFilename": {
             const file = pool.fileByName(query.value);
             return file === undefined
-                ? error(Code.NotFound, `file not found: "${query.value}"`)
+                ? error(Code.NotFound, `file not found: "${boundedName(query.value)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "fileContainingSymbol": {
             const file = pool.fileContainingSymbol(query.value);
             return file === undefined
-                ? error(Code.NotFound, `symbol not found: "${query.value}"`)
+                ? error(Code.NotFound, `symbol not found: "${boundedName(query.value)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "fileContainingExtension": {
             const { containingType, extensionNumber } = query.value;
             const file = pool.fileContainingExtension(containingType, extensionNumber);
             return file === undefined
-                ? error(Code.NotFound, `extension not found: number ${extensionNumber} of message type "${containingType}"`)
+                ? error(Code.NotFound, `extension not found: number ${extensionNumber} of message type "${boundedName(containingType)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "allExtensionNumbersOfType": {
             const numbers = pool.extensionNumbersOf(query.value);
             return numbers === undefined
-                ? error(Code.NotFound, `message type not found: "${query.value}"`)
+                ? error(Code.NotFound, `message type not found: "${boundedName(query.value)}"`)
                 : { case: "allExtensionNumbersResponse", value: { baseTypeName: query.value, extensionNumber: numbers } };
         }
         case undefined:
@@ -79,35 +103,106 @@ export function answerReflectionQuery(pool: DescriptorPool, query: ReflectionQue
     }
 }
 
+/** Marks that a read gave way to the abort of the call. */
+const ABORTED = Symbol("aborted");
+
+/**
+ * The next request of the stream, or {@link ABORTED} when `signal` aborts
+ * first. The request iterator of a call does not end when the call's signal
+ * aborts: a read waits for the client to send or to close, however long that
+ * takes. A read that lost the race is left to settle on its own; its outcome
+ * is dropped, a failure included.
+ */
+function readOrAbort<T>(iterator: AsyncIterator<T>, signal: AbortSignal): Promise<IteratorResult<T> | typeof ABORTED> {
+    return new Promise((resolve, reject) => {
+        const onAbort = (): void => resolve(ABORTED);
+        signal.addEventListener("abort", onAbort, { once: true });
+        iterator.next().then(
+            (result) => {
+                signal.removeEventListener("abort", onAbort);
+                resolve(result);
+            },
+            (error: unknown) => {
+                signal.removeEventListener("abort", onAbort);
+                reject(error);
+            },
+        );
+    });
+}
+
+/**
+ * Answer the requests of one stream until the client closes its side or the
+ * call's signal aborts (the server is stopping, the client cancelled, the
+ * deadline passed). Aborting ends the stream here and now instead of leaving
+ * it parked on a client that may never write again: a server that is stopping
+ * would otherwise wait out the whole shutdown timeout for it. The stream ends
+ * normally, as `Health.Watch` does: every request received so far has been
+ * answered, and the client sees the end of the call rather than an error.
+ *
+ * Each stream tracks the files it has already sent, so overlapping requests on
+ * one stream do not resend shared imports.
+ */
+async function* answerStream<Request, Response>(
+    requests: AsyncIterable<Request>,
+    signal: AbortSignal,
+    respond: (request: Request, sent: Set<string>) => Response,
+): AsyncGenerator<Response> {
+    const sent = new Set<string>();
+    const iterator = requests[Symbol.asyncIterator]();
+    let exhausted = false;
+    try {
+        while (!signal.aborted) {
+            let step: IteratorResult<Request> | typeof ABORTED;
+            try {
+                step = await readOrAbort(iterator, signal);
+            } catch (error) {
+                // The source failed (a reset stream): it has nothing left to close.
+                exhausted = true;
+                throw error;
+            }
+            if (step === ABORTED) {
+                return;
+            }
+            if (step.done) {
+                exhausted = true;
+                return;
+            }
+            yield respond(step.value, sent);
+        }
+    } finally {
+        if (!exhausted) {
+            // Not awaited: after an abort the source still has a read in flight, and
+            // closing an iterator queues behind it, so waiting here would be the
+            // same wait this function exists to avoid.
+            void Promise.resolve(iterator.return?.()).catch(() => {});
+        }
+    }
+}
+
 /**
  * Register `grpc.reflection.v1.ServerReflection` and
  * `grpc.reflection.v1alpha.ServerReflection` on `router`, both answering from
- * `pool`. Each stream tracks the files it has already sent, so overlapping
- * requests on one stream do not resend shared imports.
+ * `pool`. Both end a stream when its call is aborted.
  */
 export function registerServerReflection(router: ConnectRouter, pool: DescriptorPool): void {
     router.service(V1ServerReflection, {
-        async *serverReflectionInfo(requests) {
-            const sent = new Set<string>();
-            for await (const request of requests) {
-                yield create(V1ResponseSchema, {
+        serverReflectionInfo: (requests, context) =>
+            answerStream(requests, context.signal, (request, sent) =>
+                create(V1ResponseSchema, {
                     validHost: request.host,
                     originalRequest: request,
                     messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                });
-            }
-        },
+                }),
+            ),
     });
     router.service(V1alphaServerReflection, {
-        async *serverReflectionInfo(requests) {
-            const sent = new Set<string>();
-            for await (const request of requests) {
-                yield create(V1alphaResponseSchema, {
+        serverReflectionInfo: (requests, context) =>
+            answerStream(requests, context.signal, (request, sent) =>
+                create(V1alphaResponseSchema, {
                     validHost: request.host,
                     originalRequest: request,
                     messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                });
-            }
-        },
+                }),
+            ),
     });
 }

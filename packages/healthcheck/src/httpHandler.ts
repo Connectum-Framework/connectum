@@ -8,6 +8,7 @@
 import type { HttpHandler, NodeRequest, NodeResponse } from "@connectum/core";
 import type { HealthcheckManager } from "./HealthcheckManager.ts";
 import { ServingStatus } from "./types.ts";
+import { assertHttpPaths } from "./validation.ts";
 
 /**
  * HTTP status codes mapped from gRPC ServingStatus
@@ -50,7 +51,8 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
  *
  * Configured paths return JSON with the service name, status, and timestamp.
  * A `service` query parameter checks one service or component; without it,
- * the handler reports overall health (an empty `service=` counts as absent).
+ * the handler reports overall health (an empty `service=` counts as absent:
+ * same status, same HTTP code, and `"service": "overall"` in the body).
  * Unknown named services return 404 with the requested name in the body,
  * unhealthy overall status returns 503, and unconfigured paths are not handled.
  *
@@ -60,10 +62,17 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
  * method is not checked; the `Host` header is not consulted.
  *
  * @param manager - Healthcheck manager instance
- * @param healthPaths - HTTP health endpoint paths
+ * @param healthPaths - HTTP health endpoint paths: a non-empty array of
+ *   absolute paths, each starting with `/` and free of `?` and `#`. Defaults to
+ *   `/healthz`, `/health` and `/readyz` when omitted.
  * @returns HTTP handler function that returns true if request was handled
+ * @throws {RangeError} when `healthPaths` is an empty array (a handler that can
+ *   never match a request)
+ * @throws {TypeError} when `healthPaths` is not an array, or an entry is not a
+ *   string, does not start with `/`, or contains `?` or `#`
  */
 export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths: string[] = DEFAULT_HTTP_PATHS): HttpHandler {
+    assertHttpPaths(healthPaths, "createHttpHealthHandler(): argument 'healthPaths'", "omit it to serve the default paths");
     const pathSet = new Set(healthPaths);
 
     return function httpHealthHandler(req: NodeRequest, res: NodeResponse): boolean {
@@ -95,7 +104,9 @@ export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths
 
         const body: HttpHealthResponse = {
             status: STATUS_NAMES.get(status) ?? "UNKNOWN",
-            service: service ?? "overall",
+            // An empty `service=` selected the overall state above; the body
+            // must say so too, so `||` and not `??`.
+            service: service || "overall",
             timestamp: new Date().toISOString(),
         };
 

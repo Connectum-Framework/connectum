@@ -10,6 +10,13 @@
 import { z } from "zod";
 
 /**
+ * An empty environment variable is the same as an unset one (OpenTelemetry SDK
+ * rule for its `OTEL_*` variables), which orchestrators rely on when they pass
+ * a blank value for a variable the operator did not set.
+ */
+const emptyAsUnset = (value: unknown): unknown => (value === "" ? undefined : value);
+
+/**
  * Log level schema with validation
  */
 export const LogLevelSchema = z.enum(["debug", "info", "warn", "error"]).default("info");
@@ -52,11 +59,13 @@ export const BooleanFromStringSchema = z
  */
 export const ConnectumEnvSchema = z.object({
     /**
-     * Server port: a whole number from 1 to 65535 (a fraction is rejected here
-     * instead of failing later inside the network layer)
+     * Server port: a whole number from 1 to 65535 written in decimal digits. A
+     * fraction, or a form `Number()` would read (`0x50`, `1e3`, `+80`, padded with
+     * spaces), is rejected here instead of being read as another port or failing
+     * later inside the network layer.
      * @default 5000
      */
-    PORT: z.coerce.number().int().min(1).max(65535).default(5000),
+    PORT: z.string().regex(/^\d+$/, "PORT must be an integer from 1 to 65535 written in decimal digits").transform(Number).pipe(z.number().int().min(1).max(65535)).default(5000),
 
     /**
      * Listen address
@@ -103,14 +112,18 @@ export const ConnectumEnvSchema = z.object({
 
     /**
      * Optional OpenTelemetry service name. The core parser leaves it undefined
-     * when absent; provider defaults belong to the telemetry package.
+     * when absent or empty (the OpenTelemetry SDK reads an empty value of an
+     * environment variable as unset); provider defaults belong to the telemetry
+     * package.
      */
-    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_SERVICE_NAME: z.preprocess(emptyAsUnset, z.string().optional()),
 
     /**
-     * OpenTelemetry exporter endpoint
+     * OpenTelemetry exporter endpoint: an absolute `http:` or `https:` URL. A bare
+     * `host:port` such as `localhost:4318` parses as a URL with the scheme
+     * `localhost:`, so the scheme is checked explicitly. An empty value is read as unset.
      */
-    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyAsUnset, z.url({ protocol: /^https?$/ }).optional()),
 
     /**
      * Enable graceful shutdown

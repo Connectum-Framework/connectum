@@ -506,3 +506,90 @@ describe("BooleanFromStringSchema validation errors", () => {
         );
     });
 });
+
+// ---------------------------------------------------------------------------
+// PORT: only decimal digits. `Number()` would also read hex, exponent, signed
+// and padded forms, each as a different port than a reader of the value expects.
+// ---------------------------------------------------------------------------
+
+describe("parseEnvConfig() PORT notation", () => {
+    for (const port of ["0x50", "0X50", "1e3", "+80", "-80", " 80", "80 ", "8_0", "0b101", "٨٠"]) {
+        it(`should reject PORT=${JSON.stringify(port)}, naming PORT and the decimal-digit rule`, () => {
+            assert.throws(
+                () => parseEnvConfig({ PORT: port }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "PORT" && /decimal digits/.test(err.issues[0]?.message ?? ""),
+            );
+        });
+    }
+
+    // Leading zeros stay decimal: "08080" is 8080, never octal.
+    for (const [port, expected] of [
+        ["08080", 8080],
+        ["0080", 80],
+        ["1", 1],
+        ["65535", 65_535],
+    ] as const) {
+        it(`should read PORT=${JSON.stringify(port)} as the decimal ${expected}`, () => {
+            assert.strictEqual(parseEnvConfig({ PORT: port }).PORT, expected);
+        });
+    }
+
+    it("should still apply the range to a digits-only value", () => {
+        assert.throws(
+            () => parseEnvConfig({ PORT: "000" }),
+            (err) => err instanceof ZodError && err.issues[0]?.path.join(".") === "PORT",
+        );
+        assert.throws(
+            () => parseEnvConfig({ PORT: "99999999999999999999" }),
+            (err) => err instanceof ZodError && err.issues[0]?.path.join(".") === "PORT",
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// OTEL_EXPORTER_OTLP_ENDPOINT: an http(s) URL. A bare host:port parses as a URL
+// whose scheme is the host name, and an exporter given it fails far from here.
+// ---------------------------------------------------------------------------
+
+describe("parseEnvConfig() OTEL_EXPORTER_OTLP_ENDPOINT scheme", () => {
+    for (const endpoint of ["localhost:4318", "ftp://collector", "ws://collector:4318", "file:///etc/passwd", "collector.example:4318", "not a url", "http://", "//collector:4318"]) {
+        it(`should reject ${JSON.stringify(endpoint)}, naming OTEL_EXPORTER_OTLP_ENDPOINT`, () => {
+            assert.throws(
+                () => parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: endpoint }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "OTEL_EXPORTER_OTLP_ENDPOINT",
+            );
+        });
+    }
+
+    for (const endpoint of ["http://localhost:4318", "https://collector.example:4318", "https://collector.example/v1/traces", "http://10.0.0.5:4317"]) {
+        it(`should accept ${JSON.stringify(endpoint)} unchanged`, () => {
+            assert.strictEqual(parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: endpoint }).OTEL_EXPORTER_OTLP_ENDPOINT, endpoint);
+        });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// An empty OTEL_* variable is the same as an unset one, the rule the
+// OpenTelemetry SDK applies to its own environment variables.
+// ---------------------------------------------------------------------------
+
+describe("parseEnvConfig() empty OTEL_* variables", () => {
+    it("should read an empty OTEL_SERVICE_NAME as unset", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_SERVICE_NAME: "" }).OTEL_SERVICE_NAME, undefined);
+    });
+
+    it("should read an empty OTEL_EXPORTER_OTLP_ENDPOINT as unset instead of rejecting it", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "" }).OTEL_EXPORTER_OTLP_ENDPOINT, undefined);
+    });
+
+    it("should keep a whitespace-only name as given: only the empty string is unset", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_SERVICE_NAME: " " }).OTEL_SERVICE_NAME, " ");
+    });
+
+    it("should still reject a whitespace-only endpoint", () => {
+        assert.throws(
+            () => parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: " " }),
+            (err) => err instanceof ZodError && err.issues[0]?.path.join(".") === "OTEL_EXPORTER_OTLP_ENDPOINT",
+        );
+    });
+});

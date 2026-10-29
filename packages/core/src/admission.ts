@@ -5,6 +5,7 @@
  * @module admission
  */
 
+import { constants as osConstants } from "node:os";
 import type { CreateServerOptions } from "./types.ts";
 
 /**
@@ -85,5 +86,83 @@ export function validateShutdownOptions(shutdown: CreateServerOptions["shutdown"
     }
     if (forceCloseOnTimeout !== undefined && typeof forceCloseOnTimeout !== "boolean") {
         throw new TypeError(`createServer: shutdown.forceCloseOnTimeout must be a boolean, got ${typeof forceCloseOnTimeout}`);
+    }
+}
+
+/** Signals the operating system does not let a process handle; `process.on` for them fails when the listener is installed. */
+const UNHANDLEABLE_SIGNALS: ReadonlySet<string> = new Set(["SIGKILL", "SIGSTOP"]);
+
+/**
+ * Reject `shutdown.signals` and `shutdown.autoShutdown` values that would
+ * leave no signal handler installed. Node ignores an unknown signal name in
+ * `process.on`, an empty list installs nothing and a string is walked
+ * character by character; in each case SIGTERM then ends the process through
+ * the default action, without running a single shutdown hook, and this shows
+ * only at deploy time. `autoShutdown` must be a real boolean so that a string
+ * such as `"false"` cannot enable the handlers.
+ *
+ * @throws TypeError if `autoShutdown` is not a boolean, or `signals` is not an array of strings
+ * @throws RangeError if `signals` is empty or names a signal the platform does not know or cannot handle
+ * @internal
+ */
+export function validateShutdownSignals(shutdown: CreateServerOptions["shutdown"]): void {
+    if (shutdown === undefined) {
+        return;
+    }
+    const { signals, autoShutdown } = shutdown;
+    if (autoShutdown !== undefined && typeof autoShutdown !== "boolean") {
+        throw new TypeError(`createServer: shutdown.autoShutdown must be a boolean, got ${typeof autoShutdown}`);
+    }
+    if (signals === undefined) {
+        return;
+    }
+    if (!Array.isArray(signals)) {
+        throw new TypeError(`createServer: shutdown.signals must be an array of signal names, got ${typeof signals}`);
+    }
+    if (signals.length === 0) {
+        throw new RangeError('createServer: shutdown.signals must not be empty; omit it to use the default ["SIGTERM", "SIGINT"]');
+    }
+    for (const signal of signals) {
+        if (typeof signal !== "string") {
+            throw new TypeError(`createServer: shutdown.signals must contain only signal names, got ${typeof signal}`);
+        }
+        if (!Object.hasOwn(osConstants.signals, signal)) {
+            throw new RangeError(`createServer: shutdown.signals contains unknown signal "${signal}"; known signals: ${Object.keys(osConstants.signals).join(", ")}`);
+        }
+        if (UNHANDLEABLE_SIGNALS.has(signal)) {
+            throw new RangeError(`createServer: shutdown.signals contains "${signal}", which a process cannot handle`);
+        }
+    }
+}
+
+/**
+ * Reject `port` and `host` values that Node would read in a different sense
+ * than the option documents: a non-numeric string `port` is a Unix socket
+ * path, an out-of-range number fails only inside `start()` with an error that
+ * does not name the option, and an empty or non-string `host` falls back to
+ * all interfaces, which widens the bind address. `port: 0` stays valid (an
+ * ephemeral port). `undefined` means "not set" and keeps the default.
+ *
+ * @throws TypeError if `port` is not a number or `host` is not a string
+ * @throws RangeError if `port` is not an integer from 0 to 65535 or `host` is empty
+ * @internal
+ */
+export function validateListenOptions(options: Pick<CreateServerOptions, "port" | "host">): void {
+    const { port, host } = options;
+    if (port !== undefined) {
+        if (typeof port !== "number") {
+            throw new TypeError(`createServer: port must be a number, got ${typeof port}`);
+        }
+        if (!Number.isInteger(port) || port < 0 || port > 65535) {
+            throw new RangeError(`createServer: port must be an integer from 0 to 65535, got ${String(port)}`);
+        }
+    }
+    if (host !== undefined) {
+        if (typeof host !== "string") {
+            throw new TypeError(`createServer: host must be a non-empty string, got ${typeof host}`);
+        }
+        if (host === "") {
+            throw new RangeError('createServer: host must be a non-empty string (use "0.0.0.0" or "::" to listen on all interfaces)');
+        }
     }
 }
