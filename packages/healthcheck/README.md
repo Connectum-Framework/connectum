@@ -53,6 +53,21 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   registered services and components.
   Use a dedicated manager when separate servers or components need independent
   status.
+- `update()`, `register()` and `set()` accept only the four `ServingStatus`
+  values (0 to 3) and string names. Anything else throws `TypeError` or
+  `RangeError` and leaves the registry unchanged.
+- `Health.Watch` sends a message for every change of the watched status, in
+  order, as soon as the manager reports it (`HealthcheckManager.subscribe()`).
+  A status that goes down and back up inside one `watchInterval` is delivered
+  as two messages. The interval only paces a periodic re-check.
+- `watchInterval` must be an integer from 1 to 2147483647 milliseconds;
+  `Healthcheck()` throws otherwise.
+- `Healthcheck()` throws when `options` is `null`, `manager` is not a
+  `HealthcheckManager` or `httpEnabled` is not a boolean. Register it once per
+  server: a second `Healthcheck()` (or your own `grpc.health.v1.Health`
+  service) makes `start()` reject, because only one registration may answer.
+- `Health.Check` answers `NOT_FOUND` for an unknown service. The message repeats
+  at most the first 128 characters of the requested name.
 
 ## Learn and reference
 
