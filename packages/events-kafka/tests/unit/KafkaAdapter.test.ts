@@ -201,8 +201,8 @@ describe("KafkaAdapter", () => {
             assert.deepEqual(await topicChecks(["orders.*"]), { listings: 1, checkDelays: [300_000] });
         });
 
-        it("does not run discovery when the option is false: the start-up listing is the only one and no check is scheduled", async () => {
-            assert.deepEqual(await topicChecks(["orders.*"], false), { listings: 1, checkDelays: [] });
+        it("does not run discovery when the option is false: the two start-up listings (before and after subscribing) are the only ones and no check is scheduled", async () => {
+            assert.deepEqual(await topicChecks(["orders.*"], false), { listings: 2, checkDelays: [] });
         });
 
         it("takes the interval of the option for the scheduled check", async () => {
@@ -211,6 +211,72 @@ describe("KafkaAdapter", () => {
 
         it("never lists topics and never schedules a check for a subscription without wildcards", async () => {
             assert.deepEqual(await topicChecks(["orders.created"]), { listings: 0, checkDelays: [] });
+        });
+    });
+
+    describe("recovery of a wildcard subscription that runs without topic discovery", () => {
+        it("keeps a topic that was created between the first listing and the subscription when it replaces the consumer", async () => {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
+            const originalWarn = console.warn;
+            type Created = { config: { retry?: { restartOnFailure?: (error: Error) => Promise<boolean> } }; handlers: Record<string, (event: unknown) => void>; subscribed: unknown[] };
+            const created: Created[] = [];
+            let listings = 0;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = (config: Created["config"]) => {
+                const record: Created = { config, handlers: {}, subscribed: [] };
+                created.push(record);
+                return {
+                    connect: async () => undefined,
+                    disconnect: async () => undefined,
+                    subscribe: async (request: { topics: unknown[] }) => {
+                        record.subscribed.push(request.topics);
+                    },
+                    run: async () => undefined,
+                    stop: async () => undefined,
+                    events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                    on: (event: string, listener: (event: unknown) => void) => {
+                        record.handlers[event] = listener;
+                        return () => undefined;
+                    },
+                };
+            };
+            proto.admin = () => ({
+                connect: async () => undefined,
+                disconnect: async () => undefined,
+                listTopics: async () => {
+                    listings++;
+                    // 1: before subscribe(); 2: after it, when orders.window already exists; later: orders.b has been deleted.
+                    return listings === 1 ? ["orders.a", "orders.b"] : listings === 2 ? ["orders.a", "orders.b", "orders.window"] : ["orders.a", "orders.window"];
+                },
+            });
+            console.warn = () => undefined;
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(["orders.*"], async () => undefined);
+                const unknownTopic = Object.assign(new Error("This server does not host this topic-partition"), { type: "UNKNOWN_TOPIC_OR_PARTITION" });
+                const restart = await created[0]?.config.retry?.restartOnFailure?.(unknownTopic);
+                assert.equal(restart, false, "the deletion is confirmed, so the library is told not to restart the consumer");
+                created[0]?.handlers["consumer.crash"]?.({ payload: { error: unknownTopic, groupId: "g", restart: false } });
+                const start = Date.now();
+                while (created[1]?.subscribed.length === undefined || created[1].subscribed.length === 0) {
+                    if (Date.now() - start > 3_000) {
+                        throw new Error("the replacement consumer was not started");
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                assert.deepEqual(created[1]?.subscribed[0], ["orders.a", "orders.window"], "the topic created in the window is still subscribed; only the deleted one is dropped");
+                await subscription.unsubscribe();
+            } finally {
+                console.warn = originalWarn;
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
+                await adapter.disconnect();
+            }
         });
     });
 

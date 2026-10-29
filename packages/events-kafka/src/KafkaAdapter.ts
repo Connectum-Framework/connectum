@@ -328,18 +328,21 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             const started = new Set<string>();
 
             const recovery = createTopicRecovery({
-                createConsumer: (onCrash) => {
+                createConsumer: ({ onCrash, restartOnFailure }) => {
                     const consumer = kafka.consumer({
                         groupId,
                         allowAutoTopicCreation,
                         heartbeatInterval: defaultHeartbeatIntervalMs,
                         ...(sessionTimeout !== undefined && { sessionTimeout }),
+                        // Only a wildcard subscription can be replaced. 5 is the client's own default for a consumer's retries, which giving `retry` would otherwise replace.
+                        ...(wildcards.length > 0 && { retry: { retries: 5, restartOnFailure } }),
                     });
                     // Attached before the consumer runs, so a crash of the first run is not missed. Without a lifecycle callback and without wildcards no listener exists.
                     if (tracker !== undefined || wildcards.length > 0) {
                         consumer.on(consumer.events.CRASH, (event) => {
-                            tracker?.onCrash(event.payload);
-                            onCrash(event.payload);
+                            // A crash the recovery takes over is reported as one the subscription will recover from.
+                            const reported = onCrash(event.payload);
+                            tracker?.onCrash(reported);
                         });
                     }
                     if (tracker !== undefined) {
@@ -379,6 +382,17 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 }
 
                 await subscribeToTopics({ consumer, topics, fromBeginning, allowAutoTopicCreation });
+                if (wildcards.length > 0 && topicDiscoveryInterval === undefined) {
+                    // Without discovery nothing else would learn of a topic that was created between the listing above and
+                    // the metadata request inside subscribe(): the consumer is subscribed to it, but the listing lacks it,
+                    // and a recovery would then leave it out. With discovery the first check handles it.
+                    for (const name of await (await getAdmin()).listTopics()) {
+                        if (!known.has(name) && wildcards.some((wildcard) => wildcard.test(name))) {
+                            known.add(name);
+                            started.add(name);
+                        }
+                    }
+                }
                 await consumer.run(runConfig);
 
                 if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {

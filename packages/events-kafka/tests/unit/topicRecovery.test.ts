@@ -46,14 +46,27 @@ interface FakeConsumer {
 }
 
 /** Builds the pieces a subscription gives the recovery, with consumers that record what is done to them. */
-function harness(options: { discover?: boolean; known: string[]; started?: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
+function harness(options: { runCrash?: (consumerIndex: number) => Error | undefined; discover?: boolean; known: string[]; started?: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
     const consumers: FakeConsumer[] = [];
+    /** What the subscription reports for each crash: whether the subscription will recover. */
+    const reported: { consumer: number; restart: boolean }[] = [];
+    /** What the subscription answered the library's question whether to restart a crashed consumer. */
+    const decisions: { consumer: number; restart: boolean }[] = [];
     const subscribed: { consumer: number; topics: readonly string[]; fromBeginning: boolean }[] = [];
     const known = new Set(options.known);
     let failConnects = options.failConnects ?? 0;
     const recovery = createTopicRecovery({
-        createConsumer: (onCrash) => {
+        createConsumer: (hooks) => {
             const id = consumers.length;
+            /** What the client library does with a crash: asks `restartOnFailure` (for a retriable error), then emits the crash. */
+            const crash = async (payload: ConsumerCrashPayload): Promise<void> => {
+                const restart = payload.restart && (await hooks.restartOnFailure(payload.error));
+                decisions.push({ consumer: id, restart });
+                reported.push({ consumer: id, restart: hooks.onCrash({ ...payload, restart }).restart });
+            };
+            const onCrash = (payload: ConsumerCrashPayload): void => {
+                void crash(payload);
+            };
             const calls: string[] = [];
             const consumer = {
                 connect: async () => {
@@ -71,6 +84,11 @@ function harness(options: { discover?: boolean; known: string[]; started?: strin
                 },
                 run: async () => {
                     calls.push("run");
+                    // The library does not reject run() when the start fails: it reports a crash and returns.
+                    const startError = options.runCrash?.(id);
+                    if (startError !== undefined) {
+                        await crash({ error: startError, groupId: "g", restart: false });
+                    }
                 },
                 stop: async () => {
                     calls.push("stop");
@@ -93,7 +111,7 @@ function harness(options: { discover?: boolean; known: string[]; started?: strin
         },
         ...(options.retryDelay !== undefined && { retryDelay: options.retryDelay }),
     });
-    return { recovery, consumers, subscribed, known };
+    return { recovery, consumers, subscribed, known, reported, decisions };
 }
 
 describe("createTopicRecovery", () => {
@@ -265,6 +283,68 @@ describe("createTopicRecovery", () => {
             await recovery.current.stop();
             assert.ok(consumers[1]?.calls.includes("stop"));
             assert.ok(!consumers[0]?.calls.includes("stop"));
+        });
+    });
+
+    it("tells the library not to restart a consumer it replaces, before anything else happens to that consumer, and reports the crash as recoverable", async () => {
+        await quietly(async () => {
+            const { recovery, consumers, decisions, reported } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a"] });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers[1]?.calls.includes("run") === true, "a second consumer runs");
+            assert.deepEqual(decisions, [{ consumer: 0, restart: false }], "the library is told not to schedule a restart: a restart already under way would start the old consumer beside its replacement");
+            assert.deepEqual(reported, [{ consumer: 0, restart: true }], "the lifecycle sees a crash that the subscription recovers from");
+        });
+    });
+
+    it("leaves the restart to the library when the broker still has every topic the subscription matched", async () => {
+        const { recovery, consumers, decisions, reported } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a", "orders.b"] });
+        recovery.spawn();
+        consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+        await waitFor(() => reported.length === 1, "the crash is reported");
+        assert.deepEqual(decisions, [{ consumer: 0, restart: true }]);
+        assert.deepEqual(reported, [{ consumer: 0, restart: true }]);
+        assert.equal(consumers.length, 1);
+    });
+
+    it("starts a replacement even when the deleted topic is back by the time it is listed again", async () => {
+        await quietly(async () => {
+            let calls = 0;
+            // The first listing (the library's question) shows the topic gone; the second (the replacement's own) shows it back.
+            const { recovery, consumers } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => (++calls === 1 ? ["orders.a"] : ["orders.a", "orders.b"]) });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers[1]?.calls.includes("run") === true, "a replacement runs although nothing is gone any more");
+        });
+    });
+
+    it("does not treat a failed start of the replacement as a recovery: known topics stay, and the start is tried again", async () => {
+        await quietly(async () => {
+            const authorization = Object.assign(new Error("Not authorized to access group"), { name: "KafkaJSProtocolError", type: "GROUP_AUTHORIZATION_FAILED" });
+            const { recovery, consumers, known } = harness({
+                known: ["orders.a", "orders.b"],
+                topicsOnBroker: () => ["orders.a"],
+                retryDelay: 20,
+                // run() of the first replacement resolves although its start failed, like the library's.
+                runCrash: (index) => (index === 1 ? authorization : undefined),
+            });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers.length === 3 && consumers[2]?.calls.includes("run") === true, "the start is tried again with a third consumer");
+            assert.ok(consumers[1]?.calls.includes("disconnect"), "the consumer whose start failed is disconnected, which also cancels the library's restart of it");
+            assert.deepEqual([...known].sort(), ["orders.a"], "known topics are updated only after the start that worked");
+        });
+    });
+
+    it("keeps known topics while the replacement's start keeps failing", async () => {
+        await quietly(async () => {
+            const authorization = Object.assign(new Error("Not authorized to access group"), { type: "GROUP_AUTHORIZATION_FAILED" });
+            const { recovery, consumers, known } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a"], retryDelay: 20, runCrash: () => authorization });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers.length >= 3, "the start is tried more than once");
+            assert.ok(known.has("orders.b"), "a start that failed never counts as a recovery");
+            await recovery.close();
         });
     });
 

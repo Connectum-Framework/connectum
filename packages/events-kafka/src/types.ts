@@ -211,7 +211,8 @@ export interface KafkaAdapterOptions {
          * throws a `RangeError` otherwise.
          *
          * A wildcard subscription lists the broker's topics once when it starts, also with `false`
-         * (one metadata request through an admin connection), so that it can tell a deleted topic
+         * (one metadata request through an admin connection, and one more right after subscribing so that
+         * a topic created in between is not lost), so that it can tell a deleted topic
          * from one that never existed. If a topic a wildcard had matched is deleted, the consumer
          * crashes and the adapter replaces it with one that subscribes the topics that remain; with
          * `false` that consumer keeps the topic list fixed and subscribes no topic created since the

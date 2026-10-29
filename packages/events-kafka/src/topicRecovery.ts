@@ -15,13 +15,29 @@ import type { Consumer } from "kafkajs";
 import type { ConsumerCrashPayload } from "./lifecycle.ts";
 import { isUnknownTopic as isUnknownTopicError } from "./subscribeTopics.ts";
 
+/** What the recovery needs a consumer of the subscription to call. */
+export interface ConsumerHooks {
+    /**
+     * Called with every crash of the consumer. Returns the payload to report: a crash the recovery
+     * takes over is reported as one the subscription will recover from, because it will.
+     */
+    readonly onCrash: (payload: ConsumerCrashPayload) => ConsumerCrashPayload;
+    /**
+     * The consumer's `retry.restartOnFailure`. The library asks it before it schedules a restart of the
+     * crashed consumer; the recovery answers `false` when it replaces the consumer itself, so the
+     * library never starts the old consumer again beside its replacement.
+     */
+    readonly restartOnFailure: (error: Error) => Promise<boolean>;
+}
+
 /** What {@link createTopicRecovery} needs from the subscription it keeps alive. */
 export interface TopicRecoveryOptions {
     /**
      * Create a consumer of the subscription's group with its event listeners attached.
-     * The crash listener it registers must forward the payload to `onCrash`.
+     * The crash listener it registers must pass the payload to `onCrash` and report what `onCrash`
+     * returns, and the consumer must be created with `restartOnFailure` as its `retry.restartOnFailure`.
      */
-    readonly createConsumer: (onCrash: (payload: ConsumerCrashPayload) => void) => Consumer;
+    readonly createConsumer: (hooks: ConsumerHooks) => Consumer;
     /** The literal topic names of the subscription; they are subscribed again as they are. */
     readonly literals: readonly string[];
     /** The wildcard patterns of the subscription, as matchers over topic names. */
@@ -100,15 +116,49 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
 
     const matchesWildcard = (name: string): boolean => wildcards.some((wildcard) => wildcard.test(name));
 
+    /** The last crash of each consumer, read right after a replacement was started to see whether its start failed. */
+    const lastCrash = new WeakMap<Consumer, Error>();
+
+    /** Whether the broker's topic list shows that a topic a wildcard had matched is gone. A failed listing counts as no. */
+    async function matchedTopicIsGone(): Promise<boolean> {
+        try {
+            const existing = new Set(await listTopics());
+            return [...known].some((name) => matchesWildcard(name) && !existing.has(name));
+        } catch (err) {
+            // The consumer is restarted by the library, crashes again and asks again.
+            console.error("[KafkaAdapter] topic recovery: listing topics failed:", err);
+            return false;
+        }
+    }
+
     function spawn(): Consumer {
-        const created: Consumer = createConsumer((payload) => {
-            // The library schedules its own restart right after this listener returns; queueing the
-            // recovery behind it means disconnect() below cancels that restart instead of racing it.
-            if (created === consumer && !closed && wildcards.length > 0 && isUnknownTopicError(payload.error)) {
-                void serialize(() => recover(created, false)).catch((err: unknown) => {
+        /** Set when the library was told not to restart this consumer because the recovery replaces it. */
+        let takenOver = false;
+        const created: Consumer = createConsumer({
+            restartOnFailure: async (error) => {
+                if (created !== consumer || closed || wildcards.length === 0 || !isUnknownTopicError(error)) {
+                    return true;
+                }
+                // Decided before the library schedules anything: a restart that was already scheduled
+                // could fire while the topics are being listed, and a consumer that is still starting
+                // ignores a stop, so it would run on beside its replacement.
+                if (!(await matchedTopicIsGone()) || created !== consumer || closed) {
+                    return true;
+                }
+                takenOver = true;
+                return false;
+            },
+            onCrash: (payload) => {
+                lastCrash.set(created, payload.error);
+                if (!takenOver) {
+                    return payload;
+                }
+                takenOver = false;
+                void serialize(() => recover(created)).catch((err: unknown) => {
                     console.error("[KafkaAdapter] topic recovery failed:", err);
                 });
-            }
+                return { ...payload, restart: true };
+            },
         });
         consumer = created;
         return created;
@@ -120,14 +170,19 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
             return;
         }
         retryTimer = setTimeout(() => {
-            void serialize(() => recover(from, true)).catch((err: unknown) => {
+            void serialize(() => recover(from)).catch((err: unknown) => {
                 console.error("[KafkaAdapter] topic recovery failed:", err);
             });
         }, retryDelay);
         retryTimer.unref();
     }
 
-    async function recover(source: Consumer, retrying: boolean): Promise<void> {
+    /**
+     * Replace `source`, a consumer that crashed (or whose replacement failed) and that the library does
+     * not restart. A consumer is always started, even when the deleted topic is back by now: nothing
+     * else would start one.
+     */
+    async function recover(source: Consumer): Promise<void> {
         if (closed || source !== consumer) {
             return;
         }
@@ -136,10 +191,8 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
             names = await listTopics();
         } catch (err) {
             console.error("[KafkaAdapter] topic recovery: listing topics failed:", err);
-            // The library's own restart loop crashes again and asks again; a consumer already replaced by a failed recovery has no such loop.
-            if (retrying) {
-                scheduleRetry(source);
-            }
+            // The library will not restart this consumer, so nothing but the retry brings the subscription back.
+            scheduleRetry(source);
             return;
         }
         if (closed || source !== consumer) {
@@ -147,13 +200,11 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
         }
         const existing = new Set(names);
         const gone = [...known].filter((name) => matchesWildcard(name) && !existing.has(name));
-        // A retry of a recovery that failed half-way has no consumer running and must start one even if the deleted topic came back meanwhile.
-        if (gone.length === 0 && !retrying) {
-            return;
-        }
 
         console.warn(
-            `[KafkaAdapter] topic recovery: ${gone.length} topic(s) matching a wildcard no longer exist (${gone.join(", ")}); replacing the consumer with one subscribed to the remaining topics`,
+            gone.length > 0
+                ? `[KafkaAdapter] topic recovery: ${gone.length} topic(s) matching a wildcard no longer exist (${gone.join(", ")}); replacing the consumer with one subscribed to the remaining topics`
+                : "[KafkaAdapter] topic recovery: starting a replacement consumer",
         );
         for (const pending of resumeTimers) {
             clearTimeout(pending);
@@ -182,6 +233,12 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
                 await next.subscribe({ topics: fresh, fromBeginning: true });
             }
             await next.run(runConfig);
+            // run() resolves although the start failed (for example GROUP_AUTHORIZATION_FAILED): the library reports
+            // such a failure as a crash of the consumer and returns. The subscription is not recovered by that.
+            const startFailure = lastCrash.get(next);
+            if (startFailure !== undefined) {
+                throw startFailure;
+            }
         } catch (err) {
             console.error(`[KafkaAdapter] topic recovery failed; will retry in ${retryDelay} ms:`, err);
             await next.disconnect().catch(() => undefined);
