@@ -403,7 +403,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     removeAbortListener = undefined;
                     await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
-                    await adapter.disconnect();
+                    // The caller needs the error that made start() fail. A disconnect that fails
+                    // while rolling back is secondary and must not replace it, as the failed
+                    // unsubscribes above do not.
+                    await adapter.disconnect().catch(() => undefined);
                     throw error;
                 } finally {
                     starting = false;
