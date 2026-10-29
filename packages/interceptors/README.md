@@ -90,7 +90,8 @@ an `async` one rejects, the client still receives the error from the table above
 process sees no unhandled rejection. The first failure of the callback is written once to
 `console.error`; later ones are dropped.
 
-To send the original text, set `exposeErrorMessages: true`: only for trusted
+To send the original text (for a thrown value that is not an `Error`, its string form), set
+`exposeErrorMessages: true`: only for trusted
 internal callers or while debugging. It is a server-side option, independent of
 `NODE_ENV`:
 
@@ -115,10 +116,17 @@ on a server chain and on a client transport alike:
 
 The `handler` returns the response message of the method: a message made with
 `create(OutputSchema, { ... })`, or a plain object with that message's fields, which the
-interceptor turns into one. Any other value (`undefined`, `null`, an object with a field
-the type does not have, a field of the wrong type) fails the call with a `TypeError` that
-names `createFallbackInterceptor` and the expected type; behind the error handler the client
-sees `Internal: internal error` and the server side sees the full text.
+interceptor turns into one (a field of a oneof is set as `pick: { case: "a", value }`, under
+the name of the oneof). A plain object is checked field by field before the message is built,
+and the first problem fails the call with a `TypeError` that names `createFallbackInterceptor`,
+the expected type and the path of the problem. Refused are: `undefined`, `null`, a string or an
+array instead of the object; a key that is not a field (nested objects included); a value
+of another kind than the field takes (a number in a string field, a non-boolean in a bool field,
+a string in an int32 field, a non-array in a repeated field, an enum name instead of its
+number, a bare oneof member name); and a number the encoder cannot write (a fraction or a value
+beyond the range in an int32, `NaN`). An enum number that the enum does not name is accepted.
+Behind the error handler the client sees `Internal: internal error` and the server side sees the
+full text.
 
 No header of the request is copied into the response, whichever interceptor added
 it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and

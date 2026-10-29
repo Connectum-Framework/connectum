@@ -298,9 +298,12 @@ export interface FallbackOptions<T = unknown> {
      * Fallback function to call on error.
      *
      * Returns the response message of the method being called: a message created for
-     * its output type, or a plain object holding that message's fields. Any other value
-     * (`undefined`, `null`, an object with a field the type does not have, a field of
-     * the wrong type) fails the call with a `TypeError` naming the expected type.
+     * its output type, or a plain object holding that message's fields (a oneof is set
+     * as `{ case, value }` under the oneof's name). A plain object is checked field by
+     * field: `undefined`, `null`, a key that is not a field, a value of another kind than
+     * its field takes (a number in a string field, a non-boolean in a bool field, a
+     * non-array in a repeated field) and a number the encoder cannot write fail the call
+     * with a `TypeError` naming the expected type and the path of the problem.
      */
     handler: (error: Error) => T | Promise<T>;
 

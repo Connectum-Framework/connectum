@@ -325,7 +325,7 @@ describe("fallback interceptor", () => {
 
             await assert.rejects(
                 () => interceptor(failing())(createMockRequest()),
-                (err: unknown) => err instanceof TypeError && /unknown fields: items/.test(err.message),
+                (err: unknown) => err instanceof TypeError && /items is not a field of streaming\.v1\.Item/.test(err.message),
             );
         });
 
@@ -340,8 +340,8 @@ describe("fallback interceptor", () => {
             );
         });
 
-        it("refuses a field value that cannot be encoded and keeps the cause", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ sequence: "not a number" }) });
+        it("refuses a number the encoder cannot write (a fraction in an int32) and keeps the cause", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ sequence: 1.5 }) });
 
             await assert.rejects(
                 () => interceptor(failing())(createMockRequest()),

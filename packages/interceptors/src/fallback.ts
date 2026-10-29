@@ -10,6 +10,7 @@ import type { DescMessage, Message, MessageInitShape } from "@bufbuild/protobuf"
 import { create, isMessage, toBinary } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { initProblem } from "./response-init.ts";
 import type { FallbackOptions } from "./types.ts";
 
 /**
@@ -21,7 +22,7 @@ function isAccessRefusal(err: unknown): boolean {
     return code === Code.Unauthenticated || code === Code.PermissionDenied;
 }
 
-/** Whether a value is a plain object: not null, not an array, not an instance of a class (a message of another type is refused through its keys). */
+/** Whether a value is a plain object: not null, not an array, not an instance of a class. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return false;
@@ -34,10 +35,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * The response message a fallback handler's value stands for.
  *
  * A value that is already a message of the method's output type is used as it is.
- * A plain object is turned into one with `create`, which is lenient on its own: it drops
- * keys the type does not have and keeps values of the wrong type. A typo would therefore
- * answer with an empty message, or fail later in the protocol layer with a serialization
- * text. Both are refused here, naming the handler, so the mistake is found where it is made.
+ * A plain object is checked against the type first (`initProblem`), then turned into one with
+ * `create`, which is lenient on its own: it drops keys the type does not have and coerces
+ * values of the wrong kind (a number in a string field becomes `"5"`). A typo would therefore
+ * answer with a wrong or empty message without any signal. Both are refused here, naming the
+ * handler, so the mistake is found where it is made.
  */
 function toResponseMessage(schema: DescMessage, value: unknown): Message {
     const expected = `createFallbackInterceptor: handler must return a ${schema.typeName} message or a plain object that initialises one`;
@@ -47,14 +49,13 @@ function toResponseMessage(schema: DescMessage, value: unknown): Message {
     if (!isPlainObject(value)) {
         throw new TypeError(`${expected}, got ${value === null ? "null" : typeof value}`);
     }
-    const known = new Set([...schema.fields.map((field) => field.localName), ...schema.oneofs.map((oneof) => oneof.localName)]);
-    const unknown = Object.keys(value).filter((key) => !known.has(key));
-    if (unknown.length > 0) {
-        throw new TypeError(`${expected}, got an object with unknown fields: ${unknown.join(", ")}`);
+    const problem = initProblem(schema, value);
+    if (problem !== undefined) {
+        throw new TypeError(`${expected}, but ${problem}`);
     }
     try {
         const message = create(schema, value as MessageInitShape<DescMessage>);
-        // The dry run is what the protocol layer would do later; a value it cannot encode fails here, by name.
+        // What the walk above cannot judge (an integer out of its range, NaN) the encoder rejects here, by name.
         toBinary(schema, message);
         return message;
     } catch (cause) {
@@ -98,9 +99,12 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * The handler returns the RPC response message, not a response wrapper. It may return a
  * message created for the method's output type (`create(OutputSchema, { ... })`), or a plain
  * object with that message's fields, which the interceptor turns into one. A value that is
- * neither (`undefined`, `null`, a string, an object with a field the type does not have, a
- * field of the wrong type) fails the call with a `TypeError` that names this interceptor and
- * the expected type; behind the error handler the client sees `Internal: internal error`.
+ * neither (`undefined`, `null`, a string) fails the call with a `TypeError` that names this
+ * interceptor and the expected type. A plain object is checked field by field first: a key that
+ * is not a field, a value of another kind than its field takes (a number in a string field, a
+ * non-boolean in a bool field, a non-array in a repeated field) and a number the encoder cannot
+ * write fail the same way, with the path of the problem. A oneof is set as `{ case, value }`
+ * under the oneof's name. Behind the error handler the client sees `Internal: internal error`.
  * In the server example, getCachedData is application code that returns that message.
  *
  * A refusal of access is never replaced: a failure with the code `Unauthenticated` or
