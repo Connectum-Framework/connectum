@@ -15,9 +15,12 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as delay, setImmediate as nextImmediate } from "node:timers/promises";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { context, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { shutdownProvider } from "../../src/provider.ts";
 import { traceAll } from "../../src/traceAll.ts";
 import { traced } from "../../src/traced.ts";
@@ -332,38 +335,62 @@ describe("span lifetime of a traced generator", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
-            // A generator that the caller keeps (a cursor stored in a field) must not hold the
-            // finished span and its context through the methods that were put on it.
-            it("takes the protocol methods off the generator object once it has ended", async () => {
-                const own = (generator: object) => Object.getOwnPropertyNames(generator).sort();
+            it("keeps answering like the original generator after it has ended", async () => {
                 const syncWork = makeTraced(function* () {
                     yield 1;
                 });
                 const asyncWork = makeTraced(async function* () {
                     yield 1;
                 });
-                const early = makeTraced(function* () {
-                    yield 1;
-                    yield 2;
-                });
 
-                await observe(async () => {
+                const observed = await observe(async () => {
                     const sync = syncWork() as Generator<number>;
-                    assert.deepStrictEqual(own(sync), ["next", "return", "throw"], "wrapped while it runs");
                     assert.deepStrictEqual([...sync], [1]);
-                    assert.deepStrictEqual(own(sync), [], "released when exhausted");
-                    assert.deepStrictEqual(sync.next(), { value: undefined, done: true }, "a finished generator still answers");
+                    assert.deepStrictEqual(sync.next(), { value: undefined, done: true });
+                    assert.deepStrictEqual(sync.return(5), { value: 5, done: true });
 
                     const asynchronous = asyncWork() as AsyncGenerator<number>;
                     for await (const _ of asynchronous) {
                         // Drain it.
                     }
-                    assert.deepStrictEqual(own(asynchronous), [], "released when exhausted");
-
-                    const stopped = early() as Generator<number>;
-                    for (const _ of stopped) break;
-                    assert.deepStrictEqual(own(stopped), [], "released when closed early");
+                    assert.deepStrictEqual(await asynchronous.next(), { value: undefined, done: true });
                 });
+
+                assert.strictEqual(observed.spans.length, 2, "each span ended once");
+            });
+
+            // The result of a traced function can be traced again (a traced function that calls
+            // another one and returns its generator): both spans end exactly once, together.
+            it("ends the spans of two traced layers over one generator once, when it is exhausted", async () => {
+                const inner = makeTraced(function* () {
+                    yield 1;
+                });
+                const outer = makeTraced(() => inner());
+
+                const observed = await observe(async () => {
+                    assert.deepStrictEqual([...(outer() as Generator<number>)], [1]);
+                });
+
+                assert.strictEqual(observed.spans.length, 2);
+                assert.ok(observed.spans.every((span) => span.status.code === SpanStatusCode.UNSET));
+            });
+
+            it("leaves a generator with a method that cannot be replaced as it was, and ends the span at once", async () => {
+                const work = makeTraced(() => {
+                    const generator = (function* () {
+                        yield 1;
+                    })();
+                    Object.defineProperty(generator, "return", { value: generator.return, writable: false, configurable: false });
+                    return generator;
+                });
+
+                const observed = await observe(async () => {
+                    const generator = work() as Generator<number>;
+                    assert.ok(!Object.getOwnPropertyNames(generator).includes("next"), "the methods replaced before the failure are put back");
+                    assert.deepStrictEqual([...generator], [1]);
+                });
+
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
             it("keeps an optional protocol method absent when the generator object does not have it", async () => {
@@ -425,4 +452,87 @@ describe("span lifetime of a traced generator", () => {
             });
         });
     }
+});
+
+// A generator that the caller keeps (a cursor stored in a field) must not hold the finished
+// span, with its attributes and events, and the context of the call, through the methods that
+// were put on it.
+describe("retention by a kept generator", () => {
+    afterEach(async () => {
+        await shutdownProvider();
+    });
+
+    it("no finished span stays reachable through a generator the caller keeps", { timeout: 60_000 }, async () => {
+        // Node exposes a collector through a V8 flag, Bun through its own API.
+        const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
+        let gc: () => void;
+        if (bun) {
+            gc = () => bun.gc(true);
+        } else {
+            setFlagsFromString("--expose-gc");
+            gc = runInNewContext("gc") as () => void;
+        }
+
+        const refs: WeakRef<Span>[] = [];
+        // A tracer provider that keeps no span: the collector would otherwise hold every
+        // finished span and hide a leak.
+        const provider = new BasicTracerProvider({
+            spanProcessors: [
+                {
+                    onStart: (span) => {
+                        refs.push(new WeakRef(span as unknown as Span));
+                    },
+                    onEnd: () => {},
+                    forceFlush: async () => {},
+                    shutdown: async () => {},
+                },
+            ],
+        });
+        await shutdownProvider();
+        trace.disable();
+        trace.setGlobalTracerProvider(provider);
+
+        const syncWork = traced(function* () {
+            yield 1;
+        }, { name: "kept-sync" });
+        const asyncWork = traced(async function* () {
+            yield 1;
+        }, { name: "kept-async" });
+        // A traced function that returns the generator of another traced function puts two
+        // layers on one generator; the outer one must not bring the inner layer back.
+        const nestedWork = traced(() => syncWork(), { name: "kept-nested" });
+        // The caller keeps every generator until the collector has run.
+        const kept: unknown[] = [];
+        for (let i = 0; i < 20; i++) {
+            const sync = syncWork() as Generator<number>;
+            for (const _ of sync) {
+                // Drain it.
+            }
+            const asynchronous = asyncWork() as AsyncGenerator<number>;
+            for await (const _ of asynchronous) {
+                // Drain it.
+            }
+            const nested = nestedWork() as Generator<number>;
+            for (const _ of nested) {
+                // Drain it.
+            }
+            kept.push(sync, asynchronous, nested);
+        }
+        trace.disable();
+        await provider.shutdown();
+
+        let alive = refs.length;
+        for (let attempt = 0; attempt < 20 && alive > 0; attempt++) {
+            await nextImmediate();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            gc();
+            alive = refs.filter((r) => r.deref() !== undefined).length;
+        }
+        assert.ok(refs.length >= 80, `spans were created (${refs.length})`);
+        assert.strictEqual(kept.length, 60, "the generators are still held");
+        // JavaScriptCore (Bun) keeps the most recently created object alive from its stack scan,
+        // so one survivor is the engine's floor there; V8 must release every span.
+        const allowed = bun ? 1 : 0;
+        assert.ok(alive <= allowed, `${alive} of ${refs.length} spans are still reachable through the kept generators`);
+    });
 });

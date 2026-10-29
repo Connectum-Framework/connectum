@@ -31,14 +31,32 @@ function generatorTagOf(result: unknown): "Generator" | "AsyncGenerator" | undef
     return undefined;
 }
 
-/** Ends a span once; later calls (a second `return()` after exhaustion) are no-ops. */
-function onceEnder(span: Span): (failure?: { error: unknown }) => void {
-    let ended = false;
-    return (failure) => {
-        if (ended) return;
-        ended = true;
-        if (failure) recordFailure(span, failure.error);
-        span.end();
+/**
+ * The span and the context a traced generator runs in, until it ends.
+ *
+ * Ending clears both: the methods put on a generator that the caller keeps (a cursor in
+ * a field, say) would otherwise hold the finished span, with its attributes and events,
+ * and the context of the call for as long as the generator lives. After the end they run
+ * the original method and nothing else.
+ */
+interface LiveTrace {
+    /** The context to run a step in, or `undefined` once the generator has ended. */
+    scope(): Context | undefined;
+    /** Ends the span once, marking it failed when given a failure; later calls do nothing. */
+    finish(failure?: { error: unknown }): void;
+}
+
+function createLiveTrace(span: Span, scope: Context): LiveTrace {
+    let current: { span: Span; scope: Context } | undefined = { span, scope };
+    return {
+        scope: () => current?.scope,
+        finish(failure) {
+            const live = current;
+            current = undefined;
+            if (live === undefined) return;
+            if (failure) recordFailure(live.span, failure.error);
+            live.span.end();
+        },
     };
 }
 
@@ -49,22 +67,21 @@ function onceEnder(span: Span): (failure?: { error: unknown }) => void {
  * `Iterator`, still its own iterable, and keeps the iterator helpers and the disposal
  * methods, which call `next` and `return` on it) and with any property the function
  * added to it. They are non-enumerable, so the shape of the object does not change.
+ * Installation is all or nothing: when one method cannot be replaced the ones already
+ * replaced are put back.
  *
- * @returns A function that puts the methods back (called when the generator has ended, so
- *   that a generator the caller keeps does not hold the finished span and its context
- *   through the closures), or `undefined` when the object does not accept own properties
- *   (it is frozen or sealed)
+ * @returns `false` when the object does not accept the methods (it is frozen or sealed)
  */
-function interceptSteps(generator: object, step: (run: () => unknown) => unknown): (() => void) | undefined {
+function interceptSteps(generator: object, step: (run: () => unknown) => unknown): boolean {
     const target = generator as Record<"next" | "return" | "throw", (...args: unknown[]) => unknown>;
-    const previous = new Map<string, PropertyDescriptor | undefined>();
+    const replaced: Array<readonly [string, PropertyDescriptor | undefined]> = [];
     try {
         for (const method of ["next", "return", "throw"] as const) {
             const original = target[method];
             // `return` and `throw` are optional in the iterator protocol; a method the object
             // does not have stays absent, so a consumer that probes for it sees the same shape.
             if (typeof original !== "function") continue;
-            previous.set(method, Object.getOwnPropertyDescriptor(generator, method));
+            replaced.push([method, Object.getOwnPropertyDescriptor(generator, method)]);
             Object.defineProperty(generator, method, {
                 value: (...args: unknown[]) => step(() => original.apply(generator, args)),
                 writable: true,
@@ -72,67 +89,58 @@ function interceptSteps(generator: object, step: (run: () => unknown) => unknown
                 enumerable: false,
             });
         }
+        return true;
     } catch {
-        return undefined;
-    }
-    return () => {
-        for (const [method, descriptor] of previous) {
+        for (const [method, descriptor] of replaced) {
             try {
                 if (descriptor) Object.defineProperty(generator, method, descriptor);
                 else delete (generator as Record<string, unknown>)[method];
             } catch {
-                // Intentionally empty: the methods keep working, they only hold on to their closures.
+                // Intentionally empty: the method that cannot be put back is not a method that was replaced.
             }
         }
-    };
+        return false;
+    }
 }
 
 /**
  * Makes the steps of a sync generator run in the span's context and ends the span when the
  * generator is exhausted, throws, or is closed with `return()` / `throw()`.
  */
-function traceGenerator(generator: Generator, scope: Context, end: ReturnType<typeof onceEnder>): Generator {
-    let release: (() => void) | undefined;
-    const finish = (failure?: { error: unknown }) => {
-        end(failure);
-        release?.();
-    };
-    const step = (run: () => IteratorResult<unknown, unknown>): IteratorResult<unknown, unknown> => {
+function traceGenerator(generator: Generator, live: LiveTrace): Generator {
+    const step = (run: () => unknown): unknown => {
+        const scope = live.scope();
+        if (scope === undefined) return run();
         let result: IteratorResult<unknown, unknown>;
         try {
-            result = context.with(scope, run);
+            result = context.with(scope, run) as IteratorResult<unknown, unknown>;
         } catch (error) {
-            finish({ error });
+            live.finish({ error });
             throw error;
         }
-        if (result.done) finish();
+        if (result.done) live.finish();
         return result;
     };
-    release = interceptSteps(generator, (run) => step(run as () => IteratorResult<unknown, unknown>));
-    if (release === undefined) end();
+    if (!interceptSteps(generator, step)) live.finish();
     return generator;
 }
 
 /** The async counterpart of {@link traceGenerator}. */
-function traceAsyncGenerator(generator: AsyncGenerator, scope: Context, end: ReturnType<typeof onceEnder>): AsyncGenerator {
-    let release: (() => void) | undefined;
-    const finish = (failure?: { error: unknown }) => {
-        end(failure);
-        release?.();
-    };
-    const step = async (run: () => Promise<IteratorResult<unknown, unknown>>): Promise<IteratorResult<unknown, unknown>> => {
+function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncGenerator {
+    const step = async (run: () => unknown): Promise<unknown> => {
+        const scope = live.scope();
+        if (scope === undefined) return run();
         let result: IteratorResult<unknown, unknown>;
         try {
-            result = await context.with(scope, run);
+            result = (await context.with(scope, run)) as IteratorResult<unknown, unknown>;
         } catch (error) {
-            finish({ error });
+            live.finish({ error });
             throw error;
         }
-        if (result.done) finish();
+        if (result.done) live.finish();
         return result;
     };
-    release = interceptSteps(generator, (run) => step(run as () => Promise<IteratorResult<unknown, unknown>>));
-    if (release === undefined) end();
+    if (!interceptSteps(generator, step)) live.finish();
     return generator;
 }
 
@@ -175,8 +183,8 @@ export function endSpanWithResult(span: Span, result: unknown): unknown {
     }
 
     const tag = generatorTagOf(result);
-    if (tag === "Generator") return traceGenerator(result as Generator, context.active(), onceEnder(span));
-    if (tag === "AsyncGenerator") return traceAsyncGenerator(result as AsyncGenerator, context.active(), onceEnder(span));
+    if (tag === "Generator") return traceGenerator(result as Generator, createLiveTrace(span, context.active()));
+    if (tag === "AsyncGenerator") return traceAsyncGenerator(result as AsyncGenerator, createLiveTrace(span, context.active()));
 
     // Sync result: success leaves the status unset.
     span.end();
