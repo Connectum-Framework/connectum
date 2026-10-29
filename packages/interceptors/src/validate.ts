@@ -168,3 +168,23 @@ export function requireDefaultOption(options: { option: string; value: unknown; 
     }
     throw new TypeError(`${option} must be ${EXPECTATION[kind]}, got ${describeValue(value)}`);
 }
+
+/**
+ * Require every own enumerable key of an options object to be one the factory
+ * knows. A mistyped key is otherwise ignored, so the caller asks for a behavior
+ * (a timeout, say) and silently gets none. A key whose value is `undefined` still
+ * counts: its name is wrong whatever it holds.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.value - the received options object
+ * @param options.known - every key the factory accepts, in the order to list them
+ * @throws TypeError naming every unknown key and listing the known ones
+ */
+export function requireKnownKeys(options: { caller: string; value: object; known: readonly string[] }): void {
+    const { caller, value, known } = options;
+    const unknown = Object.keys(value).filter((key) => !known.includes(key));
+    if (unknown.length > 0) {
+        const names = unknown.map((key) => JSON.stringify(key)).join(", ");
+        throw new TypeError(`${caller}: unknown option${unknown.length > 1 ? "s" : ""} ${names}; the known options are ${known.join(", ")}`);
+    }
+}
