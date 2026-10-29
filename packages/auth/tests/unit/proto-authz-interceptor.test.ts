@@ -11,6 +11,7 @@ import { describe, it, mock } from "node:test";
 import { Code } from "@connectrpc/connect";
 import { assertConnectError, createMockNext } from "@connectum/testing";
 import { authContextStorage } from "../../src/context.ts";
+import { createInternalAuthInterceptor } from "../../src/internal-auth-interceptor.ts";
 import { createProtoAuthzInterceptor } from "../../src/proto/proto-authz-interceptor.ts";
 import type { AuthContext, AuthzRule, ProtoAuthzInterceptorOptions } from "../../src/types.ts";
 import { createFakeMethod, createFakeService, createMethodOptions, createProtoMockRequest, createServiceOptions } from "../helpers/proto-test-helpers.ts";
@@ -650,7 +651,9 @@ describe("proto-authz-interceptor", () => {
 
     // Internal (service-to-service) methods compose inclusively with
     // the existing authz model. The internal identity is populated upstream by
-    // createInternalAuthInterceptor; here we simulate it via authContextStorage.run.
+    // createInternalAuthInterceptor; the requires cases simulate it via authContextStorage.run,
+    // the no-requires cases run the real internal interceptor in front, because an internal
+    // method without requires admits only an identity that interceptor established.
     describe("internal methods", () => {
         const internalContext: AuthContext = {
             subject: "trips-service",
@@ -660,18 +663,62 @@ describe("proto-authz-interceptor", () => {
             type: "service",
         };
 
-        it("allows an internal method with no requires when identity is present", async () => {
+        /** Run the real internal interceptor, trusting `context`, in front of the proto authz handler. */
+        const throughInternalAuth = (context: AuthContext, handler: ReturnType<ReturnType<typeof createProtoAuthzInterceptor>>) =>
+            createInternalAuthInterceptor({ internalMethods: ["*"], trustSource: () => ({ ...context }) })(handler);
+
+        it("allows an internal method with no requires when the internal interceptor established the identity", async () => {
             const service = createFakeService();
             const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }));
 
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
             const next = createMockNext();
+            const handler = throughInternalAuth(internalContext, interceptor(next));
+            const req = createProtoMockRequest(service, method);
+
+            await handler(req);
+
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        it("rejects an internal method with no requires for an identity the internal interceptor did not establish", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "allow" });
+            const next = createMockNext();
             const handler = interceptor(next);
             const req = createProtoMockRequest(service, method);
 
-            await authContextStorage.run(internalContext, () => handler(req));
+            // An end-user JWT, a gateway header or a hand-built context: valid identity, wrong origin.
+            await assert.rejects(
+                () => authContextStorage.run(internalContext, () => handler(req)),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated, "Untrusted internal request");
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
+        });
 
-            assert.strictEqual(next.mock.calls.length, 1);
+        it("does not trust a copy of an established identity", async () => {
+            const service = createFakeService();
+            const method = createFakeMethod(service, "RecordTrip", createMethodOptions({ internal: true }));
+
+            const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
+            const next = createMockNext();
+            // The marker belongs to the object the internal interceptor handed to the chain, not to its content.
+            const handler = interceptor(next);
+            const copyOfInternalIdentity = { ...internalContext };
+
+            await assert.rejects(
+                () => authContextStorage.run(copyOfInternalIdentity, () => handler(createProtoMockRequest(service, method))),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated, "Untrusted internal request");
+                    return true;
+                },
+            );
+            assert.strictEqual(next.mock.calls.length, 0);
         });
 
         it("rejects an internal method with no identity as Unauthenticated", async () => {
@@ -736,10 +783,10 @@ describe("proto-authz-interceptor", () => {
 
             const interceptor = createProtoAuthzInterceptor({ defaultPolicy: "deny" });
             const next = createMockNext();
-            const handler = interceptor(next);
+            const handler = throughInternalAuth(internalContext, interceptor(next));
             const req = createProtoMockRequest(service, method);
 
-            await authContextStorage.run(internalContext, () => handler(req));
+            await handler(req);
 
             assert.strictEqual(next.mock.calls.length, 1);
         });

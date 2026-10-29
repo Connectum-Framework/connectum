@@ -22,6 +22,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
+import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
@@ -44,6 +45,10 @@ import type {
  *
  * MUST run BEFORE `createProtoAuthzInterceptor`: the internal interceptor
  * populates the `AuthContext` that proto-authz's `internal` rule consumes.
+ * An `internal` method without `requires` is open only to an identity established
+ * here: with this interceptor missing from the chain, or not covering the method in
+ * `internalMethods`, an identity from any other interceptor (an end-user JWT) is
+ * rejected as `Unauthenticated`.
  *
  * Each trust-source factory strips its own trust header after extraction on the
  * internal path (accept and reject), to prevent a spoofed marker from being
@@ -116,6 +121,8 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 
+        // Proto authorization admits an `internal` method only for an identity recorded here.
+        markInternalContext(authContext);
         return await runWithAuthContext(authContext, () => next(req));
     };
 }

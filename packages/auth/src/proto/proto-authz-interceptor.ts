@@ -14,6 +14,7 @@ import { satisfiesRequirements } from "../authz-utils.ts";
 import { getAuthContext } from "../context.ts";
 import type { AuthzDeniedDetails } from "../errors.ts";
 import { AuthzDeniedError } from "../errors.ts";
+import { isInternalContext } from "../internal-context.ts";
 import { matchesMethodPattern } from "../method-match.ts";
 import { assertAuthzPolicy } from "../option-validation.ts";
 import type { AuthzRule, ProtoAuthzInterceptorOptions } from "../types.ts";
@@ -88,7 +89,9 @@ function evaluateRules(
  * 3.  Get auth context               -- lazy: don't throw yet
  * 3b. internal = true:               -- service-to-service (ADR-029)
  *       no context                   --> throw Unauthenticated
- *       no requires                  --> allow (any trusted internal caller)
+ *       no requires                  --> allow when the context was established by
+ *                                        createInternalAuthInterceptor, else
+ *                                        throw Unauthenticated (untrusted)
  *       has requires                 --> fall through to step 4 (inclusive roles)
  * 4.  requires defined, no context   --> throw Unauthenticated
  * 4b. requires defined, has context  --> satisfiesRequirements? allow : deny
@@ -162,6 +165,13 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
             if (resolved.requires === undefined) {
+                // "Any trusted internal caller" means an identity the internal interceptor
+                // established. Any other identity (an end-user JWT, gateway headers) proves
+                // nothing about an internal caller, and it is what reaches this point when
+                // the internal interceptor is missing from the chain or covers no method.
+                if (!isInternalContext(authContext)) {
+                    throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
+                }
                 return await next(req);
             }
             // else: fall through to step 4 requires check (inclusive role composition)
