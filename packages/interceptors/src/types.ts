@@ -43,7 +43,7 @@ export interface ErrorHandlerOptions {
      * receives and never becomes an unhandled rejection: the first failure is
      * written once to `console.error`, later ones are dropped.
      */
-    onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void | Promise<void>;
+    onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void;
 
     /**
      * Send the text of a non-Connect failure to the client.
@@ -303,7 +303,9 @@ export interface FallbackOptions<T = unknown> {
      * field: `undefined`, `null`, a key that is not a field, a value of another kind than
      * its field takes (a number in a string field, a non-boolean in a bool field, a
      * non-array in a repeated field) and a number the encoder cannot write fail the call
-     * with a `TypeError` naming the expected type and the path of the problem.
+     * with a `TypeError` naming the expected type and the path of the problem. Fields use
+     * the protobuf-es forms: a wrapper such as `StringValue` in a singular field outside a
+     * oneof is its bare value, and a `Struct` is a plain JSON object.
      */
     handler: (error: Error) => T | Promise<T>;
 
