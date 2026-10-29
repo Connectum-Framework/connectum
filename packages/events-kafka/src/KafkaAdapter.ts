@@ -16,6 +16,7 @@ import { explainConnectionError, explainInvalidTopic } from "./brokerErrors.ts";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import { dispatchLifecycle, trackConsumer } from "./lifecycle.ts";
+import { subscribeToTopics } from "./subscribeTopics.ts";
 import { startTopicDiscovery } from "./topicDiscovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
@@ -288,9 +289,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const groupId = subOptions?.group ?? `connectum-${randomUUID()}`;
             const sessionTimeout = options.consumerOptions?.sessionTimeout;
+            const allowAutoTopicCreation = options.consumerOptions?.allowAutoTopicCreation ?? false;
             const consumer = kafka.consumer({
                 groupId,
-                allowAutoTopicCreation: options.consumerOptions?.allowAutoTopicCreation ?? false,
+                allowAutoTopicCreation,
                 heartbeatInterval: defaultHeartbeatIntervalMs,
                 ...(sessionTimeout !== undefined && { sessionTimeout }),
             });
@@ -342,7 +344,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                     }
                 }
 
-                await consumer.subscribe({ topics, fromBeginning });
+                await subscribeToTopics({ consumer, topics, fromBeginning, allowAutoTopicCreation });
                 await consumer.run(runConfig);
 
                 if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
