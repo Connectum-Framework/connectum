@@ -29,3 +29,30 @@ export function assertCallTimeout(timeoutMs: unknown): number | undefined {
     }
     return timeoutMs;
 }
+
+/** An HTTP field name is a non-empty run of `tchar` (RFC 9110, section 5.6.2); a pseudo-header starts with `:`, which is not one. */
+const HEADER_FIELD_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * Check `createServer({ propagateHeaders })`. Every entry is later read with
+ * `Headers.get`, which throws for a malformed name on every `ctx.call`, long
+ * after the server started.
+ *
+ * @throws TypeError naming `propagateHeaders` if the value is not an array of valid header field names
+ * @internal
+ */
+export function validatePropagateHeaders(propagateHeaders: unknown): void {
+    if (propagateHeaders === undefined) {
+        return;
+    }
+    if (!Array.isArray(propagateHeaders)) {
+        throw new TypeError(`createServer: propagateHeaders must be an array of header names, got ${typeof propagateHeaders}`);
+    }
+    for (const name of propagateHeaders as unknown[]) {
+        if (typeof name !== "string" || !HEADER_FIELD_NAME.test(name)) {
+            throw new TypeError(
+                `createServer: propagateHeaders entry ${JSON.stringify(name)} is not a valid HTTP header name (a non-empty token such as "x-request-id"; pseudo-headers like ":authority" are not allowed)`,
+            );
+        }
+    }
+}

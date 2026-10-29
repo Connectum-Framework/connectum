@@ -579,6 +579,10 @@ export interface CreateServerOptions {
      *
      * Use {@link defaultPropagateHeaders} (W3C trace-context headers) as a base
      * and add your own, e.g. `[...defaultPropagateHeaders, "x-tenant-id"]`.
+     *
+     * Every entry must be a valid HTTP header name: a non-empty token such as
+     * `"x-request-id"`, not a pseudo-header like `":authority"`. `createServer()`
+     * throws a `TypeError` naming `propagateHeaders` and the entry otherwise.
      */
     propagateHeaders?: readonly string[];
 }

@@ -15,6 +15,7 @@ import { validateAdmissionOptions, validateShutdownOptions } from "./admission.t
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
+import { validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -83,6 +84,7 @@ class ServerImpl extends EventEmitter implements Server {
         super();
         validateAdmissionOptions(options);
         validateShutdownOptions(options.shutdown);
+        validatePropagateHeaders(options.propagateHeaders);
         this._options = options;
         this._routes = [...options.services];
         this._protocols = [...(options.protocols ?? [])];
