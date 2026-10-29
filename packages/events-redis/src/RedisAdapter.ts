@@ -153,17 +153,34 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             });
         }
 
+        // ioredis applies `connectTimeout` only until the TCP connection is established, so a host that
+        // accepts it and never answers the handshake would keep this wait pending forever. The same
+        // option bounds the wait for `ready`; a non-positive value means no deadline, as it does in ioredis.
+        const timeoutMs = instance.options.connectTimeout;
+
         await new Promise<void>((resolve, reject) => {
-            const onReady = () => {
+            let deadline: ReturnType<typeof globalThis.setTimeout> | undefined;
+            const settle = () => {
+                instance.removeListener("ready", onReady);
                 instance.removeListener("error", onError);
+                globalThis.clearTimeout(deadline);
+            };
+            const onReady = () => {
+                settle();
                 resolve();
             };
             const onError = (err: Error) => {
-                instance.removeListener("ready", onReady);
+                settle();
                 reject(err);
             };
             instance.once("ready", onReady);
             instance.once("error", onError);
+            if (typeof timeoutMs === "number" && timeoutMs > 0) {
+                deadline = globalThis.setTimeout(() => {
+                    settle();
+                    reject(new Error(`RedisAdapter: connection not ready within ${timeoutMs} ms (redisOptions.connectTimeout)`));
+                }, timeoutMs);
+            }
         });
     }
 

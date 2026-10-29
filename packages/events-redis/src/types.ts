@@ -23,6 +23,11 @@ export interface RedisAdapterOptions {
      *
      * Passed directly to `new Redis(redisOptions)`.
      * When `url` is also set, these options are merged as the second argument.
+     *
+     * `connectTimeout` (ioredis default 10000 ms) also bounds the wait for a connection to become
+     * ready: `connect()` and `subscribe()` reject with an error when the server accepts the TCP
+     * connection but does not complete the handshake in time. A value of `0` or less removes the
+     * deadline.
      */
     readonly redisOptions?: RedisOptions;
 
