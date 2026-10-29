@@ -11,7 +11,7 @@ import { resolve } from "node:path/posix";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { createServer } from "../../src/Server.ts";
-import { getTLSPath, loadTLSCertificates, readTLSCertificates } from "../../src/TLSConfig.ts";
+import { explainTLSFailure, getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
 
 describe("TLSConfig", () => {
 	let testDir: string;
@@ -356,6 +356,16 @@ describe("TLSConfig", () => {
 			return { keyPath, certPath };
 		}
 
+		const SERVER_FAILURE = new Error("server could not use the files");
+
+		/** What a failed server start reports: the read result, or the error that names the file. */
+		function loadTLSCertificates(options: Parameters<typeof readTLSCertificates>[0], secureOptions?: { passphrase?: string }): { key: Buffer; cert: Buffer } {
+			const certificates = readTLSCertificates(options);
+			const explained = explainTLSFailure(options ?? {}, SERVER_FAILURE, secureOptions);
+			if (explained !== SERVER_FAILURE) throw explained;
+			return certificates;
+		}
+
 		const NOT_PEM = "this is not a PEM file\n";
 
 		describe("a file that cannot be read", () => {
@@ -412,7 +422,7 @@ describe("TLSConfig", () => {
 			});
 		});
 
-		describe("loadTLSCertificates", () => {
+		describe("explainTLSFailure", () => {
 			it("returns the key and certificate of a valid pair", () => {
 				const pair = writePair(testDir, "good");
 
@@ -489,6 +499,28 @@ describe("TLSConfig", () => {
 			const certPath = resolve(testDir, "enc.crt");
 			execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-days", "1", "-subj", "/CN=enc", "-passout", "pass:secret", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
 			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath }, http2Options: { passphrase: "secret" } });
+
+			await server.start();
+			try {
+				assert.ok(server.address?.port);
+			} finally {
+				await server.stop();
+			}
+		});
+
+		it("hands back the server failure unchanged when the files are fine", () => {
+			const pair = writePair(testDir, "good");
+
+			assert.strictEqual(explainTLSFailure(pair, SERVER_FAILURE), SERVER_FAILURE);
+		});
+
+		// A 1024-bit RSA key is below the default OpenSSL security level, yet the server accepts it once
+		// `ciphers` lowers the level; the files must not be judged by a check that ignores that option.
+		it("starts with a key that is only acceptable under the lowered security level of http2Options.ciphers", { skip: process.versions.bun !== undefined && "Bun has no OpenSSL security levels" }, async () => {
+			const keyPath = resolve(testDir, "weak.key");
+			const certPath = resolve(testDir, "weak.crt");
+			execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:1024", "-nodes", "-days", "1", "-subj", "/CN=weak", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath }, http2Options: { ciphers: "DEFAULT:@SECLEVEL=0" } });
 
 			await server.start();
 			try {
