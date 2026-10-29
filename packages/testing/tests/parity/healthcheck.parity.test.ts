@@ -12,6 +12,7 @@
  */
 
 import assert from "node:assert";
+import { setTimeout as delay } from "node:timers/promises";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createHealthcheckManager, Healthcheck, ServingStatus } from "@connectum/healthcheck";
 import { Health } from "../../../healthcheck/gen/grpc/health/v1/health_pb.js";
@@ -57,13 +58,27 @@ transportParityTest("parity 9.2: Watch delivers both changes of a status that go
         const controller = new AbortController();
         const received: ServingStatus[] = [];
         const stream = client.watch({ service: "db" }, { signal: controller.signal })[Symbol.asyncIterator]();
+        // A server that loses a change would leave the stream silent; fail with a reason instead of hanging.
+        const next = async () => {
+            const guard = new AbortController();
+            try {
+                return await Promise.race([
+                    stream.next(),
+                    delay(5000, undefined, { signal: guard.signal }).then(() => {
+                        throw new Error(`no Watch message within 5 s, received ${JSON.stringify(received)}`);
+                    }),
+                ]);
+            } finally {
+                guard.abort();
+            }
+        };
         try {
-            received.push((await stream.next()).value.status);
+            received.push((await next()).value.status);
             // Same tick: the interval is a minute, so only notifications can deliver these.
             manager.set("db", ServingStatus.NOT_SERVING);
             manager.set("db", ServingStatus.SERVING);
-            received.push((await stream.next()).value.status);
-            received.push((await stream.next()).value.status);
+            received.push((await next()).value.status);
+            received.push((await next()).value.status);
         } finally {
             controller.abort();
         }
