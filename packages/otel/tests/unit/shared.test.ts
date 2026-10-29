@@ -185,6 +185,26 @@ describe("buildErrorAttributes", () => {
 		assert.deepStrictEqual(buildErrorAttributes(error), { "error.type": "_OTHER" });
 	});
 
+	// A thrown value can be hostile. The attributes describe the failure and must not
+	// replace it: the function returns instead of throwing.
+	it("should report _OTHER for a revoked proxy, whose instanceof check throws", () => {
+		const { proxy, revoke } = Proxy.revocable(new Error("gone"), {});
+		revoke();
+
+		assert.deepStrictEqual(buildErrorAttributes(proxy), { "error.type": "_OTHER" });
+	});
+
+	it("should report _OTHER for an error whose constructor getter throws", () => {
+		const error = new Error("x");
+		Object.defineProperty(error, "constructor", {
+			get() {
+				throw new Error("hostile getter");
+			},
+		});
+
+		assert.deepStrictEqual(buildErrorAttributes(error), { "error.type": "_OTHER" });
+	});
+
 	// The metrics guide: error.type is the error class name for another Error, "otherwise UNKNOWN".
 	const notErrors: Array<[string, unknown]> = [
 		["a string", "something went wrong"],
@@ -275,7 +295,22 @@ describe("buildBaseAttributes", () => {
 // ---------------------------------------------------------------------------
 
 describe("applyAttributeFilter", () => {
-	const noReport = () => {};
+	// The function is exported from the public `@connectum/otel/shared` subpath; callers
+	// that pass one or two arguments keep compiling, and a filter that throws still does
+	// not make the call throw.
+	it("should drop an attribute whose filter throws when the caller passes no reporter", () => {
+		const attrs = {
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
+			[ATTR_SERVER_PORT]: 5000,
+		};
+
+		const result = applyAttributeFilter(attrs, (key) => {
+			if (key === ATTR_SERVER_PORT) throw new Error("filter bug");
+			return true;
+		});
+
+		assert.deepStrictEqual(result, { [ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC });
+	});
 
 	it("should drop an attribute whose filter call throws, keep the others, and report the error", () => {
 		const reported: unknown[] = [];
@@ -303,7 +338,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_RPC_METHOD]: "Method",
 		};
 
-		const result = applyAttributeFilter(attrs, undefined, noReport);
+		const result = applyAttributeFilter(attrs);
 
 		assert.deepStrictEqual(result, attrs);
 	});
@@ -314,7 +349,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_SERVER_PORT]: 5000,
 		};
 
-		const result = applyAttributeFilter(attrs, (key) => key !== ATTR_SERVER_PORT, noReport);
+		const result = applyAttributeFilter(attrs, (key) => key !== ATTR_SERVER_PORT);
 
 		assert.deepStrictEqual(result, {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
@@ -326,7 +361,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 		};
 
-		const result = applyAttributeFilter(attrs, () => false, noReport);
+		const result = applyAttributeFilter(attrs, () => false);
 
 		assert.deepStrictEqual(result, {});
 	});
@@ -338,7 +373,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_SERVER_ADDRESS]: "localhost",
 		};
 
-		const result = applyAttributeFilter(attrs, () => true, noReport);
+		const result = applyAttributeFilter(attrs, () => true);
 
 		assert.deepStrictEqual(result, attrs);
 	});

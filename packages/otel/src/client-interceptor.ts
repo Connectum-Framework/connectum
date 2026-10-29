@@ -74,7 +74,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
 
     let rpcMetrics: RpcClientMetrics | undefined;
     let rpcMetricsMeter: Meter | undefined;
-    const reportHookFailure = createHookFailureReporter("client");
+    const reportHookFailure = createHookFailureReporter("the client interceptor");
 
     return (next) => async (req) => {
         // 1. Filter check: skip instrumentation if filter returns false (a filter that

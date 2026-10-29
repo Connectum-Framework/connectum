@@ -182,6 +182,38 @@ describe("a throwing user callback", () => {
                 assert.match(reports[0] ?? "", /afbug/);
             });
 
+            // The provider installs the diagnostics logger when it is created, and a callback
+            // runs before the first use of the tracer: a report made before the provider
+            // exists would go nowhere, and it is made only once.
+            it("reports a throwing filter even when the provider does not exist yet", async () => {
+                const handler = side.create({
+                    filter: () => {
+                        throw new Error("filterbug");
+                    },
+                })(createMockNext({ message: { ok: true } }));
+                // The default diagnostics logger prints with the console methods saved when
+                // the OpenTelemetry API was loaded, so the output is read at the stream.
+                const printed: string[] = [];
+                const originalWrite = process.stderr.write;
+                process.stderr.write = ((chunk: string | Uint8Array) => {
+                    printed.push(String(chunk));
+                    return true;
+                }) as typeof process.stderr.write;
+                try {
+                    await observe(async () => {
+                        await handler(request());
+                    });
+                } finally {
+                    process.stderr.write = originalWrite;
+                    diag.disable();
+                }
+
+                assert.ok(
+                    printed.some((line) => line.includes("filterbug")),
+                    `printed: ${JSON.stringify(printed)}`,
+                );
+            });
+
             it("does not let a throw of a non-error value fail the call", async () => {
                 const handler = side.create({
                     filter: () => {

@@ -43,6 +43,19 @@ function onceEnder(span: Span): (failure?: { error: unknown }) => void {
 }
 
 /**
+ * The prototype that a generator object shares with every iterator of its kind
+ * (`%IteratorPrototype%`, or `%AsyncIteratorPrototype%` for an async generator): three
+ * links up its chain (the generator, its function's `prototype`, `%GeneratorPrototype%`,
+ * then this one). An iterator built on it keeps what the platform puts there: it is its
+ * own iterable, it has the iterator helpers (`map`, `toArray`, ...) and the disposal
+ * methods (`using` / `await using`), all of which call the iterator's own `next` and
+ * `return`.
+ */
+function iteratorPrototypeOf(generator: object): object {
+    return Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf(generator))) ?? Object.prototype;
+}
+
+/**
  * A sync generator whose steps run in the span's context and whose span ends when the
  * generator is exhausted, throws, or is closed with `return()` / `throw()`.
  */
@@ -58,15 +71,11 @@ function traceGenerator(generator: Generator, scope: Context, end: ReturnType<ty
         if (result.done) end();
         return result;
     };
-    const traced = {
+    return Object.assign(Object.create(iteratorPrototypeOf(generator)), {
         next: (...args: [] | [unknown]) => step(() => generator.next(...args)),
         return: (value?: unknown) => step(() => generator.return(value)),
         throw: (error?: unknown) => step(() => generator.throw(error)),
-        [Symbol.iterator]() {
-            return traced;
-        },
-    };
-    return traced as unknown as Generator;
+    }) as Generator;
 }
 
 /** The async counterpart of {@link traceGenerator}. */
@@ -82,15 +91,11 @@ function traceAsyncGenerator(generator: AsyncGenerator, scope: Context, end: Ret
         if (result.done) end();
         return result;
     };
-    const traced = {
+    return Object.assign(Object.create(iteratorPrototypeOf(generator)), {
         next: (...args: [] | [unknown]) => step(() => generator.next(...args)),
         return: (value?: unknown) => step(() => generator.return(value)),
         throw: (error?: unknown) => step(() => generator.throw(error)),
-        [Symbol.asyncIterator]() {
-            return traced;
-        },
-    };
-    return traced as unknown as AsyncGenerator;
+    }) as AsyncGenerator;
 }
 
 /**

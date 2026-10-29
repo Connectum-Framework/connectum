@@ -247,6 +247,66 @@ describe("span lifetime of a traced generator", () => {
                 });
             });
 
+            // The platform puts the iterator helpers on the prototype all iterators share; an
+            // iterator built from a plain object would lose them.
+            it("returns a sync iterator that keeps the iterator helpers of the platform", async () => {
+                const work = makeTraced(function* () {
+                    yield 1;
+                    yield 2;
+                });
+
+                const observed = await observe(async () => {
+                    const generator = work() as Generator<number>;
+                    assert.ok(generator instanceof Iterator, "the result is an Iterator");
+                    assert.deepStrictEqual(generator.map((value) => value * 10).toArray(), [10, 20]);
+                });
+
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("closes the generator and ends the span through Symbol.dispose, where the platform defines it", { skip: typeof (Iterator.prototype as { [Symbol.dispose]?: unknown })[Symbol.dispose] !== "function" }, async () => {
+                let cleanedUp = false;
+                const work = makeTraced(function* () {
+                    try {
+                        yield 1;
+                    } finally {
+                        cleanedUp = true;
+                    }
+                });
+
+                const observed = await observe(async () => {
+                    const generator = work() as Generator<number> & Disposable;
+                    generator.next();
+                    generator[Symbol.dispose]();
+                });
+
+                assert.strictEqual(cleanedUp, true);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("returns an async iterator that is its own async iterable and closes through Symbol.asyncDispose, where the platform defines it", async () => {
+                let cleanedUp = false;
+                const work = makeTraced(async function* () {
+                    try {
+                        yield 1;
+                    } finally {
+                        cleanedUp = true;
+                    }
+                });
+
+                const observed = await observe(async () => {
+                    const generator = work() as AsyncGenerator<number> & Partial<AsyncDisposable>;
+                    assert.strictEqual(generator[Symbol.asyncIterator](), generator);
+                    await generator.next();
+                    // The platform defines asyncDispose on the shared prototype in newer runtimes only.
+                    if (typeof generator[Symbol.asyncDispose] === "function") await generator[Symbol.asyncDispose]();
+                    else await generator.return(undefined);
+                });
+
+                assert.strictEqual(cleanedUp, true);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
             it("returns an array, a Map and a Set untouched and ends the span at once", async () => {
                 const array = [1, 2, 3];
                 const map = new Map([[1, 2]]);

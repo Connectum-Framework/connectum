@@ -822,6 +822,32 @@ for (const side of SIDES) {
 			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 		});
 
+		// A thrown value can be hostile (a revoked proxy makes `instanceof` throw). The
+		// telemetry of the stream's end must not lose the call: the consumer still gets the
+		// value, the duration is recorded once and the span ends as failed.
+		it("should record the end of a stream that raises an unreadable value, and hand the value to the consumer", async () => {
+			const { proxy, revoke } = Proxy.revocable(new Error("gone"), {});
+			revoke();
+			const next: any = async () => ({ stream: true, message: slowMessages(2, { messages: 1, error: proxy }) });
+			const handler = side.create({})(next);
+			let received: unknown;
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				try {
+					await collectAll(streamOf(response));
+					assert.fail("the stream must raise");
+				} catch (error) {
+					received = error;
+				}
+			});
+
+			assert.strictEqual(received, proxy);
+			assert.strictEqual(durationPoints(observed).length, 1, "the duration is recorded once");
+			assert.strictEqual(durationPoints(observed)[0]?.[semconv.ATTR_ERROR_TYPE], "_OTHER");
+			assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.ERROR);
+		});
+
 		it("should pass stream=true to the filter for streaming requests", async () => {
 			let receivedStream: boolean | undefined;
 			const interceptor = side.create({

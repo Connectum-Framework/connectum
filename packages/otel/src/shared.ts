@@ -32,6 +32,7 @@ import {
     RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
 import { describeThrown, recordFailure } from "./failure.ts";
+import { getProvider } from "./provider.ts";
 import type { OtelAttributeFilter, OtelFilter } from "./types.ts";
 
 /** Well-known `error.type` value for an error that the instrumentation cannot name better. */
@@ -236,14 +237,21 @@ function errorClassName(error: Error): string {
  */
 export function buildErrorAttributes(error: unknown): Record<string, string> {
     const attrs: Record<string, string> = {};
-    if (error instanceof ConnectError) {
-        const name = ConnectErrorCodeName[error.code] ?? "UNKNOWN";
-        attrs[ATTR_ERROR_TYPE] = name;
-        attrs[ATTR_RPC_RESPONSE_STATUS_CODE] = name;
-    } else if (error instanceof Error) {
-        attrs[ATTR_ERROR_TYPE] = errorClassName(error);
-    } else {
-        attrs[ATTR_ERROR_TYPE] = "UNKNOWN";
+    try {
+        if (error instanceof ConnectError) {
+            const name = ConnectErrorCodeName[error.code] ?? "UNKNOWN";
+            attrs[ATTR_ERROR_TYPE] = name;
+            attrs[ATTR_RPC_RESPONSE_STATUS_CODE] = name;
+        } else if (error instanceof Error) {
+            attrs[ATTR_ERROR_TYPE] = errorClassName(error);
+        } else {
+            attrs[ATTR_ERROR_TYPE] = "UNKNOWN";
+        }
+    } catch {
+        // A thrown value can be hostile: a revoked proxy makes `instanceof` throw, and an
+        // error can have a `constructor` getter that throws. The attributes describe the
+        // failure, they must not replace it, so the error is reported as unidentifiable.
+        return { [ATTR_ERROR_TYPE]: ERROR_TYPE_OTHER };
     }
     return attrs;
 }
@@ -264,7 +272,12 @@ const SERVER_ERROR_CODES: ReadonlySet<number> = new Set([2, 4, 12, 13, 14, 15]);
  * @param error - The error, exactly as caught
  */
 export function isServerErrorStatus(error: unknown): boolean {
-    return !(error instanceof ConnectError) || SERVER_ERROR_CODES.has(error.code);
+    try {
+        return !(error instanceof ConnectError) || SERVER_ERROR_CODES.has(error.code);
+    } catch {
+        // An unreadable thrown value (a revoked proxy) is not a code the caller chose.
+        return true;
+    }
 }
 
 /**
@@ -358,24 +371,32 @@ export type HookFailureReporter = (hook: "filter" | "attributeFilter", error: un
  * OpenTelemetry diagnostics channel (`diag`), which has no output until the
  * application or `initProvider()` registers a logger. A callback that is broken for
  * every call would otherwise flood the log, so each callback is reported once per
- * interceptor. The reporter never throws.
+ * owner. The reporter never throws.
  *
- * @param side - Which interceptor the reporter belongs to, named in the message
+ * @param owner - What the reporter belongs to, named in the message ("the server interceptor")
  * @returns The reporter
  */
-export function createHookFailureReporter(side: "server" | "client"): HookFailureReporter {
+export function createHookFailureReporter(owner: string): HookFailureReporter {
     const reported = new Set<string>();
     return (hook, error) => {
         if (reported.has(hook)) return;
         reported.add(hook);
         const consequence = hook === "filter" ? "the call is instrumented" : "the attribute it was asked about is not recorded";
         try {
-            diag.error(`@connectum/otel: the ${hook} option of the ${side} interceptor threw, ${consequence} (reported once per interceptor): ${describeThrown(error)}`);
+            // The provider registers the diagnostics logger when it is created. The call is
+            // about to create it anyway (the callbacks run before the tracer and the meter
+            // are first used), so create it now: a report made before that goes nowhere,
+            // and a report is made once.
+            getProvider();
+            diag.error(`@connectum/otel: the ${hook} option of ${owner} threw, ${consequence} (reported once per ${owner}): ${describeThrown(error)}`);
         } catch {
             // Intentionally empty: a failing diagnostics logger must not fail the call either.
         }
     };
 }
+
+/** Reporter for a direct call of {@link applyAttributeFilter} that passes none. */
+const reportForDirectCaller = createHookFailureReporter("a caller of applyAttributeFilter");
 
 /**
  * Asks the `filter` option whether a call is to be instrumented. A filter that throws
@@ -405,10 +426,10 @@ export function shouldInstrument(filter: OtelFilter | undefined, call: { service
  *
  * @param attrs - Base attributes to filter
  * @param filter - Optional filter function
- * @param report - Reporter for a throwing filter
+ * @param report - Reporter for a throwing filter; the interceptors pass their own, a direct caller gets one report per process
  * @returns Filtered attributes
  */
-export function applyAttributeFilter(attrs: Record<string, string | number>, filter: OtelAttributeFilter | undefined, report: HookFailureReporter): Attributes {
+export function applyAttributeFilter(attrs: Record<string, string | number>, filter?: OtelAttributeFilter, report: HookFailureReporter = reportForDirectCaller): Attributes {
     if (!filter) return attrs;
     return Object.fromEntries(
         Object.entries(attrs).filter(([key, value]) => {
