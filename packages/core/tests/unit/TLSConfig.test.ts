@@ -3,14 +3,15 @@
  */
 
 import assert from "node:assert";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { relative } from "node:path";
 import { resolve } from "node:path/posix";
 import { cwd } from "node:process";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { createServer } from "../../src/Server.ts";
-import { getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
+import { explainTLSFailure, getTLSPath, readTLSCertificates } from "../../src/TLSConfig.ts";
 
 describe("TLSConfig", () => {
 	let testDir: string;
@@ -339,6 +340,229 @@ describe("TLSConfig", () => {
 				assert.strictEqual(result.key.toString(), "dir-key-content");
 				assert.strictEqual(result.cert.toString(), "dir-cert-content");
 			});
+		});
+	});
+
+	describe("failures name the file and the setting that supplied its path", () => {
+		/** A throwaway self-signed pair; no key material is committed. */
+		function writePair(dir: string, name: string): { keyPath: string; certPath: string } {
+			const keyPath = resolve(dir, `${name}.key`);
+			const certPath = resolve(dir, `${name}.crt`);
+			execFileSync(
+				"openssl",
+				["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", `/CN=${name}`, "-keyout", keyPath, "-out", certPath],
+				{ stdio: "ignore" },
+			);
+			return { keyPath, certPath };
+		}
+
+		const SERVER_FAILURE = new Error("server could not use the files");
+
+		/** What a failed server start reports: the read result, or the error that names the file. */
+		function loadTLSCertificates(options: Parameters<typeof readTLSCertificates>[0], secureOptions?: { passphrase?: string; ciphers?: string }): { key: Buffer; cert: Buffer } {
+			const certificates = readTLSCertificates(options);
+			const explained = explainTLSFailure(options ?? {}, SERVER_FAILURE, secureOptions);
+			if (explained !== SERVER_FAILURE) throw explained;
+			return certificates;
+		}
+
+		const NOT_PEM = "this is not a PEM file\n";
+
+		describe("a file that cannot be read", () => {
+			it("names the explicit key path and tls.keyPath, and keeps code, path and cause", () => {
+				const { certPath } = writePair(testDir, "good");
+				const missing = resolve(testDir, "missing.key");
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath: missing, certPath }),
+					(error: NodeJS.ErrnoException) => {
+						assert.ok(error.message.includes("tls.keyPath"), error.message);
+						assert.ok(error.message.includes(missing), error.message);
+						assert.strictEqual(error.code, "ENOENT");
+						assert.strictEqual(error.path, missing);
+						assert.ok(error.cause instanceof Error);
+						return true;
+					},
+				);
+			});
+
+			it("names tls.certPath for a missing certificate", () => {
+				const { keyPath } = writePair(testDir, "good");
+
+				assert.throws(
+					() => readTLSCertificates({ keyPath, certPath: resolve(testDir, "missing.crt") }),
+					(error: Error) => error.message.includes("tls.certPath") && error.message.includes("certificate file"),
+				);
+			});
+
+			it("names tls.dirPath when the directory comes from the option", () => {
+				assert.throws(
+					() => readTLSCertificates({ dirPath: testDir }),
+					(error: Error) => error.message.includes("tls.dirPath") && error.message.includes(resolve(testDir, "server.key")),
+				);
+			});
+
+			it("names TLS_DIR_PATH when the directory comes from the variable", () => {
+				process.env.TLS_DIR_PATH = testDir;
+
+				assert.throws(
+					() => readTLSCertificates(),
+					(error: Error) => error.message.includes("TLS_DIR_PATH") && error.message.includes(resolve(testDir, "server.key")),
+				);
+			});
+
+			it("says the default directory was used, and which one, when neither is set", () => {
+				delete process.env.TLS_DIR_PATH;
+				process.env.NODE_ENV = "production";
+
+				assert.throws(
+					() => readTLSCertificates({}),
+					(error: Error) => error.message.includes("default TLS directory") && error.message.includes(`${resolve(cwd())}/server.key`),
+				);
+			});
+		});
+
+		describe("explainTLSFailure", () => {
+			it("returns the key and certificate of a valid pair", () => {
+				const pair = writePair(testDir, "good");
+
+				const result = loadTLSCertificates(pair);
+
+				assert.deepStrictEqual(result.key, readFileSync(pair.keyPath));
+				assert.deepStrictEqual(result.cert, readFileSync(pair.certPath));
+			});
+
+			it("names the key file and tls.keyPath when the key is not PEM", () => {
+				const { certPath } = writePair(testDir, "good");
+				const keyPath = resolve(testDir, "bad.key");
+				writeFileSync(keyPath, NOT_PEM);
+
+				assert.throws(
+					() => loadTLSCertificates({ keyPath, certPath }),
+					(error: Error) => {
+						assert.ok(error.message.includes(keyPath), error.message);
+						assert.ok(error.message.includes("tls.keyPath"), error.message);
+						assert.ok(error.message.includes("private key"), error.message);
+						assert.strictEqual(error.cause, SERVER_FAILURE, "the error the server threw is kept as cause");
+						return true;
+					},
+				);
+			});
+
+			it("names the certificate file and tls.certPath when the certificate is not PEM", () => {
+				const { keyPath } = writePair(testDir, "good");
+				const certPath = resolve(testDir, "bad.crt");
+				writeFileSync(certPath, NOT_PEM);
+
+				assert.throws(
+					() => loadTLSCertificates({ keyPath, certPath }),
+					(error: Error) => error.message.includes(certPath) && error.message.includes("tls.certPath") && error.message.includes("certificate"),
+				);
+			});
+
+			it("names both files when the key does not belong to the certificate", () => {
+				const first = writePair(testDir, "first");
+				const second = writePair(testDir, "second");
+
+				assert.throws(
+					() => loadTLSCertificates({ keyPath: first.keyPath, certPath: second.certPath }),
+					(error: Error) => error.message.includes(first.keyPath) && error.message.includes(second.certPath) && error.message.includes("does not match"),
+				);
+			});
+
+			it("accepts an encrypted key when the passphrase is given, and names the key when it is not", () => {
+				const keyPath = resolve(testDir, "enc.key");
+				const certPath = resolve(testDir, "enc.crt");
+				execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-days", "1", "-subj", "/CN=enc", "-passout", "pass:secret", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+
+				assert.doesNotThrow(() => loadTLSCertificates({ keyPath, certPath }, { passphrase: "secret" }));
+				assert.throws(
+					() => loadTLSCertificates({ keyPath, certPath }),
+					(error: Error) => error.message.includes(keyPath) && error.message.includes("tls.keyPath"),
+				);
+			});
+
+			it("names tls.dirPath and server.key for a bad file in the directory", () => {
+				const { certPath } = writePair(testDir, "good");
+				writeFileSync(resolve(testDir, "server.key"), NOT_PEM);
+				writeFileSync(resolve(testDir, "server.crt"), readFileSync(certPath));
+
+				assert.throws(
+					() => loadTLSCertificates({ dirPath: testDir }),
+					(error: Error) => error.message.includes(resolve(testDir, "server.key")) && error.message.includes("tls.dirPath"),
+				);
+			});
+		});
+
+		it("starts with an encrypted key when http2Options carries the passphrase", async () => {
+			const keyPath = resolve(testDir, "enc.key");
+			const certPath = resolve(testDir, "enc.crt");
+			execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-days", "1", "-subj", "/CN=enc", "-passout", "pass:secret", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath }, http2Options: { passphrase: "secret" } });
+
+			await server.start();
+			try {
+				assert.ok(server.address?.port);
+			} finally {
+				await server.stop();
+			}
+		});
+
+		it("hands back the server failure unchanged when the files are fine", () => {
+			const pair = writePair(testDir, "good");
+
+			assert.strictEqual(explainTLSFailure(pair, SERVER_FAILURE), SERVER_FAILURE);
+		});
+
+		// A 1024-bit RSA key is below the default OpenSSL security level, yet the server accepts it once
+		// `ciphers` lowers the level; the files must not be judged by a check that ignores that option.
+		it("starts with a key that is only acceptable under the lowered security level of http2Options.ciphers", { skip: process.versions.bun !== undefined && "Bun has no OpenSSL security levels" }, async () => {
+			const keyPath = resolve(testDir, "weak.key");
+			const certPath = resolve(testDir, "weak.crt");
+			execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:1024", "-nodes", "-days", "1", "-subj", "/CN=weak", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath }, http2Options: { ciphers: "DEFAULT:@SECLEVEL=0" } });
+
+			await server.start();
+			try {
+				assert.ok(server.address?.port);
+			} finally {
+				await server.stop();
+			}
+		});
+
+		it("judges the files under the security level the server used, so a weak but mismatched pair is reported as a mismatch", { skip: process.versions.bun !== undefined && "Bun has no OpenSSL security levels" }, () => {
+			const weak = (name: string): { keyPath: string; certPath: string } => {
+				const keyPath = resolve(testDir, `${name}.key`);
+				const certPath = resolve(testDir, `${name}.crt`);
+				execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:1024", "-nodes", "-days", "1", "-subj", `/CN=${name}`, "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+				return { keyPath, certPath };
+			};
+			const first = weak("weak-a");
+			const second = weak("weak-b");
+
+			assert.throws(
+				() => loadTLSCertificates({ keyPath: first.keyPath, certPath: second.certPath }, { ciphers: "DEFAULT:@SECLEVEL=0" }),
+				(error: Error) => error.message.includes("does not match") && error.cause === SERVER_FAILURE,
+			);
+		});
+
+		it("hands back the server failure unchanged when the cipher setting is what is wrong", () => {
+			const pair = writePair(testDir, "good");
+
+			assert.strictEqual(explainTLSFailure(pair, SERVER_FAILURE, { ciphers: "not-a-cipher" }), SERVER_FAILURE);
+		});
+
+		it("makes server.start() reject with the file and the option, and leaves no listener", async () => {
+			const { certPath } = writePair(testDir, "good");
+			const keyPath = resolve(testDir, "bad.key");
+			writeFileSync(keyPath, NOT_PEM);
+			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath } });
+
+			await assert.rejects(
+				() => server.start(),
+				(error: Error) => error.message.includes(keyPath) && error.message.includes("tls.keyPath"),
+			);
+			assert.strictEqual(server.address, null);
 		});
 	});
 });
