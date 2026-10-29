@@ -8,7 +8,7 @@
  */
 
 import { NonRetryableError, RetryableError } from "../errors.ts";
-import type { EventMiddleware, RetryOptions } from "../types.ts";
+import type { EventContext, EventMiddleware, RetryOptions } from "../types.ts";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_INITIAL_DELAY = 1000;
@@ -53,11 +53,69 @@ function requireMaxRetries(value: unknown): asserts value is number {
 }
 
 /**
+ * Wait `delay` ms or until `signal` aborts. Resolves `true` when the delay elapsed and `false`
+ * when the abort ended it; it never rejects, so the caller decides what an abort means.
+ */
+function sleepUnlessAborted(delay: number, signal: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+        if (signal.aborted) {
+            resolve(false);
+            return;
+        }
+        const onAbort = (): void => {
+            globalThis.clearTimeout(timer);
+            resolve(false);
+        };
+        const timer = globalThis.setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(true);
+        }, delay);
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+/**
+ * The per-event time limit (`AbortSignal.timeout`) ends with a `TimeoutError`. Any other abort
+ * reason comes from the shutdown signal or from the drain abort of `EventBus.stop()`.
+ */
+function isTimeoutReason(reason: unknown): boolean {
+    return reason instanceof Error && reason.name === "TimeoutError";
+}
+
+/**
+ * End the attempt loop because the signal aborted while the event still had retry budget.
+ *
+ * A stop is not a failure of the event: it is returned to the broker (`nack(true)`) so that it is
+ * handled again, and it does not reach the dead-letter middleware as an "error". Running out of the
+ * per-event time is a failure and is thrown. A failing `nack` is dropped: the event stays
+ * unacknowledged and the broker delivers it again by its own redelivery timeout, as for an
+ * abandoned handler; throwing would only make the dead-letter middleware publish it.
+ */
+async function endOnAbort(ctx: EventContext): Promise<void> {
+    const reason: unknown = ctx.signal.reason;
+    if (isTimeoutReason(reason)) {
+        throw reason;
+    }
+    try {
+        await ctx.nack(true);
+    } catch {
+        // see above
+    }
+}
+
+/**
  * Create a retry middleware with configurable options.
  *
  * On handler failure, retries up to `maxRetries` times with
  * the configured backoff strategy. If all retries exhaust,
  * the error is re-thrown for the next middleware (e.g., DLQ).
+ *
+ * When `ctx.signal` aborts while the event waits for its next attempt, the outcome depends on the
+ * reason. A stop (the server's shutdown signal, or the drain abort of `EventBus.stop()`) returns
+ * the event to the broker with `ctx.nack(true)` and ends the middleware without an error, so the
+ * dead-letter middleware does not see it. Because the retry budget is not carried over, the broker
+ * delivers the event again with a fresh budget; whether it does, and after what delay, is up to
+ * the broker. The per-event `handlerTimeout` (a `TimeoutError`) is a failure and is thrown.
  */
 export function retryMiddleware(options?: RetryOptions): EventMiddleware {
     // Only an omitted value takes the default: an explicit `null` is a mistake and is refused below.
@@ -77,7 +135,7 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
         for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
             // Bail out before re-entering handler if shutdown requested
             if (attempt > 1 && ctx.signal.aborted) {
-                throw ctx.signal.reason;
+                return endOnAbort(ctx);
             }
 
             try {
@@ -113,22 +171,9 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
 
                 // Wait before retry with abort-aware sleep
                 const delay = calculateDelay({ backoff, initialDelay, maxDelay, multiplier }, attempt);
-                await new Promise<void>((resolve, reject) => {
-                    const onAbort = () => {
-                        globalThis.clearTimeout(timer);
-                        reject(ctx.signal.reason);
-                    };
-                    const timer = globalThis.setTimeout(() => {
-                        ctx.signal.removeEventListener("abort", onAbort);
-                        resolve();
-                    }, delay);
-                    if (ctx.signal.aborted) {
-                        globalThis.clearTimeout(timer);
-                        reject(ctx.signal.reason);
-                        return;
-                    }
-                    ctx.signal.addEventListener("abort", onAbort, { once: true });
-                });
+                if (!(await sleepUnlessAborted(delay, ctx.signal))) {
+                    return endOnAbort(ctx);
+                }
             }
         }
 
