@@ -22,6 +22,7 @@ import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
+import { onProcessSignal } from "./processSignals.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
@@ -49,7 +50,8 @@ class ServerImpl extends EventEmitter implements Server {
     private readonly _registry: DescFile[] = [];
     private readonly _shutdownManager = new ShutdownManager();
     private readonly _abortController = new AbortController();
-    private _signalHandlers: Map<NodeJS.Signals, () => void> = new Map();
+    /** Ends of this server's subscriptions to the shared process signal listeners. */
+    private readonly _signalSubscriptions: Array<() => void> = [];
     private _stopPromise: Promise<void> | null = null;
     /** Settles when start() has finished, successfully or not; set while the state is STARTING. */
     private _startSettled: Promise<void> | null = null;
@@ -677,8 +679,7 @@ class ServerImpl extends EventEmitter implements Server {
                 this.stop().catch(() => {});
             };
 
-            this._signalHandlers.set(signal, handler);
-            process.on(signal, handler);
+            this._signalSubscriptions.push(onProcessSignal(signal, handler));
         }
     }
 
@@ -720,10 +721,10 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     private _removeAutoShutdown(): void {
-        for (const [signal, handler] of this._signalHandlers) {
-            process.removeListener(signal, handler);
+        for (const unsubscribe of this._signalSubscriptions) {
+            unsubscribe();
         }
-        this._signalHandlers.clear();
+        this._signalSubscriptions.length = 0;
     }
 }
 
