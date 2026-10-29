@@ -43,11 +43,20 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
     const excludeSet = exclude ? new Set(exclude) : undefined;
 
     const proxy = new Proxy(target, {
-        get(obj, prop, receiver) {
-            const value = Reflect.get(obj, prop, receiver);
+        get(obj, prop) {
+            // The target is the receiver: a getter that reads a `#private` field or an
+            // internal slot (`Map.prototype.size`, `Set.prototype.size`) throws a TypeError
+            // when `this` is the proxy, so the proxy must not be what a getter sees.
+            const value = Reflect.get(obj, prop, obj);
 
             // Only wrap functions
             if (typeof value !== "function") return value;
+
+            // A proxy must report the real value of an own property that is neither writable
+            // nor configurable (a method of a frozen object): returning a wrapper for it
+            // makes every read throw a TypeError. Such a method stays untraced.
+            const descriptor = Reflect.getOwnPropertyDescriptor(obj, prop);
+            if (descriptor !== undefined && descriptor.configurable === false && descriptor.writable === false) return value;
 
             // Skip constructor
             if (prop === "constructor") return value;
