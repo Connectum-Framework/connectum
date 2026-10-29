@@ -136,3 +136,66 @@ export function assertRuleMethods(factory: string, rules: readonly AuthzRule[]):
         assertMethodPatterns(`${factory} rules[${index}].methods (rule ${describeValue(rule?.name)})`, rule?.methods);
     });
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Name the kind of a value without printing it, for options that may hold a secret. */
+function describeKind(value: unknown): string {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "an array";
+    if (typeof value === "string") return value.length === 0 ? "an empty string" : "a string";
+    return typeof value === "undefined" ? "undefined" : `a ${typeof value}`;
+}
+
+/**
+ * Check the options a gateway interceptor cannot work without.
+ *
+ * `expectedValues` usually holds a shared secret, often read from an environment variable that
+ * may be unset (`[process.env.GATEWAY_SECRET]` gives `[undefined]`). Such an interceptor used to
+ * be created and then failed every request with `internal`. Messages name the kind of a bad
+ * value, never the value, because it may be a secret.
+ *
+ * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, `trustSource.header`
+ *   is not a non-empty string, or `trustSource.expectedValues` is not an array of non-empty strings
+ */
+export function assertGatewayOptions(options: unknown): void {
+    const factory = "createGatewayAuthInterceptor";
+    const { headerMapping, trustSource } = (isRecord(options) ? options : {}) as { headerMapping?: unknown; trustSource?: unknown };
+    if (!isRecord(headerMapping)) {
+        throw new TypeError(`@connectum/auth: ${factory} headerMapping must be an object that maps at least "subject" to a header name; got ${describeKind(headerMapping)}`);
+    }
+    if (!isRecord(trustSource)) {
+        throw new TypeError(`@connectum/auth: ${factory} trustSource must be an object with header and expectedValues; got ${describeKind(trustSource)}`);
+    }
+    const { header, expectedValues } = trustSource;
+    if (typeof header !== "string" || header.trim().length === 0) {
+        throw new TypeError(`@connectum/auth: ${factory} trustSource.header must be a non-empty string naming the trust header; got ${describeKind(header)}`);
+    }
+    if (!Array.isArray(expectedValues)) {
+        throw new TypeError(`@connectum/auth: ${factory} trustSource.expectedValues must be an array of non-empty strings; got ${describeKind(expectedValues)}`);
+    }
+    expectedValues.forEach((value, index) => {
+        if (typeof value !== "string" || value.length === 0) {
+            throw new TypeError(
+                `@connectum/auth: ${factory} trustSource.expectedValues[${index}] must be a non-empty string (an unset environment variable reads as undefined); got ${describeKind(value)}`,
+            );
+        }
+    });
+}
+
+/**
+ * Check the callbacks the generic authentication interceptor calls on every request.
+ *
+ * @throws {TypeError} When `verifyCredentials` is not a function, or `extractCredentials` is present and not a function
+ */
+export function assertAuthInterceptorOptions(options: unknown): void {
+    const { verifyCredentials, extractCredentials } = (isRecord(options) ? options : {}) as { verifyCredentials?: unknown; extractCredentials?: unknown };
+    if (typeof verifyCredentials !== "function") {
+        throw new TypeError(`@connectum/auth: createAuthInterceptor verifyCredentials must be a function; got ${describeKind(verifyCredentials)}`);
+    }
+    if (extractCredentials !== undefined && typeof extractCredentials !== "function") {
+        throw new TypeError(`@connectum/auth: createAuthInterceptor extractCredentials must be a function when set; got ${describeKind(extractCredentials)}`);
+    }
+}

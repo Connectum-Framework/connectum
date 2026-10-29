@@ -342,9 +342,13 @@ export interface GatewayAuthInterceptorOptions {
     readonly headerMapping: GatewayHeaderMapping;
     /** Trust verification: check that request came from a trusted gateway */
     readonly trustSource: {
-        /** Header set by the gateway to prove trust */
+        /** Header set by the gateway to prove trust. A non-empty string; anything else throws when the interceptor is created. */
         readonly header: string;
-        /** Accepted values for the trust header */
+        /**
+         * Accepted values for the trust header. Every entry must be a non-empty string, so an
+         * unset environment variable (`[process.env.GATEWAY_SECRET]` gives `[undefined]`) throws
+         * when the interceptor is created instead of failing every request.
+         */
         readonly expectedValues: string[];
     };
     /** Headers to strip from the request after extraction (prevent spoofing) */

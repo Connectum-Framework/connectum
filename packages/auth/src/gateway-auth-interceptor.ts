@@ -14,6 +14,7 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertGatewayOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 
@@ -116,6 +117,9 @@ function parseRoles(raw: string): string[] {
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, `trustSource.header` is not a
+ *   non-empty string, or `trustSource.expectedValues` is not an array of non-empty strings (`[undefined]`
+ *   from an unset environment variable included)
  * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
  *   contains `"*"`, or `defaultType` contains NUL, CR or LF
  *
@@ -135,6 +139,7 @@ function parseRoles(raw: string): string[] {
  * ```
  */
 export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOptions): Interceptor {
+    assertGatewayOptions(options);
     const { headerMapping, trustSource, stripHeaders = [], skipMethods = [], propagateHeaders = false, defaultType = "gateway" } = options;
 
     // Fail-closed: require subject mapping and non-empty expectedValues
