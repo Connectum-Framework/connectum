@@ -163,28 +163,43 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         return adminConnecting;
     };
 
+    /** The connect() attempt under way, shared by every overlapping call. */
+    let connecting: Promise<void> | null = null;
+
+    const openProducer = async (context: AdapterContext | undefined): Promise<void> => {
+        kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
+        const p = kafka.producer();
+        try {
+            await p.connect();
+        } catch (err) {
+            await p.disconnect().catch(() => undefined);
+            explainConnectionError(err);
+            throw err;
+        }
+        producer = p;
+        connected = true;
+        dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+    };
+
     return {
         name: "kafka",
 
-        async connect(context?: AdapterContext): Promise<void> {
+        connect(context?: AdapterContext): Promise<void> {
             if (connected) {
-                return;
+                return Promise.resolve();
             }
-            kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
-            const p = kafka.producer();
-            try {
-                await p.connect();
-            } catch (err) {
-                await p.disconnect().catch(() => undefined);
-                explainConnectionError(err);
-                throw err;
-            }
-            producer = p;
-            connected = true;
-            dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+            // Overlapping calls share one attempt: each would otherwise create its own producer, and the
+            // one assigned last would replace the others, which nothing could ever disconnect again.
+            // A failed attempt is not remembered, so the next call starts a new one.
+            connecting ??= openProducer(context).finally(() => {
+                connecting = null;
+            });
+            return connecting;
         },
 
         async disconnect(): Promise<void> {
+            // A disconnect that arrives while connect() is under way ends the connection that attempt makes.
+            await connecting?.catch(() => undefined);
             if (!connected) {
                 return;
             }
