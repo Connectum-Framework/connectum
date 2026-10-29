@@ -19,7 +19,7 @@ import { SpanStatusCode } from "@opentelemetry/api";
  * replace the value the caller is about to receive. The empty string is quoted so the
  * recorded message is not blank.
  */
-function describeThrown(value: unknown): string {
+export function describeThrown(value: unknown): string {
     if (value === "") return '""';
     try {
         return String(value);

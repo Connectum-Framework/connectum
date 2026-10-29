@@ -235,13 +235,35 @@ describe("buildBaseAttributes", () => {
 // ---------------------------------------------------------------------------
 
 describe("applyAttributeFilter", () => {
+	const noReport = () => {};
+
+	it("should drop an attribute whose filter call throws, keep the others, and report the error", () => {
+		const reported: unknown[] = [];
+		const attrs = {
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
+			[ATTR_SERVER_PORT]: 5000,
+		};
+
+		const result = applyAttributeFilter(
+			attrs,
+			(key) => {
+				if (key === ATTR_SERVER_PORT) throw new Error("filter bug");
+				return true;
+			},
+			(hook, error) => reported.push([hook, (error as Error).message]),
+		);
+
+		assert.deepStrictEqual(result, { [ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC });
+		assert.deepStrictEqual(reported, [["attributeFilter", "filter bug"]]);
+	});
+
 	it("should return attrs unchanged when no filter", () => {
 		const attrs = {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 			[ATTR_RPC_METHOD]: "Method",
 		};
 
-		const result = applyAttributeFilter(attrs);
+		const result = applyAttributeFilter(attrs, undefined, noReport);
 
 		assert.deepStrictEqual(result, attrs);
 	});
@@ -252,7 +274,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_SERVER_PORT]: 5000,
 		};
 
-		const result = applyAttributeFilter(attrs, (key) => key !== ATTR_SERVER_PORT);
+		const result = applyAttributeFilter(attrs, (key) => key !== ATTR_SERVER_PORT, noReport);
 
 		assert.deepStrictEqual(result, {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
@@ -264,7 +286,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
 		};
 
-		const result = applyAttributeFilter(attrs, () => false);
+		const result = applyAttributeFilter(attrs, () => false, noReport);
 
 		assert.deepStrictEqual(result, {});
 	});
@@ -276,7 +298,7 @@ describe("applyAttributeFilter", () => {
 			[ATTR_SERVER_ADDRESS]: "localhost",
 		};
 
-		const result = applyAttributeFilter(attrs, () => true);
+		const result = applyAttributeFilter(attrs, () => true, noReport);
 
 		assert.deepStrictEqual(result, attrs);
 	});

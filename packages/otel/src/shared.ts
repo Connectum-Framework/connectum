@@ -9,7 +9,7 @@
 
 import { ConnectError } from "@connectrpc/connect";
 import type { Attributes, Context, Span } from "@opentelemetry/api";
-import { context } from "@opentelemetry/api";
+import { context, diag } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
@@ -29,8 +29,8 @@ import {
     RPC_MESSAGE_EVENT,
     RPC_SYSTEM_NAME_CONNECTRPC,
 } from "./attributes.ts";
-import { recordFailure } from "./failure.ts";
-import type { OtelAttributeFilter } from "./types.ts";
+import { describeThrown, recordFailure } from "./failure.ts";
+import type { OtelAttributeFilter, OtelFilter } from "./types.ts";
 
 /** Well-known `error.type` value for an error that the instrumentation cannot name better. */
 const ERROR_TYPE_OTHER = "_OTHER";
@@ -265,14 +265,78 @@ export function detectConnectumTransport(headers: Headers): "in-process" | "http
     return headers.get(CONNECTUM_INTERNAL_TRANSPORT_HEADER) === CONNECTUM_INTERNAL_TRANSPORT_IN_PROCESS ? "in-process" : "http";
 }
 
+/** Reports the failure of a user callback; see {@link createHookFailureReporter}. */
+export type HookFailureReporter = (hook: "filter" | "attributeFilter", error: unknown) => void;
+
+/**
+ * Creates the reporter an interceptor uses when one of its user callbacks (`filter`,
+ * `attributeFilter`) throws.
+ *
+ * The callback is the application's code on the path of every RPC: its bug must not
+ * fail the call, so the interceptor goes on and reports the error through the
+ * OpenTelemetry diagnostics channel (`diag`), which has no output until the
+ * application or `initProvider()` registers a logger. A callback that is broken for
+ * every call would otherwise flood the log, so each callback is reported once per
+ * interceptor. The reporter never throws.
+ *
+ * @param side - Which interceptor the reporter belongs to, named in the message
+ * @returns The reporter
+ */
+export function createHookFailureReporter(side: "server" | "client"): HookFailureReporter {
+    const reported = new Set<string>();
+    return (hook, error) => {
+        if (reported.has(hook)) return;
+        reported.add(hook);
+        const consequence = hook === "filter" ? "the call is instrumented" : "the attribute it was asked about is not recorded";
+        try {
+            diag.error(`@connectum/otel: the ${hook} option of the ${side} interceptor threw, ${consequence} (reported once per interceptor): ${describeThrown(error)}`);
+        } catch {
+            // Intentionally empty: a failing diagnostics logger must not fail the call either.
+        }
+    };
+}
+
+/**
+ * Asks the `filter` option whether a call is to be instrumented. A filter that throws
+ * counts as "instrument": the failure is reported, the call is not affected, and
+ * telemetry is not lost silently.
+ *
+ * @param filter - The user's filter, if any
+ * @param call - The call the filter is asked about
+ * @param report - Reporter for a throwing filter
+ * @returns Whether to instrument the call
+ */
+export function shouldInstrument(filter: OtelFilter | undefined, call: { service: string; method: string; stream: boolean }, report: HookFailureReporter): boolean {
+    if (!filter) return true;
+    try {
+        return Boolean(filter(call));
+    } catch (error) {
+        report("filter", error);
+        return true;
+    }
+}
+
 /**
  * Applies an attribute filter to the given attributes.
  *
+ * An attribute is kept only if the filter approves it, so a filter that throws for an
+ * attribute drops that attribute (the failure is reported, the call is not affected).
+ *
  * @param attrs - Base attributes to filter
  * @param filter - Optional filter function
+ * @param report - Reporter for a throwing filter
  * @returns Filtered attributes
  */
-export function applyAttributeFilter(attrs: Record<string, string | number>, filter?: OtelAttributeFilter): Attributes {
+export function applyAttributeFilter(attrs: Record<string, string | number>, filter: OtelAttributeFilter | undefined, report: HookFailureReporter): Attributes {
     if (!filter) return attrs;
-    return Object.fromEntries(Object.entries(attrs).filter(([key, value]) => filter(key, value)));
+    return Object.fromEntries(
+        Object.entries(attrs).filter(([key, value]) => {
+            try {
+                return filter(key, value);
+            } catch (error) {
+                report("attributeFilter", error);
+                return false;
+            }
+        }),
+    );
 }

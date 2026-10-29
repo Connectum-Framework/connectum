@@ -24,9 +24,11 @@ import {
     buildBaseAttributes,
     buildErrorAttributes,
     buildSuccessAttributes,
+    createHookFailureReporter,
     detectConnectumTransport,
     estimateMessageSize,
     scopeAsyncIterable,
+    shouldInstrument,
     wrapAsyncIterable,
 } from "./shared.ts";
 import { getTracer } from "./tracer.ts";
@@ -73,17 +75,12 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
 
     let rpcMetrics: RpcServerMetrics | undefined;
     let rpcMetricsMeter: Meter | undefined;
+    const reportHookFailure = createHookFailureReporter("server");
 
     return (next) => async (req) => {
-        // 1. Filter check: skip instrumentation if filter returns false
-        if (filter) {
-            const shouldInstrument = filter({
-                service: req.service.typeName,
-                method: req.method.name,
-                stream: req.stream,
-            });
-            if (!shouldInstrument) return next(req);
-        }
+        // 1. Filter check: skip instrumentation if filter returns false (a filter that
+        // throws instruments the call; see shouldInstrument)
+        if (!shouldInstrument(filter, { service: req.service.typeName, method: req.method.name, stream: req.stream }, reportHookFailure)) return next(req);
 
         // 2. No-op check: if both tracing and metrics are disabled, pass through
         if (withoutTracing && withoutMetrics) return next(req);
@@ -109,7 +106,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         // Apply attribute filter if provided. The `connectum.transport`
         // attribute is added *after* filtering so user attribute filters
         // cannot accidentally strip it.
-        const filteredAttributes: Record<string, unknown> = { ...applyAttributeFilter(baseAttributes, attributeFilter) };
+        const filteredAttributes: Record<string, unknown> = { ...applyAttributeFilter(baseAttributes, attributeFilter, reportHookFailure) };
         const spanAttributes = { ...filteredAttributes, [ATTR_CONNECTUM_TRANSPORT]: transportKind };
 
         // Metric label uses the short key per OTel metric-label conventions.
