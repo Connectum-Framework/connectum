@@ -487,6 +487,17 @@ export function initProvider(options?: ProviderOptions): void {
 }
 
 /**
+ * Whether a provider exists, without creating one. The provider registers the
+ * OpenTelemetry diagnostics logger when it is created, so code that wants to report
+ * through `diag` can tell whether the report would be seen.
+ *
+ * @internal
+ */
+export function hasProvider(): boolean {
+    return provider !== undefined;
+}
+
+/**
  * Get the current OpenTelemetry provider.
  *
  * If not yet initialized, lazily creates a provider with default

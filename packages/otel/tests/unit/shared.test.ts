@@ -15,7 +15,9 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { ItemSchema } from "../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts";
 import {
 	ATTR_RPC_METHOD,
 	ATTR_RPC_SYSTEM_NAME,
@@ -35,6 +37,44 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("estimateMessageSize", () => {
+	// Oracle: the protobuf wire format. A message `{ value: "abc", sequence: 150 }` of
+	// streaming.v1.Item is field 1 (tag 0x0a, length 3, "abc") and field 2 (tag 0x10,
+	// varint 150 = 0x96 0x01): 2 + 3 + 1 + 2 = 8 bytes. The bytes are written out here,
+	// not produced by the library under test.
+	it("should measure a protobuf-es v2 message by the serialized length under its schema", () => {
+		const message = create(ItemSchema, { value: "abc", sequence: 150 });
+
+		assert.strictEqual(typeof (message as { toBinary?: unknown }).toBinary, "undefined", "a v2 message has no toBinary() method");
+		assert.strictEqual(estimateMessageSize(message, ItemSchema), 8);
+	});
+
+	it("should report 0 for an empty v2 message, whose serialized form has no bytes", () => {
+		assert.strictEqual(estimateMessageSize(create(ItemSchema), ItemSchema), 0);
+	});
+
+	it("should report 0 for a v2 message when its schema is not known", () => {
+		assert.strictEqual(estimateMessageSize(create(ItemSchema, { value: "abc" })), 0);
+	});
+
+	it("should not throw and report 0 for an object that is not a message of the schema", () => {
+		assert.strictEqual(estimateMessageSize({ total: 3 }, ItemSchema), 0);
+		assert.strictEqual(estimateMessageSize(42, ItemSchema), 0);
+	});
+
+	it("should fall back to the toBinary() method of a message that the schema cannot serialize", () => {
+		assert.strictEqual(estimateMessageSize({ toBinary: () => new Uint8Array(7) }, ItemSchema), 7);
+	});
+
+	it("should report 0 for a toBinary() method that throws", () => {
+		const message = {
+			toBinary: () => {
+				throw new Error("cannot serialize");
+			},
+		};
+
+		assert.strictEqual(estimateMessageSize(message), 0);
+	});
+
 	it("should return 0 for null", () => {
 		assert.strictEqual(estimateMessageSize(null), 0);
 	});
@@ -128,6 +168,43 @@ describe("buildErrorAttributes", () => {
 		assert.deepStrictEqual(attrs, { "error.type": "TypeError" });
 	});
 
+	// Oracle: the semantic conventions ask for a non-empty, low-cardinality error.type,
+	// and name `_OTHER` as the fallback when the instrumentation has nothing better.
+	it("should fall back to the error's name when its class is anonymous", () => {
+		const Anonymous = (() => class extends Error {})();
+		assert.strictEqual(Anonymous.name, "", "the fixture class has an empty name");
+
+		assert.deepStrictEqual(buildErrorAttributes(new Anonymous("x")), { "error.type": "Error" });
+	});
+
+	it("should fall back to _OTHER when neither the class nor the error has a name", () => {
+		const Anonymous = (() => class extends Error {})();
+		const error = new Anonymous("x");
+		error.name = "";
+
+		assert.deepStrictEqual(buildErrorAttributes(error), { "error.type": "_OTHER" });
+	});
+
+	// A thrown value can be hostile. The attributes describe the failure and must not
+	// replace it: the function returns instead of throwing.
+	it("should report _OTHER for a revoked proxy, whose instanceof check throws", () => {
+		const { proxy, revoke } = Proxy.revocable(new Error("gone"), {});
+		revoke();
+
+		assert.deepStrictEqual(buildErrorAttributes(proxy), { "error.type": "_OTHER" });
+	});
+
+	it("should report _OTHER for an error whose constructor getter throws", () => {
+		const error = new Error("x");
+		Object.defineProperty(error, "constructor", {
+			get() {
+				throw new Error("hostile getter");
+			},
+		});
+
+		assert.deepStrictEqual(buildErrorAttributes(error), { "error.type": "_OTHER" });
+	});
+
 	// The metrics guide: error.type is the error class name for another Error, "otherwise UNKNOWN".
 	const notErrors: Array<[string, unknown]> = [
 		["a string", "something went wrong"],
@@ -218,6 +295,43 @@ describe("buildBaseAttributes", () => {
 // ---------------------------------------------------------------------------
 
 describe("applyAttributeFilter", () => {
+	// The function is exported from the public `@connectum/otel/shared` subpath; callers
+	// that pass one or two arguments keep compiling, and a filter that throws still does
+	// not make the call throw.
+	it("should drop an attribute whose filter throws when the caller passes no reporter", () => {
+		const attrs = {
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
+			[ATTR_SERVER_PORT]: 5000,
+		};
+
+		const result = applyAttributeFilter(attrs, (key) => {
+			if (key === ATTR_SERVER_PORT) throw new Error("filter bug");
+			return true;
+		});
+
+		assert.deepStrictEqual(result, { [ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC });
+	});
+
+	it("should drop an attribute whose filter call throws, keep the others, and report the error", () => {
+		const reported: unknown[] = [];
+		const attrs = {
+			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
+			[ATTR_SERVER_PORT]: 5000,
+		};
+
+		const result = applyAttributeFilter(
+			attrs,
+			(key) => {
+				if (key === ATTR_SERVER_PORT) throw new Error("filter bug");
+				return true;
+			},
+			(hook, error) => reported.push([hook, (error as Error).message]),
+		);
+
+		assert.deepStrictEqual(result, { [ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC });
+		assert.deepStrictEqual(reported, [["attributeFilter", "filter bug"]]);
+	});
+
 	it("should return attrs unchanged when no filter", () => {
 		const attrs = {
 			[ATTR_RPC_SYSTEM_NAME]: RPC_SYSTEM_NAME_CONNECTRPC,
