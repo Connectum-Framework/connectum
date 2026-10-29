@@ -22,6 +22,37 @@ export function describeValue(value: unknown): string {
 }
 
 /**
+ * The longest delay a Node.js timer keeps: a larger one is replaced by 1 ms with a
+ * `TimeoutOverflowWarning`, which turns a long wait into a busy loop.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * Refuse a number option outside `[min, max]`. `allowed` finishes the sentence "<name> must be ...".
+ *
+ * @throws {TypeError} When the value is not a number.
+ * @throws {RangeError} When it is `NaN`, infinite, fractional where `integer` is set, or outside the range.
+ */
+export function assertNumberOption(options: {
+    readonly owner: string;
+    readonly name: string;
+    readonly value: unknown;
+    readonly min: number;
+    readonly max: number;
+    readonly integer?: boolean;
+    readonly allowed: string;
+}): void {
+    const { owner, name, value, min, max, integer = false, allowed } = options;
+    const message = `${owner}: ${name} must be ${allowed}, got ${describeValue(value)}`;
+    if (typeof value !== "number") {
+        throw new TypeError(message);
+    }
+    if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+        throw new RangeError(message);
+    }
+}
+
+/**
  * Refuse a string option that is not usable as a name: it must be a string with a visible character.
  *
  * @throws {TypeError} When the value is not a string.

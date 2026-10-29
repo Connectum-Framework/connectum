@@ -435,6 +435,11 @@ export interface EventBusOptions {
      *
      * Each event handler invocation gets an AbortSignal that fires after
      * this duration. Default: 30000 (30 seconds).
+     *
+     * Must be an integer from 1 to 4294967295 (the range `AbortSignal.timeout()` accepts, and `0`
+     * would abort every signal before the handler runs). Anything else (`NaN`, negative, `0`,
+     * fractional, `Infinity`, a non-number) makes `createEventBus` throw a `RangeError` or
+     * `TypeError` naming the option.
      */
     handlerTimeout?: number;
     /**

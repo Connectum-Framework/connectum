@@ -16,6 +16,7 @@ import { EventRouterImpl } from "./EventRouter.ts";
 import { dlqMiddleware } from "./middleware/dlq.ts";
 import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
+import { assertNumberOption } from "./optionValidation.ts";
 import { resolveTopicName } from "./topic.ts";
 import type { EventBus, EventBusObserverEvent, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
@@ -70,7 +71,18 @@ export function deriveServiceName(serviceNames: readonly string[]): string | und
  */
 export function createEventBus(options: EventBusOptions): EventBus & EventBusLike {
     const { adapter, routes = [], group, middleware: mwConfig } = options;
-    const handlerTimeout = options.handlerTimeout ?? 30_000;
+    const handlerTimeout = options.handlerTimeout === undefined ? 30_000 : options.handlerTimeout;
+    // Evaluated by `AbortSignal.timeout()` on every delivery, so a value it refuses would fail each
+    // delivery before the handler runs, and 0 would abort every signal at once.
+    assertNumberOption({
+        owner: "createEventBus",
+        name: "handlerTimeout",
+        value: handlerTimeout,
+        min: 1,
+        max: 2 ** 32 - 1,
+        integer: true,
+        allowed: "an integer number of milliseconds from 1 to 4294967295",
+    });
     const strictTopics = options.strictTopics ?? false;
     const subscriptions: EventSubscription[] = [];
     let started = false;
