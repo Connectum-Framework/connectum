@@ -936,11 +936,27 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
 }
 
 /**
+ * A header value as text for `RawEvent.metadata`.
+ *
+ * Scalars (strings, numbers, booleans, byte arrays) use their string form. An
+ * AMQP table or array arrives as an object, whose string form is the useless
+ * `[object Object]`; it becomes JSON text instead, with a 64-bit integer written
+ * as its decimal digits because JSON has no place for a BigInt.
+ */
+function headerValueText(value: unknown): string {
+    if (typeof value === "object" && value !== null && !Buffer.isBuffer(value)) {
+        return JSON.stringify(value, (_key, member: unknown) => (typeof member === "bigint" ? member.toString() : member));
+    }
+    return String(value);
+}
+
+/**
  * Parse AMQP message headers into a `Map<string, string>`.
  *
- * Only string-coercible values are included. All headers are passed
- * through; internal EventBus headers (`x-event-id`, `x-published-at`)
- * are removed by the consumer callback after extraction.
+ * Absent and null values are left out. All other headers are passed
+ * through as text (see {@link headerValueText}); internal EventBus headers
+ * (`x-event-id`, `x-published-at`) are removed by the consumer callback after
+ * extraction.
  */
 function parseHeaders(headers: Record<string, unknown> | undefined): Map<string, string> {
     const map = new Map<string, string>();
@@ -949,7 +965,7 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
     }
     for (const [key, value] of Object.entries(headers)) {
         if (value !== undefined && value !== null) {
-            map.set(key, String(value));
+            map.set(key, headerValueText(value));
         }
     }
     return map;
