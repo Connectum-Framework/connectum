@@ -164,6 +164,20 @@ check("healthcheck.ServingStatus enum + manager singleton", () => {
     const m = hc.createHealthcheckManager();
     assert.ok(m);
 });
+check("healthcheck: the manager refuses a bad status and announces changes; Healthcheck() refuses a bad watchInterval", () => {
+    const m = hc.createHealthcheckManager();
+    let announced = 0;
+    m.subscribe(() => announced++);
+    m.set("db", hc.ServingStatus.SERVING);
+    assert.strictEqual(announced, 1);
+    assert.throws(() => m.set("db", "SERVING" as never), TypeError);
+    assert.throws(() => m.set("db", 99 as never), RangeError);
+    assert.strictEqual(m.getStatus("db")?.status, hc.ServingStatus.SERVING);
+    assert.strictEqual(announced, 1, "a refused call does not announce");
+    assert.throws(() => hc.Healthcheck({ watchInterval: 0 }), RangeError);
+    assert.throws(() => hc.createHttpHealthHandler(m, []), RangeError);
+    assert.strictEqual(hc.Healthcheck({ manager: m, watchInterval: 500 }).name, "healthcheck");
+});
 
 // ---------- @connectum/events: bus + pure helpers ----------
 const ev = await import("@connectum/events");
