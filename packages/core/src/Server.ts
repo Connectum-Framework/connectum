@@ -676,7 +676,15 @@ class ServerImpl extends EventEmitter implements Server {
                 // stop() has already reported a failed shutdown through "error";
                 // reporting it again would duplicate the event and, without an
                 // "error" listener, turn it into an unhandled rejection.
+                const duringStart = this._state === ServerState.STARTING;
                 this.stop().catch(() => {});
+                if (duringStart) {
+                    // The stop now waits for a start that may never settle. Release the
+                    // handlers so that a repeated signal gets the default action and ends
+                    // the process, exactly as a repeated signal does once a running
+                    // server has begun to stop (stop() removes the handlers then too).
+                    this._removeAutoShutdown();
+                }
             };
 
             this._signalSubscriptions.push(onProcessSignal(signal, handler));
