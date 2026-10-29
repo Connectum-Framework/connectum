@@ -44,6 +44,9 @@ const EXCHANGE_TYPES: readonly string[] = ["topic", "direct", "fanout", "headers
 /** Largest value of the AMQP `prefetch-count` field (a 16-bit unsigned integer). */
 const MAX_PREFETCH = 65_535;
 
+/** Largest delay `setTimeout` honors; a larger one fires after about 1 ms. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -80,6 +83,19 @@ function optionalInteger(name: string, value: unknown, range: { readonly min: nu
     }
     if (!Number.isInteger(value) || value < range.min || value > range.max) {
         throw new RangeError(`AmqpAdapter: ${name} must be an integer from ${range.min} to ${range.max}, got ${show(value)}`);
+    }
+}
+
+/** A delay in milliseconds a timer can honor: finite, not negative, at most the largest `setTimeout` delay. */
+function optionalDelay(name: string, value: unknown): void {
+    if (value === undefined) {
+        return;
+    }
+    if (typeof value !== "number") {
+        throw new TypeError(`AmqpAdapter: ${name} must be a number of milliseconds, got ${show(value)}`);
+    }
+    if (!Number.isFinite(value) || value < 0 || value > MAX_TIMER_DELAY_MS) {
+        throw new RangeError(`AmqpAdapter: ${name} must be a finite number of milliseconds from 0 to ${MAX_TIMER_DELAY_MS}, got ${show(value)}`);
     }
 }
 
@@ -130,7 +146,9 @@ export function validateAdapterOptions(options: unknown): void {
         throw new TypeError(`AmqpAdapter: publishRetry.maxRetries must be a number, got ${show(retry.maxRetries)}`);
     }
 
-    optionalInteger("consumerOptions.prefetch", optionalObject("consumerOptions", consumerOptions)?.prefetch, { min: 0, max: MAX_PREFETCH });
+    const consumer = optionalObject("consumerOptions", consumerOptions);
+    optionalInteger("consumerOptions.prefetch", consumer?.prefetch, { min: 0, max: MAX_PREFETCH });
+    optionalDelay("consumerOptions.redeliveryDelay", consumer?.redeliveryDelay);
 
     const queue = optionalObject("queueOptions", queueOptions);
     optionalInteger("queueOptions.messageTtl", queue?.messageTtl, { min: 0, max: Number.MAX_SAFE_INTEGER });

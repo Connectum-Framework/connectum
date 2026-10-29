@@ -901,6 +901,31 @@ export interface AmqpConsumerOptions {
     readonly prefetch?: number;
 
     /**
+     * Milliseconds to hold a message unacknowledged after its handler threw,
+     * before it is requeued. Opt-in: unset or `0` requeues at once, so a
+     * handler that always throws receives the same message as fast as the
+     * broker can deliver it (tens of thousands of times in a few seconds,
+     * measured against RabbitMQ 4.3), which keeps a CPU core busy and floods
+     * the logs.
+     *
+     * The held message occupies one `prefetch` slot for the whole delay, and
+     * the delay applies to every handler failure of this adapter's
+     * subscriptions, not only to a poison message. It does not apply to a
+     * message the handler already settled with `ack()` or `nack()`. When the
+     * channel closes during the wait (`unsubscribe()`, `disconnect()`, a lost
+     * connection) the wait ends and the broker returns the message itself.
+     * The attempt number stays 1 or 2: `redelivered` is a flag, not a counter,
+     * so a delay does not replace `retry` and `dlq` middleware for a message
+     * that can never succeed.
+     *
+     * A finite number of milliseconds from `0` to `2147483647` (the largest
+     * delay a timer honors); anything else makes `AmqpAdapter()` throw.
+     *
+     * @default 0
+     */
+    readonly redeliveryDelay?: number;
+
+    /**
      * Whether the private queue of a subscription without `group` is exclusive
      * to the subscriber's connection, so the broker removes it with that
      * connection. RabbitMQ 4.3 and later refuse a queue that is neither

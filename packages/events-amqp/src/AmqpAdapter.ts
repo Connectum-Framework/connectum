@@ -31,7 +31,7 @@ import type {
     AmqpSettlementAction,
 } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
-import { validateAdapterOptions } from "./validateOptions.ts";
+import { MAX_TIMER_DELAY_MS, validateAdapterOptions } from "./validateOptions.ts";
 
 /** Default exchange name when none is provided. */
 const DEFAULT_EXCHANGE = "connectum.events";
@@ -371,9 +371,6 @@ export function computeRecoveryDelay(
 export function normalizeInitialConnectBudget(raw: unknown): number | null {
     return typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : null;
 }
-
-/** Largest delay `setTimeout` honors; a larger one fires after about 1 ms. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
  * Normalize `publishTimeoutMs` into a delay `setTimeout` can honor.
@@ -963,6 +960,26 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
 interface DeliveryChannel {
     ack(message: amqp.Message): void;
     nack(message: amqp.Message, allUpTo: boolean, requeue: boolean): void;
+    /** Present on a real channel; lets a redelivery pause end as soon as the channel closes. */
+    once?(event: "close", listener: () => void): unknown;
+    off?(event: "close", listener: () => void): unknown;
+}
+
+/**
+ * Wait `delayMs` before a failed delivery is requeued, or less when its channel
+ * closes first: a closed channel returns the unacknowledged message to the queue
+ * by itself, so a timer that outlived it would only delay shutdown.
+ */
+function pauseBeforeRequeue(channel: DeliveryChannel, delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+        const finish = (): void => {
+            clearTimeout(timer);
+            channel.off?.("close", finish);
+            resolve();
+        };
+        const timer = setTimeout(finish, delayMs);
+        channel.once?.("close", finish);
+    });
 }
 
 /**
@@ -1021,8 +1038,10 @@ export function handleDelivery(params: {
     readonly handler: RawEventHandler;
     readonly decode: ((data: Uint8Array) => Uint8Array) | undefined;
     readonly lifecycle: AmqpLifecycleCallbacks | undefined;
+    /** Milliseconds to hold a message the handler failed on before requeueing it; unset or 0 requeues at once. */
+    readonly redeliveryDelay?: number | undefined;
 }): Promise<void> {
-    const { channel, message: msg, queue, handler, decode, lifecycle } = params;
+    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay } = params;
     const delivery = { queue, message: msg };
 
     // A second settlement of the same delivery tag makes the broker close the
@@ -1106,11 +1125,18 @@ export function handleDelivery(params: {
     // has finished and any requeue after its failure is done; it never rejects.
     return new Promise<void>((resolve) => {
         resolve(handler(rawEvent, ack, nack));
-    }).catch(() => {
+    }).catch(async () => {
         // Handler error — requeue for redelivery unless the handler already
         // settled the delivery (its explicit choice stands). Nothing may escape
         // from here: there is no caller above this callback, so a throw would be
         // an unhandled rejection. Any settlement failure is reported instead.
+        //
+        // With a redelivery delay the message is held unacknowledged first, so a
+        // handler that keeps failing is not fed the same message as fast as the
+        // broker can send it. The wait ends early when the channel closes.
+        if (!settled && redeliveryDelay !== undefined && redeliveryDelay > 0) {
+            await pauseBeforeRequeue(channel, redeliveryDelay);
+        }
         try {
             settleOnce("requeue", () => channel.nack(msg, false, true));
         } catch (error) {
@@ -2047,7 +2073,15 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         return;
                     }
 
-                    const delivery = handleDelivery({ channel: ch, message: msg, queue: queueName, handler: record.handler, decode, lifecycle });
+                    const delivery = handleDelivery({
+                        channel: ch,
+                        message: msg,
+                        queue: queueName,
+                        handler: record.handler,
+                        decode,
+                        lifecycle,
+                        redeliveryDelay: options.consumerOptions?.redeliveryDelay,
+                    });
                     record.inFlight.add(delivery);
                     void delivery.then(() => record.inFlight.delete(delivery));
                 },
