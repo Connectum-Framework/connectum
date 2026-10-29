@@ -44,6 +44,15 @@ describe("RedisAdapter brokerOptions validation", () => {
         }
     });
 
+    it("still throws the RangeError naming the option for values JSON cannot serialize", () => {
+        const circular: Record<string, unknown> = {};
+        circular.self = circular;
+        for (const value of [1n, circular, Object.create(null), Symbol("x")]) {
+            assert.throws(() => create({ count: value }), { name: "RangeError", message: /brokerOptions\.count must be a positive safe integer, got / });
+        }
+        assert.throws(() => create({ maxLen: 1n }), { message: "RedisAdapter: brokerOptions.maxLen must be a positive safe integer, got 1" });
+    });
+
     it("reports the offending value so the caller can find it", () => {
         assert.throws(() => create({ count: "abc" }), { message: 'RedisAdapter: brokerOptions.count must be a positive safe integer, got "abc"' });
         assert.throws(() => create({ maxLen: 0 }), { message: "RedisAdapter: brokerOptions.maxLen must be a positive safe integer, got 0" });

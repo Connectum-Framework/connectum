@@ -7,7 +7,20 @@
 import type { RedisBrokerOptions } from "./types.ts";
 
 function describeValue(value: unknown): string {
-    return typeof value === "number" ? String(value) : (JSON.stringify(value) ?? String(value));
+    if (typeof value === "number") {
+        return String(value);
+    }
+    // A BigInt or a circular object makes JSON.stringify throw, and an object without a prototype makes
+    // String() throw; the caller must still get the RangeError that names the option, so fall back step by step.
+    try {
+        return JSON.stringify(value) ?? String(value);
+    } catch {
+        try {
+            return String(value);
+        } catch {
+            return Object.prototype.toString.call(value);
+        }
+    }
 }
 
 function checkInteger(name: string, value: unknown, minimum: 0 | 1): void {
