@@ -49,6 +49,11 @@ export type CallOptions = {
      * Timeout in milliseconds. When omitted, the remaining inbound deadline
      * (`ctx.timeoutMs()`) is injected. A caller may **shorten** the deadline,
      * never extend it (the effective value is `min(timeoutMs, remaining)`).
+     * Must be a finite number greater than 0: any other value rejects the call
+     * with `Code.InvalidArgument` instead of lifting the inherited deadline. If
+     * the inbound deadline has already passed, the call fails with
+     * `Code.DeadlineExceeded`. A standalone `createCatalogClient` has no
+     * inbound deadline and passes a valid value on as is.
      */
     timeoutMs?: number;
     /**
@@ -65,7 +70,9 @@ export type CallOptions = {
     /**
      * Opaque endpoint hint forwarded to the configured `remoteResolver` for
      * services reachable at several endpoints. Ignored for locally-mounted
-     * services.
+     * services. An empty string counts as no endpoint: the resolver receives
+     * the same context, and shares the same cached transport, as for a call
+     * without the option.
      */
     endpoint?: string;
 };

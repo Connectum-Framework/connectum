@@ -95,8 +95,10 @@ describe("Redis consumer group recovery", { skip: REDIS_TEST_URL === undefined ?
                         await publish("before-loss");
                         await until(() => received.includes("before-loss"), "delivery before the loss");
 
-                        await control.del(streamKey);
-                        assert.equal(await control.exists(streamKey), 0);
+                        // The consumer is blocked on the stream with a 100 ms timeout and re-creates the
+                        // group (and so the stream) right after the delete, so the stream may already exist
+                        // again by the next command. The delete count is what shows the stream was there.
+                        assert.equal(await control.del(streamKey), 1, "the stream existed and was deleted");
                         await publish("after-loss");
 
                         await until(() => received.includes("after-loss"), "delivery after the group was lost");
