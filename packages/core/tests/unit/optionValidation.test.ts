@@ -167,3 +167,63 @@ describe("caller prefix in the validation message", () => {
         });
     }
 });
+
+const serverWithOptions = (options: Record<string, unknown>) => () => createServer({ services: [], ...options } as never);
+
+describe("port", () => {
+    for (const bad of [-1, 65536, 70_000, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        it(`rejects the number ${String(bad)} with a RangeError naming the option`, () => {
+            assert.throws(serverWithOptions({ port: bad }), (err: unknown) => err instanceof RangeError && /createServer: port\b/.test(err.message) && err.message.includes(String(bad)));
+        });
+    }
+
+    // A string port is not coerced: Node reads a non-numeric one as a Unix socket path.
+    for (const bad of ["abc", "5000", "", null, true, {}]) {
+        it(`rejects the non-number ${JSON.stringify(bad)} with a TypeError naming the option`, () => {
+            assert.throws(serverWithOptions({ port: bad }), (err: unknown) => err instanceof TypeError && /createServer: port\b/.test(err.message));
+        });
+    }
+
+    for (const good of [0, 1, 5000, 65_535]) {
+        it(`accepts ${good} at creation`, () => {
+            assert.doesNotThrow(serverWithOptions({ port: good }));
+        });
+    }
+
+    it("a valid port is the port the server listens on", async () => {
+        const probe = createServer({ services: [], port: 0, host: "127.0.0.1" });
+        await probe.start();
+        const free = probe.address?.port ?? 0;
+        await probe.stop();
+
+        const server = createServer({ services: [], port: free, host: "127.0.0.1" });
+        await server.start();
+        try {
+            assert.strictEqual(server.address?.port, free);
+        } finally {
+            await server.stop();
+        }
+    });
+});
+
+describe("host", () => {
+    it("rejects the empty string with a RangeError naming the option, because it would bind every interface", () => {
+        assert.throws(serverWithOptions({ host: "" }), (err: unknown) => err instanceof RangeError && /createServer: host\b/.test(err.message));
+    });
+
+    for (const bad of [123, null, true, {}, ["127.0.0.1"]]) {
+        it(`rejects the non-string ${JSON.stringify(bad)} with a TypeError naming the option`, () => {
+            assert.throws(serverWithOptions({ host: bad }), (err: unknown) => err instanceof TypeError && /createServer: host\b/.test(err.message));
+        });
+    }
+
+    it("a valid host is the address the server binds", async () => {
+        const server = createServer({ services: [], port: 0, host: "127.0.0.1" });
+        await server.start();
+        try {
+            assert.strictEqual(server.address?.address, "127.0.0.1");
+        } finally {
+            await server.stop();
+        }
+    });
+});

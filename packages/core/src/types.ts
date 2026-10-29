@@ -287,13 +287,15 @@ export interface CreateServerOptions {
     services: readonly ServiceDefinition[];
 
     /**
-     * Server port
+     * Server port: an integer from 0 to 65535 (`0` lets the system pick a free port).
+     * `createServer()` throws for any other value, a numeric string included.
      * @default 5000
      */
     port?: number;
 
     /**
-     * Server host to bind
+     * Server host to bind: a non-empty string. `createServer()` throws for an empty
+     * or non-string value instead of binding every interface.
      * @default "0.0.0.0"
      */
     host?: string;

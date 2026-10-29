@@ -87,3 +87,35 @@ export function validateShutdownOptions(shutdown: CreateServerOptions["shutdown"
         throw new TypeError(`createServer: shutdown.forceCloseOnTimeout must be a boolean, got ${typeof forceCloseOnTimeout}`);
     }
 }
+
+/**
+ * Reject `port` and `host` values that Node would read in a different sense
+ * than the option documents: a non-numeric string `port` is a Unix socket
+ * path, an out-of-range number fails only inside `start()` with an error that
+ * does not name the option, and an empty or non-string `host` falls back to
+ * all interfaces, which widens the bind address. `port: 0` stays valid (an
+ * ephemeral port). `undefined` means "not set" and keeps the default.
+ *
+ * @throws TypeError if `port` is not a number or `host` is not a string
+ * @throws RangeError if `port` is not an integer from 0 to 65535 or `host` is empty
+ * @internal
+ */
+export function validateListenOptions(options: Pick<CreateServerOptions, "port" | "host">): void {
+    const { port, host } = options;
+    if (port !== undefined) {
+        if (typeof port !== "number") {
+            throw new TypeError(`createServer: port must be a number, got ${typeof port}`);
+        }
+        if (!Number.isInteger(port) || port < 0 || port > 65535) {
+            throw new RangeError(`createServer: port must be an integer from 0 to 65535, got ${String(port)}`);
+        }
+    }
+    if (host !== undefined) {
+        if (typeof host !== "string") {
+            throw new TypeError(`createServer: host must be a non-empty string, got ${typeof host}`);
+        }
+        if (host === "") {
+            throw new RangeError('createServer: host must be a non-empty string (use "0.0.0.0" or "::" to listen on all interfaces)');
+        }
+    }
+}
