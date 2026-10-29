@@ -103,7 +103,8 @@ function boundedName(name: string): string {
  * A second `Healthcheck()` in one server (or an application service that
  * already is `grpc.health.v1.Health`) cannot be seen from here. It is refused
  * with an `Error` when the server builds its routes: `start()` rejects, and so
- * does the first `localClient()`.
+ * does the first call made through `localClient()` (the client itself is
+ * created without building routes).
  *
  * @example
  * ```typescript
