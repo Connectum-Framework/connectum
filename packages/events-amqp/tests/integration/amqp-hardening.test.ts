@@ -341,9 +341,10 @@ for (const image of IMAGES) {
         }
 
         for (const mode of [
-            { label: "recovery: false", recovery: false as const, lifecycle: false },
-            { label: "recovery", recovery: true as const, lifecycle: false },
-            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true },
+            { label: "recovery: false", recovery: false as const, lifecycle: false, cancelled: /AmqpConnectionError: Adapter closed while connect\(\) was in progress/ },
+            // The recovering connection is held from the start, so disconnect() closes it and the connect() reports the initial phase.
+            { label: "recovery", recovery: true as const, lifecycle: false, cancelled: /AmqpConnectionError: Adapter closed during the initial connect phase/ },
+            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true, cancelled: /AmqpConnectionError: Adapter closed while connect\(\) was in progress/ },
         ]) {
             it(`a superseded connect() whose setup finishes late does not take over the publish channel (${mode.label})`, async () => {
                 const name = `hardening-late-setup-${Math.random().toString(36).slice(2, 8)}`;
@@ -361,13 +362,16 @@ for (const image of IMAGES) {
                     );
                     await proxy.setupStarted;
                     await adapter.disconnect();
+                    // disconnect() ends the wait: the first connect() settles although its setup has not finished.
+                    const early = await Promise.race([first, sleep(5_000).then(() => "still pending")]);
+                    assert.match(early, mode.cancelled, "the superseded connect() must not report success, and must not wait for the broker");
                     await adapter.connect({ serviceName: name });
 
-                    // The first connect() resumes only now, with its setup finishing after the second one is live.
+                    // What the first connect() left on the wire finishes only now, after the second one is live.
                     proxy.release();
                     const firstOutcome = await first;
 
-                    assert.match(firstOutcome, /AmqpConnectionError: Adapter closed while connect\(\) was in progress/, "the superseded connect() must not report success");
+                    assert.match(firstOutcome, mode.cancelled, "the superseded connect() must not report success");
                     await adapter.publish("hardening.late-setup.evt", new Uint8Array([1]));
                 } finally {
                     await adapter.disconnect();

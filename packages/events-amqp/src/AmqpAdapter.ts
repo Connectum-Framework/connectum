@@ -268,6 +268,54 @@ export function withConnectionCloseReason(err: unknown, reason: Error | undefine
 }
 
 /**
+ * Wait for `operation`, or end the wait when `signal` aborts first.
+ *
+ * A connection attempt that stalls (a socket that never completes the handshake, a broker that stops
+ * answering the setup) gives its caller nothing to cancel: amqplib sets no timeout unless
+ * `socketOptions.timeout` is given. The signal is also handed to the socket, which destroys it, but
+ * that is not relied on: the wait ends here either way. What the operation yields after the wait
+ * ended is disposed of by `dispose` instead of being leaked.
+ */
+function abortable<T>(operation: Promise<T>, signal: AbortSignal, dispose?: (value: T) => unknown): Promise<T> {
+    const superseded = (): AmqpConnectionError => new AmqpConnectionError("Adapter closed while connect() was in progress");
+    const discard = (value: T): void => {
+        void Promise.resolve(dispose?.(value)).catch(() => undefined);
+    };
+    if (signal.aborted) {
+        operation.then(discard, () => undefined);
+        return Promise.reject(superseded());
+    }
+    return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const onAbort = (): void => {
+            if (!settled) {
+                settled = true;
+                reject(superseded());
+            }
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        operation.then(
+            (value) => {
+                signal.removeEventListener("abort", onAbort);
+                if (settled) {
+                    discard(value);
+                    return;
+                }
+                settled = true;
+                resolve(value);
+            },
+            (error: unknown) => {
+                signal.removeEventListener("abort", onAbort);
+                if (!settled) {
+                    settled = true;
+                    reject(error);
+                }
+            },
+        );
+    });
+}
+
+/**
  * Classify a publisher-confirm failure into a typed error.
  *
  * A connection/channel loss MUST reject with {@link AmqpConnectionError} (the
@@ -1622,6 +1670,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * able to close it.
      */
     let pendingCycle: RecoveryCycle | null = null;
+    /**
+     * Ends what the connect() in flight waits for on the network while it holds no connection that
+     * disconnect() could close: the startup probe and the single connection of `recovery: false`.
+     * The recovering connection has its own handle (`pendingCycle`). It is aborted by disconnect()
+     * and dropped when the connect() settles, so it never reaches an established connection later.
+     */
+    let connectAbort: AbortController | null = null;
     let publishChannel: amqp.ConfirmChannel | null = null;
     let closing = false;
     /**
@@ -2394,6 +2449,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
             const attemptToken = {};
             connectAttempt = attemptToken;
+            const abort = new AbortController();
+            connectAbort = abort;
             const attemptGeneration = generation;
             const isCurrent = (): boolean => generation === attemptGeneration;
             const superseded = (): boolean => !isCurrent();
@@ -2424,6 +2481,12 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 const backoffGuard = recoveryEnabled && recoveryOpts.backoff !== undefined ? createBackoffGuard(recoveryOpts.backoff) : null;
 
                 const connectOptions = buildConnectOptions(options.socketOptions, clientProperties);
+                // disconnect() aborts it while this connect() is pending, and the sockets of every attempt
+                // are destroyed: closing a recovering connection does not stop an attempt that is already
+                // in its handshake, so without the signal that socket stays open for as long as the peer
+                // keeps it. It is never aborted after connect() settled, so an established connection is
+                // still closed gracefully.
+                connectOptions.signal = abort.signal;
                 if (recoveryEnabled) {
                     // amqplib opt-in recovery: reconnect with backoff+jitter; our
                     // setup hook re-creates channels/topology/subscriptions.
@@ -2446,11 +2509,14 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // then attached before amqplib's first attempt, and every attempt
                 // runs the full setup and reports its own failure.
                 if (recoveryEnabled && initialBudget === null && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed || lifecycle?.onLifecycle)) {
-                    const probeOptions = buildConnectOptions(options.socketOptions, clientProperties);
+                    // The probe is a connection of its own that disconnect() knows nothing about: a socket that
+                    // never completes the handshake, or a broker that stops answering the setup, would hold
+                    // connect() forever. Everything below that waits on it ends when disconnect() aborts.
+                    const probeOptions: Record<string, unknown> = { ...buildConnectOptions(options.socketOptions, clientProperties), signal: abort.signal };
 
                     let probe: amqp.ChannelModel | null = null;
                     try {
-                        probe = (await amqplib.connect(options.url, probeOptions)) as amqp.ChannelModel;
+                        probe = await abortable(amqplib.connect(options.url, probeOptions) as Promise<amqp.ChannelModel>, abort.signal, (late) => late.close());
                         // A broker drop while the probe runs its setup pass must
                         // not crash the process via an unhandled 'error' event —
                         // the drop surfaces as an onSetup rejection instead.
@@ -2462,9 +2528,13 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
 
                     if (probe) {
                         try {
-                            await onSetup(probe, isCurrent);
+                            await abortable(onSetup(probe, isCurrent), abort.signal);
                         } catch (err) {
-                            await probe.close().catch(() => undefined);
+                            await abortable(probe.close(), abort.signal).catch(() => undefined);
+                            if (superseded()) {
+                                // disconnect() ended the wait: the caller learns that, not what the aborted setup said.
+                                throw new AmqpConnectionError("Adapter closed while connect() was in progress");
+                            }
                             if (isCurrent()) {
                                 publishChannel = null;
                             }
@@ -2483,7 +2553,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                             // Topology validated; discard the probe. The real recovering
                             // connection re-runs onSetup (re-creating publishChannel)
                             // before connect() returns.
-                            await probe.close().catch(() => undefined);
+                            await abortable(probe.close(), abort.signal).catch(() => undefined);
                             if (isCurrent()) {
                                 publishChannel = null;
                             }
@@ -2557,9 +2627,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // Node reports a connect to a host name with several addresses as an
                 // AggregateError without a message; it is filled in on the error itself,
                 // so its class and code stay.
+                // The connection has no handle that disconnect() could close until it is up, so the
+                // signal (set above) ends the wait on a socket that stalls.
                 let conn: amqp.ChannelModel;
                 try {
-                    conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
+                    conn = await abortable(amqplib.connect(options.url, connectOptions) as Promise<amqp.ChannelModel>, abort.signal, (late) => late.close());
                 } catch (err) {
                     throw explainAggregateError(err);
                 }
@@ -2607,7 +2679,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 });
 
                 try {
-                    await onSetup(conn, isCurrent);
+                    await abortable(onSetup(conn, isCurrent), abort.signal);
                     // A disconnect() during the setup closed nothing: this
                     // connection was not published to `connection` yet.
                     if (superseded()) {
@@ -2617,15 +2689,19 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
                 } catch (err) {
                     setupFailedClose = true;
-                    await conn.close().catch(() => undefined);
+                    await abortable(conn.close(), abort.signal).catch(() => undefined);
                     if (isCurrent()) {
                         publishChannel = null;
                     }
-                    throw err;
+                    // disconnect() ended the wait: the caller learns that, not what the aborted setup said.
+                    throw superseded() && !(err instanceof AmqpConnectionError) ? new AmqpConnectionError("Adapter closed while connect() was in progress", { cause: err }) : err;
                 }
             } finally {
                 if (connectAttempt === attemptToken) {
                     connectAttempt = null;
+                }
+                if (connectAbort === abort) {
+                    connectAbort = null;
                 }
             }
         },
@@ -2635,6 +2711,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             connectAttempt = null;
             generation += 1;
             liveModel = null;
+            // Ends a connect() that waits on a socket it cannot cancel otherwise (see connectAbort).
+            connectAbort?.abort();
+            connectAbort = null;
 
             // A connect() still inside its initial window owns a live
             // recovering connection that is not `connection` yet. Close it
