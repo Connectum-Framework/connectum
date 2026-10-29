@@ -157,7 +157,7 @@ transportParityTest("parity 8.1: a reflection stream answers identically", {
 });
 
 /** One request on a fresh stream; the single response, or the error that ended the stream. */
-async function askOnce(client: Client<typeof ServerReflection>, messageRequest: MessageInitShape<typeof ServerReflectionRequestSchema>["messageRequest"]): Promise<ReflectionResponse> {
+async function askOnce(client: Client<typeof ServerReflection>, messageRequest: NonNullable<MessageInitShape<typeof ServerReflectionRequestSchema>["messageRequest"]>): Promise<ReflectionResponse> {
     async function* send() {
         yield create(ServerReflectionRequestSchema, { messageRequest });
     }
