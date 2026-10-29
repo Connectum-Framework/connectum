@@ -28,6 +28,13 @@ export interface TopicRecoveryOptions {
     readonly wildcards: readonly RegExp[];
     /** The topics on the broker the subscription has seen; replaced by the current list after a recovery. */
     readonly known: Set<string>;
+    /**
+     * The topics that were on the broker when the subscription started; never changed afterwards.
+     * A surviving topic that is not in it was found later and was subscribed from its beginning,
+     * so the replacement subscribes it from its beginning too: a partition of it may have no
+     * committed offset yet, and reading from the end would skip messages that were never settled.
+     */
+    readonly started: ReadonlySet<string>;
     /** Whether topics the group has no offset for are read from their beginning. */
     readonly fromBeginning: boolean;
     /**
@@ -76,7 +83,7 @@ const defaultRetryDelayMs = 5_000;
  * topic discovery). A recovery that fails half-way is repeated after `retryDelay`.
  */
 export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecovery {
-    const { createConsumer, literals, wildcards, known, fromBeginning, runConfig, resumeTimers, listTopics, subscribe } = options;
+    const { createConsumer, literals, wildcards, known, started, fromBeginning, runConfig, resumeTimers, listTopics, subscribe } = options;
     const retryDelay = options.retryDelay ?? defaultRetryDelayMs;
 
     let consumer: Consumer | undefined;
@@ -160,8 +167,9 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
         }
 
         const matching = names.filter(matchesWildcard);
-        const survivors = matching.filter((name) => known.has(name));
-        const fresh = options.discover ? matching.filter((name) => !known.has(name)) : [];
+        const survivors = matching.filter((name) => known.has(name) && started.has(name));
+        // Found after the start (by discovery or an earlier recovery) or created meanwhile: read from the first message.
+        const fresh = matching.filter((name) => (known.has(name) ? !started.has(name) : options.discover) && !literals.includes(name));
         const next = spawn();
         try {
             await next.connect();

@@ -324,6 +324,8 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             // topic that was deleted from one that never existed, so it is taken whether or not topic
             // discovery runs.
             const known = new Set<string>();
+            /** The same list, frozen at the start: tells a topic the consumer began with from one found later. */
+            const started = new Set<string>();
 
             const recovery = createTopicRecovery({
                 createConsumer: (onCrash) => {
@@ -348,6 +350,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 literals,
                 wildcards,
                 known,
+                started,
                 fromBeginning,
                 discover: topicDiscoveryInterval !== undefined,
                 runConfig,
@@ -371,6 +374,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 if (wildcards.length > 0) {
                     for (const name of await (await getAdmin()).listTopics()) {
                         known.add(name);
+                        started.add(name);
                     }
                 }
 

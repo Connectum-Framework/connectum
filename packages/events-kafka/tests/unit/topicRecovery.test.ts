@@ -46,7 +46,7 @@ interface FakeConsumer {
 }
 
 /** Builds the pieces a subscription gives the recovery, with consumers that record what is done to them. */
-function harness(options: { discover?: boolean; known: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
+function harness(options: { discover?: boolean; known: string[]; started?: string[]; topicsOnBroker: () => string[]; wildcards?: RegExp[]; literals?: string[]; failConnects?: number; retryDelay?: number; resumeTimers?: Set<NodeJS.Timeout> }) {
     const consumers: FakeConsumer[] = [];
     const subscribed: { consumer: number; topics: readonly string[]; fromBeginning: boolean }[] = [];
     const known = new Set(options.known);
@@ -82,6 +82,7 @@ function harness(options: { discover?: boolean; known: string[]; topicsOnBroker:
         literals: options.literals ?? [],
         wildcards: options.wildcards ?? [/^orders\..+$/],
         known,
+        started: new Set(options.started ?? options.known),
         fromBeginning: false,
         discover: options.discover ?? true,
         runConfig,
@@ -118,6 +119,18 @@ describe("createTopicRecovery", () => {
             await waitFor(() => consumers[1]?.calls.includes("run") === true, "a second consumer runs");
             assert.ok(consumers[1]?.calls.includes("subscribe orders.c fromBeginning=true"), String(consumers[1]?.calls));
             assert.ok(known.has("orders.c"));
+        });
+    });
+
+    it("keeps reading a topic that discovery found after the start from its beginning", async () => {
+        await quietly(async () => {
+            // orders.late was found by discovery and subscribed from its beginning; a partition of it may have no committed offset yet.
+            const { recovery, consumers, subscribed } = harness({ known: ["orders.a", "orders.b", "orders.late"], started: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a", "orders.late"] });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers[1]?.calls.includes("run") === true, "a second consumer runs");
+            assert.deepEqual(subscribed, [{ consumer: 1, topics: ["orders.a"], fromBeginning: false }], "the topics the consumer started with keep the subscription's own position");
+            assert.ok(consumers[1]?.calls.includes("subscribe orders.late fromBeginning=true"), String(consumers[1]?.calls));
         });
     });
 
