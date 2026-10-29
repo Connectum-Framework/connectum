@@ -368,14 +368,15 @@ describe('createDefaultInterceptors', () => {
         it('should put fallback inside retry', async () => {
             const chain = createDefaultInterceptors({
                 retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
-                fallback: { handler: () => ({ fallback: true }) },
+                fallback: { handler: () => ({ message: 'fallback' }) },
                 validation: false,
             });
             const next = createMockNextError(Code.Unavailable, 'upstream down');
 
-            const result = await compose(chain, next)(request());
+            const result = await compose(chain, next)(validatedRequest('abc'));
 
-            assert.deepStrictEqual(result.message, { fallback: true });
+            assert.ok(isMessage(result.message, EchoResponseSchema), 'the fallback value must be a response message');
+            assert.strictEqual((result.message as { message: string }).message, 'fallback');
             assert.strictEqual(next.mock.calls.length, 1);
         });
 

@@ -291,7 +291,12 @@ export interface BulkheadOptions {
  */
 export interface FallbackOptions<T = unknown> {
     /**
-     * Fallback function to call on error
+     * Fallback function to call on error.
+     *
+     * Returns the response message of the method being called: a message created for
+     * its output type, or a plain object holding that message's fields. Any other value
+     * (`undefined`, `null`, an object with a field the type does not have, a field of
+     * the wrong type) fails the call with a `TypeError` naming the expected type.
      */
     handler: (error: Error) => T | Promise<T>;
 

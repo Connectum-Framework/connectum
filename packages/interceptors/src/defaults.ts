@@ -179,7 +179,8 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  *
  * // Enable fallback with handler
  * const withFallback = createDefaultInterceptors({
- *   fallback: { handler: () => ({ data: [] }) },
+ *   // A plain object with the fields of the method's response message, or a message made with create(ResponseSchema, ...)
+ *   fallback: { handler: () => ({ items: [] }) },
  * });
  *
  * // No interceptors: omit `interceptors` option in createServer()

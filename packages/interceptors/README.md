@@ -107,6 +107,13 @@ on a server chain and on a client transport alike:
 | Header | One field, `content-type`, equal to the request `content-type`. For a Connect GET request, which sends none, it comes from the `encoding` query parameter (`json` gives `application/json`, `proto` gives `application/proto`). |
 | Trailer | `grpc-status: 0` when the request `content-type` starts with `application/grpc` (gRPC and gRPC-web); empty otherwise. |
 
+The `handler` returns the response message of the method: a message made with
+`create(OutputSchema, { ... })`, or a plain object with that message's fields, which the
+interceptor turns into one. Any other value (`undefined`, `null`, an object with a field
+the type does not have, a field of the wrong type) fails the call with a `TypeError` that
+names `createFallbackInterceptor` and the expected type; behind the error handler the client
+sees `Internal: internal error` and the server side sees the full text.
+
 No header of the request is copied into the response, whichever interceptor added
 it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
 HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
