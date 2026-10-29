@@ -8,6 +8,7 @@
  * @module failure
  */
 
+import { ConnectError } from "@connectrpc/connect";
 import type { Span } from "@opentelemetry/api";
 import { SpanStatusCode } from "@opentelemetry/api";
 
@@ -42,7 +43,13 @@ function describeThrown(value: unknown): string {
 export function recordFailure(span: Span, error: unknown): void {
     try {
         if (typeof error === "object" && error !== null && typeof (error as { message?: unknown }).message === "string") {
-            span.recordException(error as Error);
+            // The SDK takes `exception.type` from a numeric `code` property before the
+            // `name`, which turns a ConnectError (code 5 for NOT_FOUND) into the type "5".
+            // The Connect code is already on the span as `error.type`; the exception event
+            // names the class, so it is recorded from the three fields the SDK reads.
+            span.recordException(
+                error instanceof ConnectError ? { name: error.name, message: error.message, ...(error.stack === undefined ? {} : { stack: error.stack }) } : (error as Error),
+            );
             span.setStatus({ code: SpanStatusCode.ERROR, message: (error as { message: string }).message });
             return;
         }

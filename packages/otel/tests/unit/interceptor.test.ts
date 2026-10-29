@@ -357,6 +357,37 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 		});
 
+		// Oracle: the exception event conventions: exception.type is the type or class name of
+		// the exception. The OpenTelemetry SDK reads a numeric `code` property of the
+		// exception before its `name`, which gave "5" for a ConnectError with Code.NotFound.
+		it("should record the class name of a ConnectError, not its numeric code, as exception.type", async () => {
+			const next: any = async (_req: unknown) => { throw new ConnectError("no such user", Code.NotFound); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			const [event] = onlySpan(observed).events.filter((e) => e.name === "exception");
+			assert.ok(event, "the failure is recorded as an exception event");
+			assert.strictEqual(event.attributes[semconv.ATTR_EXCEPTION_TYPE], "ConnectError");
+			assert.strictEqual(event.attributes[semconv.ATTR_EXCEPTION_MESSAGE], "[not_found] no such user");
+			assert.strictEqual(typeof event.attributes[semconv.ATTR_EXCEPTION_STACKTRACE], "string");
+		});
+
+		it("should record the empty-named class of an anonymous error with a non-empty error.type", async () => {
+			const Anonymous = (() => class extends Error {})();
+			const next: any = async (_req: unknown) => { throw new Anonymous("x"); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_ERROR_TYPE], "Error");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "Error");
+		});
+
 		// The Connect spelling of code 1 has one L (as the Connect protocol, Connect-ES and
 		// otelconnect-go write it); the gRPC spelling with two Ls is never produced.
 		it("should report a canceled call as CANCELED with one L and an ERROR span status", async () => {

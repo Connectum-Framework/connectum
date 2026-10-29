@@ -32,6 +32,9 @@ import {
 import { recordFailure } from "./failure.ts";
 import type { OtelAttributeFilter } from "./types.ts";
 
+/** Well-known `error.type` value for an error that the instrumentation cannot name better. */
+const ERROR_TYPE_OTHER = "_OTHER";
+
 /**
  * WeakMap cache for message size estimation.
  * Avoids redundant toBinary() calls for the same message object.
@@ -170,11 +173,25 @@ export function scopeAsyncIterable<T>(iterable: AsyncIterable<T>, scope: Context
 }
 
 /**
+ * Class name of an error for `error.type`: the constructor name, then the error's own
+ * `name` when the class is anonymous, then `_OTHER`, the fallback value the semantic
+ * conventions define for an error that has no better identifier. Never empty.
+ */
+function errorClassName(error: Error): string {
+    const className = error.constructor?.name;
+    if (typeof className === "string" && className !== "") return className;
+    const name = error.name;
+    if (typeof name === "string" && name !== "") return name;
+    return ERROR_TYPE_OTHER;
+}
+
+/**
  * Builds error-specific attributes for spans and metrics.
  *
  * For ConnectError instances, `error.type` and `rpc.response.status_code` both carry the
  * Connect error-code name (the convention asks `error.type` to be the status code).
- * For generic Error instances, records the error constructor name as `error.type` only.
+ * For generic Error instances, records the error constructor name as `error.type` only;
+ * an anonymous class falls back to the error's `name`, then to `_OTHER`.
  * For unknown error types, records "UNKNOWN".
  *
  * @param error - The caught error
@@ -187,7 +204,7 @@ export function buildErrorAttributes(error: unknown): Record<string, string> {
         attrs[ATTR_ERROR_TYPE] = name;
         attrs[ATTR_RPC_RESPONSE_STATUS_CODE] = name;
     } else if (error instanceof Error) {
-        attrs[ATTR_ERROR_TYPE] = error.constructor.name;
+        attrs[ATTR_ERROR_TYPE] = errorClassName(error);
     } else {
         attrs[ATTR_ERROR_TYPE] = "UNKNOWN";
     }

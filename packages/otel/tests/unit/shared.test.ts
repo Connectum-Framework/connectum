@@ -128,6 +128,23 @@ describe("buildErrorAttributes", () => {
 		assert.deepStrictEqual(attrs, { "error.type": "TypeError" });
 	});
 
+	// Oracle: the semantic conventions ask for a non-empty, low-cardinality error.type,
+	// and name `_OTHER` as the fallback when the instrumentation has nothing better.
+	it("should fall back to the error's name when its class is anonymous", () => {
+		const Anonymous = (() => class extends Error {})();
+		assert.strictEqual(Anonymous.name, "", "the fixture class has an empty name");
+
+		assert.deepStrictEqual(buildErrorAttributes(new Anonymous("x")), { "error.type": "Error" });
+	});
+
+	it("should fall back to _OTHER when neither the class nor the error has a name", () => {
+		const Anonymous = (() => class extends Error {})();
+		const error = new Anonymous("x");
+		error.name = "";
+
+		assert.deepStrictEqual(buildErrorAttributes(error), { "error.type": "_OTHER" });
+	});
+
 	// The metrics guide: error.type is the error class name for another Error, "otherwise UNKNOWN".
 	const notErrors: Array<[string, unknown]> = [
 		["a string", "something went wrong"],
