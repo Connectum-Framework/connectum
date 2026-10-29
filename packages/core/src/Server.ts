@@ -15,6 +15,7 @@ import { validateAdmissionOptions, validateListenOptions, validateShutdownOption
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
+import { assertEnabledServicesAreSupplied, assertNoDuplicateService, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -22,6 +23,7 @@ import { createLocalTransport } from "./localTransport.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
+import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
 import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
@@ -85,8 +87,14 @@ class ServerImpl extends EventEmitter implements Server {
         validateShutdownOptions(options.shutdown);
         validateShutdownSignals(options.shutdown);
         validateListenOptions(options);
+        validatePropagateHeaders(options.propagateHeaders);
+        if (options.catalog !== undefined) assertCatalogShape(options.catalog, "createServer");
         this._options = options;
-        this._routes = [...options.services];
+        this._routes = [];
+        for (const service of options.services) {
+            assertNoDuplicateService(this._routes, service, "createServer");
+            this._routes.push(service);
+        }
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
         this._outgoingInterceptors = [...(options.outgoingInterceptors ?? [])];
@@ -97,7 +105,10 @@ class ServerImpl extends EventEmitter implements Server {
         // construction-order coupling with route building.
         const host: CatalogDispatchHost = {
             catalog: options.catalog,
-            propagateHeaders: options.propagateHeaders ?? [],
+            // A frozen copy: what is forwarded must not change when the caller
+            // later edits the array it passed (credentials forwarding is opt-in).
+            propagateHeaders: Object.freeze([...(options.propagateHeaders ?? [])]),
+            hasRemoteResolver: options.remoteResolver !== undefined,
             isLocal: (typeName) => this._getRegisteredServiceTypeNames().has(typeName),
             getLocalTransport: () => this._getCatalogLocalTransport(),
             resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),
@@ -322,8 +333,11 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add service: routes have already been materialized (e.g. via server.localClient()). Add services before any local-transport access.");
+            throw new Error(
+                "Cannot add service: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add services before any local-transport access.",
+            );
         }
+        assertNoDuplicateService(this._routes, service, "addService");
         this._routes.push(service);
     }
 
@@ -332,7 +346,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add interceptor: server is already ${this._state}. Add interceptors before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add interceptor: routes have already been materialized (e.g. via server.localClient()). Add interceptors before any local-transport access.");
+            throw new Error(
+                "Cannot add interceptor: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add interceptors before any local-transport access.",
+            );
         }
         this._interceptors.push(interceptor);
     }
@@ -342,7 +358,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add protocol: server is already ${this._state}. Add protocols before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add protocol: routes have already been materialized (e.g. via server.localClient()). Add protocols before any local-transport access.");
+            throw new Error(
+                "Cannot add protocol: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add protocols before any local-transport access.",
+            );
         }
         this._protocols.push(protocol);
     }
@@ -371,7 +389,15 @@ class ServerImpl extends EventEmitter implements Server {
 
     /**
      * Synchronous lookup: is the given proto service descriptor served locally
-     * by this `Server`? Triggers route materialization on first call.
+     * by this `Server`?
+     *
+     * A service the application defines (`services`, `addService()`, filtered by
+     * `enabledServices`) is answered from its definition, so a lookup before the
+     * routes exist runs no lazy factory and leaves `addService()`,
+     * `addInterceptor()` and `addProtocol()` available. A descriptor that no
+     * definition covers can only come from a protocol; when protocols are
+     * registered, what they mount is known only once the routes are built, so
+     * that lookup builds them (and closes those methods) on first call.
      *
      * @example
      * ```typescript
@@ -379,8 +405,21 @@ class ServerImpl extends EventEmitter implements Server {
      * ```
      */
     hasService(desc: DescService): boolean {
-        const names = this._getRegisteredServiceTypeNames();
-        return names.has(desc.typeName);
+        const { typeName } = desc;
+        if (this._builtRoutes === null) {
+            // Not built yet: the application's own definitions answer without
+            // running lazy factories or freezing addService()/addInterceptor().
+            const enabled = this._options.enabledServices;
+            if (this._routes.some((definition) => definition.descriptor.typeName === typeName && (enabled === undefined || enabled.includes(typeName)))) {
+                return true;
+            }
+            // Only protocols can still provide it, and what they mount is known
+            // only once they register on a router: with none, the answer is no.
+            if (this._protocols.length === 0) {
+                return false;
+            }
+        }
+        return this._getRegisteredServiceTypeNames().has(typeName);
     }
 
     /**
@@ -413,9 +452,10 @@ class ServerImpl extends EventEmitter implements Server {
                     `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
             );
         }
-        const transport = this._resolveRemoteTransport(service.typeName, options?.endpoint);
+        const endpoint = normalizeEndpoint(options?.endpoint);
+        const transport = this._resolveRemoteTransport(service.typeName, endpoint);
         if (!transport) {
-            const at = options?.endpoint ? ` (endpoint "${options.endpoint}")` : "";
+            const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
             throw new ConnectError(`No route for service "${service.typeName}"${at}: the resolver returned null.`, Code.Unavailable);
         }
         return createClient(service, transport);
@@ -433,8 +473,13 @@ class ServerImpl extends EventEmitter implements Server {
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
-        const resolved = this._options.remoteResolver?.(ctx) ?? null;
-        if (resolved === null) return null;
+        const resolver = this._options.remoteResolver;
+        if (resolver === undefined) return null;
+        const answer: unknown = resolver(ctx);
+        if (answer === null) return null;
+        // Checked before anything is cached: an invalid value kept in the cache
+        // would fail every later call to this route the same way.
+        const resolved = assertResolvedTransport(answer, typeName);
         // The resolver's transport is opaque (its own interceptors are fixed at
         // construction), so the server's outgoing chain is applied around it —
         // once per call, outside the transport's own middleware. With an empty
@@ -461,24 +506,27 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
-     * Validate the catalog configuration at startup. Currently the always-on
-     * shape check: every `enabledServices` entry must be a known catalog key
-     * (when a `catalog` is configured). A mismatch is a programmer error
-     * → `CatalogConfigError`.
+     * Validate the catalog configuration at startup. The always-on shape
+     * check: every `enabledServices` entry must be a known catalog key (when a
+     * `catalog` is configured) and the type name of a supplied service. A
+     * mismatch is a programmer error → `CatalogConfigError`.
      *
      * @internal
      */
     private _validateCatalogConfig(): void {
         const { catalog, enabledServices } = this._options;
-        if (!catalog || !enabledServices) return;
-        const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
-        if (missing.length > 0) {
-            const known = Object.keys(catalog);
-            throw new CatalogConfigError(
-                `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
-                    `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
-            );
+        if (!enabledServices) return;
+        if (catalog) {
+            const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
+            if (missing.length > 0) {
+                const known = Object.keys(catalog);
+                throw new CatalogConfigError(
+                    `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
+                        `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+                );
+            }
         }
+        assertEnabledServicesAreSupplied(enabledServices, new Set(this._routes.map((service) => service.descriptor.typeName)));
     }
 
     /**

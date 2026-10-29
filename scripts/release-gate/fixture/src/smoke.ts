@@ -77,9 +77,18 @@ check("core.mapResolver constructs", () => {
     const r = core.mapResolver({} as never);
     assert.strictEqual(typeof r, "function");
 });
-check("core.dnsResolver constructs", () => {
-    const r = core.dnsResolver({ port: 5000 } as never);
+check("core.dnsResolver constructs from a template and resolves a service to a transport", () => {
+    const r = core.dnsResolver({ template: "http://{shortName}.svc.local:5000" });
     assert.strictEqual(typeof r, "function");
+    const transport = r({ typeName: "greeter.v1.GreeterService" });
+    assert.ok(transport !== null && typeof transport.unary === "function" && typeof transport.stream === "function", "a transport");
+});
+check("core.dnsResolver throws CatalogConfigError naming template when it is missing", () => {
+    assert.throws(
+        () => core.dnsResolver({ port: 5000 } as never),
+        (e: unknown) => (e as Error).name === "CatalogConfigError" && /template/.test((e as Error).message),
+        "expected CatalogConfigError naming template",
+    );
 });
 check("core.perServiceEnvResolver constructs", () => {
     const r = core.perServiceEnvResolver({} as never);
