@@ -10,6 +10,7 @@
  * @module gateway-auth-interceptor
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
@@ -45,16 +46,15 @@ function parseIPv4(text: string): number | null {
 }
 
 /**
- * Match an IPv4 address against a pattern: an exact string or `a.b.c.d/prefix`.
+ * Match an IPv4 address against a `a.b.c.d/prefix` block.
  *
  * A pattern that is not a well-formed CIDR block (for example `10.0.0.0/33`,
- * `10.0.0.0/abc`) matches nothing but its exact text: `expectedValues` also
- * carries shared secrets, which may legitimately contain `/`, so a malformed
- * block cannot be told apart from a secret and must not widen trust.
+ * `10.0.0.0/abc`) matches nothing here and is left to the exact comparison in
+ * {@link isTrusted}: `expectedValues` also carries shared secrets, which may
+ * legitimately contain `/`, so a malformed block cannot be told apart from a
+ * secret and must not widen trust.
  */
 function matchesIp(address: string, pattern: string): boolean {
-    if (address === pattern) return true;
-
     const slash = pattern.indexOf("/");
     if (slash === -1) return false;
     const prefixText = pattern.slice(slash + 1);
@@ -70,14 +70,24 @@ function matchesIp(address: string, pattern: string): boolean {
     return Math.floor(peer / blockSize) === Math.floor(network / blockSize);
 }
 
+function digest(text: string): Buffer {
+    // utf16le keeps every code unit distinct; utf8 would map any lone surrogate to U+FFFD and make unequal texts equal.
+    return createHash("sha256").update(text, "utf16le").digest();
+}
+
 /**
  * Check if a trust header value matches any of the expected values.
  *
  * For each expected value, tries exact match first, then CIDR match.
+ *
+ * The exact match is constant time: a shared secret is compared through fixed-size digests with
+ * `timingSafeEqual`, so neither the position of the first differing byte nor the length of the
+ * guess shows in the response time.
  */
 function isTrusted(headerValue: string, expectedValues: readonly string[]): boolean {
+    const headerDigest = digest(headerValue);
     for (const expected of expectedValues) {
-        if (headerValue === expected) return true;
+        if (timingSafeEqual(headerDigest, digest(expected))) return true;
         if (expected.includes("/") && matchesIp(headerValue, expected)) return true;
     }
     return false;
