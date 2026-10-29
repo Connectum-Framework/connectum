@@ -35,8 +35,12 @@ export interface ErrorHandlerOptions {
     /**
      * Callback for error logging. Replaces console.error when provided.
      * Receives rich error info including serverDetails from SanitizableError.
+     *
+     * The callback may be `async`. The interceptor does not wait for it, and a
+     * promise it rejects never becomes an unhandled rejection: the first
+     * failure is written once to `console.error`, later ones are dropped.
      */
-    onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void;
+    onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void | Promise<void>;
 
     /**
      * Send the text of a non-Connect failure to the client.

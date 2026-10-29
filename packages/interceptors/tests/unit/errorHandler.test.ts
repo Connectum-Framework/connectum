@@ -666,4 +666,100 @@ describe("errorHandler interceptor", () => {
             assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
         });
     });
+
+    // `onError` is a reporting hook that usually talks to an external sink. A sink that is
+    // down must not take the process down or change what the caller receives.
+    describe("an onError callback that fails", () => {
+        type Options = NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]>;
+        const sanitizable = () => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { query: "SELECT 1" }, code: Code.Unavailable });
+
+        /** Everything the run wrote with `console.error` and every promise rejection nobody handled. */
+        async function observe(run: () => Promise<void>): Promise<{ consoleErrors: unknown[][]; unhandled: unknown[] }> {
+            const consoleErrors: unknown[][] = [];
+            const unhandled: unknown[] = [];
+            const originalConsoleError = console.error;
+            const onUnhandled = (reason: unknown): void => {
+                unhandled.push(reason);
+            };
+            // Listeners that node:test installed itself would fail the whole file on an unhandled rejection.
+            const previous = process.listeners("unhandledRejection");
+            process.removeAllListeners("unhandledRejection");
+            process.on("unhandledRejection", onUnhandled);
+            console.error = (...args: unknown[]) => {
+                consoleErrors.push(args);
+            };
+            try {
+                await run();
+                // An unhandled rejection is reported after the microtask queue has drained.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            } finally {
+                console.error = originalConsoleError;
+                process.removeListener("unhandledRejection", onUnhandled);
+                for (const listener of previous) process.on("unhandledRejection", listener);
+            }
+            return { consoleErrors, unhandled };
+        }
+
+        async function failureWith(thrown: unknown, options: Options): Promise<unknown> {
+            const next = mock.fn(async () => {
+                throw thrown;
+            });
+            try {
+                await createErrorHandlerInterceptor({ logErrors: false, ...options })(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} }));
+            } catch (err) {
+                return err;
+            }
+            assert.fail("interceptor should have rejected");
+        }
+
+        it("does not leave an unhandled rejection when onError is async and rejects", async () => {
+            const original = new ConnectError("user 42 not found", Code.NotFound);
+            let received: unknown;
+            const { unhandled } = await observe(async () => {
+                received = await failureWith(original, {
+                    onError: async () => {
+                        throw new Error("async sink down");
+                    },
+                });
+            });
+
+            assert.deepStrictEqual(unhandled, [], "a rejection of onError must be handled");
+            assert.strictEqual(received, original, "the caller still receives the handler's own error");
+        });
+
+        it("does not leave an unhandled rejection for a SanitizableError either", async () => {
+            let received: unknown;
+            const { unhandled } = await observe(async () => {
+                received = await failureWith(sanitizable(), {
+                    onError: () => Promise.reject(new Error("async sink down")),
+                });
+            });
+
+            assert.deepStrictEqual(unhandled, []);
+            assertConnectError(received, Code.Unavailable);
+            assert.strictEqual((received as ConnectError).rawMessage, "safe text");
+        });
+
+        it("reports a rejection of onError once on the console, not once per call", async () => {
+            const sink = new Error("async sink down");
+            const interceptor = createErrorHandlerInterceptor({
+                logErrors: false,
+                onError: async () => {
+                    throw sink;
+                },
+            });
+            const { consoleErrors, unhandled } = await observe(async () => {
+                for (let call = 0; call < 3; call++) {
+                    const next = mock.fn(async () => {
+                        throw new Error("boom");
+                    });
+                    await assert.rejects(() => interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} })));
+                }
+            });
+
+            assert.deepStrictEqual(unhandled, []);
+            assert.strictEqual(consoleErrors.length, 1, "later failures of the same callback are not reported again");
+            assert.ok(consoleErrors[0]!.includes(sink), "the report carries the failure of the callback");
+        });
+    });
 });

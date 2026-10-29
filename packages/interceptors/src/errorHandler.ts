@@ -35,6 +35,38 @@ function isConnectCode(value: unknown): value is Code {
     return typeof value === "number" && Number.isInteger(value) && value >= Code.Canceled && value <= Code.Unauthenticated;
 }
 
+type OnErrorCallback = NonNullable<ErrorHandlerOptions["onError"]>;
+
+/**
+ * Wrap `onError` so that its failure cannot reach the caller or the process.
+ *
+ * The callback is a reporting hook that usually talks to an external sink (an error
+ * tracker, a metrics endpoint). A rejected promise it returns would otherwise be an
+ * unhandled rejection, which ends a Node process. The first failure is written to the
+ * console so it is not silent; later ones are dropped, because a sink that is down
+ * fails on every call and would flood the console on every RPC.
+ */
+function guardOnError(onError: OnErrorCallback): (info: Parameters<OnErrorCallback>[0]) => void {
+    let reported = false;
+    const report = (failure: unknown): void => {
+        if (reported) {
+            return;
+        }
+        reported = true;
+        try {
+            console.error("[@connectum/interceptors] errorHandler onError failed; further onError failures are not reported", failure);
+        } catch {
+            // The report is best effort: a console that throws must not change the outcome of the call either.
+        }
+    };
+    return (info) => {
+        const pending: unknown = onError(info);
+        if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
+            Promise.resolve(pending).then(undefined, report);
+        }
+    };
+}
+
 /**
  * Create error handler interceptor
  *
@@ -85,7 +117,8 @@ function isConnectCode(value: unknown): value is Code {
  * ```
  */
 export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {}): Interceptor {
-    const { logErrors = process.env.NODE_ENV !== "production", includeStackTrace = process.env.NODE_ENV !== "production", onError, exposeErrorMessages = false } = options;
+    const { logErrors = process.env.NODE_ENV !== "production", includeStackTrace = process.env.NODE_ENV !== "production", exposeErrorMessages = false } = options;
+    const notifyOnError = options.onError ? guardOnError(options.onError) : undefined;
 
     return (next) => async (req) => {
         try {
@@ -93,7 +126,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
         } catch (err) {
             // SanitizableError: preserve server details for logging, sanitize for client
             if (isSanitizableError(err)) {
-                if (onError) {
+                if (notifyOnError) {
                     const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
                         error: err as Error,
                         code: err.code,
@@ -101,7 +134,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                     };
                     const errStack = (err as Error).stack;
                     if (includeStackTrace && errStack) info.stack = errStack;
-                    onError(info);
+                    notifyOnError(info);
                 } else if (logErrors) {
                     console.error("Interceptor caught error:", err);
                     console.error("Transformed ConnectError:", err.clientMessage);
@@ -123,7 +156,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
             const full = ConnectError.from(err, code);
             const client = exposeErrorMessages || err instanceof ConnectError ? full : new ConnectError(clientMessageFor(full.code), full.code, undefined, undefined, err);
 
-            if (onError) {
+            if (notifyOnError) {
                 // The code the client receives: `ConnectError.from` may map the error to a different
                 // code than the one picked above (an `AbortError` becomes `Canceled`).
                 const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
@@ -131,7 +164,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                     code: full.code,
                 };
                 if (includeStackTrace && full.stack) info.stack = full.stack;
-                onError(info);
+                notifyOnError(info);
             } else if (logErrors) {
                 console.error("Interceptor caught error:", err);
                 console.error("Transformed ConnectError:", client);
