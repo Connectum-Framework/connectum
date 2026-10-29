@@ -125,6 +125,11 @@ of another kind than the field takes (a number in a string field, a non-boolean 
 a string in an int32 field, a non-array in a repeated field, an enum name instead of its
 number, a bare oneof member name); and a number the encoder cannot write (a fraction or a value
 beyond the range in an int32, `NaN`). An enum number that the enum does not name is accepted.
+The forms are those of protobuf-es: a wrapper (`StringValue`, `Int64Value`, ...) in a singular
+field outside a oneof is its bare value (`name: "cached"`, not `{ value: "cached" }`), and a
+`Struct` is a plain JSON object (a message object is refused in both places); `Timestamp`,
+`Duration`, `Value`, `ListValue`, `Any`, `FieldMask` and `Empty` are objects with their own
+fields (`{ seconds: 1n }`), and a wrapper in a list or a oneof is an object with `value`.
 Behind the error handler the client sees `Internal: internal error` and the server side sees the
 full text.
 
