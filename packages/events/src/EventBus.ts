@@ -169,16 +169,20 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     if (mwConfig?.dlq) {
         const dlqTopic = mwConfig.dlq.topic;
         middlewares.push(
-            dlqMiddleware(mwConfig.dlq, {
-                publish: (topic, payload, publishOptions) => {
-                    const republish = adapter.publish(topic, payload, publishOptions);
-                    if (stopping) {
-                        notify({ type: "dlq-republish", topic: dlqTopic });
-                        trackRelay(republish);
-                    }
-                    return republish;
+            dlqMiddleware(
+                mwConfig.dlq,
+                {
+                    publish: (topic, payload, publishOptions) => {
+                        const republish = adapter.publish(topic, payload, publishOptions);
+                        if (stopping) {
+                            notify({ type: "dlq-republish", topic: dlqTopic });
+                            trackRelay(republish);
+                        }
+                        return republish;
+                    },
                 },
-            }),
+                (failure) => notify({ type: "dlq-failed", ...failure }),
+            ),
         );
     }
 

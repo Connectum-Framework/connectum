@@ -324,7 +324,12 @@ export interface RetryOptions {
  * Dead letter queue middleware options
  */
 export interface DlqOptions {
-    /** DLQ topic name */
+    /**
+     * DLQ topic name: a non-empty string. Anything else (a missing or empty value, a non-string)
+     * makes `createEventBus` and `dlqMiddleware` throw when they are created, because every failed
+     * event would otherwise be lost. Whether the broker accepts the name is decided by the adapter
+     * at the first publish; a rejected publish is reported as a `dlq-failed` observer event.
+     */
     topic: string;
     /**
      * Custom error serializer for DLQ metadata.
@@ -372,7 +377,15 @@ export type EventBusObserverEvent =
      */
     | { readonly type: "rejected"; readonly reason: "aborted" | "not-in-flight" }
     /** The built-in dead-letter middleware republished a failed event while the bus was stopping. */
-    | { readonly type: "dlq-republish"; readonly topic: string };
+    | { readonly type: "dlq-republish"; readonly topic: string }
+    /**
+     * The built-in dead-letter middleware could not publish a failed event to its topic, at any
+     * time, not only during a stop. The original is nacked without requeue and, unless the broker
+     * has its own dead-letter policy, lost. `topic` is the dead-letter topic, `eventType` and
+     * `eventId` identify the event, `error` is what the publish rejected with (it can carry broker
+     * details, so redact it before logging it outside your service).
+     */
+    | { readonly type: "dlq-failed"; readonly topic: string; readonly eventType: string; readonly eventId: string; readonly error: unknown };
 
 /** Callback for {@link EventBusObserverEvent}; see `EventBusOptions.observer`. */
 export type EventBusObserver = (event: EventBusObserverEvent) => void | Promise<void>;
@@ -454,9 +467,11 @@ export interface EventBusOptions {
      */
     drainAbortGrace?: number;
     /**
-     * Receives what the shutdown could not finish, see {@link EventBusObserverEvent}. Called
-     * synchronously by `stop()`; an error thrown by it (or a promise it returns that rejects)
-     * is swallowed, because reporting must never prevent the adapter from being disconnected.
+     * Receives what the shutdown could not finish and a failed dead-letter publish, see
+     * {@link EventBusObserverEvent}. Called synchronously by the code that reports (`stop()`, or
+     * the dead-letter middleware); an error thrown by it (or a promise it returns that rejects)
+     * is swallowed, because reporting must never prevent the adapter from being disconnected or
+     * change what happens to the event.
      */
     observer?: EventBusObserver;
     /**
