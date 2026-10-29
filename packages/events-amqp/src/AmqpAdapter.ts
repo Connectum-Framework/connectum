@@ -31,6 +31,7 @@ import type {
     AmqpSettlementAction,
 } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
+import { MAX_TIMER_DELAY_MS, validateAdapterOptions } from "./validateOptions.ts";
 
 /** Default exchange name when none is provided. */
 const DEFAULT_EXCHANGE = "connectum.events";
@@ -189,6 +190,84 @@ export function isConnectionLostError(err: unknown): boolean {
 }
 
 /**
+ * Give an `AggregateError` that carries no message the text of its members.
+ *
+ * Node reports a failed connect to a hostname with several addresses (such as
+ * `localhost`, which resolves to `::1` and `127.0.0.1`) as an `AggregateError`
+ * with an empty message, one member per address. Used as the `cause` of an
+ * error, or reported through a lifecycle event, it then states neither the
+ * reason nor the address, while the same failure against a single address says
+ * `connect ECONNREFUSED 127.0.0.1:1`. The message is filled in on the error
+ * itself, so its class, `code` and `errors` stay what callers may already match
+ * on; an error that has a message, or is not an aggregate, is returned as is.
+ * Exported (not via the package barrel) for direct unit testing.
+ */
+export function explainAggregateError<E>(err: E): E {
+    if (err instanceof AggregateError && err.message === "" && err.errors.length > 0) {
+        err.message = err.errors.map((member: unknown) => (member instanceof Error && member.message !== "" ? member.message : String(member))).join("; ");
+    }
+    return err;
+}
+
+/** The part of a connection `watchConnectionCloseReason` listens to. */
+interface ConnectionCloseEvents {
+    on(event: "error" | "close", listener: (reason?: unknown) => void): unknown;
+    off(event: "error" | "close", listener: (reason?: unknown) => void): unknown;
+}
+
+/**
+ * Remember why the broker closed a connection while an operation on it was running.
+ *
+ * A connection exception (for example RabbitMQ 4.3 refusing a non-durable named
+ * queue with `541 INTERNAL_ERROR`) reaches amqplib as the connection's `error`
+ * and `close` events, and the operation in flight is rejected afterwards with
+ * the generic "Channel ended, no reply will be forthcoming". Without this the
+ * reply code and text are gone by the time the error is built. The first
+ * reason wins; `stop()` removes the listeners. Exported (not via the package
+ * barrel) for direct unit testing.
+ */
+export function watchConnectionCloseReason(connection: ConnectionCloseEvents): { reason(): Error | undefined; stop(): void } {
+    let seen: Error | undefined;
+    const remember = (reason?: unknown): void => {
+        if (seen === undefined && reason instanceof Error) {
+            seen = reason;
+        }
+    };
+    connection.on("error", remember);
+    connection.on("close", remember);
+    return {
+        reason: () => seen,
+        stop: () => {
+            connection.off("error", remember);
+            connection.off("close", remember);
+        },
+    };
+}
+
+/**
+ * Replace the generic channel failure inside a topology error with the reason
+ * the broker gave when it closed the connection.
+ *
+ * Only a failure that carries no broker reply of its own is replaced: a
+ * channel exception arrives with its reply `code`, and that reply is already
+ * the answer. The error keeps its message prefix (what was being declared) and
+ * its `object`; the broker's reply code and text are appended and the close
+ * reason becomes the `cause`. Anything else is returned unchanged. Exported
+ * (not via the package barrel) for direct unit testing.
+ */
+export function withConnectionCloseReason(err: unknown, reason: Error | undefined): unknown {
+    if (reason === undefined || !(err instanceof AmqpTopologyError) || !(err.cause instanceof Error)) {
+        return err;
+    }
+    if (typeof (err.cause as { code?: unknown }).code === "number") {
+        return err;
+    }
+    const prefix = err.message.endsWith(`: ${err.cause.message}`) ? err.message.slice(0, -(err.cause.message.length + 2)) : err.message;
+    const options = err.object !== undefined ? { cause: reason, object: err.object } : { cause: reason };
+    return new AmqpTopologyError(`${prefix}: ${reason.message}`, options);
+}
+
+/**
  * Classify a publisher-confirm failure into a typed error.
  *
  * A connection/channel loss MUST reject with {@link AmqpConnectionError} (the
@@ -293,9 +372,6 @@ export function normalizeInitialConnectBudget(raw: unknown): number | null {
     return typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : null;
 }
 
-/** Largest delay `setTimeout` honors; a larger one fires after about 1 ms. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
 /**
  * Normalize `publishTimeoutMs` into a delay `setTimeout` can honor.
  *
@@ -319,8 +395,9 @@ export function normalizePublishTimeout(raw: unknown): number {
  *
  * A finite number becomes `max(0, floor(N))`; `Infinity` is kept (retry until
  * `disconnect()` aborts); `-Infinity` is a negative budget and gives 0; anything else
- * (`NaN`, a non-number, unset) is the default of 5. Exported (not via the
- * package barrel) for direct unit testing.
+ * (`NaN`, unset) is the default of 5. The adapter factory rejects a value that
+ * is not a number before it gets here. Exported (not via the package barrel)
+ * for direct unit testing.
  */
 export function normalizePublishRetryBudget(raw: unknown): number {
     if (raw === Number.POSITIVE_INFINITY) {
@@ -501,6 +578,20 @@ export function isAutoRetriablePublishError(err: unknown, options?: { readonly r
         return true;
     }
     return options?.retryOnTimeout === true && err instanceof AmqpPublishTimeoutError;
+}
+
+/**
+ * Whether a synchronous failure of `channel.publish()` is amqplib rejecting an
+ * argument it cannot encode.
+ *
+ * amqplib reports those as `TypeError` (wrong type, a string over 255 bytes, a
+ * NaN timestamp) or `RangeError` (a timestamp that is negative, fractional or
+ * infinite). A closed channel throws amqplib's `IllegalOperationError`, a plain
+ * `Error`, so it is not confused with them and stays a connection failure.
+ * Exported (not via the package barrel) for direct unit testing.
+ */
+export function isInvalidPublishArgument(err: unknown): boolean {
+    return err instanceof TypeError || err instanceof RangeError;
 }
 
 /**
@@ -786,7 +877,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         hooks.deliverConnected();
     });
     conn.on("disconnect", (err: Error) => {
-        hooks.noteConnectionError(err);
+        hooks.noteConnectionError(explainAggregateError(err));
         hooks.failPendingReturns();
         dispatchLifecycle(lifecycle, { type: "disconnected", error: err });
     });
@@ -794,10 +885,10 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         if (hooks.isInitialWindow() && hooks.isClosing()) {
             return;
         }
-        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: info.error });
+        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: explainAggregateError(info.error) });
     });
     conn.on("connect-failed", (err: Error) => {
-        hooks.noteConnectionError(err);
+        hooks.noteConnectionError(explainAggregateError(err));
         if (hooks.isInitialWindow()) {
             // amqplib finishes an attempt that was already in flight when
             // the wrapper was closed and still reports its failure — often
@@ -838,6 +929,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         // Tear down before notifying, like the fatal path: a callback that
         // reacts to the give-up (for example by calling connect() again) must
         // already see the dead cycle forgotten, not "already connected".
+        explainAggregateError(err);
         hooks.markCycleDead();
         dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: hooks.mapGiveUpError(err) });
     });
@@ -845,11 +937,27 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
 }
 
 /**
+ * A header value as text for `RawEvent.metadata`.
+ *
+ * Scalars (strings, numbers, booleans, byte arrays) use their string form. An
+ * AMQP table or array arrives as an object, whose string form is the useless
+ * `[object Object]`; it becomes JSON text instead, with a 64-bit integer written
+ * as its decimal digits because JSON has no place for a BigInt.
+ */
+function headerValueText(value: unknown): string {
+    if (typeof value === "object" && value !== null && !Buffer.isBuffer(value)) {
+        return JSON.stringify(value, (_key, member: unknown) => (typeof member === "bigint" ? member.toString() : member));
+    }
+    return String(value);
+}
+
+/**
  * Parse AMQP message headers into a `Map<string, string>`.
  *
- * Only string-coercible values are included. All headers are passed
- * through; internal EventBus headers (`x-event-id`, `x-published-at`)
- * are removed by the consumer callback after extraction.
+ * Absent and null values are left out. All other headers are passed
+ * through as text (see {@link headerValueText}); internal EventBus headers
+ * (`x-event-id`, `x-published-at`) are removed by the consumer callback after
+ * extraction.
  */
 function parseHeaders(headers: Record<string, unknown> | undefined): Map<string, string> {
     const map = new Map<string, string>();
@@ -858,7 +966,7 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
     }
     for (const [key, value] of Object.entries(headers)) {
         if (value !== undefined && value !== null) {
-            map.set(key, String(value));
+            map.set(key, headerValueText(value));
         }
     }
     return map;
@@ -869,6 +977,58 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
 interface DeliveryChannel {
     ack(message: amqp.Message): void;
     nack(message: amqp.Message, allUpTo: boolean, requeue: boolean): void;
+}
+
+/**
+ * The deliveries of one consumer channel that wait out `redeliveryDelay`.
+ *
+ * One object per channel, ended by one listener on that channel: a listener per
+ * delivery would exceed the emitter's limit of ten with the default `prefetch`.
+ */
+export interface RedeliveryHold {
+    /** Set when the channel closed or the subscription is being stopped; no delivery waits after that. */
+    stopped: boolean;
+    /** The release functions of the deliveries that are waiting now. */
+    readonly releases: Set<() => void>;
+}
+
+/** A hold with nothing waiting that has not been stopped. */
+export function createRedeliveryHold(): RedeliveryHold {
+    return { stopped: false, releases: new Set() };
+}
+
+/**
+ * End the waits of a hold and refuse new ones. Called when the channel closes (it
+ * returns the unacknowledged messages to the queue by itself, so a timer that
+ * outlived it would only delay shutdown) and when the subscription is stopped (the
+ * messages go back to the queue on the still-open channel at once, instead of
+ * staying unacknowledged for the rest of the delay with nobody left to consume them).
+ */
+export function stopRedeliveryHold(hold: RedeliveryHold): void {
+    hold.stopped = true;
+    for (const release of [...hold.releases]) {
+        release();
+    }
+}
+
+/**
+ * Wait `delayMs` before a failed delivery is requeued, or less when the hold is
+ * stopped. A hold that is already stopped (the handler failed after the channel
+ * closed or the subscription ended) does not wait at all.
+ */
+function pauseBeforeRequeue(delayMs: number, hold: RedeliveryHold | undefined): Promise<void> {
+    if (hold?.stopped === true) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        const finish = (): void => {
+            clearTimeout(timer);
+            hold?.releases.delete(finish);
+            resolve();
+        };
+        const timer = setTimeout(finish, delayMs);
+        hold?.releases.add(finish);
+    });
 }
 
 /**
@@ -927,8 +1087,12 @@ export function handleDelivery(params: {
     readonly handler: RawEventHandler;
     readonly decode: ((data: Uint8Array) => Uint8Array) | undefined;
     readonly lifecycle: AmqpLifecycleCallbacks | undefined;
+    /** Milliseconds to hold a message the handler failed on before requeueing it; unset or 0 requeues at once. */
+    readonly redeliveryDelay?: number | undefined;
+    /** The hold of the delivery's channel: where it registers its wait and learns that the wait must end. */
+    readonly redeliveryHold?: RedeliveryHold | undefined;
 }): Promise<void> {
-    const { channel, message: msg, queue, handler, decode, lifecycle } = params;
+    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay, redeliveryHold } = params;
     const delivery = { queue, message: msg };
 
     // A second settlement of the same delivery tag makes the broker close the
@@ -1012,11 +1176,18 @@ export function handleDelivery(params: {
     // has finished and any requeue after its failure is done; it never rejects.
     return new Promise<void>((resolve) => {
         resolve(handler(rawEvent, ack, nack));
-    }).catch(() => {
+    }).catch(async () => {
         // Handler error — requeue for redelivery unless the handler already
         // settled the delivery (its explicit choice stands). Nothing may escape
         // from here: there is no caller above this callback, so a throw would be
         // an unhandled rejection. Any settlement failure is reported instead.
+        //
+        // With a redelivery delay the message is held unacknowledged first, so a
+        // handler that keeps failing is not fed the same message as fast as the
+        // broker can send it. The wait ends early when the channel closes.
+        if (!settled && redeliveryDelay !== undefined && redeliveryDelay > 0) {
+            await pauseBeforeRequeue(redeliveryDelay, redeliveryHold);
+        }
         try {
             settleOnce("requeue", () => channel.nack(msg, false, true));
         } catch (error) {
@@ -1038,6 +1209,11 @@ interface SubscriptionRecord extends RestorableSubscription {
      * makes the broker take the message back and deliver it again.
      */
     readonly inFlight: Set<Promise<void>>;
+    /**
+     * The hold of the current consumer channel (see {@link RedeliveryHold}); `unsubscribe()` stops it.
+     * Replaced by a fresh one with each channel, so a delivery of an earlier channel never waits on it.
+     */
+    redeliveryHold: RedeliveryHold;
 }
 
 /** A timer handle the restorer can hold without keeping the process alive. */
@@ -1348,6 +1524,12 @@ interface RecoveryCycle {
  *
  * @param options - AMQP adapter configuration
  * @returns EventAdapter instance
+ * @throws {TypeError} when an option has the wrong type or an unsupported value: `options` itself,
+ *   `exchangeType`, `topologyMode`, `recovery`, `publishRetry`, `consumerOptions`, `queueOptions`,
+ *   `serialization`, or `recovery.backoff` combined with a delay knob. The message names the option.
+ * @throws {RangeError} when a number is out of range: `consumerOptions.prefetch` (integer 0 to 65535),
+ *   `queueOptions.messageTtl` and `maxLength` (non-negative integers), `recovery.jitter` and
+ *   `publishRetry.jitter` (0 to 1).
  *
  * @example
  * ```typescript
@@ -1402,6 +1584,7 @@ interface RecoveryCycle {
  * ```
  */
 export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
+    validateAdapterOptions(options);
     rejectBackoffWithDelayKnobs(options.recovery);
     const exchange = options.exchange ?? DEFAULT_EXCHANGE;
     const exchangeType = options.exchangeType ?? DEFAULT_EXCHANGE_TYPE;
@@ -1784,6 +1967,17 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * auto-delete queue that never had a consumer is not removed on its own.
      */
     async function startConsumer(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<ConsumerIncarnation | null> {
+        const closeWatch = watchConnectionCloseReason(model);
+        try {
+            return await startConsumerOn(model, record);
+        } catch (err) {
+            throw withConnectionCloseReason(err, closeWatch.reason());
+        } finally {
+            closeWatch.stop();
+        }
+    }
+
+    async function startConsumerOn(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<ConsumerIncarnation | null> {
         const group = record.subOptions?.group;
         const isAutoGroup = !group;
         const override: AmqpQueueOverride | undefined = group ? options.queueOverrides?.[group] : undefined;
@@ -1814,6 +2008,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
             throw err;
         }
+        // One listener ends every redelivery wait of this channel when it closes.
+        const redeliveryHold = createRedeliveryHold();
+        record.redeliveryHold = redeliveryHold;
+        ch.once("close", () => stopRedeliveryHold(redeliveryHold));
         watchConsumerChannel(ch, incarnation, (cause, error) => {
             restorer.lost({ record, generation: mine, incarnation, channel: ch, queue: queueName, cause, error });
         });
@@ -1935,7 +2133,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         return;
                     }
 
-                    const delivery = handleDelivery({ channel: ch, message: msg, queue: queueName, handler: record.handler, decode, lifecycle });
+                    const delivery = handleDelivery({
+                        channel: ch,
+                        message: msg,
+                        queue: queueName,
+                        handler: record.handler,
+                        decode,
+                        lifecycle,
+                        redeliveryDelay: options.consumerOptions?.redeliveryDelay,
+                        redeliveryHold,
+                    });
                     record.inFlight.add(delivery);
                     void delivery.then(() => record.inFlight.delete(delivery));
                 },
@@ -2144,6 +2351,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * disconnect(), then a failed backoff hook, then an exhausted budget.
      */
     function initialConnectFailure(cycle: RecoveryCycle, err: unknown, budget: number): Error {
+        explainAggregateError(err);
         if (cycle.failFastError !== null) {
             return cycle.failFastError;
         }
@@ -2320,6 +2528,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 try {
                     conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
                 } catch (err) {
+                    // Node reports a connect to a host name with several addresses as an
+                    // AggregateError without a message; fill it in on the error itself so
+                    // every error below carries the reason, and its class and code stay.
+                    explainAggregateError(err);
                     // With recovery, a rejection here means amqplib's initial loop
                     // gave up (finite maxRetries without initialConnectMaxRetries):
                     // it rejects with its raw last error (ECONNREFUSED, ...). Keep
@@ -2620,6 +2832,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                 });
                             });
                         } catch (err) {
+                            // amqplib validates the frame fields while encoding and throws a
+                            // TypeError/RangeError for an argument it cannot write (a routing key or
+                            // message id over 255 bytes, a timestamp that is not a non-negative integer).
+                            // Nothing was sent, the connection is fine, and the same call fails the same
+                            // way every time: it is the caller's error, so it is not wrapped as a
+                            // connection failure (which publishRetry would repeat) and passes through.
+                            if (isInvalidPublishArgument(err)) {
+                                settle(() => reject(err));
+                                return;
+                            }
                             const rootCause = publishChannelErrors.get(ch) ?? err;
                             settle(() => reject(new AmqpConnectionError(`Publish failed: ${err instanceof Error ? err.message : String(err)}`, { cause: rootCause })));
                             return;
@@ -2726,6 +2948,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 queueName: "",
                 isAutoGroup: !subOptions?.group,
                 inFlight: new Set(),
+                redeliveryHold: createRedeliveryHold(),
                 active: true,
                 generation: 0,
                 restore: { attempt: 0, timer: null, stabilityTimer: null, pending: false },
@@ -2774,6 +2997,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         // they would be delivered again after their handlers had finished. It is closed
                         // when the last of them has settled; the consumer is already cancelled, so no
                         // new delivery starts, and unsubscribe() itself does not wait for a slow handler.
+                        // A delivery that is only waiting out `redeliveryDelay` is not working: it is
+                        // requeued now, on this still-open channel, rather than after the delay.
+                        stopRedeliveryHold(record.redeliveryHold);
                         const closeWhenIdle = async (): Promise<void> => {
                             await Promise.allSettled([...record.inFlight]);
                             await ch.close().catch(() => undefined);

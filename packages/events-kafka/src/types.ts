@@ -129,7 +129,14 @@ export interface KafkaAdapterOptions {
         readonly sessionTimeout?: number;
         /** Whether to start consuming from the beginning of topics (default: false) */
         readonly fromBeginning?: boolean;
-        /** Whether Kafka should auto-create topics on subscribe (default: false) */
+        /**
+         * Whether the broker may create a topic that `subscribe()` names and that does not exist yet
+         * (default: false). The broker must allow it too (`auto.create.topics.enable`, on by default
+         * in Apache Kafka). The broker answers the first request for a missing topic with an error and
+         * creates the topic a moment later, so with this option `subscribe()` asks again for up to ten
+         * seconds before it gives up. Without it, `subscribe()` rejects an unknown topic at once with an
+         * error that names the topic. Wildcard patterns only match topics that exist and are not affected.
+         */
         readonly allowAutoTopicCreation?: boolean;
         /**
          * Milliseconds to wait before a message that was not committed is delivered again

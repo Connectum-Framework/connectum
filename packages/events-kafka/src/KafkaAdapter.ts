@@ -12,9 +12,11 @@ import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, R
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
+import { explainConnectionError, explainInvalidTopic } from "./brokerErrors.ts";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import { dispatchLifecycle, trackConsumer } from "./lifecycle.ts";
+import { subscribeToTopics } from "./subscribeTopics.ts";
 import { startTopicDiscovery } from "./topicDiscovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
@@ -144,6 +146,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             await candidate.connect();
         } catch (err) {
             await candidate.disconnect().catch(() => undefined);
+            explainConnectionError(err);
             throw err;
         }
         admin = candidate;
@@ -161,27 +164,43 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         return adminConnecting;
     };
 
+    /** The connect() attempt under way, shared by every overlapping call. */
+    let connecting: Promise<void> | null = null;
+
+    const openProducer = async (context: AdapterContext | undefined): Promise<void> => {
+        kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
+        const p = kafka.producer();
+        try {
+            await p.connect();
+        } catch (err) {
+            await p.disconnect().catch(() => undefined);
+            explainConnectionError(err);
+            throw err;
+        }
+        producer = p;
+        connected = true;
+        dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+    };
+
     return {
         name: "kafka",
 
-        async connect(context?: AdapterContext): Promise<void> {
+        connect(context?: AdapterContext): Promise<void> {
             if (connected) {
-                return;
+                return Promise.resolve();
             }
-            kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
-            const p = kafka.producer();
-            try {
-                await p.connect();
-            } catch (err) {
-                await p.disconnect().catch(() => undefined);
-                throw err;
-            }
-            producer = p;
-            connected = true;
-            dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+            // Overlapping calls share one attempt: each would otherwise create its own producer, and the
+            // one assigned last would replace the others, which nothing could ever disconnect again.
+            // A failed attempt is not remembered, so the next call starts a new one.
+            connecting ??= openProducer(context).finally(() => {
+                connecting = null;
+            });
+            return connecting;
         },
 
         async disconnect(): Promise<void> {
+            // A disconnect that arrives while connect() is under way ends the connection that attempt makes.
+            await connecting?.catch(() => undefined);
             if (!connected) {
                 return;
             }
@@ -237,17 +256,22 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const compression = compressionOf(options);
 
-            await producer.send({
-                topic: eventType,
-                messages: [
-                    {
-                        key: publishOptions?.key ?? null,
-                        value: Buffer.from(payload),
-                        headers,
-                    },
-                ],
-                ...(compression !== undefined && { compression }),
-            });
+            try {
+                await producer.send({
+                    topic: eventType,
+                    messages: [
+                        {
+                            key: publishOptions?.key ?? null,
+                            value: Buffer.from(payload),
+                            headers,
+                        },
+                    ],
+                    ...(compression !== undefined && { compression }),
+                });
+            } catch (err) {
+                explainConnectionError(err);
+                throw explainInvalidTopic(eventType, err);
+            }
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
@@ -265,9 +289,10 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const groupId = subOptions?.group ?? `connectum-${randomUUID()}`;
             const sessionTimeout = options.consumerOptions?.sessionTimeout;
+            const allowAutoTopicCreation = options.consumerOptions?.allowAutoTopicCreation ?? false;
             const consumer = kafka.consumer({
                 groupId,
-                allowAutoTopicCreation: options.consumerOptions?.allowAutoTopicCreation ?? false,
+                allowAutoTopicCreation,
                 heartbeatInterval: defaultHeartbeatIntervalMs,
                 ...(sessionTimeout !== undefined && { sessionTimeout }),
             });
@@ -279,7 +304,12 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 consumer.on(consumer.events.GROUP_JOIN, (event) => tracker.onGroupJoin(event.payload));
             }
 
-            await consumer.connect();
+            try {
+                await consumer.connect();
+            } catch (err) {
+                explainConnectionError(err);
+                throw err;
+            }
 
             /** Pending partition resumes of this subscription, cleared on unsubscribe. */
             const resumeTimers = new Set<NodeJS.Timeout>();
@@ -314,7 +344,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                     }
                 }
 
-                await consumer.subscribe({ topics, fromBeginning });
+                await subscribeToTopics({ consumer, topics, fromBeginning, allowAutoTopicCreation });
                 await consumer.run(runConfig);
 
                 if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {

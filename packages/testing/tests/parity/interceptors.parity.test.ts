@@ -507,3 +507,16 @@ transportParityTest("parity 3.3f: serializer interceptor hands the handler the J
     },
     compare: expectOnBoth({ message: "json:sz" }),
 });
+
+// serializer with strict unknown-field handling: the option set the guide shows must not reject the
+// protobuf message a real handler returns (it carries a `$typeName` marker), so a valid call succeeds.
+transportParityTest("parity 3.3g: serializer with ignoreUnknownFields=false serves a valid call on both transports", {
+    services: [echoRoutes()],
+    interceptors: [createSerializerInterceptor({ alwaysEmitImplicit: true, ignoreUnknownFields: false })],
+    scenario: async ({ transport }) => {
+        const client = createClient(EchoService, transport);
+        const res = await client.echo(create(EchoRequestSchema, { message: "strict" }));
+        return { response: { message: res.message } };
+    },
+    compare: expectOnBoth({ message: "echo:strict" }),
+});

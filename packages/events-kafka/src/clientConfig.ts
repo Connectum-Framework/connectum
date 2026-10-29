@@ -9,6 +9,7 @@
 
 import type { KafkaConfig } from "kafkajs";
 import { CompressionTypes, logLevel } from "kafkajs";
+import { defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import type { KafkaAdapterOptions, KafkaCompression, KafkaLogLevel } from "./types.ts";
 
 /** Codec numbers of the client library, by the name the adapter's option uses. */
@@ -33,11 +34,94 @@ const logLevels: Readonly<Record<KafkaLogLevel, number>> = {
 export const removedKafkaConfigMessage =
     "KafkaAdapter: the `kafkaConfig` option was removed. Use the typed options (ssl, sasl, connectionTimeout, authenticationTimeout, reauthenticationThreshold, requestTimeout, enforceRequestTimeout, retry, logLevel) and put client-specific settings that have no portable form in `clientOptions`. See https://connectum.dev/en/migration/kafka-adapter-options";
 
+/** SASL mechanisms the typed `sasl` option carries. A mechanism the client library supports only through `clientOptions` does not belong here. */
+const saslMechanisms = ["plain", "scram-sha-256", "scram-sha-512", "oauthbearer", "aws"] as const;
+
+/** A short, safe rendering of a rejected value for an error message. */
+function describe(value: unknown): string {
+    if (typeof value === "number") {
+        return String(value);
+    }
+    if (typeof value === "string" || typeof value === "boolean" || value === undefined || value === null) {
+        return JSON.stringify(value) ?? "undefined";
+    }
+    return Array.isArray(value) ? "an array" : typeof value;
+}
+
+function assertBrokers(brokers: unknown): void {
+    if (!Array.isArray(brokers)) {
+        throw new TypeError(`KafkaAdapter: brokers must be an array of broker addresses such as ["localhost:9092"], got ${describe(brokers)}`);
+    }
+    if (brokers.length === 0) {
+        throw new RangeError("KafkaAdapter: brokers must contain at least one broker address");
+    }
+    brokers.forEach((entry: unknown, index) => {
+        if (typeof entry !== "string" || entry.trim() === "") {
+            throw new TypeError(`KafkaAdapter: brokers[${index}] must be a non-empty "host:port" string, got ${describe(entry)}`);
+        }
+    });
+}
+
+function assertSessionTimeout(sessionTimeout: unknown): void {
+    if (sessionTimeout === undefined) {
+        return;
+    }
+    // KafkaJS refuses a session timeout that is not above the heartbeat interval, but only when the first consumer is created.
+    if (typeof sessionTimeout !== "number" || !Number.isFinite(sessionTimeout) || sessionTimeout <= defaultHeartbeatIntervalMs) {
+        throw new RangeError(
+            `KafkaAdapter: consumerOptions.sessionTimeout must be a finite number of milliseconds above the heartbeat interval (${defaultHeartbeatIntervalMs}), got ${describe(sessionTimeout)}`,
+        );
+    }
+}
+
+function assertRetry(retry: unknown): void {
+    if (retry === undefined) {
+        return;
+    }
+    if (typeof retry !== "object" || retry === null || Array.isArray(retry)) {
+        throw new TypeError(`KafkaAdapter: retry must be an object, got ${describe(retry)}`);
+    }
+    const { retries, ...times } = retry as Record<string, unknown>;
+    if (retries !== undefined && (typeof retries !== "number" || !Number.isInteger(retries) || retries < 0)) {
+        throw new RangeError(`KafkaAdapter: retry.retries must be a non-negative integer, got ${describe(retries)}`);
+    }
+    for (const key of ["maxRetryTime", "initialRetryTime", "factor", "multiplier"]) {
+        const value = times[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+            throw new RangeError(`KafkaAdapter: retry.${key} must be a non-negative finite number, got ${describe(value)}`);
+        }
+    }
+}
+
+function assertSasl(sasl: unknown): void {
+    if (sasl === undefined) {
+        return;
+    }
+    if (typeof sasl !== "object" || sasl === null || Array.isArray(sasl)) {
+        throw new TypeError(`KafkaAdapter: sasl must be an object with a mechanism, got ${describe(sasl)}`);
+    }
+    const mechanism = (sasl as { mechanism?: unknown }).mechanism;
+    if (typeof mechanism !== "string" || !(saslMechanisms as readonly string[]).includes(mechanism)) {
+        throw new RangeError(`KafkaAdapter: sasl.mechanism must be one of ${saslMechanisms.join(", ")}, got ${describe(mechanism)}`);
+    }
+}
+
 /**
  * Validate the options that carry a closed set of values or that were removed, and throw
  * at construction time instead of connecting with a different configuration than asked for.
  */
 export function assertKafkaOptions(options: KafkaAdapterOptions): void {
+    if (typeof options !== "object" || options === null) {
+        throw new TypeError(`KafkaAdapter: options must be an object with a \`brokers\` list, got ${describe(options)}`);
+    }
+    assertBrokers(options.brokers);
+    const clientId: unknown = options.clientId;
+    if (clientId !== undefined && (typeof clientId !== "string" || clientId.trim() === "")) {
+        throw new TypeError(`KafkaAdapter: clientId must be a non-empty string, got ${describe(clientId)}`);
+    }
+    assertSessionTimeout(options.consumerOptions?.sessionTimeout);
+    assertRetry(options.retry);
+    assertSasl(options.sasl);
     // A JavaScript caller (or one that casts) can still pass the old key; ignoring it would silently drop its ssl and sasl.
     if ("kafkaConfig" in options && (options as { kafkaConfig?: unknown }).kafkaConfig !== undefined) {
         throw new TypeError(removedKafkaConfigMessage);
