@@ -317,3 +317,41 @@ for (const [label, onError] of [
         },
     });
 }
+
+// A SanitizableError whose `code` is not a failure code (1..16) reaches both transports as
+// `internal` with its clientMessage; the server details stay on the server.
+transportParityTest("parity: a SanitizableError with an invalid code maps to internal with its clientMessage on both transports", {
+    services: [
+        defineService(EchoService, {
+            echo: () => {
+                throw Object.assign(new Error("secret-detail-4c1d"), { clientMessage: "safe text", serverDetails: { table: "users" }, code: 99 });
+            },
+            secureEcho: () => {
+                throw new Error("should not be reached");
+            },
+            rateLimitedEcho: () => {
+                throw new Error("should not be reached");
+            },
+        }),
+    ],
+    interceptors: [createErrorHandlerInterceptor({ logErrors: false })],
+    scenario: async ({ transport }) => {
+        const client = createClient(EchoService, transport);
+        try {
+            await client.echo(create(EchoRequestSchema, { message: "x" }));
+            return { response: { unreachable: true } };
+        } catch (err) {
+            return { error: describeError(err) };
+        }
+    },
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.Internal)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "safe text", `${name} transport must deliver the clientMessage`);
+            assert.ok(!JSON.stringify(result.error).includes("secret-detail-4c1d"), `${name} transport must not disclose the original text`);
+        }
+    },
+});

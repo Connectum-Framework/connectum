@@ -56,7 +56,7 @@ describe("a failing onError callback as seen by the client", () => {
     const recordUnhandled = (reason: unknown): void => {
         unhandled.push(reason);
     };
-    let previousListeners: NodeJS.UnhandledRejectionListener[] = [];
+    let previousListeners: Array<(reason: unknown, promise: Promise<unknown>) => void> = [];
 
     before(async () => {
         // node:test installs its own listener that fails the whole file; this suite looks at the event itself.

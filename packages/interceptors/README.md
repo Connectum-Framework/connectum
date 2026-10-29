@@ -70,7 +70,7 @@ from the request.
 | Thrown by the handler | Client receives |
 |---|---|
 | `ConnectError` | Unchanged: code, text, details, metadata |
-| `SanitizableError` | Its `clientMessage` and code; `serverDetails` stay on the server |
+| `SanitizableError` | Its `clientMessage` and code (`Internal` when the code is not an integer from 1 to 16); `serverDetails` stay on the server |
 | `Error` or a thrown string | `Internal` with the text `internal error` |
 | An error with a numeric `code` | That code with an empty text |
 

@@ -137,6 +137,57 @@ describe("errorHandler interceptor", () => {
         });
     }
 
+    // A SanitizableError is a deliberate client message, but its `code` is subject to the same
+    // rule as the code of any other failure: only the integers 1..16 are failure codes. Any other
+    // number is Internal for the client and for onError, and the clientMessage is kept.
+    describe("SanitizableError with a code outside 1..16", () => {
+        const sanitizableWith = (code: number) => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { table: "users" }, code });
+
+        for (const code of [0, 17, 99, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 404]) {
+            it(`sends Internal with the clientMessage for code ${String(code)}, and gives onError the same code`, async () => {
+                const original = sanitizableWith(code);
+                let reported: { code: number; serverDetails?: Readonly<Record<string, unknown>> } | undefined;
+                const interceptor = createErrorHandlerInterceptor({
+                    logErrors: false,
+                    onError: (info) => {
+                        reported = info;
+                    },
+                });
+
+                await assert.rejects(
+                    () => interceptor((async () => {
+                        throw original;
+                    }) as any)(mockReq),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Internal);
+                        assert.strictEqual(err.rawMessage, "safe text");
+                        return true;
+                    },
+                );
+
+                assert.ok(reported, "onError must have been called");
+                assert.strictEqual(reported.code, Code.Internal);
+                assert.deepStrictEqual(reported.serverDetails, { table: "users" });
+                assert.ok(Object.is(original.code, code), "the original error keeps its own code");
+            });
+        }
+
+        for (let code = Code.Canceled; code <= Code.Unauthenticated; code++) {
+            it(`keeps the valid code ${code} with the clientMessage`, async () => {
+                await assert.rejects(
+                    () => createErrorHandlerInterceptor({ logErrors: false })((async () => {
+                        throw sanitizableWith(code);
+                    }) as any)(mockReq),
+                    (err: unknown) => {
+                        assertConnectError(err, code);
+                        assert.strictEqual((err as ConnectError).rawMessage, "safe text");
+                        return true;
+                    },
+                );
+            });
+        }
+    });
+
     // Connect turns an AbortError into Canceled whatever code the interceptor passes in; the code
     // given to onError must be the one the client receives, not the one picked before that.
     it("should give onError the same code the client receives for a DOMException AbortError (numeric code 20)", async () => {

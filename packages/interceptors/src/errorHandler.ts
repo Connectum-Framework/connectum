@@ -82,6 +82,7 @@ function guardOnError(onError: OnErrorCallback): (info: Parameters<OnErrorCallba
  * - `ConnectError`: passes through unchanged, text and details included. Its author
  *   chose to send them.
  * - `SanitizableError`: its `clientMessage` and code only; `serverDetails` stay on the server.
+ *   A `code` that is not an integer from 1 to 16 is sent as `Internal`, as for any other failure.
  * - Anything else (`Error`, a thrown string, an object with a numeric `code`): the code is
  *   the numeric `code` when it is an integer from 1 to 16 (a Connect failure code) and
  *   `Internal` otherwise (no code, a non-number, or a number outside 1..16). The text of the failure
@@ -135,10 +136,13 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
         } catch (err) {
             // SanitizableError: preserve server details for logging, sanitize for client
             if (isSanitizableError(err)) {
+                // The message is the author's; the code is held to the same rule as any other failure's.
+                // A number outside 1..16 is no failure code, and the wire layer would turn it into `Unknown`.
+                const sanitizedCode = isConnectCode(err.code) ? err.code : Code.Internal;
                 if (notifyOnError) {
                     const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
                         error: err as Error,
-                        code: err.code,
+                        code: sanitizedCode,
                         serverDetails: err.serverDetails,
                     };
                     const errStack = (err as Error).stack;
@@ -151,7 +155,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                         console.error("Stack trace:", (err as Error).stack);
                     }
                 }
-                throw new ConnectError(err.clientMessage, err.code);
+                throw new ConnectError(err.clientMessage, sanitizedCode);
             }
 
             // Non-sanitizable errors
