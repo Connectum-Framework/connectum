@@ -35,6 +35,8 @@ export interface CatalogDispatchHost {
     readonly catalog: ServiceCatalog | undefined;
     /** Inbound header names copied onto outgoing catalog calls (empty by default). */
     readonly propagateHeaders: readonly string[];
+    /** Whether a `remoteResolver` is configured. Without one, a non-local target cannot be routed at all. */
+    readonly hasRemoteResolver: boolean;
     /** Whether `typeName` is mounted locally on this server. */
     isLocal(typeName: string): boolean;
     /** The in-process transport carrying `outgoingInterceptors` (lazily built). */
@@ -504,6 +506,16 @@ export class CatalogDispatcher {
         const endpoint = normalizeEndpoint(requestedEndpoint);
         if (this.host.isLocal(typeName)) {
             return this.host.getLocalTransport();
+        }
+        // No resolver at all is a wiring mistake, not an outage: `Unavailable`
+        // would be retried by default and could never succeed. Same code as the
+        // sibling mistake "no catalog is configured".
+        if (!this.host.hasRemoteResolver) {
+            throw new ConnectError(
+                `ctx.call: cannot reach "${typeName}": it is not mounted locally and no remoteResolver is configured. ` +
+                    `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
+                Code.FailedPrecondition,
+            );
         }
         let transport: Transport | null;
         try {
