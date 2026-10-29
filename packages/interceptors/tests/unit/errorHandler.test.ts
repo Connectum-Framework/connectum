@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import { inspect } from "node:util";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
 import { createErrorHandlerInterceptor } from "../../src/errorHandler.ts";
@@ -240,14 +241,17 @@ describe("errorHandler interceptor", () => {
         );
 
         // The documented guarantee: the original failure stays in the console log, and the
-        // log also shows the ConnectError the client receives. Both are checked by what they
-        // carry, not by the label text in front of them.
+        // log also says what the client receives. The failure is logged as the object, so its
+        // stack is in the log; what the client receives is logged as its text, not as the
+        // ConnectError, which would print the original again through its `cause`.
         const logged = originalError.mock.calls.flatMap((call) => call.arguments);
         assert.ok(logged.includes(original), "the original failure itself must be logged");
-        const clientFacing = logged.find((arg): arg is ConnectError => arg instanceof ConnectError);
-        assert.ok(clientFacing, "the ConnectError sent to the client must be logged");
-        assert.strictEqual(clientFacing, rejected, "the logged ConnectError must be the one the client receives");
-        assert.strictEqual(clientFacing.code, Code.Internal);
+        assert.ok(!logged.some((arg) => arg instanceof ConnectError), "the ConnectError must not be logged as an object: it would print the failure a second time");
+        assert.ok(
+            logged.includes((rejected as ConnectError).message),
+            "what the client receives must be logged as text",
+        );
+        assert.strictEqual((rejected as ConnectError).code, Code.Internal);
 
         originalError.mock.restore();
     });
@@ -284,13 +288,12 @@ describe("errorHandler interceptor", () => {
 
         await assert.rejects(() => handler(mockReq));
 
-        // includeStackTrace puts a real stack into the log: a string with the failure text
-        // followed by "at ..." frames, not just a label saying "stack".
+        // The log carries the failure as the object, which holds its real stack ("at ..." frames).
+        // The stack is not written a second time as a separate line.
         const logged = originalError.mock.calls.flatMap((call) => call.arguments);
-        assert.ok(
-            logged.some((arg) => typeof arg === "string" && arg.includes("test error with stack") && /\n\s+at /.test(arg)),
-            "a stack string of the failure must be logged",
-        );
+        assert.ok(logged.includes(original), "the failure with its stack must be logged");
+        assert.ok(/\n\s+at /.test(original.stack ?? ""), "the logged failure carries real stack frames");
+        assert.ok(!logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)), "the stack must not be logged again as a separate string");
 
         originalError.mock.restore();
     });
@@ -365,8 +368,8 @@ describe("errorHandler interceptor", () => {
                 "the failure must be logged",
             );
             assert.ok(
-                logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)),
-                "a stack string must be logged",
+                logged.some((arg) => arg instanceof Error && /\n\s+at /.test(arg.stack ?? "")),
+                "the failure must be logged with its stack",
             );
             assert.ok(infoStack && /\n\s+at /.test(infoStack), "onError must receive the stack");
         });
@@ -687,8 +690,8 @@ describe("errorHandler interceptor", () => {
                 assert.strictEqual(calls[0]!.arguments[0], "Interceptor caught error:");
                 assert.strictEqual(calls[0]!.arguments[1], original, "log must carry the original failure");
                 assert.strictEqual(calls[1]!.arguments[0], "Transformed ConnectError:");
-                const logged = calls[1]!.arguments[1] as ConnectError;
-                assert.strictEqual(logged.rawMessage, "internal error", "the transformed line shows what the client gets");
+                assert.strictEqual(calls.length, 2, "one entry for the failure and one line for what the client gets");
+                assert.strictEqual(calls[1]!.arguments[1], "[internal] internal error", "the transformed line shows what the client gets, as text");
             } finally {
                 consoleErrorMock.mock.restore();
             }
@@ -715,6 +718,71 @@ describe("errorHandler interceptor", () => {
             assertConnectError(err, Code.Internal);
             assert.strictEqual(err.rawMessage, "Something went wrong");
             assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+    });
+
+    // An expected client error used to print the error, the "transformed" error and the stack,
+    // each with the stack again through `cause`: dozens of lines for one validation failure.
+    // One handled error is one console entry; a second line appears only when the client
+    // receives something other than what was thrown, and it is a short text.
+    describe("console log of a handled error", () => {
+        async function logOf(thrown: unknown, options: NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]> = {}): Promise<unknown[][]> {
+            const original = console.error;
+            const calls: unknown[][] = [];
+            console.error = (...args: unknown[]) => {
+                calls.push(args);
+            };
+            try {
+                const next = mock.fn(async () => {
+                    throw thrown;
+                });
+                await assert.rejects(() => createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: true, ...options })(next as any)(mockReq));
+            } finally {
+                console.error = original;
+            }
+            return calls;
+        }
+
+        it("writes one entry for a ConnectError that leaves unchanged", async () => {
+            const original = new ConnectError("name must not be empty", Code.InvalidArgument);
+
+            const calls = await logOf(original);
+
+            assert.strictEqual(calls.length, 1);
+            assert.deepStrictEqual(calls[0], ["Interceptor caught error:", original]);
+        });
+
+        it("writes the failure and one short text line for an error the client receives differently", async () => {
+            const original = new Error("db connect failed");
+
+            const calls = await logOf(original);
+
+            assert.deepStrictEqual(calls, [
+                ["Interceptor caught error:", original],
+                ["Transformed ConnectError:", "[internal] internal error"],
+            ]);
+        });
+
+        it("writes the failure and the client text for a SanitizableError", async () => {
+            const original = Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: {}, code: Code.Unavailable });
+
+            const calls = await logOf(original);
+
+            assert.deepStrictEqual(calls, [
+                ["Interceptor caught error:", original],
+                ["Transformed ConnectError:", "safe text"],
+            ]);
+        });
+
+        it("does not print the original stack more than once in the text of the log", async () => {
+            const original = new Error("db connect failed");
+
+            const calls = await logOf(original);
+
+            const printed = calls.map((args) => args.map((arg) => (typeof arg === "string" ? arg : inspect(arg))).join(" ")).join("\n");
+            const frames = printed.split("\n").filter((line) => /^\s+at /.test(line)).length;
+            const framesOfOne = (original.stack ?? "").split("\n").filter((line) => /^\s+at /.test(line)).length;
+            assert.strictEqual(frames, framesOfOne, "the frames of the failure appear exactly once");
         });
     });
 

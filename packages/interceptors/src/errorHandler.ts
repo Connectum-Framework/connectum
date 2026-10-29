@@ -35,6 +35,21 @@ function isConnectCode(value: unknown): value is Code {
     return typeof value === "number" && Number.isInteger(value) && value >= Code.Canceled && value <= Code.Unauthenticated;
 }
 
+/**
+ * Write one handled failure to the console.
+ *
+ * The failure is logged once, as the object: `console.error` prints an `Error` with its stack and
+ * its `cause` chain, so a separate stack line would only repeat it. A second line says what the
+ * client receives, and only when that differs from what was thrown; it carries the text, not the
+ * `ConnectError`, because that object holds the original as `cause` and would print it again.
+ */
+function logHandledError(thrown: unknown, sentToClient: string | undefined): void {
+    console.error("Interceptor caught error:", thrown);
+    if (sentToClient !== undefined) {
+        console.error("Transformed ConnectError:", sentToClient);
+    }
+}
+
 type OnErrorCallback = NonNullable<ErrorHandlerOptions["onError"]>;
 
 /**
@@ -149,11 +164,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                     if (includeStackTrace && errStack) info.stack = errStack;
                     notifyOnError(info);
                 } else if (logErrors) {
-                    console.error("Interceptor caught error:", err);
-                    console.error("Transformed ConnectError:", err.clientMessage);
-                    if (includeStackTrace && (err as Error).stack) {
-                        console.error("Stack trace:", (err as Error).stack);
-                    }
+                    logHandledError(err, err.clientMessage);
                 }
                 throw new ConnectError(err.clientMessage, sanitizedCode);
             }
@@ -179,11 +190,8 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                 if (includeStackTrace && full.stack) info.stack = full.stack;
                 notifyOnError(info);
             } else if (logErrors) {
-                console.error("Interceptor caught error:", err);
-                console.error("Transformed ConnectError:", client);
-                if (includeStackTrace && full.stack) {
-                    console.error("Stack trace:", full.stack);
-                }
+                // A ConnectError that leaves unchanged needs no second line: it is the same failure.
+                logHandledError(err, client === err ? undefined : client.message);
             }
 
             throw client;

@@ -27,7 +27,9 @@ export interface ErrorHandlerOptions {
     logErrors?: boolean;
 
     /**
-     * Include stack trace in logs
+     * Pass the stack of the failure to `onError` as `info.stack`. The console log is not
+     * affected: it prints the failure as an object, which already carries its stack and
+     * its `cause` chain, once per handled error.
      * @default process.env.NODE_ENV !== "production"
      */
     includeStackTrace?: boolean;
