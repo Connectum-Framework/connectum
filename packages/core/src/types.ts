@@ -270,7 +270,10 @@ export interface ShutdownOptions {
     signals?: NodeJS.Signals[];
 
     /**
-     * Enable automatic graceful shutdown on signals. Must be a boolean.
+     * Enable automatic graceful shutdown on signals. Must be a boolean. The
+     * handlers are installed when `start()` begins, so a signal that arrives
+     * while the server is still starting stops it as soon as the start has
+     * finished.
      * @default false
      */
     autoShutdown?: boolean;
@@ -659,8 +662,12 @@ export interface Server extends EventEmitter {
      * in-progress shutdown and settle with its outcome; a call after the server
      * has stopped resolves immediately without doing anything or emitting events.
      *
-     * @throws Error if the server is not RUNNING, STOPPING or STOPPED (it was
-     * never started, or is still starting)
+     * A call made while `start()` is still in progress is honoured: it waits for
+     * the start to settle and then stops the server (`start()` resolves first, and
+     * the server is already stopping when its caller resumes). If the start fails,
+     * the server is already stopped and the call resolves.
+     *
+     * @throws Error if the server was never started (state CREATED)
      */
     stop(): Promise<void>;
 
