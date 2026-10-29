@@ -11,6 +11,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, type JWTPayload, type JWTVerifyOptions, type JWTVerifyResult, jwtVerify } from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
+import { assertExpectedClaim, assertMaxTokenAge } from "./option-validation.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
 
 /**
@@ -145,6 +146,8 @@ function throwMissingSubject(): never {
  *
  * @param options - JWT authentication options
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `issuer` or `audience` is present and is an empty string, an array with an empty or non-string entry, or another type
+ * @throws {RangeError} When `maxTokenAge` is present and is not a finite number greater than 0, or is a blank string
  *
  * @example JWKS-based JWT auth (Auth0, Keycloak, etc.)
  * ```typescript
@@ -172,17 +175,23 @@ function throwMissingSubject(): never {
 export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): Interceptor {
     const { claimsMapping = {}, skipMethods, propagateHeaders } = options;
 
+    // An expected issuer, audience or age that is present must be usable: an empty string or 0
+    // used to be skipped as falsy, which switched the check off without saying so.
+    assertExpectedClaim("createJwtAuthInterceptor", "issuer", options.issuer);
+    assertExpectedClaim("createJwtAuthInterceptor", "audience", options.audience);
+    assertMaxTokenAge("createJwtAuthInterceptor", options.maxTokenAge);
+
     const verifyOptions: JWTVerifyOptions = {};
-    if (options.issuer) {
+    if (options.issuer !== undefined) {
         verifyOptions.issuer = options.issuer;
     }
-    if (options.audience) {
+    if (options.audience !== undefined) {
         verifyOptions.audience = options.audience;
     }
     if (options.algorithms) {
         verifyOptions.algorithms = options.algorithms;
     }
-    if (options.maxTokenAge) {
+    if (options.maxTokenAge !== undefined) {
         verifyOptions.maxTokenAge = options.maxTokenAge;
     }
     if (options.requireExpiration !== false) {

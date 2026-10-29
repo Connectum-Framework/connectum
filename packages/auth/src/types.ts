@@ -217,9 +217,15 @@ export interface JwtAuthInterceptorOptions {
      * @see {@link https://github.com/panva/jose/blob/main/docs/types/types.CryptoKey.md | jose CryptoKey documentation}
      */
     publicKey?: CryptoKey | undefined;
-    /** Expected issuer(s) */
+    /**
+     * Expected issuer(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     issuer?: string | string[] | undefined;
-    /** Expected audience(s) */
+    /**
+     * Expected audience(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     audience?: string | string[] | undefined;
     /** Allowed algorithms */
     algorithms?: string[] | undefined;
@@ -238,7 +244,8 @@ export interface JwtAuthInterceptorOptions {
     /**
      * Maximum token age.
      * Passed to jose jwtVerify options.
-     * Number (seconds) or string (e.g., "2h", "7d").
+     * Number (seconds) or string (e.g., "2h", "7d"). Omit the option to skip the check; `0`, a
+     * negative or non-finite number and a blank string throw when the interceptor is created.
      */
     maxTokenAge?: number | string | undefined;
     /**

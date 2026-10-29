@@ -44,3 +44,53 @@ export function assertAuthzPolicy(factory: string, defaultPolicy: unknown, rules
         assertAuthzEffect(factory, `rules[${index}].effect (rule ${describeValue(rule?.name)})`, rule?.effect);
     });
 }
+
+/**
+ * Check an expected `issuer` or `audience`: absent, one non-empty string, or an array of non-empty strings.
+ *
+ * An empty string used to switch the check off, so a token with any issuer or audience was
+ * accepted when the value came from `process.env.X ?? ""`. An empty array is left alone: it
+ * matches no token, which is the fail-closed reading.
+ *
+ * @throws {TypeError} When the value is present and is anything else
+ */
+export function assertExpectedClaim(factory: string, option: "issuer" | "audience", value: unknown): void {
+    if (value === undefined) {
+        return;
+    }
+    const entries: unknown[] = Array.isArray(value) ? value : [value];
+    if (!entries.every((entry) => typeof entry === "string" && entry.length > 0)) {
+        throw new TypeError(
+            `@connectum/auth: ${factory} ${option} must be a non-empty string or an array of non-empty strings (omit the option to skip the check); got ${describeValue(value)}`,
+        );
+    }
+}
+
+/**
+ * Check a `maxTokenAge`: absent, a finite number of seconds greater than 0, or a non-empty duration string.
+ *
+ * `0` used to be skipped as falsy, which switched the age check off.
+ *
+ * @throws {RangeError} When the number is not finite and greater than 0, or the string is blank
+ * @throws {TypeError} When the value is neither a number nor a string
+ */
+export function assertMaxTokenAge(factory: string, value: unknown): void {
+    if (value === undefined) {
+        return;
+    }
+    if (typeof value === "number") {
+        if (!Number.isFinite(value) || value <= 0) {
+            throw new RangeError(
+                `@connectum/auth: ${factory} maxTokenAge must be a finite number of seconds greater than 0 (omit the option to skip the check); got ${describeValue(value)}`,
+            );
+        }
+        return;
+    }
+    if (typeof value === "string") {
+        if (value.trim().length === 0) {
+            throw new RangeError(`@connectum/auth: ${factory} maxTokenAge must not be blank (omit the option to skip the check); got ${describeValue(value)}`);
+        }
+        return;
+    }
+    throw new TypeError(`@connectum/auth: ${factory} maxTokenAge must be a number of seconds or a duration string such as "2h"; got ${describeValue(value)}`);
+}
