@@ -505,6 +505,20 @@ export function isAutoRetriablePublishError(err: unknown, options?: { readonly r
 }
 
 /**
+ * Whether a synchronous failure of `channel.publish()` is amqplib rejecting an
+ * argument it cannot encode.
+ *
+ * amqplib reports those as `TypeError` (wrong type, a string over 255 bytes, a
+ * NaN timestamp) or `RangeError` (a timestamp that is negative, fractional or
+ * infinite). A closed channel throws amqplib's `IllegalOperationError`, a plain
+ * `Error`, so it is not confused with them and stays a connection failure.
+ * Exported (not via the package barrel) for direct unit testing.
+ */
+export function isInvalidPublishArgument(err: unknown): boolean {
+    return err instanceof TypeError || err instanceof RangeError;
+}
+
+/**
  * Broker reply texts (by AMQP reply code) that identify DETERMINISTIC topology
  * drift: the condition cannot heal without a configuration or topology change.
  * Verified against RabbitMQ 3.13 and 4.2 (identical texts). A `404` the broker
@@ -2622,6 +2636,16 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                                 });
                             });
                         } catch (err) {
+                            // amqplib validates the frame fields while encoding and throws a
+                            // TypeError/RangeError for an argument it cannot write (a routing key or
+                            // message id over 255 bytes, a timestamp that is not a non-negative integer).
+                            // Nothing was sent, the connection is fine, and the same call fails the same
+                            // way every time: it is the caller's error, so it is not wrapped as a
+                            // connection failure (which publishRetry would repeat) and passes through.
+                            if (isInvalidPublishArgument(err)) {
+                                settle(() => reject(err));
+                                return;
+                            }
                             const rootCause = publishChannelErrors.get(ch) ?? err;
                             settle(() => reject(new AmqpConnectionError(`Publish failed: ${err instanceof Error ? err.message : String(err)}`, { cause: rootCause })));
                             return;

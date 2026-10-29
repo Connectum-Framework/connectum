@@ -15,6 +15,7 @@ import {
     isBrokerClosedChannel,
     isConnectionLostError,
     isDeterministicTopologyDrift,
+    isInvalidPublishArgument,
     normalizeInitialConnectBudget,
     normalizePublishRetryBudget,
     normalizePublishTimeout,
@@ -1072,6 +1073,17 @@ describe("isAutoRetriablePublishError", () => {
         assert.equal(isAutoRetriablePublishError(new AmqpSerializationError("bad encode"), { retryOnTimeout: true }), false, "deterministic: serialization");
         assert.equal(isAutoRetriablePublishError(new AmqpTopologyError("drift"), { retryOnTimeout: true }), false, "deterministic: topology");
         assert.equal(isAutoRetriablePublishError(new Error("raw"), { retryOnTimeout: true }), false, "raw errors never gate a retry");
+    });
+
+    it("an argument error is not retriable, and a closed channel is not mistaken for one", () => {
+        assert.equal(isAutoRetriablePublishError(new TypeError("Field 'routingKey' is the wrong type"), { retryOnTimeout: true }), false);
+        assert.equal(isAutoRetriablePublishError(new RangeError("timestamp out of range"), { retryOnTimeout: true }), false);
+        assert.equal(isInvalidPublishArgument(new TypeError("Field 'routingKey' is the wrong type")), true);
+        assert.equal(isInvalidPublishArgument(new RangeError("timestamp out of range")), true);
+        // amqplib's IllegalOperationError is a plain Error subclass: publishing on a closed channel stays a connection failure.
+        const illegalOperation = Object.assign(new Error("Channel closed"), { name: "IllegalOperationError" });
+        assert.equal(isInvalidPublishArgument(illegalOperation), false);
+        assert.equal(isInvalidPublishArgument(new AmqpConnectionError("recovery in progress")), false);
     });
 
 });
