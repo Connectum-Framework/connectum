@@ -399,6 +399,76 @@ transportParityTest("parity 3.3d: circuit-breaker interceptor opens after thresh
     }),
 });
 
+// circuit breaker, half-open: once the open period has passed, exactly one call is the probe;
+// callers that arrive while it is still running are rejected at once with Unavailable instead of
+// waiting for it, and a successful probe closes the circuit. `halfOpenAfter: 0` makes the very next
+// call the probe, so the scenario needs no clock.
+function perRunProbeBreaker(): Interceptor {
+    const instances = new Map<string, Interceptor>();
+    return (next) => (req) => {
+        const run = req.header.get("x-run") ?? "";
+        let instance = instances.get(run);
+        if (!instance) {
+            instance = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 0 });
+            instances.set(run, instance);
+        }
+        return instance(next)(req);
+    };
+}
+const probeHandlerCalls = new Map<string, string[]>();
+transportParityTest("parity 3.3d2: circuit-breaker half-open rejects callers that arrive during the probe at once", {
+    services: [
+        behaviourRoutes(async (message) => {
+            const [kind, name] = message.split("|") as [TransportKind, string];
+            probeHandlerCalls.set(kind, [...(probeHandlerCalls.get(kind) ?? []), name]);
+            if (name === "fail") throw new ConnectError("upstream broke", Code.Internal);
+            if (name === "probe") {
+                const gate = gateFor(`${kind}|probe`);
+                gate.markEntered();
+                await gate.released;
+            }
+            return `done:${name}`;
+        }),
+    ],
+    interceptors: [perRunProbeBreaker()],
+    scenario: async ({ transport, transportKind: kind }) => {
+        const client = createClient(EchoService, transport);
+        const headers = { "x-run": kind };
+        try {
+            const failed = await outcome(client, `${kind}|fail`, headers);
+            const probe = outcome(client, `${kind}|probe`, headers);
+            await gateFor(`${kind}|probe`).entered;
+
+            // A regression leaves these callers waiting for the probe, which only ends below: the bound keeps the run from hanging.
+            const giveUp = new Promise<string>((resolve) => AbortSignal.timeout(3000).addEventListener("abort", () => resolve("still waiting"), { once: true }));
+            const during = await Promise.all([1, 2].map((n) => Promise.race([outcome(client, `${kind}|during${n}`, headers), giveUp])));
+
+            gateFor(`${kind}|probe`).release();
+            const probeResult = await probe;
+            const after = await outcome(client, `${kind}|after`, headers);
+            return {
+                response: {
+                    failed,
+                    during: during.map((result) => (typeof result === "string" ? result : { code: (result as { code?: number }).code })),
+                    probe: probeResult,
+                    after,
+                    handlerCalls: probeHandlerCalls.get(kind),
+                },
+            };
+        } finally {
+            gateFor(`${kind}|probe`).release();
+        }
+    },
+    compare: expectOnBoth({
+        failed: { code: Code.Internal, text: "upstream broke" },
+        during: [{ code: Code.Unavailable }, { code: Code.Unavailable }],
+        probe: { message: "done:probe" },
+        after: { message: "done:after" },
+        // The two callers that arrived during the probe never reached the handler.
+        handlerCalls: ["fail", "probe", "after"],
+    }),
+});
+
 // logger: every call writes a request line, a response line and a completion line.
 const loggedLines: string[] = [];
 transportParityTest("parity 3.3e: logger interceptor writes the request, response and completion lines", {

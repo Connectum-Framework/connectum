@@ -8,7 +8,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { BrokenCircuitError, ConsecutiveBreaker, circuitBreaker, handleWhen } from "cockatiel";
+import { BrokenCircuitError, CircuitState, ConsecutiveBreaker, circuitBreaker, handleWhen } from "cockatiel";
 import type { CircuitBreakerOptions } from "./types.ts";
 import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
 
@@ -51,7 +51,10 @@ export function defaultFailurePredicate(error: unknown): boolean {
  * Circuit States:
  * - Closed (normal): Requests pass through
  * - Open (failing): Requests rejected immediately
- * - Half-Open (testing): Single request allowed to test recovery
+ * - Half-Open (testing): Single request allowed to test recovery. While that probe
+ *   is in flight, every other call is rejected at once with the same
+ *   `Unavailable` error as in the open state; none of them waits for the probe.
+ *   A successful probe closes the circuit, a failed one opens it again.
  *
  * By default only infrastructure errors trip the breaker (see
  * {@link defaultFailurePredicate}); business codes like invalid_argument or
@@ -133,23 +136,52 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
         breaker: new ConsecutiveBreaker(threshold),
     });
 
+    const openError = (): ConnectError => new ConnectError(`Circuit breaker is open (${threshold} consecutive failures)`, Code.Unavailable);
+
+    // Whether the half-open probe is running. cockatiel makes every other caller
+    // that arrives meanwhile wait for the probe's verdict and then run, so a slow
+    // probe would hold them all and a healthy one would let them through together.
+    // They are rejected at once instead: one probe decides, as documented.
+    let probing = false;
+
     return (next) => async (req) => {
         // Skip streaming calls
         if (skipStreaming && req.stream) {
             return await next(req);
         }
 
+        if (probing && breaker.state === CircuitState.HalfOpen) {
+            throw openError();
+        }
+
+        // The call that starts its work while the policy is half-open is the probe.
+        // Work starts synchronously inside execute(), so no other caller can slip in
+        // between the policy's switch to half-open and this flag being set.
+        let isProbe = false;
         try {
             // Execute with circuit breaker protection
-            return await breaker.execute(() => next(req));
+            return await breaker.execute(() => {
+                if (breaker.state === CircuitState.HalfOpen) {
+                    isProbe = true;
+                    probing = true;
+                }
+                return next(req);
+            });
         } catch (err) {
             // Convert BrokenCircuitError to ConnectError
             if (err instanceof BrokenCircuitError) {
-                throw new ConnectError(`Circuit breaker is open (${threshold} consecutive failures)`, Code.Unavailable);
+                throw openError();
             }
 
             // Re-throw other errors
             throw err;
+        } finally {
+            // Cleared only after the policy has recorded the verdict, so a caller
+            // arriving in between sees either a half-open policy with a probe in
+            // flight or the already decided state, never a gap.
+            if (isProbe) {
+                probing = false;
+            }
         }
     };
 }

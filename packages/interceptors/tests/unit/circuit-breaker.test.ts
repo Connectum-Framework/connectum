@@ -684,4 +684,144 @@ describe("circuit breaker interceptor", () => {
             assert.strictEqual(next.mock.calls.length, 8);
         });
     });
+
+    describe("half-open probe", () => {
+        /** Let every continuation that is already scheduled run, without waiting on a clock. */
+        const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+        type Peek = { status: "pending" } | { status: "fulfilled"; value: unknown } | { status: "rejected"; reason: unknown };
+
+        /** Where a call stands once everything scheduled has run: a call that is still held reads as pending. */
+        async function peek(call: Promise<unknown>): Promise<Peek> {
+            return await Promise.race([
+                call.then(
+                    (value): Peek => ({ status: "fulfilled", value }),
+                    (reason): Peek => ({ status: "rejected", reason }),
+                ),
+                flush().then((): Peek => ({ status: "pending" })),
+            ]);
+        }
+
+        /**
+         * A clock the test moves by hand. The breaker reads `Date.now()`; replacing it directly
+         * (rather than through the runner's mock timers) works the same on every runtime and
+         * leaves nothing behind once `restore()` has run.
+         */
+        function manualClock() {
+            const original = Date.now;
+            let now = original.call(Date);
+            Date.now = () => now;
+            return {
+                tick: (ms: number) => {
+                    now += ms;
+                },
+                restore: () => {
+                    Date.now = original;
+                },
+            };
+        }
+
+        /**
+         * A downstream whose calls are decided by the test: every call is recorded and held
+         * until the test settles it, so the time a call spends in flight is under the test's control.
+         */
+        function controlledDownstream() {
+            const calls: Array<PromiseWithResolvers<unknown>> = [];
+            const next = mock.fn(() => {
+                const call = Promise.withResolvers<unknown>();
+                calls.push(call);
+                return call.promise;
+            });
+            return {
+                next,
+                succeed: (index: number) => calls[index]?.resolve({ message: { result: "ok" } }),
+                fail: (index: number, code: Code = Code.Unavailable) => calls[index]?.reject(new ConnectError("down", code)),
+            };
+        }
+
+        /** Open the circuit with one failing call and let `halfOpenAfter` pass; the next call is the probe. */
+        async function openAndWait(options: { halfOpenAfter: number }) {
+            const clock = manualClock();
+            try {
+                const downstream = controlledDownstream();
+                const handler = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: options.halfOpenAfter })(downstream.next as any);
+                const req = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+                const opening = handler(req);
+                downstream.fail(0);
+                await assert.rejects(opening);
+                clock.tick(options.halfOpenAfter);
+                return { handler, req, downstream, clock };
+            } catch (error) {
+                clock.restore();
+                throw error;
+            }
+        }
+
+        it("should reject callers that arrive while the probe is in flight, without waiting for it", async () => {
+            const { handler, req, downstream, clock } = await openAndWait({ halfOpenAfter: 1000 });
+            try {
+                const probe = handler(req);
+                const others = [handler(req), handler(req), handler(req)];
+                probe.catch(() => undefined);
+
+                for (const other of others) {
+                    const state = await peek(other);
+                    assert.strictEqual(state.status, "rejected", "a caller that is not the probe must be rejected at once, not held until the probe ends");
+                    assertConnectError((state as { reason: unknown }).reason, Code.Unavailable, "Circuit breaker is open (1 consecutive failures)");
+                }
+                assert.strictEqual(downstream.next.mock.calls.length, 2, "only the failing call and the probe reached the handler");
+                assert.strictEqual((await peek(probe)).status, "pending", "the probe itself is still running");
+
+                downstream.succeed(1);
+                assert.strictEqual((await peek(probe)).status, "fulfilled");
+            } finally {
+                clock.restore();
+            }
+        });
+
+        it("should close the circuit when the probe succeeds and let the next call through", async () => {
+            const { handler, req, downstream, clock } = await openAndWait({ halfOpenAfter: 1000 });
+            try {
+                const probe = handler(req);
+                const rejected = handler(req);
+                rejected.catch(() => undefined);
+                downstream.succeed(1);
+                await probe;
+                assert.strictEqual((await peek(rejected)).status, "rejected");
+
+                const after = handler(req);
+                downstream.succeed(2);
+                assert.deepStrictEqual(((await after) as { message: unknown }).message, { result: "ok" });
+                assert.strictEqual(downstream.next.mock.calls.length, 3, "the rejected caller never reached the handler");
+            } finally {
+                clock.restore();
+            }
+        });
+
+        it("should open the circuit again when the probe fails, rejecting callers that arrive afterwards", async () => {
+            const { handler, req, downstream, clock } = await openAndWait({ halfOpenAfter: 1000 });
+            try {
+                const probe = handler(req);
+                probe.catch(() => undefined);
+                const during = handler(req);
+                during.catch(() => undefined);
+                downstream.fail(1);
+                await assert.rejects(probe);
+                assertConnectError(((await peek(during)) as { reason: unknown }).reason, Code.Unavailable, "Circuit breaker is open");
+
+                const after = await peek(handler(req));
+                assert.strictEqual(after.status, "rejected");
+                assertConnectError((after as { reason: unknown }).reason, Code.Unavailable, "Circuit breaker is open");
+                assert.strictEqual(downstream.next.mock.calls.length, 2);
+
+                // The next window admits a new probe.
+                clock.tick(1000);
+                const nextProbe = handler(req);
+                downstream.succeed(2);
+                await nextProbe;
+            } finally {
+                clock.restore();
+            }
+        });
+    });
 });
