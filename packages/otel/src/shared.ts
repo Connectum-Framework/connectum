@@ -269,7 +269,7 @@ export function isServerErrorStatus(error: unknown): boolean {
 
 /**
  * Marks a span as failed by the error a call ended with: the failure itself (status and
- * exception, see {@link recordFailure}) and the error attributes of {@link buildErrorAttributes}.
+ * exception, see `recordFailure`) and the error attributes of {@link buildErrorAttributes}.
  * The span status becomes `ERROR` for every failure of a client span, and for a server span
  * only when {@link isServerErrorStatus} says so. It does not end the span. Never throws.
  *
