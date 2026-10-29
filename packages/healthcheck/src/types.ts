@@ -49,7 +49,13 @@ export interface HealthcheckOptions {
     httpPaths?: string[];
 
     /**
-     * Watch interval in milliseconds for streaming health updates
+     * Watch interval in milliseconds for streaming health updates.
+     *
+     * Must be an integer from 1 to 2147483647. Anything else throws
+     * `RangeError` (or `TypeError` for a non-number, `null` included) from
+     * `Healthcheck()`: zero, fractions, `NaN`, negative numbers and larger
+     * values are turned into a 1 ms delay by the platform, which would make
+     * every `Watch` call poll about a thousand times a second.
      * @default 500
      */
     watchInterval?: number;

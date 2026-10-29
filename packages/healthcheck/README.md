@@ -56,6 +56,8 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 - `update()`, `register()` and `set()` accept only the four `ServingStatus`
   values (0 to 3) and string names. Anything else throws `TypeError` or
   `RangeError` and leaves the registry unchanged.
+- `watchInterval` must be an integer from 1 to 2147483647 milliseconds;
+  `Healthcheck()` throws otherwise.
 - `Health.Check` answers `NOT_FOUND` for an unknown service. The message repeats
   at most the first 128 characters of the requested name.
 

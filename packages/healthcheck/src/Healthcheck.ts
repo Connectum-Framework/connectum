@@ -18,7 +18,7 @@ import { HealthcheckManager } from "./HealthcheckManager.ts";
 import { createHttpHealthHandler } from "./httpHandler.ts";
 import type { HealthcheckOptions } from "./types.ts";
 import { ServingStatus } from "./types.ts";
-import { assertHttpPaths } from "./validation.ts";
+import { assertHttpPaths, assertWatchInterval } from "./validation.ts";
 
 /**
  * Default watch interval for streaming health updates (ms)
@@ -93,9 +93,11 @@ function boundedName(name: string): string {
  *
  * @param options - Healthcheck configuration options
  * @returns ProtocolRegistration for createServer
- * @throws {RangeError} when `httpPaths` is an empty array
+ * @throws {RangeError} when `httpPaths` is an empty array, or `watchInterval`
+ *   is a number that is not an integer from 1 to 2147483647
  * @throws {TypeError} when `httpPaths` is not an array, or an entry is not a
- *   string, does not start with `/`, or contains `?` or `#`
+ *   string, does not start with `/`, or contains `?` or `#`; or when
+ *   `watchInterval` is not a number (including `null`)
  *
  * @example
  * ```typescript
@@ -117,6 +119,8 @@ function boundedName(name: string): string {
 export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistration {
     const { httpEnabled = false, httpPaths, watchInterval = DEFAULT_WATCH_INTERVAL } = options;
     const manager = options.manager ?? healthcheckManager;
+
+    assertWatchInterval(watchInterval);
 
     if (httpPaths !== undefined) {
         assertHttpPaths(httpPaths, "Healthcheck(): option 'httpPaths'", "to disable the HTTP endpoint set 'httpEnabled: false'");

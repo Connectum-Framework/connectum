@@ -87,3 +87,25 @@ export function assertHttpPaths(paths: unknown, subject: string, emptyHint: stri
         }
     }
 }
+
+/** Longest timer delay in milliseconds; a larger one is replaced by 1 ms. */
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+/**
+ * Require a `watchInterval`: a whole number of milliseconds a timer can hold.
+ * Zero, fractions, `NaN`, negative numbers and values above the timer limit
+ * are all turned into a 1 ms delay by the platform, which makes every `Watch`
+ * call poll about a thousand times a second.
+ *
+ * @throws {TypeError} when `value` is not a number
+ * @throws {RangeError} when it is not an integer from 1 to 2147483647
+ */
+export function assertWatchInterval(value: unknown): asserts value is number {
+    const rule = `Healthcheck(): option 'watchInterval' must be an integer from 1 to ${MAX_TIMER_DELAY} (milliseconds), got ${describeValue(value)}`;
+    if (typeof value !== "number") {
+        throw new TypeError(rule);
+    }
+    if (!Number.isInteger(value) || value < 1 || value > MAX_TIMER_DELAY) {
+        throw new RangeError(rule);
+    }
+}
