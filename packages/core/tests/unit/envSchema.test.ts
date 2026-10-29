@@ -503,6 +503,27 @@ describe("parseEnvConfig() GRACEFUL_SHUTDOWN_TIMEOUT_MS validation errors", () =
         });
     }
 
+    // An empty value (`GRACEFUL_SHUTDOWN_TIMEOUT_MS=` in a compose file or a manifest) is a
+    // missing value. `Number("")` is 0, which would silently pass the range check and mean
+    // "do not wait for in-flight requests": draining switched off by a blank line.
+    for (const timeout of ["", " ", "  ", "\t", "\n"]) {
+        it(`should reject the blank ${JSON.stringify(timeout)} instead of reading it as 0, naming GRACEFUL_SHUTDOWN_TIMEOUT_MS`, () => {
+            assert.throws(
+                () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
+            );
+        });
+    }
+
+    it("should still use the default when the variable is absent or undefined", () => {
+        assert.equal(parseEnvConfig({}).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 30000);
+        assert.equal(parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: undefined }).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 30000);
+    });
+
+    it("should tolerate whitespace around a number", () => {
+        assert.equal(parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: " 5000 " }).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 5000);
+    });
+
     it("should only accept values that createServer({ shutdown: { timeout } }) accepts", () => {
         for (const timeout of ["0", "1", "5000", "30000", "300000"]) {
             const env = parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout });
