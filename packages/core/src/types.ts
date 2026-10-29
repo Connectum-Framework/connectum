@@ -583,6 +583,9 @@ export interface CreateServerOptions {
      * Every entry must be a valid HTTP header name: a non-empty token such as
      * `"x-request-id"`, not a pseudo-header like `":authority"`. `createServer()`
      * throws a `TypeError` naming `propagateHeaders` and the entry otherwise.
+     *
+     * The list is copied when the server is created: changing the array you
+     * passed afterwards does not change what is forwarded.
      */
     propagateHeaders?: readonly string[];
 }

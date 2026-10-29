@@ -26,5 +26,8 @@
  *
  * `authorization` is intentionally excluded: forwarding credentials is a
  * deliberate, security-sensitive choice the caller must opt into explicitly.
+ *
+ * The array is frozen: spread it to build your own list, as in the example
+ * above. Adding to it in place would change the default for the whole process.
  */
-export const defaultPropagateHeaders: readonly string[] = ["traceparent", "tracestate"];
+export const defaultPropagateHeaders: readonly string[] = Object.freeze(["traceparent", "tracestate"]);
