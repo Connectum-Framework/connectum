@@ -219,7 +219,9 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
             const allowed = await authorize(authContext, { service: serviceName, method: methodName });
-            if (!allowed) {
+            // Exactly `true` allows. A truthy non-boolean ("false" read from a claim, 1, {}) is a
+            // bug in the callback, and authorization fails closed on it.
+            if (allowed !== true) {
                 throw new ConnectError("Access denied", Code.PermissionDenied);
             }
             return await next(req);

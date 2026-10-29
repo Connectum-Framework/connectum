@@ -287,7 +287,7 @@ export interface AuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 
@@ -626,7 +626,7 @@ export interface ProtoAuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 }
