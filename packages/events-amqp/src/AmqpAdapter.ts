@@ -190,6 +190,26 @@ export function isConnectionLostError(err: unknown): boolean {
 }
 
 /**
+ * Give an `AggregateError` that carries no message the text of its members.
+ *
+ * Node reports a failed connect to a hostname with several addresses (such as
+ * `localhost`, which resolves to `::1` and `127.0.0.1`) as an `AggregateError`
+ * with an empty message, one member per address. Used as the `cause` of an
+ * error, or reported through a lifecycle event, it then states neither the
+ * reason nor the address, while the same failure against a single address says
+ * `connect ECONNREFUSED 127.0.0.1:1`. The message is filled in on the error
+ * itself, so its class, `code` and `errors` stay what callers may already match
+ * on; an error that has a message, or is not an aggregate, is returned as is.
+ * Exported (not via the package barrel) for direct unit testing.
+ */
+export function explainAggregateError<E>(err: E): E {
+    if (err instanceof AggregateError && err.message === "" && err.errors.length > 0) {
+        err.message = err.errors.map((member: unknown) => (member instanceof Error && member.message !== "" ? member.message : String(member))).join("; ");
+    }
+    return err;
+}
+
+/**
  * Classify a publisher-confirm failure into a typed error.
  *
  * A connection/channel loss MUST reject with {@link AmqpConnectionError} (the
@@ -801,7 +821,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         hooks.deliverConnected();
     });
     conn.on("disconnect", (err: Error) => {
-        hooks.noteConnectionError(err);
+        hooks.noteConnectionError(explainAggregateError(err));
         hooks.failPendingReturns();
         dispatchLifecycle(lifecycle, { type: "disconnected", error: err });
     });
@@ -809,10 +829,10 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         if (hooks.isInitialWindow() && hooks.isClosing()) {
             return;
         }
-        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: info.error });
+        dispatchLifecycle(lifecycle, { type: "reconnecting", attempt: info.attempt, delay: info.delay, error: explainAggregateError(info.error) });
     });
     conn.on("connect-failed", (err: Error) => {
-        hooks.noteConnectionError(err);
+        hooks.noteConnectionError(explainAggregateError(err));
         if (hooks.isInitialWindow()) {
             // amqplib finishes an attempt that was already in flight when
             // the wrapper was closed and still reports its failure — often
@@ -853,6 +873,7 @@ export function wireRecoveryLifecycle(conn: AmqpRecoveryEmitter, lifecycle: Amqp
         // Tear down before notifying, like the fatal path: a callback that
         // reacts to the give-up (for example by calling connect() again) must
         // already see the dead cycle forgotten, not "already connected".
+        explainAggregateError(err);
         hooks.markCycleDead();
         dispatchLifecycle(lifecycle, { type: "reconnect-failed", error: hooks.mapGiveUpError(err) });
     });
@@ -2166,6 +2187,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * disconnect(), then a failed backoff hook, then an exhausted budget.
      */
     function initialConnectFailure(cycle: RecoveryCycle, err: unknown, budget: number): Error {
+        explainAggregateError(err);
         if (cycle.failFastError !== null) {
             return cycle.failFastError;
         }
@@ -2342,6 +2364,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 try {
                     conn = (await amqplib.connect(options.url, connectOptions)) as amqp.ChannelModel;
                 } catch (err) {
+                    // Node reports a connect to a host name with several addresses as an
+                    // AggregateError without a message; fill it in on the error itself so
+                    // every error below carries the reason, and its class and code stay.
+                    explainAggregateError(err);
                     // With recovery, a rejection here means amqplib's initial loop
                     // gave up (finite maxRetries without initialConnectMaxRetries):
                     // it rejects with its raw last error (ECONNREFUSED, ...). Keep
