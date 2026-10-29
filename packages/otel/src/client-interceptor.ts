@@ -17,11 +17,10 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
-import type { Meter, SpanOptions } from "@opentelemetry/api";
+import type { Meter, Span, SpanOptions } from "@opentelemetry/api";
 import { context, propagation, SpanKind } from "@opentelemetry/api";
 
 import { ATTR_CONNECTUM_TRANSPORT, ATTR_CONNECTUM_TRANSPORT_METRIC } from "./attributes.ts";
-import { recordFailure } from "./failure.ts";
 import { getMeter } from "./meter.ts";
 import type { RpcClientMetrics } from "./metrics.ts";
 import { createRpcClientMetrics } from "./metrics.ts";
@@ -33,6 +32,9 @@ import {
     createHookFailureReporter,
     detectConnectumTransport,
     estimateMessageSize,
+    markSpanFailed,
+    NON_RECORDING_SPAN,
+    type StreamOutcome,
     shouldInstrument,
     wrapAsyncIterable,
 } from "./shared.ts";
@@ -130,13 +132,26 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
             rpcMetrics.responseSize.record(responseSize, metricAttrs);
         };
 
+        // A streaming call lasts until its response stream ends, so that is where its duration
+        // is recorded; a failure of the stream is recorded the same way as one of a unary call.
+        const recordStreamEnd = (span: Span, outcome: StreamOutcome) => {
+            const duration = (performance.now() - startTime) / 1000;
+            recordMetrics(duration, 0, outcome.failed ? markSpanFailed(span, outcome.error) : undefined);
+        };
+
         // 7. Metrics-only mode (tracing disabled)
         if (withoutTracing) {
             try {
                 const response = await next(req);
+                if (response.stream) {
+                    return Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, NON_RECORDING_SPAN, "RECEIVED", false, true, {
+                            onEnd: (outcome) => recordStreamEnd(NON_RECORDING_SPAN, outcome),
+                        }),
+                    });
+                }
                 const duration = (performance.now() - startTime) / 1000;
-                const responseSize = !response.stream ? estimateMessageSize(response.message, req.method.output) : 0;
-                recordMetrics(duration, responseSize, response.stream ? undefined : buildSuccessAttributes());
+                recordMetrics(duration, estimateMessageSize(response.message, req.method.output), buildSuccessAttributes());
                 return response;
             } catch (error) {
                 const duration = (performance.now() - startTime) / 1000;
@@ -181,17 +196,18 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
 
                 const response = await next(instrumentedReq);
 
-                const duration = (performance.now() - startTime) / 1000;
-
-                // Wrap streaming response messages for instrumentation
+                // Wrap streaming response messages for instrumentation. The call ends, and
+                // its duration and failure are recorded, when the stream ends.
                 if (response.stream) {
-                    const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, true, { schema: req.method.output }),
+                    return Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, true, {
+                            schema: req.method.output,
+                            onEnd: (outcome) => recordStreamEnd(span, outcome),
+                        }),
                     });
-                    recordMetrics(duration, 0);
-                    return wrappedResponse;
                 }
 
+                const duration = (performance.now() - startTime) / 1000;
                 const responseSize = withoutMetrics && !recordMessages ? 0 : estimateMessageSize(response.message, req.method.output);
 
                 if (recordMessages) {
@@ -210,14 +226,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                 return response;
             } catch (error) {
                 const duration = (performance.now() - startTime) / 1000;
-                const errorAttrs = buildErrorAttributes(error);
-
-                recordFailure(span, error);
-
-                // Set error attributes on span
-                for (const [key, value] of Object.entries(errorAttrs)) {
-                    span.setAttribute(key, value);
-                }
+                const errorAttrs = markSpanFailed(span, error);
 
                 span.end();
 

@@ -11,7 +11,7 @@ import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { toBinary } from "@bufbuild/protobuf";
 import { ConnectError } from "@connectrpc/connect";
 import type { Attributes, Context, Span } from "@opentelemetry/api";
-import { context, diag } from "@opentelemetry/api";
+import { context, diag, INVALID_SPAN_CONTEXT, trace } from "@opentelemetry/api";
 
 import {
     ATTR_ERROR_TYPE,
@@ -81,7 +81,18 @@ export function estimateMessageSize(message: unknown, schema?: DescMessage): num
 export interface StreamOptions {
     /** Descriptor of the stream's message type; event sizes are the serialized length under it. */
     schema?: DescMessage;
+    /**
+     * Called once when a stream that ends its span ends: after the last message, after an
+     * error, or when the consumer stops reading. It runs before the span ends, so it can
+     * still put attributes on the span, and it takes over the recording of a failure
+     * (without it the failure is recorded on the span as is). An exception it throws is
+     * swallowed: telemetry must not change what the consumer of the stream receives.
+     */
+    onEnd?: (outcome: StreamOutcome) => void;
 }
+
+/** How a stream ended: `failed` is true for an error raised by the source, whatever its value. */
+export type StreamOutcome = { failed: false } | { failed: true; error: unknown };
 
 /**
  * Wraps an AsyncIterable to track streaming messages with OTel span events.
@@ -111,7 +122,7 @@ export async function* wrapAsyncIterable<T>(
     endSpanOnComplete = false,
     streamOptions: StreamOptions = {},
 ): AsyncGenerator<T> {
-    const { schema } = streamOptions;
+    const { schema, onEnd } = streamOptions;
     let sequence = 1;
     // Whether the stream raised is tracked apart from the raised value: the value
     // may be falsy (`null`, `0`, `""`) and must still count as a failure.
@@ -135,7 +146,13 @@ export async function* wrapAsyncIterable<T>(
         throw error;
     } finally {
         if (endSpanOnComplete) {
-            if (failed) {
+            if (onEnd) {
+                try {
+                    onEnd(failed ? { failed: true, error: streamError } : { failed: false });
+                } catch {
+                    // Intentionally empty: see StreamOptions.onEnd.
+                }
+            } else if (failed) {
                 recordFailure(span, streamError);
             }
             // Normal completion and an early exit of the consumer both leave the
@@ -230,6 +247,29 @@ export function buildErrorAttributes(error: unknown): Record<string, string> {
     }
     return attrs;
 }
+
+/**
+ * Marks a span as failed by the error a call ended with: the failure itself (status and
+ * exception, see {@link recordFailure}) and the error attributes of {@link buildErrorAttributes}.
+ * It does not end the span. Never throws.
+ *
+ * @param span - The span of the call
+ * @param error - The error, exactly as caught
+ * @returns The error attributes, for the metric points of the same call
+ */
+export function markSpanFailed(span: Span, error: unknown): Record<string, string> {
+    const errorAttrs = buildErrorAttributes(error);
+    recordFailure(span, error);
+    try {
+        span.setAttributes(errorAttrs);
+    } catch {
+        // Intentionally empty: a failing exporter-side hook must not replace the call's error.
+    }
+    return errorAttrs;
+}
+
+/** A span that records nothing, for the code paths that observe a call without a trace. */
+export const NON_RECORDING_SPAN: Span = trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
 
 /**
  * Attributes of a successfully completed unary call: `rpc.response.status_code="OK"`.

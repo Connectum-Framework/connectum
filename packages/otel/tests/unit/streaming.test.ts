@@ -15,7 +15,8 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
-import type { Interceptor } from "@connectrpc/connect";
+import { setTimeout as delay } from "node:timers/promises";
+import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { createMockRequest, type NormalizedSpan } from "@connectum/testing";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import * as semconv from "@opentelemetry/semantic-conventions/incubating";
@@ -714,6 +715,92 @@ for (const side of SIDES) {
 			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
 			assert.deepStrictEqual(span.events, []);
 		});
+
+		// Oracle: the OpenTelemetry RPC metrics conventions: when the duration metric is
+		// reported alongside an RPC span, its value SHOULD be the duration of that span, and
+		// the span of a stream lasts until the stream ends. A stream of three messages 40 ms
+		// apart lasts at least 120 ms; the bound 100 ms only needs to tell that from the
+		// time to the response head (a few ms), so it survives a loaded machine.
+		const STREAM_STEP_MS = 40;
+		async function* slowMessages(count: number, failureAfter?: { messages: number; error: unknown }) {
+			for (let i = 0; i < count; i++) {
+				await delay(STREAM_STEP_MS);
+				if (failureAfter && i === failureAfter.messages) throw failureAfter.error;
+				yield sized(i + 1);
+			}
+		}
+
+		for (const withoutTracing of [false, true]) {
+			it(`should record the duration of a stream when the stream ends, not when the response head returns${withoutTracing ? " (metrics only)" : ""}`, async () => {
+				const next: any = async () => ({ stream: true, message: slowMessages(3) });
+				const handler = side.create({ withoutTracing })(next);
+
+				const observed = await observe(async () => {
+					const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+					await collectAll(streamOf(response));
+				});
+
+				const totals = histogramTotals(observed, side.durationMetric);
+				assert.strictEqual(totals.count, 1, "exactly one duration point per call");
+				assert.ok(totals.sum >= 0.1, `the duration covers the whole stream, got ${totals.sum} s`);
+			});
+
+			it(`should record error.type and rpc.response.status_code on the span and the duration metric when a stream fails after it started${withoutTracing ? " (metrics only)" : ""}`, async () => {
+				const failure = new ConnectError("backend gone", Code.Unavailable);
+				const next: any = async () => ({ stream: true, message: slowMessages(3, { messages: 2, error: failure }) });
+				const handler = side.create({ withoutTracing })(next);
+
+				const observed = await observe(async () => {
+					const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+					await assert.rejects(() => collectAll(streamOf(response)), failure);
+				});
+
+				const totals = histogramTotals(observed, side.durationMetric);
+				assert.strictEqual(totals.count, 1, "exactly one duration point per call");
+				assert.ok(totals.sum >= 0.08, `the duration covers the stream up to the failure, got ${totals.sum} s`);
+				assert.strictEqual(durationPoints(observed).length, 1);
+				assert.strictEqual(durationPoints(observed)[0]?.[semconv.ATTR_ERROR_TYPE], "UNAVAILABLE");
+				assert.strictEqual(durationPoints(observed)[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "UNAVAILABLE");
+				if (withoutTracing) {
+					assert.deepStrictEqual(observed.spans, []);
+				} else {
+					const span = onlySpan(observed);
+					assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "UNAVAILABLE");
+					assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "UNAVAILABLE");
+					assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+				}
+			});
+
+			it(`should record the class name as error.type, and no status code, when a stream fails with a generic error${withoutTracing ? " (metrics only)" : ""}`, async () => {
+				const failure = new TypeError("bad message");
+				const next: any = async () => ({ stream: true, message: slowMessages(2, { messages: 1, error: failure }) });
+				const handler = side.create({ withoutTracing })(next);
+
+				const observed = await observe(async () => {
+					const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+					await assert.rejects(() => collectAll(streamOf(response)), failure);
+				});
+
+				assert.strictEqual(durationPoints(observed).length, 1);
+				assert.strictEqual(durationPoints(observed)[0]?.[semconv.ATTR_ERROR_TYPE], "TypeError");
+				assert.ok(!(semconv.ATTR_RPC_RESPONSE_STATUS_CODE in (durationPoints(observed)[0] ?? {})));
+				if (!withoutTracing) assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_ERROR_TYPE], "TypeError");
+			});
+
+			it(`should record the duration once, without error attributes, when the consumer stops reading early${withoutTracing ? " (metrics only)" : ""}`, async () => {
+				const next: any = async () => ({ stream: true, message: slowMessages(10) });
+				const handler = side.create({ withoutTracing })(next);
+
+				const observed = await observe(async () => {
+					const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+					for await (const _message of streamOf(response)) break;
+				});
+
+				assert.strictEqual(durationPoints(observed).length, 1);
+				assert.ok(!(semconv.ATTR_ERROR_TYPE in (durationPoints(observed)[0] ?? {})));
+				assert.ok(histogramTotals(observed, side.durationMetric).sum >= 0.03, "the duration includes the time until the consumer stopped");
+			});
+		}
 
 		it("should pass stream=true to the filter for streaming requests", async () => {
 			let receivedStream: boolean | undefined;

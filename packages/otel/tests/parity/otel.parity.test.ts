@@ -30,6 +30,7 @@ process.env.OTEL_LOGS_EXPORTER ??= "none";
 
 import assert from "node:assert";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
@@ -839,6 +840,96 @@ test("parity: rpc.message events of a server-streaming call carry the serialized
         // The metrics guide: for streaming RPCs the aggregate size measurements are recorded as zero.
         for (const name of ["rpc.server.request.size", "rpc.server.response.size", "rpc.client.request.size", "rpc.client.response.size"]) {
             assert.strictEqual(histogramOf(run.metrics, name).sum, 0, `[${label}] ${name} is zero for a streaming call`);
+        }
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Streaming calls last until the stream ends
+// ---------------------------------------------------------------------------
+
+const STEP_MS = 100;
+
+/** A server-streaming service whose messages are STEP_MS apart; with `failAt`, it fails with UNAVAILABLE before that message. */
+function slowStreamingRoutes(failAt?: number) {
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+        async *server(req) {
+            for (let i = 0; i < 4; i++) {
+                await delay(STEP_MS);
+                if (i === failAt) throw new ConnectError("backend gone", Code.Unavailable);
+                yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
+            }
+        },
+        async client(requests) {
+            let total = 0;
+            for await (const _ of requests) total++;
+            return { total };
+        },
+        async *bidi(requests) {
+            for await (const item of requests) yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+        },
+    });
+}
+
+test("parity: the duration histograms of a streaming call cover the whole stream on both transports", async () => {
+    // Oracle: the OpenTelemetry RPC metrics conventions: reported alongside an RPC span,
+    // the duration metric SHOULD be the span duration; the span of a stream lasts until the
+    // stream ends. The stream takes 4 x 100 ms; the bound 0.3 s tells that from the time to
+    // the response head (a few ms) and survives a loaded machine.
+    const { http, local } = await runBothTransports({
+        services: [slowStreamingRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            for await (const _ of createClient(StreamingService, fn).server(create(ItemSchema, { value: "s" }))) {
+                // Drain the stream: the calls end with it.
+            }
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        for (const name of ["rpc.server.call.duration", "rpc.client.call.duration"]) {
+            const duration = histogramOf(run.metrics, name);
+            assert.strictEqual(duration.count, 1, `[${label}] ${name}: one point per call`);
+            assert.ok(duration.sum >= 0.3, `[${label}] ${name} covers the stream, got ${duration.sum} s`);
+            const point = run.metrics.find((m) => m.name === name)?.points[0];
+            assert.ok(point && !("error.type" in point.attributes), `[${label}] ${name}: a stream that ended normally carries no error.type`);
+        }
+    }
+});
+
+test("parity: a stream that fails after it started carries error.type and rpc.response.status_code on spans and duration metrics on both transports", async () => {
+    // Oracle: the Connect RPC conventions: error.type is the status code of a failed call
+    // (UNAVAILABLE is one of the codes that are errors for a server and a client), and
+    // rpc.response.status_code is the Connect code name.
+    const { http, local } = await runBothTransports({
+        services: [slowStreamingRoutes(2)],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await assert.rejects(
+                async () => {
+                    for await (const _ of createClient(StreamingService, fn).server(create(ItemSchema, { value: "s" }))) {
+                        // Drain until the stream fails.
+                    }
+                },
+                (err: unknown) => err instanceof ConnectError && err.code === Code.Unavailable,
+            );
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        for (const [kind, name] of [[SpanKind.SERVER, "rpc.server.call.duration"], [SpanKind.CLIENT, "rpc.client.call.duration"]] as const) {
+            const span = run.spans.find((s) => s.kind === kind);
+            assert.ok(span, `[${label}] span of kind ${kind} missing`);
+            assert.strictEqual(span.attributes["error.type"], "UNAVAILABLE", `[${label}] span ${kind} error.type`);
+            assert.strictEqual(span.attributes["rpc.response.status_code"], "UNAVAILABLE", `[${label}] span ${kind} rpc.response.status_code`);
+            assert.strictEqual(span.status.code, 2 /* SpanStatusCode.ERROR */, `[${label}] span ${kind} status`);
+            const duration = histogramOf(run.metrics, name);
+            assert.strictEqual(duration.count, 1, `[${label}] ${name}: one point per call`);
+            assert.ok(duration.sum >= 0.2, `[${label}] ${name} covers the stream up to the failure, got ${duration.sum} s`);
+            const point = run.metrics.find((m) => m.name === name)?.points[0];
+            assert.strictEqual(point?.attributes["error.type"], "UNAVAILABLE", `[${label}] ${name} error.type`);
+            assert.strictEqual(point?.attributes["rpc.response.status_code"], "UNAVAILABLE", `[${label}] ${name} rpc.response.status_code`);
         }
     }
 });
