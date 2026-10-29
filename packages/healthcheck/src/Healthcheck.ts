@@ -54,6 +54,31 @@ function resolveServiceStatus(manager: HealthcheckManager, service: string): Ser
 }
 
 /**
+ * Longest part of a requested service name that an error message repeats.
+ * The name comes from the client without a limit of its own: echoing all of it
+ * lets one request build a response larger than an HTTP/2 frame, which kills
+ * the stream and can take the session down with it.
+ */
+const MAX_ECHOED_NAME_LENGTH = 128;
+
+/**
+ * Cut a client-supplied name to {@link MAX_ECHOED_NAME_LENGTH} UTF-16 code
+ * units for use in a message, marking the cut with an ellipsis. A name that
+ * fits is returned unchanged. A cut never leaves half of a surrogate pair.
+ */
+function boundedName(name: string): string {
+    if (name.length <= MAX_ECHOED_NAME_LENGTH) {
+        return name;
+    }
+    let end = MAX_ECHOED_NAME_LENGTH;
+    const last = name.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) {
+        end -= 1;
+    }
+    return `${name.slice(0, end)}…`;
+}
+
+/**
  * Reject an `httpPaths` value that could never match a request or would
  * silently turn the HTTP endpoint into a no-op.
  *
@@ -156,12 +181,13 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                 /**
                  * Check health status of a specific service
                  *
-                 * Per gRPC spec: returns NOT_FOUND for unknown services.
+                 * Per gRPC spec: returns NOT_FOUND for unknown services. The
+                 * message repeats at most the first 128 characters of the name.
                  */
                 check: ({ service }) => {
                     const status = resolveServiceStatus(manager, service);
                     if (status === ServingStatus.SERVICE_UNKNOWN) {
-                        throw new ConnectError(`Service '${service}' not found`, Code.NotFound);
+                        throw new ConnectError(`Service '${boundedName(service)}' not found`, Code.NotFound);
                     }
                     return create(HealthCheckResponseSchema, { status });
                 },
