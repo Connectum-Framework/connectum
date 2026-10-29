@@ -4,7 +4,7 @@
  * Production-ready ConnectRPC interceptors with resilience patterns.
  *
  * Fixed chain order (8 interceptors):
- * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer
+ * errorHandler → timeout → bulkhead → circuitBreaker → retry → validation → fallback → serializer
  *
  * Default-enabled: errorHandler, validation. Resilience interceptors
  * (timeout, bulkhead, circuitBreaker, retry) are opt-in.

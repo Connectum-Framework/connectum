@@ -201,3 +201,56 @@ nodeTest("parity: local transport has no validation-bypass API", async () => {
     const ok = await client.echo(create(EchoRequestSchema, { message: "hello" }));
     assert.strictEqual(ok.message, "ok:hello");
 });
+
+/**
+ * Fallback enabled next to validation. A request that breaks a rule is a client error
+ * and must reach the caller as `InvalidArgument` with the violations, not as a served
+ * response. The handler fails for a valid request in the second scenario, so the
+ * fallback demonstrably still works and the first scenario is not passing because the
+ * fallback is inert.
+ */
+function fallbackChain() {
+    return createDefaultInterceptors({
+        errorHandler: { logErrors: false },
+        fallback: { handler: () => create(EchoResponseSchema, { message: "FALLBACK" }) },
+    });
+}
+
+function failingRoutes() {
+    return defineService(ValidatedService, {
+        echo: () => {
+            throw new ConnectError("dependency down", Code.Unavailable);
+        },
+        collect: async () => create(CountSchema, { total: 0 }),
+    });
+}
+
+transportParityTest("parity: fallback does not replace a validation rejection on either transport", {
+    services: [failingRoutes()],
+    interceptors: fallbackChain(),
+    scenario: async ({ transport }) => {
+        const client = createClient(ValidatedService, transport);
+        try {
+            const res = await client.echo(create(EchoRequestSchema, { message: "" }));
+            throw new Error(`expected validation to reject the empty message, but the call returned "${res.message}"`);
+        } catch (err) {
+            return { error: describeRejection(err) };
+        }
+    },
+    compare: expectViolationsOnBothTransports([{ field: "message", ruleId: "string.min_len", message: "must be at least 3 characters" }]),
+});
+
+transportParityTest("parity: fallback still answers a failing handler for a valid request on both transports", {
+    services: [failingRoutes()],
+    interceptors: fallbackChain(),
+    scenario: async ({ transport }) => {
+        const client = createClient(ValidatedService, transport);
+        const res = await client.echo(create(EchoRequestSchema, { message: "hello" }));
+        return { response: { message: res.message } };
+    },
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { message: "FALLBACK" }, "HTTP transport must deliver the fallback value");
+        assert.deepStrictEqual(local.response, { message: "FALLBACK" }, "Local transport must deliver the fallback value");
+        defaultCompare(http, local);
+    },
+});

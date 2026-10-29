@@ -61,6 +61,11 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * not allowed. Even so, put the authentication and authorization interceptors in front of
  * the default interceptors, as the authentication guide shows.
  *
+ * A request rejected by validation is a client error, not a failed dependency, so the
+ * validation interceptor must stand outside this one. `createDefaultInterceptors` does so;
+ * when you compose the chain yourself, put validation before the fallback, or an invalid
+ * request is answered with the fallback value as if it had been served.
+ *
  * The response synthesised by the fallback interceptor carries only the protocol
  * headers it needs, on a server chain and on a client transport alike:
  * - `header` holds one field, `content-type`, equal to the request `content-type`

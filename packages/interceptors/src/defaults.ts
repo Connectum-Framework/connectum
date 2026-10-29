@@ -2,7 +2,7 @@
  * Default interceptor chain factory
  *
  * Creates the interceptor chain in a fixed order:
- * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer.
+ * errorHandler → timeout → bulkhead → circuitBreaker → retry → validation → fallback → serializer.
  * Only errorHandler and validation are enabled by default; resilience
  * interceptors (timeout, bulkhead, circuitBreaker, retry) are opt-in —
  * no hidden behavioral logic.
@@ -150,8 +150,9 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  * 4. **circuitBreaker** - Prevent cascading failures (OPT-IN; wraps retry — an
  *    ultimate failure counts once, regardless of the number of retry attempts)
  * 5. **retry** - Retry transient failures with exponential backoff (OPT-IN)
- * 6. **fallback** - Graceful degradation (OPT-IN, requires handler)
- * 7. **validation** - @connectrpc/validate (enabled by default)
+ * 6. **validation** - @connectrpc/validate (enabled by default; outside the fallback, so a
+ *    rejected request is never answered by the fallback value)
+ * 7. **fallback** - Graceful degradation (OPT-IN, requires handler)
  * 8. **serializer** - JSON serialization (innermost, OPT-IN)
  *
  * Resilience interceptors (2-5) are opt-in by design: the recommended path
@@ -217,14 +218,17 @@ export function createDefaultInterceptors(options: DefaultInterceptorOptions = {
         interceptors.push(createRetryInterceptor(optionsOf(options.retry) ?? {}));
     }
 
-    // 6. Fallback (opt-in, disabled by default — requires handler)
-    if (options.fallback !== undefined && options.fallback !== false) {
-        interceptors.push(createFallbackInterceptor(options.fallback));
-    }
-
-    // 7. Validation (@connectrpc/validate)
+    // 6. Validation (@connectrpc/validate). It stands outside the fallback: a request that
+    // breaks a rule is a client error, and the fallback value is for failed dependencies,
+    // timeouts and bugs. Were validation inside the fallback, the rejection would be
+    // replaced by the fallback value and reach the caller as a successful response.
     if (options.validation !== false) {
         interceptors.push(createValidateInterceptor());
+    }
+
+    // 7. Fallback (opt-in, disabled by default — requires handler)
+    if (options.fallback !== undefined && options.fallback !== false) {
+        interceptors.push(createFallbackInterceptor(options.fallback));
     }
 
     // 8. Serializer (opt-in, disabled by default)

@@ -107,6 +107,13 @@ it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
 HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
 not in response headers.
 
+In `createDefaultInterceptors` validation stands outside the fallback (the order is
+`errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, fallback, serializer`).
+A request that breaks a validation rule is rejected with `INVALID_ARGUMENT` before it
+reaches the handler, and the fallback value does not stand in for that rejection: the
+fallback is for failed dependencies, timeouts and bugs. It never replaces `Unauthenticated`
+or `PermissionDenied` either.
+
 ## Cancellation behavior in 1.3
 
 Timeout now forwards its own deadline and caller cancellation to downstream
@@ -138,7 +145,8 @@ To keep timeouts from tripping the breaker, exclude `DeadlineExceeded` in
 `failurePredicate`; see the
 [circuit breaker guide](https://connectum.dev/en/guide/interceptors/built-in#circuit-breaker-placement-and-error-classification).
 
-Options, defaults and chain order are unchanged.
+Options and defaults are unchanged. The chain order is unchanged apart from the
+position of validation relative to the fallback, described above.
 
 ## Learn and reference
 
