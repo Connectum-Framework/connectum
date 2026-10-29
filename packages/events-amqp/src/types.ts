@@ -118,6 +118,9 @@ export interface AmqpAdapterOptions {
      *   PRECONDITION_FAILED 406);
      * - `"skip"` — no topology operations at all; the application owns topology.
      *
+     * Any other value (a different casing, a typo, `null`) makes `AmqpAdapter()`
+     * throw a `TypeError`; it is never read as `"assert"`.
+     *
      * @default "assert"
      */
     readonly topologyMode?: AmqpTopologyMode;

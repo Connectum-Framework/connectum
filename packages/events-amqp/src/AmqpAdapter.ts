@@ -31,6 +31,7 @@ import type {
     AmqpSettlementAction,
 } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
+import { validateTopologyMode } from "./validateOptions.ts";
 
 /** Default exchange name when none is provided. */
 const DEFAULT_EXCHANGE = "connectum.events";
@@ -1403,6 +1404,7 @@ interface RecoveryCycle {
  */
 export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
     rejectBackoffWithDelayKnobs(options.recovery);
+    validateTopologyMode(options.topologyMode);
     const exchange = options.exchange ?? DEFAULT_EXCHANGE;
     const exchangeType = options.exchangeType ?? DEFAULT_EXCHANGE_TYPE;
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
