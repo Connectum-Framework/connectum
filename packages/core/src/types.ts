@@ -151,6 +151,8 @@ export interface ProtocolRegistration {
  * Supply both explicit key and certificate paths or use a directory pair.
  * A single explicit path is a configuration error: it is rejected before any
  * file is read instead of being replaced by the directory files.
+ * A file that cannot be read or parsed fails startup with an error that names the
+ * file and the setting its path came from.
  */
 export interface TLSOptions {
     /**

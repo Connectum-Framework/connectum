@@ -16,7 +16,7 @@ import type { Http2SecureServer, Http2Server, SecureServerOptions, ServerHttp2Se
 import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { AddressInfo, Socket } from "node:net";
 import env from "env-var";
-import { readTLSCertificates } from "./TLSConfig.ts";
+import { loadTLSCertificates } from "./TLSConfig.ts";
 import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
 
 /**
@@ -86,7 +86,7 @@ export class TransportManager {
         const host = config.host ?? env.get("LISTEN").default("0.0.0.0").asString();
 
         // Read TLS certificates if configured
-        const tlsCerts = tls ? readTLSCertificates(tls) : undefined;
+        const tlsCerts = tls ? loadTLSCertificates(tls) : undefined;
 
         if (tlsCerts) {
             // Mode 1: TLS + ALPN — both HTTP/1.1 and HTTP/2
