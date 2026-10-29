@@ -132,11 +132,15 @@ export function readTLSCertificates(options: TLSOptions = {}): {
  * pair after that; every failure names the file(s) and where the path came from.
  *
  * @param options - TLS options
+ * @param secureOptions - `passphrase` of an encrypted key, as the server receives it from `http2Options`; without it an encrypted key would be reported as unusable
  * @returns TLS key and cert buffers
  * @internal
  * @throws {Error} Everything {@link readTLSCertificates} throws, and when the key or the certificate cannot be parsed or the two do not match
  */
-export function loadTLSCertificates(options: TLSOptions = {}): {
+export function loadTLSCertificates(
+    options: TLSOptions = {},
+    secureOptions: { passphrase?: string | undefined } = {},
+): {
     key: Buffer;
     cert: Buffer;
 } {
@@ -144,9 +148,10 @@ export function loadTLSCertificates(options: TLSOptions = {}): {
     const certificates = readTLSFiles(files);
 
     const describe = (source: TLSFile, role: "key" | "certificate"): string => `TLS ${role} file "${source.file}" (from ${source.origin})`;
+    const { passphrase } = secureOptions;
     const check = (description: string, material: { key?: Buffer; cert?: Buffer }): void => {
         try {
-            createSecureContext(material);
+            createSecureContext(passphrase === undefined ? material : { ...material, passphrase });
         } catch (cause) {
             const reason = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
             throw new Error(`${description}: ${reason}`, { cause });

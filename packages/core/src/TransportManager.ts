@@ -86,7 +86,7 @@ export class TransportManager {
         const host = config.host ?? env.get("LISTEN").default("0.0.0.0").asString();
 
         // Read TLS certificates if configured
-        const tlsCerts = tls ? loadTLSCertificates(tls) : undefined;
+        const tlsCerts = tls ? loadTLSCertificates(tls, { passphrase: http2Options?.passphrase }) : undefined;
 
         if (tlsCerts) {
             // Mode 1: TLS + ALPN — both HTTP/1.1 and HTTP/2

@@ -460,6 +460,18 @@ describe("TLSConfig", () => {
 				);
 			});
 
+			it("accepts an encrypted key when the passphrase is given, and names the key when it is not", () => {
+				const keyPath = resolve(testDir, "enc.key");
+				const certPath = resolve(testDir, "enc.crt");
+				execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-days", "1", "-subj", "/CN=enc", "-passout", "pass:secret", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+
+				assert.doesNotThrow(() => loadTLSCertificates({ keyPath, certPath }, { passphrase: "secret" }));
+				assert.throws(
+					() => loadTLSCertificates({ keyPath, certPath }),
+					(error: Error) => error.message.includes(keyPath) && error.message.includes("tls.keyPath"),
+				);
+			});
+
 			it("names tls.dirPath and server.key for a bad file in the directory", () => {
 				const { certPath } = writePair(testDir, "good");
 				writeFileSync(resolve(testDir, "server.key"), NOT_PEM);
@@ -470,6 +482,20 @@ describe("TLSConfig", () => {
 					(error: Error) => error.message.includes(resolve(testDir, "server.key")) && error.message.includes("tls.dirPath"),
 				);
 			});
+		});
+
+		it("starts with an encrypted key when http2Options carries the passphrase", async () => {
+			const keyPath = resolve(testDir, "enc.key");
+			const certPath = resolve(testDir, "enc.crt");
+			execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-days", "1", "-subj", "/CN=enc", "-passout", "pass:secret", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+			const server = createServer({ services: [], port: 0, host: "127.0.0.1", tls: { keyPath, certPath }, http2Options: { passphrase: "secret" } });
+
+			await server.start();
+			try {
+				assert.ok(server.address?.port);
+			} finally {
+				await server.stop();
+			}
 		});
 
 		it("makes server.start() reject with the file and the option, and leaves no listener", async () => {
