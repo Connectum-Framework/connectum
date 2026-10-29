@@ -8,6 +8,7 @@
 import type { HttpHandler, NodeRequest, NodeResponse } from "@connectum/core";
 import type { HealthcheckManager } from "./HealthcheckManager.ts";
 import { ServingStatus } from "./types.ts";
+import { assertHttpPaths } from "./validation.ts";
 
 /**
  * HTTP status codes mapped from gRPC ServingStatus
@@ -61,10 +62,17 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
  * method is not checked; the `Host` header is not consulted.
  *
  * @param manager - Healthcheck manager instance
- * @param healthPaths - HTTP health endpoint paths
+ * @param healthPaths - HTTP health endpoint paths: a non-empty array of
+ *   absolute paths, each starting with `/` and free of `?` and `#`. Defaults to
+ *   `/healthz`, `/health` and `/readyz` when omitted.
  * @returns HTTP handler function that returns true if request was handled
+ * @throws {RangeError} when `healthPaths` is an empty array (a handler that can
+ *   never match a request)
+ * @throws {TypeError} when `healthPaths` is not an array, or an entry is not a
+ *   string, does not start with `/`, or contains `?` or `#`
  */
 export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths: string[] = DEFAULT_HTTP_PATHS): HttpHandler {
+    assertHttpPaths(healthPaths, "createHttpHealthHandler(): argument 'healthPaths'", "omit it to serve the default paths");
     const pathSet = new Set(healthPaths);
 
     return function httpHealthHandler(req: NodeRequest, res: NodeResponse): boolean {

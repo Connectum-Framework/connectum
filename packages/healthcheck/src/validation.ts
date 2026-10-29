@@ -51,3 +51,39 @@ export function assertName(value: unknown, argument: string, where: string): ass
         throw new TypeError(`${where}: ${argument} must be a string, got ${describeValue(value)}`);
     }
 }
+
+/**
+ * Reject a path list that could never match a request or would silently turn
+ * the HTTP endpoint into a no-op.
+ *
+ * A request path always starts with "/" and never contains the query or
+ * fragment delimiters, so an element lacking the slash or containing them can
+ * never be matched. An empty array would leave the endpoint enabled with no
+ * reachable path.
+ *
+ * @param paths - Value to check
+ * @param subject - How the message names the value, for example `Healthcheck(): option 'httpPaths'`
+ * @param emptyHint - What to do instead of passing an empty list
+ * @throws {RangeError} when `paths` is an empty array
+ * @throws {TypeError} when `paths` is not an array, or an entry is not a
+ *   string, does not start with `/`, or contains `?` or `#`
+ */
+export function assertHttpPaths(paths: unknown, subject: string, emptyHint: string): asserts paths is string[] {
+    if (!Array.isArray(paths)) {
+        throw new TypeError(`${subject} must be an array of paths, got ${typeof paths}`);
+    }
+    if (paths.length === 0) {
+        throw new RangeError(`${subject} must not be empty; ${emptyHint}`);
+    }
+    for (const path of paths as unknown[]) {
+        if (typeof path !== "string") {
+            throw new TypeError(`${subject} must contain only strings, got ${typeof path}`);
+        }
+        if (!path.startsWith("/")) {
+            throw new TypeError(`${subject} entry '${path}' must start with '/'`);
+        }
+        if (path.includes("?") || path.includes("#")) {
+            throw new TypeError(`${subject} entry '${path}' must not contain '?' or '#'`);
+        }
+    }
+}

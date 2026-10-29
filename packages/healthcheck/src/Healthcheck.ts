@@ -18,6 +18,7 @@ import { HealthcheckManager } from "./HealthcheckManager.ts";
 import { createHttpHealthHandler } from "./httpHandler.ts";
 import type { HealthcheckOptions } from "./types.ts";
 import { ServingStatus } from "./types.ts";
+import { assertHttpPaths } from "./validation.ts";
 
 /**
  * Default watch interval for streaming health updates (ms)
@@ -79,35 +80,6 @@ function boundedName(name: string): string {
 }
 
 /**
- * Reject an `httpPaths` value that could never match a request or would
- * silently turn the HTTP endpoint into a no-op.
- *
- * A request path always starts with "/" and never contains the query or
- * fragment delimiters, so an element lacking the slash or containing them can
- * never be matched. An empty array would leave `httpEnabled: true` with no
- * reachable endpoint.
- */
-function validateHttpPaths(httpPaths: unknown): void {
-    if (!Array.isArray(httpPaths)) {
-        throw new TypeError(`Healthcheck(): option 'httpPaths' must be an array of paths, got ${typeof httpPaths}`);
-    }
-    if (httpPaths.length === 0) {
-        throw new RangeError("Healthcheck(): option 'httpPaths' must not be empty; to disable the HTTP endpoint set 'httpEnabled: false'");
-    }
-    for (const path of httpPaths as unknown[]) {
-        if (typeof path !== "string") {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' must contain only strings, got ${typeof path}`);
-        }
-        if (!path.startsWith("/")) {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must start with '/'`);
-        }
-        if (path.includes("?") || path.includes("#")) {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must not contain '?' or '#'`);
-        }
-    }
-}
-
-/**
  * Create healthcheck protocol registration
  *
  * Returns a ProtocolRegistration directly (not `{ protocol, manager }`).
@@ -147,7 +119,7 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const manager = options.manager ?? healthcheckManager;
 
     if (httpPaths !== undefined) {
-        validateHttpPaths(httpPaths);
+        assertHttpPaths(httpPaths, "Healthcheck(): option 'httpPaths'", "to disable the HTTP endpoint set 'httpEnabled: false'");
     }
 
     const protocol: ProtocolRegistration = {
