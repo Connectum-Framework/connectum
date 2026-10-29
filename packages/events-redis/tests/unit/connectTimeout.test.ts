@@ -42,8 +42,11 @@ describe("RedisAdapter connect timeout", () => {
             assert.ok(elapsed >= 250 && elapsed < 3000, `rejected after ${elapsed} ms`);
             assert.equal(silent.accepted(), 1, "the TCP connection was accepted, so the TCP timeout of the client never applied");
         } finally {
-            await adapter.disconnect();
-            await silent.close();
+            try {
+                await adapter.disconnect();
+            } finally {
+                await silent.close();
+            }
         }
     });
 
@@ -61,8 +64,11 @@ describe("RedisAdapter connect timeout", () => {
             }
             assert.equal(silent.accepted(), 2, "each attempt opened a fresh connection");
         } finally {
-            await adapter.disconnect();
-            await silent.close();
+            try {
+                await adapter.disconnect();
+            } finally {
+                await silent.close();
+            }
         }
     });
 });

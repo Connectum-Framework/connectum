@@ -14,6 +14,7 @@ import type { EventSubscription } from "@connectum/events";
 import { Redis } from "ioredis";
 import { RedisAdapter } from "../../src/RedisAdapter.ts";
 import type { RedisLifecycleEvent } from "../../src/types.ts";
+import { withCleanup } from "../helpers/cleanup.ts";
 
 const REDIS_TEST_URL = process.env.REDIS_TEST_URL;
 const modes = [
@@ -30,6 +31,11 @@ async function until(condition: () => boolean, label: string, timeoutMs = 8_000)
         }
         await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
     }
+}
+
+/** Cleanup steps shared by the tests: stop the subscription, close the adapter, drop the stream, close the control client. */
+function controlCleanup(control: Redis, streamKey: string, adapter: { disconnect(): Promise<void> }, subscription: () => EventSubscription | undefined): ReadonlyArray<() => unknown> {
+    return [() => subscription()?.unsubscribe(), () => adapter.disconnect(), () => control.del(streamKey), () => control.quit(), () => control.disconnect()];
 }
 
 /** Collect what the adapter prints through console.error / console.warn while `run` executes. */
@@ -75,34 +81,32 @@ describe("Redis consumer group recovery", { skip: REDIS_TEST_URL === undefined ?
 
             const output = await captureConsole(async () => {
                 let subscription: EventSubscription | undefined;
-                try {
-                    await adapter.connect({ serviceName: "integration-group-recovery" });
-                    subscription = await adapter.subscribe(
-                        [topic],
-                        async (event, ack) => {
-                            received.push(Buffer.from(event.payload).toString());
-                            await ack();
-                        },
-                        { group },
-                    );
-                    await publish("before-loss");
-                    await until(() => received.includes("before-loss"), "delivery before the loss");
+                await withCleanup(
+                    async () => {
+                        await adapter.connect({ serviceName: "integration-group-recovery" });
+                        subscription = await adapter.subscribe(
+                            [topic],
+                            async (event, ack) => {
+                                received.push(Buffer.from(event.payload).toString());
+                                await ack();
+                            },
+                            { group },
+                        );
+                        await publish("before-loss");
+                        await until(() => received.includes("before-loss"), "delivery before the loss");
 
-                    await control.del(streamKey);
-                    assert.equal(await control.exists(streamKey), 0);
-                    await publish("after-loss");
+                        await control.del(streamKey);
+                        assert.equal(await control.exists(streamKey), 0);
+                        await publish("after-loss");
 
-                    await until(() => received.includes("after-loss"), "delivery after the group was lost");
-                    assert.deepEqual(received, ["before-loss", "after-loss"]);
+                        await until(() => received.includes("after-loss"), "delivery after the group was lost");
+                        assert.deepEqual(received, ["before-loss", "after-loss"]);
 
-                    const groups = (await control.call("XINFO", "GROUPS", streamKey)) as unknown[];
-                    assert.equal(groups.length, 1, "the group exists again");
-                } finally {
-                    await subscription?.unsubscribe();
-                    await adapter.disconnect();
-                    await control.del(streamKey);
-                    await control.quit();
-                }
+                        const groups = (await control.call("XINFO", "GROUPS", streamKey)) as unknown[];
+                        assert.equal(groups.length, 1, "the group exists again");
+                    },
+                    controlCleanup(control, streamKey, adapter, () => subscription),
+                );
             });
 
             const recreated = lifecycle.filter((event) => event.type === "group-recreated");
@@ -128,32 +132,30 @@ describe("Redis consumer group recovery", { skip: REDIS_TEST_URL === undefined ?
 
         await captureConsole(async () => {
             let subscription: EventSubscription | undefined;
-            try {
-                await adapter.connect();
-                subscription = await adapter.subscribe(
-                    [topic],
-                    async (event, ack) => {
-                        received.push(Buffer.from(event.payload).toString());
-                        await ack();
-                    },
-                    { group },
-                );
-                await publish("first");
-                await until(() => received.includes("first"), "first delivery");
+            await withCleanup(
+                async () => {
+                    await adapter.connect();
+                    subscription = await adapter.subscribe(
+                        [topic],
+                        async (event, ack) => {
+                            received.push(Buffer.from(event.payload).toString());
+                            await ack();
+                        },
+                        { group },
+                    );
+                    await publish("first");
+                    await until(() => received.includes("first"), "first delivery");
 
-                await control.call("XGROUP", "DESTROY", streamKey, group);
-                await publish("second");
+                    await control.call("XGROUP", "DESTROY", streamKey, group);
+                    await publish("second");
 
-                // A re-created group starts at the beginning of the stream, so every entry the stream still
-                // holds is delivered; entries that were already delivered are delivered again (at-least-once).
-                await until(() => received.includes("second"), "delivery after the group was destroyed");
-                assert.deepEqual(received, ["first", "first", "second"]);
-            } finally {
-                await subscription?.unsubscribe();
-                await adapter.disconnect();
-                await control.del(streamKey);
-                await control.quit();
-            }
+                    // A re-created group starts at the beginning of the stream, so every entry the stream still
+                    // holds is delivered; entries that were already delivered are delivered again (at-least-once).
+                    await until(() => received.includes("second"), "delivery after the group was destroyed");
+                    assert.deepEqual(received, ["first", "first", "second"]);
+                },
+                controlCleanup(control, streamKey, adapter, () => subscription),
+            );
         });
     });
 
@@ -181,18 +183,16 @@ describe("Redis consumer group recovery", { skip: REDIS_TEST_URL === undefined ?
         try {
             const output = await captureConsole(async () => {
                 let subscription: EventSubscription | undefined;
-                try {
-                    await adapter.connect();
-                    subscription = await adapter.subscribe([topic], async (_event, ack) => ack(), { group });
-                    await until(() => lifecycle.some((event) => event.type === "group-recreated"), "group re-created");
-                    const groups = (await control.call("XINFO", "GROUPS", streamKey)) as unknown[];
-                    assert.equal(groups.length, 1);
-                } finally {
-                    await subscription?.unsubscribe();
-                    await adapter.disconnect();
-                    await control.del(streamKey);
-                    await control.quit();
-                }
+                await withCleanup(
+                    async () => {
+                        await adapter.connect();
+                        subscription = await adapter.subscribe([topic], async (_event, ack) => ack(), { group });
+                        await until(() => lifecycle.some((event) => event.type === "group-recreated"), "group re-created");
+                        const groups = (await control.call("XINFO", "GROUPS", streamKey)) as unknown[];
+                        assert.equal(groups.length, 1);
+                    },
+                    controlCleanup(control, streamKey, adapter, () => subscription),
+                );
             });
             assert.equal(destroyed, true);
             assert.deepEqual(
