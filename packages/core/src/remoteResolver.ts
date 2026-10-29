@@ -6,7 +6,9 @@
  * resolver MUST be **synchronous** and MUST NOT perform network I/O (TCP dial,
  * DNS lookup) — it only maps a service identity to a lazily-connecting
  * `Transport`. Returning `null` means "no route" → the call fails with
- * `Code.Unavailable`.
+ * `Code.Unavailable`. Anything else that is not a `Transport` (a string, a
+ * `Promise` from an `async` resolver, `undefined`) fails the call with
+ * `Code.Internal` naming the service, and is not cached.
  *
  * @module remoteResolver
  */

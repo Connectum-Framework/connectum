@@ -8,7 +8,7 @@
  * @module catalogOptions
  */
 
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 import { CatalogConfigError } from "./catalogErrors.ts";
 
 /**
@@ -78,4 +78,55 @@ export function assertEnabledServicesAreSupplied(enabledServices: readonly strin
         `enabledServices lists ${unknown.length} typeName(s) that match none of the services passed to createServer: ${unknown.join(", ")}. ` +
             `Services available: ${available.length > 0 ? available.join(", ") : "(none)"}.`,
     );
+}
+
+/**
+ * A `remoteResolver` returned something other than a `Transport` or `null`.
+ * A distinct class so the call sites that wrap a throwing resolver ("the
+ * resolver threw") let this one through unchanged: the resolver did not throw,
+ * it broke its contract, and its message already says how.
+ *
+ * @internal
+ */
+export class InvalidResolverResultError extends ConnectError {
+    constructor(message: string) {
+        super(message, Code.Internal);
+        Object.setPrototypeOf(this, InvalidResolverResultError.prototype);
+    }
+}
+
+/** Describe a value for an error message without printing its contents. */
+function describeValue(value: unknown): string {
+    if (value === null) return "null";
+    if (typeof value !== "object") return typeof value === "undefined" ? "undefined" : `a ${typeof value}`;
+    const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+    return typeof name === "string" && name !== "Object" ? `an object (${name})` : "an object";
+}
+
+/**
+ * Check what a `remoteResolver` returned for `typeName` and narrow it to a
+ * `Transport`. The framework caches the result per route and calls
+ * `transport.unary` / `transport.stream` on it, so anything else (a string, a
+ * `Promise` from an `async` resolver, `undefined` from a helper that found no
+ * entry) would be cached and then fail on every call with a message that names
+ * neither the resolver nor the service. `null` ("no route") is the caller's
+ * business and must be handled before this check.
+ *
+ * @throws InvalidResolverResultError (`Code.Internal`) naming the service and what was returned
+ * @internal
+ */
+export function assertResolvedTransport(resolved: unknown, typeName: string): Transport {
+    if (typeof resolved === "object" && resolved !== null && typeof (resolved as Transport).unary === "function" && typeof (resolved as Transport).stream === "function") {
+        return resolved as Transport;
+    }
+    let what = describeValue(resolved);
+    let hint = "A remoteResolver must return a Transport (an object with unary and stream functions) or null.";
+    if (typeof (resolved as { then?: unknown } | null)?.then === "function") {
+        // The promise is abandoned here: without a handler its rejection would
+        // crash the process on top of the configuration error reported below.
+        (resolved as Promise<unknown>).then(undefined, () => {});
+        what = "a Promise";
+        hint = "A remoteResolver must be synchronous: it cannot be declared async or return a Promise, because the framework caches its result per route and cannot await it.";
+    }
+    throw new InvalidResolverResultError(`The remoteResolver returned ${what} for "${typeName}". ${hint}`);
 }

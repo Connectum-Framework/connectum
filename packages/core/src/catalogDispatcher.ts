@@ -18,7 +18,7 @@
 import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import type { ContextValues, HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { assertCallTimeout } from "./catalogOptions.ts";
+import { assertCallTimeout, assertResolvedTransport, InvalidResolverResultError } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
@@ -193,17 +193,17 @@ export function remoteTransportCacheKey(typeName: string, endpoint: string | und
  * @internal
  */
 export function resolveRemoteTransportOrThrow(resolver: RemoteResolver, typeName: string, endpoint: string | undefined, caller = "ctx.call"): Transport {
-    let transport: Transport | null;
+    let answer: unknown;
     try {
-        transport = resolver(endpoint !== undefined ? { typeName, endpoint } : { typeName });
+        answer = resolver(endpoint !== undefined ? { typeName, endpoint } : { typeName });
     } catch (cause) {
         throw new ConnectError(`${caller}: the resolver threw while resolving "${typeName}".`, Code.Internal, undefined, undefined, cause);
     }
-    if (transport === null) {
+    if (answer === null) {
         const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
         throw new ConnectError(`${caller}: no route for "${typeName}"${at}: the resolver returned null.`, Code.Unavailable);
     }
-    return transport;
+    return assertResolvedTransport(answer, typeName);
 }
 
 /**
@@ -507,6 +507,7 @@ export class CatalogDispatcher {
         try {
             transport = this.host.resolveRemoteTransport(typeName, endpoint);
         } catch (cause) {
+            if (cause instanceof InvalidResolverResultError) throw cause;
             throw new ConnectError(`ctx.call: the remoteResolver threw while resolving "${typeName}".`, Code.Internal, undefined, undefined, cause);
         }
         if (transport === null) {

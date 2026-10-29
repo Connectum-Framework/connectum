@@ -15,7 +15,7 @@ import { validateAdmissionOptions, validateShutdownOptions } from "./admission.t
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
-import { assertEnabledServicesAreSupplied, validatePropagateHeaders } from "./catalogOptions.ts";
+import { assertEnabledServicesAreSupplied, assertResolvedTransport, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -435,8 +435,13 @@ class ServerImpl extends EventEmitter implements Server {
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
-        const resolved = this._options.remoteResolver?.(ctx) ?? null;
-        if (resolved === null) return null;
+        const resolver = this._options.remoteResolver;
+        if (resolver === undefined) return null;
+        const answer: unknown = resolver(ctx);
+        if (answer === null) return null;
+        // Checked before anything is cached: an invalid value kept in the cache
+        // would fail every later call to this route the same way.
+        const resolved = assertResolvedTransport(answer, typeName);
         // The resolver's transport is opaque (its own interceptors are fixed at
         // construction), so the server's outgoing chain is applied around it —
         // once per call, outside the transport's own middleware. With an empty
