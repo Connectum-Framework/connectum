@@ -12,6 +12,7 @@ import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, R
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
 import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
+import { explainConnectionError, explainInvalidTopic } from "./brokerErrors.ts";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import { dispatchLifecycle, trackConsumer } from "./lifecycle.ts";
@@ -144,6 +145,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             await candidate.connect();
         } catch (err) {
             await candidate.disconnect().catch(() => undefined);
+            explainConnectionError(err);
             throw err;
         }
         admin = candidate;
@@ -174,6 +176,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 await p.connect();
             } catch (err) {
                 await p.disconnect().catch(() => undefined);
+                explainConnectionError(err);
                 throw err;
             }
             producer = p;
@@ -237,17 +240,22 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const compression = compressionOf(options);
 
-            await producer.send({
-                topic: eventType,
-                messages: [
-                    {
-                        key: publishOptions?.key ?? null,
-                        value: Buffer.from(payload),
-                        headers,
-                    },
-                ],
-                ...(compression !== undefined && { compression }),
-            });
+            try {
+                await producer.send({
+                    topic: eventType,
+                    messages: [
+                        {
+                            key: publishOptions?.key ?? null,
+                            value: Buffer.from(payload),
+                            headers,
+                        },
+                    ],
+                    ...(compression !== undefined && { compression }),
+                });
+            } catch (err) {
+                explainConnectionError(err);
+                throw explainInvalidTopic(eventType, err);
+            }
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
@@ -279,7 +287,12 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 consumer.on(consumer.events.GROUP_JOIN, (event) => tracker.onGroupJoin(event.payload));
             }
 
-            await consumer.connect();
+            try {
+                await consumer.connect();
+            } catch (err) {
+                explainConnectionError(err);
+                throw err;
+            }
 
             /** Pending partition resumes of this subscription, cleared on unsubscribe. */
             const resumeTimers = new Set<NodeJS.Timeout>();
