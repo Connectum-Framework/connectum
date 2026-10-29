@@ -15,7 +15,7 @@ import { validateAdmissionOptions, validateShutdownOptions } from "./admission.t
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
-import { validatePropagateHeaders } from "./catalogOptions.ts";
+import { assertEnabledServicesAreSupplied, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -463,24 +463,27 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
-     * Validate the catalog configuration at startup. Currently the always-on
-     * shape check: every `enabledServices` entry must be a known catalog key
-     * (when a `catalog` is configured). A mismatch is a programmer error
-     * → `CatalogConfigError`.
+     * Validate the catalog configuration at startup. The always-on shape
+     * check: every `enabledServices` entry must be a known catalog key (when a
+     * `catalog` is configured) and the type name of a supplied service. A
+     * mismatch is a programmer error → `CatalogConfigError`.
      *
      * @internal
      */
     private _validateCatalogConfig(): void {
         const { catalog, enabledServices } = this._options;
-        if (!catalog || !enabledServices) return;
-        const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
-        if (missing.length > 0) {
-            const known = Object.keys(catalog);
-            throw new CatalogConfigError(
-                `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
-                    `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
-            );
+        if (!enabledServices) return;
+        if (catalog) {
+            const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
+            if (missing.length > 0) {
+                const known = Object.keys(catalog);
+                throw new CatalogConfigError(
+                    `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
+                        `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+                );
+            }
         }
+        assertEnabledServicesAreSupplied(enabledServices, new Set(this._routes.map((service) => service.descriptor.typeName)));
     }
 
     /**

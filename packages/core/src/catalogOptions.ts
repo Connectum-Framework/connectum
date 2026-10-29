@@ -9,6 +9,7 @@
  */
 
 import { Code, ConnectError } from "@connectrpc/connect";
+import { CatalogConfigError } from "./catalogErrors.ts";
 
 /**
  * Check a caller-supplied `CallOptions.timeoutMs` and return it (or `undefined`
@@ -55,4 +56,26 @@ export function validatePropagateHeaders(propagateHeaders: unknown): void {
             );
         }
     }
+}
+
+/**
+ * Check, at `start()`, that every `enabledServices` entry names a service the
+ * server was given. An entry that matches none mounts nothing, so a misspelled
+ * type name (often read from an environment variable) would otherwise leave a
+ * running server whose every call is `unimplemented`.
+ *
+ * @param supplied - type names of the services in `services`, including those added with `addService()`
+ * @throws CatalogConfigError naming the unknown entries and the type names available
+ * @internal
+ */
+export function assertEnabledServicesAreSupplied(enabledServices: readonly string[], supplied: ReadonlySet<string>): void {
+    const unknown = enabledServices.filter((name) => !supplied.has(name));
+    if (unknown.length === 0) {
+        return;
+    }
+    const available = [...supplied];
+    throw new CatalogConfigError(
+        `enabledServices lists ${unknown.length} typeName(s) that match none of the services passed to createServer: ${unknown.join(", ")}. ` +
+            `Services available: ${available.length > 0 ? available.join(", ") : "(none)"}.`,
+    );
 }

@@ -538,6 +538,12 @@ export interface CreateServerOptions {
      * provided service locally, whether the property is omitted or set to
      * `undefined`, so `enabledServicesFromEnv(process.env.X)` can be passed as is.
      * An empty list mounts none of them.
+     *
+     * Every entry must be the `typeName` of a service in `services` (or added
+     * with `addService()`), with or without a `catalog`; with a catalog it must
+     * also be a catalog key. `start()` rejects with `CatalogConfigError` naming
+     * the unknown entries, so a misspelled name cannot leave a running server
+     * with nothing mounted.
      */
     enabledServices?: readonly string[] | undefined;
 
