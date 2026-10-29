@@ -458,4 +458,69 @@ describe("traceAll", () => {
             assert.strictEqual(obj.regular(), "regular");
         });
     });
+
+    // A traced object must behave like the original object for every property read:
+    // the proxy only adds spans around methods, it never changes what a property holds.
+    describe("transparency of property reads", () => {
+        it("should read a getter over a #private field", () => {
+            class Counter {
+                #n = 42;
+                get n() {
+                    return this.#n;
+                }
+            }
+            assert.strictEqual(traceAll(new Counter()).n, 42);
+        });
+
+        it("should read Map.size and keep the Map methods working", () => {
+            const map = traceAll(new Map([[1, 2]]));
+            assert.strictEqual(map.size, 1);
+            assert.strictEqual(map.get(1), 2);
+        });
+
+        it("should read the accessors of a Set and a Date through the proxy", () => {
+            assert.strictEqual(traceAll(new Set([1, 2])).size, 2);
+            assert.strictEqual(traceAll(new Date(0)).getTime(), 0);
+        });
+
+        it("should call the method of a frozen object and return its result", () => {
+            const frozen = traceAll(
+                Object.freeze({
+                    greet() {
+                        return "hi";
+                    },
+                }),
+            );
+            assert.strictEqual(frozen.greet(), "hi");
+        });
+
+        it("should return the original function for a non-writable, non-configurable method, so the proxy invariant holds", () => {
+            const method = () => "hi";
+            const target = Object.freeze({ method });
+            assert.strictEqual(traceAll(target).method, method);
+        });
+
+        it("should still trace a method defined as a non-configurable but writable property", async () => {
+            const target = {};
+            Object.defineProperty(target, "work", { value: () => "done", writable: true, configurable: false });
+            const names = await spanNamesOf(() => (traceAll(target) as { work(): string }).work());
+            assert.deepStrictEqual(names, ["Object.work"]);
+        });
+
+        it("should keep tracing the methods of a class instance whose getter reads a #private field", async () => {
+            class Repository {
+                #rows = [1, 2, 3];
+                get count() {
+                    return this.#rows.length;
+                }
+                load() {
+                    return this.#rows.slice();
+                }
+            }
+            const repository = traceAll(new Repository());
+            assert.strictEqual(repository.count, 3);
+            const names = await spanNamesOf(() => repository.load());
+            assert.deepStrictEqual(names, ["Repository.load"]);
+        });
+    });
 });

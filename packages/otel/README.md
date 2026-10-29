@@ -58,9 +58,10 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 ## Limitations
 
 - Set `recordMessages: true` to add per-message events to streaming spans; the
-  option is disabled by default. The message size attribute is an estimate for
-  each individual message, not the total stream size. Events contain metadata
-  and estimated size, not serialized message payloads.
+  option is disabled by default. `rpc.message.uncompressed_size` is the
+  serialized size of each individual message, not the total stream size. Events
+  contain metadata and size, not message payloads. The aggregate size histograms
+  of a streaming call stay zero.
 - The instrumentation captures the active span when creating a stream because
   Node.js `AsyncLocalStorage` context can be lost across async-generator
   boundaries. See the [observability guide](https://connectum.dev/en/guide/observability).

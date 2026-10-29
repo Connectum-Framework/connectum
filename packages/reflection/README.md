@@ -59,6 +59,13 @@ buf curl --protocol grpc --http2-prior-knowledge http://localhost:5000 --list-me
 - Enabling reflection exposes mounted service names and schemas to clients that
   can reach the server. Restrict network access where that information must
   remain private.
+- A `ServerReflectionInfo` stream that a client keeps open ends when the server
+  stops (`server.stop()`), like the other in-flight calls; a stream that is
+  waiting for the client's next request ends without an error.
+- An `error_response` repeats at most the first 128 characters of the requested
+  name, with `…` after a cut name. `original_request` always carries the whole
+  request. Reflection has no request size limit of its own: a request is read up
+  to the server-wide `readMaxBytes` (set it on `createServer()` to bound it).
 - `grpcurl` and `buf` are external tools; they are not installed by this package.
 
 ## Learn and reference

@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path/posix";
 import { cwd } from "node:process";
+import { createSecureContext } from "node:tls";
 import env from "env-var";
 import type { TLSOptions } from "./types.ts";
 
@@ -21,28 +22,29 @@ export function getTLSPath(): string {
     const rootPath = cwd();
 
     // In production, use current directory
-    // In development, use ../../keys relative to cwd
+    // In development, use ../../../keys relative to cwd
     const defaultPath = process.env.NODE_ENV === "production" ? rootPath : resolve(rootPath, "../../../keys");
 
     return env.get("TLS_DIR_PATH").default(defaultPath).asString();
 }
 
+/** One TLS file: its resolved path and the setting that supplied it. */
+interface TLSFile {
+    readonly file: string;
+    readonly origin: string;
+}
+
+interface TLSFiles {
+    readonly key: TLSFile;
+    readonly cert: TLSFile;
+}
+
 /**
- * Read TLS certificates from configuration
- *
- * Explicit keyPath and certPath are used when both are non-empty. When neither
- * is, both files come from dirPath or getTLSPath(). Exactly one of them is a
- * configuration error: falling back to the directory would start the server
- * with a certificate other than the one the operator named.
- *
- * @param options - TLS options
- * @returns TLS key and cert buffers
- * @throws {Error} When only one of keyPath and certPath is non-empty; thrown before any file is read
+ * Work out which two files will be read and which setting each one comes from,
+ * so that a failure can name both. The complete-pair rule is checked here,
+ * before any file is read.
  */
-export function readTLSCertificates(options: TLSOptions = {}): {
-    key: Buffer;
-    cert: Buffer;
-} {
+function resolveTLSFiles(options: TLSOptions): TLSFiles {
     const { keyPath, certPath, dirPath } = options;
 
     if (keyPath && !certPath) {
@@ -55,19 +57,129 @@ export function readTLSCertificates(options: TLSOptions = {}): {
     // If explicit paths provided, use them (resolve to absolute paths)
     if (keyPath && certPath) {
         return {
-            key: readFileSync(resolve(keyPath)),
-            cert: readFileSync(resolve(certPath)),
+            key: { file: resolve(keyPath), origin: "tls.keyPath" },
+            cert: { file: resolve(certPath), origin: "tls.certPath" },
         };
     }
 
     // Otherwise use dirPath (or default TLS path)
-    const tlsDir = dirPath ?? getTLSPath();
-    const resolvedDir = resolve(tlsDir);
-
+    const resolvedDir = resolve(dirPath ?? getTLSPath());
+    let origin: string;
+    if (dirPath !== undefined) {
+        origin = "tls.dirPath";
+    } else if (env.get("TLS_DIR_PATH").asString() !== undefined) {
+        origin = "TLS_DIR_PATH";
+    } else {
+        origin = "the default TLS directory; set tls.dirPath or TLS_DIR_PATH to change it";
+    }
     return {
-        key: readFileSync(`${resolvedDir}/server.key`),
-        cert: readFileSync(`${resolvedDir}/server.crt`),
+        key: { file: `${resolvedDir}/server.key`, origin },
+        cert: { file: `${resolvedDir}/server.crt`, origin },
     };
+}
+
+/**
+ * Read one file. A failure names the file, the setting that supplied its path
+ * and its role; the file system error stays as `cause`, and its `code` and
+ * `path` are copied so that callers can still tell a missing file from the
+ * rest.
+ */
+function readTLSFile(source: TLSFile, role: "key" | "certificate"): Buffer {
+    try {
+        return readFileSync(source.file);
+    } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        const { code, path } = cause as NodeJS.ErrnoException;
+        throw Object.assign(new Error(`TLS ${role} file "${source.file}" (from ${source.origin}) could not be read: ${reason}`, { cause }), { code, path });
+    }
+}
+
+function readTLSFiles(files: TLSFiles): { key: Buffer; cert: Buffer } {
+    return {
+        key: readTLSFile(files.key, "key"),
+        cert: readTLSFile(files.cert, "certificate"),
+    };
+}
+
+/**
+ * Read TLS certificates from configuration
+ *
+ * Explicit keyPath and certPath are used when both are non-empty. When neither
+ * is, both files come from dirPath or getTLSPath(). Exactly one of them is a
+ * configuration error: falling back to the directory would start the server
+ * with a certificate other than the one the operator named.
+ *
+ * The files are only read, not parsed; when the server cannot use them,
+ * `explainTLSFailure` (internal) names the file behind the failure.
+ *
+ * @param options - TLS options
+ * @returns TLS key and cert buffers
+ * @throws {Error} When only one of keyPath and certPath is non-empty; thrown before any file is read
+ * @throws {Error} When a file cannot be read; the message names the file and the setting its path came from
+ */
+export function readTLSCertificates(options: TLSOptions = {}): {
+    key: Buffer;
+    cert: Buffer;
+} {
+    return readTLSFiles(resolveTLSFiles(options));
+}
+
+/**
+ * Name the file behind a failure of the TLS server creation.
+ *
+ * OpenSSL's own text for a file that is not PEM names neither the file nor the
+ * setting that pointed to it. Called only after `createSecureServer()` has
+ * thrown with the files already read, so a configuration the server accepts
+ * (a lowered security level through `ciphers`, an encrypted key with a
+ * passphrase) is never judged here. The key and the certificate are parsed on
+ * their own and then together; the first one that fails is reported with its
+ * resolved path and the setting its path came from. When every check passes,
+ * the failure came from something else and is returned unchanged.
+ *
+ * @param options - TLS options the files were read with
+ * @param failure - What `createSecureServer()` threw
+ * @param secureOptions - `passphrase` and `ciphers` as the server received them from `http2Options`: the key is parsed with the same security policy
+ * @returns An error naming the file, with `failure` as its cause, or `failure` itself
+ * @internal
+ */
+export function explainTLSFailure(options: TLSOptions, failure: unknown, secureOptions: { passphrase?: string | undefined; ciphers?: string | undefined } = {}): unknown {
+    const { passphrase, ciphers } = secureOptions;
+    let files: TLSFiles;
+    let certificates: { key: Buffer; cert: Buffer };
+    try {
+        files = resolveTLSFiles(options);
+        certificates = readTLSFiles(files);
+    } catch {
+        return failure;
+    }
+
+    // A setting that is wrong on its own (an unknown cipher) is not the files' fault: the server's
+    // error already says so and is returned as it is.
+    if (ciphers !== undefined) {
+        try {
+            createSecureContext({ ciphers });
+        } catch {
+            return failure;
+        }
+    }
+
+    const describe = (source: TLSFile, role: "key" | "certificate"): string => `TLS ${role} file "${source.file}" (from ${source.origin})`;
+    const check = (description: string, material: { key?: Buffer; cert?: Buffer }): Error | undefined => {
+        try {
+            createSecureContext({ ...material, ...(passphrase === undefined ? {} : { passphrase }), ...(ciphers === undefined ? {} : { ciphers }) });
+        } catch (cause) {
+            const reason = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
+            return new Error(`${description}: ${reason}`, { cause: failure });
+        }
+        return undefined;
+    };
+
+    return (
+        check(`${describe(files.key, "key")} is not a usable PEM private key`, { key: certificates.key }) ??
+        check(`${describe(files.cert, "certificate")} is not a usable PEM certificate`, { cert: certificates.cert }) ??
+        check(`${describe(files.key, "key")} does not match ${describe(files.cert, "certificate")}`, certificates) ??
+        failure
+    );
 }
 
 /**

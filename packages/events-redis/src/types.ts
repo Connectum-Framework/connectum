@@ -23,6 +23,11 @@ export interface RedisAdapterOptions {
      *
      * Passed directly to `new Redis(redisOptions)`.
      * When `url` is also set, these options are merged as the second argument.
+     *
+     * `connectTimeout` (ioredis default 10000 ms) also bounds the wait for a connection to become
+     * ready: `connect()` and `subscribe()` reject with an error when the server accepts the TCP
+     * connection but does not complete the handshake in time. A value of `0` or less removes the
+     * deadline.
      */
     readonly redisOptions?: RedisOptions;
 
@@ -43,8 +48,10 @@ export interface RedisBrokerOptions {
      * Maximum stream length (MAXLEN approximate for XADD).
      *
      * When set, older entries are trimmed on publish.
+     * Must be a positive safe integer: `0` would trim every entry on publish, so it is rejected.
      *
      * @default undefined (no limit)
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a positive safe integer.
      */
     readonly maxLen?: number;
 
@@ -53,15 +60,20 @@ export interface RedisBrokerOptions {
      *
      * How long the consumer blocks waiting for new messages
      * before retrying the loop.
+     * Must be a non-negative safe integer. `0` blocks without a deadline (Redis `BLOCK 0`), so the
+     * stale-entry reclaim pass only runs after a message arrives.
      *
      * @default 5000
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a non-negative safe integer.
      */
     readonly blockMs?: number;
 
     /**
      * Number of messages to read per XREADGROUP call.
+     * Must be a positive safe integer.
      *
      * @default 10
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a positive safe integer.
      */
     readonly count?: number;
 }
@@ -108,6 +120,17 @@ export type RedisLifecycleEvent =
           readonly type: "reconnect-failed";
           readonly error: Error;
           readonly connection: RedisLifecycleConnection;
+      }
+    | {
+          /**
+           * Redis lost a consumer group (data loss, failover to a replica without the stream) and the subscription created it again.
+           * The group starts at the beginning of the stream, so entries it had already handled before the loss can be delivered a second time.
+           */
+          readonly type: "group-recreated";
+          readonly group: string;
+          /** The stream key, `events:<topic>`. */
+          readonly stream: string;
+          readonly connection: Exclude<RedisLifecycleConnection, "publisher">;
       }
     | {
           /** A lifecycle callback threw or returned a rejected promise. */

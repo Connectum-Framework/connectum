@@ -7,6 +7,7 @@
  */
 
 import { recordArgsAttribute, recordFailure } from "./failure.ts";
+import { endSpanWithResult } from "./result.ts";
 import { getTracer } from "./tracer.ts";
 import type { TracedOptions } from "./types.ts";
 
@@ -14,7 +15,11 @@ import type { TracedOptions } from "./types.ts";
  * Wraps a function in an OpenTelemetry span.
  *
  * The wrapper preserves the original function's type signature.
- * Supports both sync and async functions.
+ * Supports sync and async functions and sync and async generator functions.
+ * The span ends when a returned promise settles, or when a returned generator is
+ * exhausted, throws or is closed (a generator that is never iterated never ends its
+ * span). A thenable that is not a native `Promise` is not awaited: the span ends when
+ * the function returns.
  *
  * @param fn - The function to wrap
  * @param options - Tracing options
@@ -62,27 +67,9 @@ export function traced<T extends (...args: any[]) => any>(fn: T, options?: Trace
                     });
                 }
 
-                const result = fn.apply(this, args);
-
-                // Handle async results
-                if (result instanceof Promise) {
-                    return result.then(
-                        (value) => {
-                            // Success leaves the status unset; only a failure sets ERROR.
-                            span.end();
-                            return value;
-                        },
-                        (error) => {
-                            recordFailure(span, error);
-                            span.end();
-                            throw error;
-                        },
-                    );
-                }
-
-                // Sync result: success leaves the status unset.
-                span.end();
-                return result;
+                // The span ends when the result is final: a promise settles, a generator is
+                // exhausted or closed, anything else is final at once.
+                return endSpanWithResult(span, fn.apply(this, args));
             } catch (error) {
                 recordFailure(span, error);
                 span.end();
