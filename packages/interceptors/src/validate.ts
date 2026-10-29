@@ -40,6 +40,47 @@ function describeValue(value: unknown): string {
 }
 
 /**
+ * Require an options argument to be an object. `null`, numbers, strings, arrays and
+ * functions are refused: destructuring them would either throw a raw `TypeError` that
+ * does not name the factory or, for a string or an array, silently read nothing.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.value - the received argument
+ * @param options.name - what the argument is called in the message; `"options"` by default
+ * @throws TypeError if `value` is not an object
+ */
+export function requireOptionsObject(options: { caller: string; value: unknown; name?: string }): void {
+    const { caller, value, name = "options" } = options;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${name} must be an object, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require a value to be an array whose entries are all functions. An entry that is
+ * `null`, `undefined` or anything else is refused instead of being skipped, so a
+ * missing interceptor cannot go unnoticed.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.subject - what the array is, e.g. `the interceptors of "svc/*"`
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not an array, or an entry is not a function
+ */
+export function requireFunctionArray(options: { caller: string; subject: string; value: unknown }): void {
+    const { caller, subject, value } = options;
+    if (!Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${subject} must be an array of functions, got ${describeValue(value)}`);
+    }
+    // An index loop, not forEach: forEach skips the holes of a sparse array.
+    for (let index = 0; index < value.length; index++) {
+        const entry: unknown = value[index];
+        if (typeof entry !== "function") {
+            throw new TypeError(`${caller}: entry ${index} of ${subject} must be a function, got ${describeValue(entry)}`);
+        }
+    }
+}
+
+/**
  * Require a number option to be an integer inside an inclusive range.
  *
  * @param options.caller - factory name shown in the message
