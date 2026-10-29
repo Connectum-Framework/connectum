@@ -134,6 +134,24 @@ describe("createTopicRecovery", () => {
         });
     });
 
+    it("treats a topic created again under the name of a deleted one as found after the start", async () => {
+        await quietly(async () => {
+            let onBroker = ["orders.a"];
+            const { recovery, consumers, known } = harness({ known: ["orders.a", "orders.b"], topicsOnBroker: () => onBroker });
+            recovery.spawn();
+            consumers[0]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers[1]?.calls.includes("run") === true, "a second consumer runs");
+
+            // orders.b is created again and discovery subscribes it from its beginning; then orders.a is deleted.
+            known.add("orders.b");
+            known.add("orders.c");
+            onBroker = ["orders.b", "orders.c"];
+            consumers[1]?.onCrash({ error: unknownTopic(), groupId: "g", restart: true });
+            await waitFor(() => consumers[2]?.calls.includes("run") === true, "a third consumer runs");
+            assert.ok(consumers[2]?.calls.includes("subscribe orders.b,orders.c fromBeginning=true"), String(consumers[2]?.calls));
+        });
+    });
+
     it("keeps the topic list fixed when discovery is off: a matching topic created since the start is not subscribed", async () => {
         await quietly(async () => {
             const { recovery, consumers, known } = harness({ discover: false, known: ["orders.a", "orders.b"], topicsOnBroker: () => ["orders.a", "orders.c"] });

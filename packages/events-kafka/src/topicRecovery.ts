@@ -29,12 +29,13 @@ export interface TopicRecoveryOptions {
     /** The topics on the broker the subscription has seen; replaced by the current list after a recovery. */
     readonly known: Set<string>;
     /**
-     * The topics that were on the broker when the subscription started; never changed afterwards.
+     * The topics that were on the broker when the subscription started; only the topics found deleted are removed from it
+     * (a topic created again under the same name is a new topic to the group).
      * A surviving topic that is not in it was found later and was subscribed from its beginning,
      * so the replacement subscribes it from its beginning too: a partition of it may have no
      * committed offset yet, and reading from the end would skip messages that were never settled.
      */
-    readonly started: ReadonlySet<string>;
+    readonly started: Set<string>;
     /** Whether topics the group has no offset for are read from their beginning. */
     readonly fromBeginning: boolean;
     /**
@@ -167,6 +168,9 @@ export function createTopicRecovery(options: TopicRecoveryOptions): TopicRecover
         }
 
         const matching = names.filter(matchesWildcard);
+        for (const name of gone) {
+            started.delete(name);
+        }
         const survivors = matching.filter((name) => known.has(name) && started.has(name));
         // Found after the start (by discovery or an earlier recovery) or created meanwhile: read from the first message.
         const fresh = matching.filter((name) => (known.has(name) ? !started.has(name) : options.discover) && !literals.includes(name));
