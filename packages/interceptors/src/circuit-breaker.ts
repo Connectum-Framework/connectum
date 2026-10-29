@@ -10,7 +10,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { BrokenCircuitError, CircuitState, ConsecutiveBreaker, circuitBreaker, handleWhen } from "cockatiel";
 import type { CircuitBreakerOptions } from "./types.ts";
-import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
+import { MAX_TIMER_MS, requireBoolean, requireFunction, requireInteger, requireOptionsObject } from "./validate.ts";
 
 /**
  * Connect codes that count as circuit failures by default.
@@ -105,11 +105,16 @@ export function defaultFailurePredicate(error: unknown): boolean {
  * ```
  */
 export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createCircuitBreakerInterceptor", value: options });
     const { threshold = 5, halfOpenAfter = 30000, skipStreaming = true, failurePredicate } = options;
 
     // Validate options
     requireInteger({ caller: "createCircuitBreakerInterceptor", option: "threshold", value: threshold, min: 1 });
     requireInteger({ caller: "createCircuitBreakerInterceptor", option: "halfOpenAfter", value: halfOpenAfter, min: 0, max: MAX_TIMER_MS, unit: "milliseconds" });
+    requireBoolean({ caller: "createCircuitBreakerInterceptor", option: "skipStreaming", value: skipStreaming });
+    if (failurePredicate !== undefined) {
+        requireFunction({ caller: "createCircuitBreakerInterceptor", option: "failurePredicate", value: failurePredicate });
+    }
 
     // Classification wrapper. The try/catch is mandatory, not defensive:
     // cockatiel invokes the error filter without guarding it (verified in the

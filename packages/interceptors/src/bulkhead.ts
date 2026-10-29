@@ -9,7 +9,7 @@
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { BulkheadOptions } from "./types.ts";
-import { requireInteger } from "./validate.ts";
+import { requireBoolean, requireInteger, requireOptionsObject } from "./validate.ts";
 
 /** A call waiting for a slot; `grant` wakes it with the slot already counted as its own. */
 interface Waiter {
@@ -73,11 +73,13 @@ interface Waiter {
  * ```
  */
 export function createBulkheadInterceptor(options: BulkheadOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createBulkheadInterceptor", value: options });
     const { capacity = 10, queueSize = 10, skipStreaming = true } = options;
 
     // Validate options
     requireInteger({ caller: "createBulkheadInterceptor", option: "capacity", value: capacity, min: 1 });
     requireInteger({ caller: "createBulkheadInterceptor", option: "queueSize", value: queueSize, min: 0 });
+    requireBoolean({ caller: "createBulkheadInterceptor", option: "skipStreaming", value: skipStreaming });
 
     // Slots in use. A slot is held until the downstream call settles, not until
     // the caller stops waiting for it: signal-unaware work still occupies capacity.

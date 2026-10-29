@@ -10,7 +10,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { TimeoutStrategy, timeout } from "cockatiel";
 import type { TimeoutOptions } from "./types.ts";
-import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
+import { MAX_TIMER_MS, requireBoolean, requireInteger, requireOptionsObject } from "./validate.ts";
 
 /**
  * Create timeout interceptor
@@ -67,10 +67,12 @@ import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
  * ```
  */
 export function createTimeoutInterceptor(options: TimeoutOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createTimeoutInterceptor", value: options });
     const { duration = 30000, skipStreaming = true } = options;
 
     // Validate options
     requireInteger({ caller: "createTimeoutInterceptor", option: "duration", value: duration, min: 1, max: MAX_TIMER_MS, unit: "milliseconds" });
+    requireBoolean({ caller: "createTimeoutInterceptor", option: "skipStreaming", value: skipStreaming });
 
     // A successfully opened stream must keep running after the policy returns.
     const policy = timeout(duration, { strategy: TimeoutStrategy.Aggressive, abortOnReturn: false });

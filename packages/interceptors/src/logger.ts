@@ -13,6 +13,10 @@ import { toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { LoggerOptions } from "./types.ts";
+import { requireBoolean, requireFunction, requireOneOf, requireOptionsObject } from "./validate.ts";
+
+/** The levels `LoggerOptions.level` accepts: the `console` methods the default sink writes to. */
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const satisfies ReadonlyArray<NonNullable<LoggerOptions["level"]>>;
 
 /**
  * Request header and value that `@connectum/core` sets on every call made
@@ -227,7 +231,19 @@ function isHealthService(typeName: string): boolean {
  * ```
  */
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createLoggerInterceptor", value: options });
     const { level = "debug", skipHealthCheck = true, includeTransport = false, includeBodies = false } = options;
+
+    // Validate options. An unknown level would reach `console[level]` as undefined, and a
+    // non-function sink would fail on the first call that is logged.
+    requireOneOf({ caller: "createLoggerInterceptor", option: "level", value: level, allowed: LOG_LEVELS });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "skipHealthCheck", value: skipHealthCheck });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "includeTransport", value: includeTransport });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "includeBodies", value: includeBodies });
+    if (options.logger !== undefined) {
+        requireFunction({ caller: "createLoggerInterceptor", option: "logger", value: options.logger });
+    }
+
     // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
     const logger = guardSink(options.logger ?? console[level]);
 

@@ -9,6 +9,7 @@
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { FallbackOptions } from "./types.ts";
+import { requireBoolean, requireOptionsObject } from "./validate.ts";
 
 /**
  * Whether a failure is a refusal of access. A fallback value stands in for a failed
@@ -122,7 +123,9 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * ```
  */
 export function createFallbackInterceptor<T = unknown>(options: FallbackOptions<T>): Interceptor {
+    requireOptionsObject({ caller: "createFallbackInterceptor", value: options });
     const { handler, skipStreaming = true } = options;
+    requireBoolean({ caller: "createFallbackInterceptor", option: "skipStreaming", value: skipStreaming });
 
     // Validate options
     if (typeof handler !== "function") {

@@ -12,6 +12,8 @@
  * @module validate
  */
 
+import { Code } from "@connectrpc/connect";
+
 /**
  * Largest delay in milliseconds the Node.js timer honours. A longer delay does not
  * wait longer: the runtime fires the timer after 1 ms, so a "very long" timeout
@@ -186,5 +188,85 @@ export function requireKnownKeys(options: { caller: string; value: object; known
     if (unknown.length > 0) {
         const names = unknown.map((key) => JSON.stringify(key)).join(", ");
         throw new TypeError(`${caller}: unknown option${unknown.length > 1 ? "s" : ""} ${names}; the known options are ${known.join(", ")}`);
+    }
+}
+
+/**
+ * Require an option to be a boolean. Truthy and falsy values of other types are
+ * refused: `"no"` or `"yes"` would otherwise be read as `true`, `0` or `null` as `false`.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not a boolean
+ */
+export function requireBoolean(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (typeof value !== "boolean") {
+        throw new TypeError(`${caller}: ${option} must be true or false, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require an option to be a function.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not a function
+ */
+export function requireFunction(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (typeof value !== "function") {
+        throw new TypeError(`${caller}: ${option} must be a function, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require an option to be one of a fixed list of strings.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @param options.allowed - the accepted strings
+ * @throws TypeError if `value` is not a string
+ * @throws RangeError if `value` is a string outside the list
+ */
+export function requireOneOf(options: { caller: string; option: string; value: unknown; allowed: readonly string[] }): void {
+    const { caller, option, value, allowed } = options;
+    const message = `${caller}: ${option} must be one of ${allowed.map((entry) => JSON.stringify(entry)).join(", ")}, got ${describeValue(value)}`;
+    if (typeof value !== "string") {
+        throw new TypeError(message);
+    }
+    if (!allowed.includes(value)) {
+        throw new RangeError(message);
+    }
+}
+
+/**
+ * Require an option to be an array of Connect status codes (`Code.Unavailable` and
+ * the like). A string such as `"14"`, a bare number or `null` would otherwise be
+ * accepted and make the interceptor retry nothing, or fail on its first failing call.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not an array, or an entry is not a number
+ * @throws RangeError if an entry is a number that is not a Connect code
+ */
+export function requireConnectCodes(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (!Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${option} must be an array of Connect codes, got ${describeValue(value)}`);
+    }
+    // An index loop, not forEach: forEach skips the holes of a sparse array.
+    for (let index = 0; index < value.length; index++) {
+        const entry: unknown = value[index];
+        if (typeof entry !== "number") {
+            throw new TypeError(`${caller}: entry ${index} of ${option} must be a Connect code, got ${describeValue(entry)}`);
+        }
+        if (typeof Code[entry] !== "string") {
+            throw new RangeError(`${caller}: entry ${index} of ${option} must be a Connect code from 1 to 16, got ${describeValue(entry)}`);
+        }
     }
 }
