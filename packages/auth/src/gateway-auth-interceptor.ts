@@ -13,7 +13,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
+import { HEADER_BREAKING_CHARS, MAX_HEADER_BYTES, propagateAuthHeaders, readHeaderText } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
@@ -75,6 +75,18 @@ function matchesIp(address: string, pattern: string): boolean {
     // the same aligned block of 2^(32 - prefix) addresses.
     const blockSize = 2 ** (32 - prefix);
     return Math.floor(peer / blockSize) === Math.floor(network / blockSize);
+}
+
+const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HEADERS));
+
+/**
+ * Read a text value of the identity from the header the mapping names. The standard `x-auth-*`
+ * names carry text written by another Connectum service, which writes characters above U+00FF as
+ * `utf-8''` plus percent-encoded UTF-8, so those values are decoded. A custom header comes from
+ * the gateway and is taken as it is.
+ */
+function readIdentityText(headerName: string, raw: string): string {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY) : raw;
 }
 
 function digest(text: string): Buffer {
@@ -184,7 +196,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
     // defaultType becomes AuthContext.type of every request that sends no type header, and
     // is propagated as a header; a value that cannot be a header would fail every such request.
     if (HEADER_BREAKING_CHARS.test(defaultType)) {
-        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters, or characters above U+00FF");
+        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters");
     }
 
     // Pre-compute headers to strip (prevents downstream spoofing on all routes).
@@ -228,14 +240,17 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         }
 
         // Extract subject (required)
-        const subject = req.header.get(headerMapping.subject);
+        const subjectRaw = req.header.get(headerMapping.subject);
+        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
         // Extract optional fields
-        const name = headerMapping.name ? (req.header.get(headerMapping.name) ?? undefined) : undefined;
-        const type = headerMapping.type ? (req.header.get(headerMapping.type) ?? defaultType) : defaultType;
+        const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
+        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw) : undefined;
+        const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
+        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw) : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];
@@ -251,7 +266,10 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         if (headerMapping.scopes) {
             const scopesRaw = req.header.get(headerMapping.scopes);
             if (scopesRaw) {
-                scopes = scopesRaw.split(" ").filter(Boolean);
+                scopes = scopesRaw
+                    .split(" ")
+                    .filter(Boolean)
+                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope));
             }
         }
 
@@ -259,7 +277,12 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         let claims: Record<string, unknown> = {};
         if (headerMapping.claims) {
             const claimsRaw = req.header.get(headerMapping.claims);
-            if (claimsRaw && claimsRaw.length <= 8192) {
+            // A claims header that does not fit is refused, not read as `{}`: a deny rule or an
+            // authorize callback that looks at a claim would otherwise stop matching.
+            if (claimsRaw && claimsRaw.length > MAX_HEADER_BYTES) {
+                throw new ConnectError("Authentication failed", Code.Unauthenticated);
+            }
+            if (claimsRaw) {
                 try {
                     const parsed: unknown = JSON.parse(claimsRaw);
                     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {

@@ -1,0 +1,5 @@
+---
+"@connectum/auth": minor
+---
+
+fix: with `propagateHeaders` on, a `subject`, `name`, `type` or scope that contains characters above U+00FF (Cyrillic, CJK, an emoji) is now admitted instead of rejected with `Unauthenticated`. It is written to the `x-auth-*` header as `utf-8''` followed by its percent-encoded UTF-8 bytes (the form of an RFC 8187 `ext-value`) and decoded by `parseAuthHeaders` and by `createGatewayAuthInterceptor` when it reads the standard `x-auth-*` names. ASCII and Latin-1 text is written exactly as before, so nothing changes on the wire for identities that were propagated until now; a text that itself starts with `utf-8''` is encoded too, so reading is unambiguous. NUL, CR, LF, a lone surrogate and a scope with a space are still rejected. A downstream service that reads `x-auth-subject` or `x-auth-name` without `@connectum/auth` sees the encoded form for such users and should decode it. `createClientGatewayInterceptor` encodes a non-Latin subject the same way. `defaultType` may now contain characters above U+00FF.

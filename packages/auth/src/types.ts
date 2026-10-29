@@ -265,6 +265,9 @@ export interface JwtAuthInterceptorOptions {
      * Propagate auth context as headers for downstream services.
      * A subject, type, name or scope containing NUL, CR or LF is rejected with
      * `Unauthenticated` (and never cached) while this is on.
+     * Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 and read back by the receiver.
+     * An identity that does not fit its header (subject over 512 characters, type over 128, name over
+     * 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      * @default false
      */
     propagateHeaders?: boolean | undefined;
@@ -366,7 +369,7 @@ export interface GatewayAuthInterceptorOptions {
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**
@@ -589,7 +592,7 @@ export interface SessionAuthInterceptorOptions {
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**

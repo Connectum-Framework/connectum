@@ -8,7 +8,8 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
-import { MAX_HEADER_BYTES, sanitizeHeaderValue } from "./headers.ts";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { encodeHeaderText, MAX_HEADER_BYTES, MAX_SUBJECT_LENGTH, sanitizeHeaderValue } from "./headers.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -53,14 +54,23 @@ export function createClientGatewayInterceptor(options: ClientGatewayInterceptor
     const { secret, subject, roles } = options;
 
     return (next) => async (req) => {
-        req.header.set(GATEWAY_SECRET_HEADER, secret);
-        req.header.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(subject, 512));
+        // Check everything before the first header is set. A subject or roles list that does not fit
+        // is refused, not cut or left out: the service would otherwise authorize a different identity.
+        if (subject.length > MAX_SUBJECT_LENGTH) {
+            throw new ConnectError(`createClientGatewayInterceptor: subject is longer than ${MAX_SUBJECT_LENGTH} characters`, Code.InvalidArgument);
+        }
+        const rolesValue = roles && roles.length > 0 ? JSON.stringify(roles).replace(/[Ā-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : undefined;
+        if (rolesValue !== undefined && rolesValue.length > MAX_HEADER_BYTES) {
+            throw new ConnectError(
+                `createClientGatewayInterceptor: roles do not fit the ${AUTH_HEADERS.ROLES} header (limit ${MAX_HEADER_BYTES} characters)`,
+                Code.InvalidArgument,
+            );
+        }
 
-        if (roles && roles.length > 0) {
-            const rolesValue = JSON.stringify(roles);
-            if (rolesValue.length <= MAX_HEADER_BYTES) {
-                req.header.set(AUTH_HEADERS.ROLES, rolesValue);
-            }
+        req.header.set(GATEWAY_SECRET_HEADER, secret);
+        req.header.set(AUTH_HEADERS.SUBJECT, encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)));
+        if (rolesValue !== undefined) {
+            req.header.set(AUTH_HEADERS.ROLES, rolesValue);
         }
 
         return await next(req);
