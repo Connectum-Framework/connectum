@@ -8,6 +8,7 @@
  */
 
 import { recordArgsAttribute, recordFailure } from "./failure.ts";
+import { endSpanWithResult } from "./result.ts";
 import { getTracer } from "./tracer.ts";
 import type { TraceAllOptions } from "./types.ts";
 
@@ -20,6 +21,12 @@ const wrapped = new WeakSet<object>();
  * Creates a Proxy that intercepts method calls and wraps each in a span.
  * Method wrappers are created lazily (on first access, not at Proxy creation).
  * Does NOT mutate the original object or its prototype.
+ *
+ * Property reads pass through untouched: getters run with the original object as
+ * `this`, so getters over `#private` fields and `Map.size` work. An own method that is
+ * neither writable nor configurable (a method of a frozen object) cannot be replaced by
+ * a wrapper in a proxy and is returned as it is, untraced. A span ends when a returned
+ * promise settles or a returned generator is exhausted, throws or is closed.
  *
  * @param target - The object whose methods to trace
  * @param options - Tracing options
@@ -96,27 +103,9 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
                             });
                         }
 
-                        const result = value.apply(this === proxy ? obj : this, args);
-
-                        // Handle async results
-                        if (result instanceof Promise) {
-                            return result.then(
-                                (val) => {
-                                    // Success leaves the status unset; only a failure sets ERROR.
-                                    span.end();
-                                    return val;
-                                },
-                                (error) => {
-                                    recordFailure(span, error);
-                                    span.end();
-                                    throw error;
-                                },
-                            );
-                        }
-
-                        // Sync result: success leaves the status unset.
-                        span.end();
-                        return result;
+                        // The span ends when the result is final: a promise settles, a generator is
+                        // exhausted or closed, anything else is final at once.
+                        return endSpanWithResult(span, value.apply(this === proxy ? obj : this, args));
                     } catch (error) {
                         recordFailure(span, error);
                         span.end();
