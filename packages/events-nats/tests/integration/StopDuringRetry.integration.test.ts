@@ -8,7 +8,9 @@
  *
  * The first bus fails the event once and starts a long retry pause; `stop()` ends the pause at
  * `drainTimeout`. The dead-letter topic must stay empty, and a second bus of the same group must
- * receive the event again (JetStream counts the redelivery: `attempt` is 2).
+ * receive the event exactly once. The delivery counter the handler sees after a nak differs between
+ * JetStream versions (2 on 2.11, 1 on 2.9.25), so the test does not assert it: what matters is that
+ * the event is not dead-lettered and is handled by the next bus.
  */
 
 import assert from "node:assert/strict";
@@ -99,7 +101,10 @@ describe("EventBus.stop() during a retry pause on NATS", { skip: NATS_TEST_URL =
             await secondBus.start();
             secondStarted = true;
             await until(() => redelivered.length > 0, "redelivery to the next bus", 30_000);
-            assert.deepEqual(redelivered, [2], "the next bus handles the event as the second JetStream delivery");
+            // Give a spurious second delivery time to show up before counting.
+            await sleep(500);
+            assert.equal(redelivered.length, 1, "the next bus handles the event exactly once");
+            assert.deepEqual(deadLettered, [], "the event handled by the next bus is still not dead-lettered");
         } finally {
             if (secondStarted) {
                 await secondBus.stop();
