@@ -75,7 +75,9 @@ export interface LoggerOptions {
     level?: "debug" | "info" | "warn" | "error";
 
     /**
-     * Skip logging for health check services
+     * Skip logging for the gRPC health service: a service type name with `grpc.health`
+     * as whole package segments (`grpc.health.v1.Health`). A name that only contains the
+     * text inside a longer segment, such as `acme.grpc.healthcare.v1.Svc`, is logged.
      * @default true
      */
     skipHealthCheck?: boolean;
