@@ -597,6 +597,10 @@ export interface ClientBearerInterceptorOptions {
      * When a string is provided, the same token is sent with every request.
      * When a function is provided, it is called before each request to
      * support token refresh flows.
+     *
+     * A static token must be a non-empty string (anything else throws when the interceptor is
+     * created). A factory that resolves to anything but a non-empty string fails that call with
+     * `Code.Unauthenticated` before a request is sent; the header is never `Bearer undefined`.
      */
     readonly token: string | (() => Promise<string>);
 }
@@ -607,9 +611,9 @@ export interface ClientBearerInterceptorOptions {
  * @see {@link createClientGatewayInterceptor}
  */
 export interface ClientGatewayInterceptorOptions {
-    /** Shared secret for gateway trust verification */
+    /** Shared secret for gateway trust verification. A non-empty string; an unset environment variable (`undefined`) throws when the interceptor is created. */
     readonly secret: string;
-    /** Authenticated subject identifier (e.g., service name) */
+    /** Authenticated subject identifier (e.g., service name). A non-empty string. */
     readonly subject: string;
     /** Optional roles to propagate (JSON-encoded in header) */
     readonly roles?: string[] | undefined;

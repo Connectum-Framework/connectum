@@ -9,6 +9,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { MAX_HEADER_BYTES, sanitizeHeaderValue } from "./headers.ts";
+import { assertClientCredential } from "./option-validation.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -33,6 +34,8 @@ const GATEWAY_SECRET_HEADER = "x-gateway-secret";
  *
  * @param options - Gateway auth configuration
  * @returns A ConnectRPC client Interceptor
+ * @throws {TypeError} When `secret` or `subject` is not a non-empty string (an unset environment
+ *   variable reads as `undefined`, and the header would otherwise carry the text `undefined`)
  *
  * @example Service-to-service call
  * ```typescript
@@ -51,6 +54,9 @@ const GATEWAY_SECRET_HEADER = "x-gateway-secret";
  */
 export function createClientGatewayInterceptor(options: ClientGatewayInterceptorOptions): Interceptor {
     const { secret, subject, roles } = options;
+
+    assertClientCredential("createClientGatewayInterceptor", "secret", secret);
+    assertClientCredential("createClientGatewayInterceptor", "subject", subject);
 
     return (next) => async (req) => {
         req.header.set(GATEWAY_SECRET_HEADER, secret);

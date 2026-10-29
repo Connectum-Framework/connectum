@@ -142,7 +142,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Name the kind of a value without printing it, for options that may hold a secret. */
-function describeKind(value: unknown): string {
+export function describeKind(value: unknown): string {
     if (value === null) return "null";
     if (Array.isArray(value)) return "an array";
     if (typeof value === "string") return value.length === 0 ? "an empty string" : "a string";
@@ -198,4 +198,24 @@ export function assertAuthInterceptorOptions(options: unknown): void {
     if (extractCredentials !== undefined && typeof extractCredentials !== "function") {
         throw new TypeError(`@connectum/auth: createAuthInterceptor extractCredentials must be a function when set; got ${describeKind(extractCredentials)}`);
     }
+}
+
+/**
+ * Check the credential a client interceptor will send: a non-empty string, or (for a token) a function that returns one.
+ *
+ * `Authorization: Bearer ${undefined}` is the text `Bearer undefined`, which the server rejects as
+ * an invalid credential far from the missing configuration, so a value that is not a usable
+ * credential is refused where it is configured. Messages name the kind of a bad value, never the
+ * value, because it is a secret.
+ *
+ * @throws {TypeError} When the value is not a non-empty string (or a function, when `allowFunction` is set)
+ */
+export function assertClientCredential(factory: string, option: string, value: unknown, allowFunction = false): void {
+    if (typeof value === "string" && value.length > 0) {
+        return;
+    }
+    if (allowFunction && typeof value === "function") {
+        return;
+    }
+    throw new TypeError(`@connectum/auth: ${factory} ${option} must be a non-empty string${allowFunction ? " or a function that returns one" : ""}; got ${describeKind(value)}`);
 }
