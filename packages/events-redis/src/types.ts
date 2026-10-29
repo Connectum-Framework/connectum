@@ -110,6 +110,17 @@ export type RedisLifecycleEvent =
           readonly connection: RedisLifecycleConnection;
       }
     | {
+          /**
+           * Redis lost a consumer group (data loss, failover to a replica without the stream) and the subscription created it again.
+           * The group starts at the beginning of the stream, so entries it had already handled before the loss can be delivered a second time.
+           */
+          readonly type: "group-recreated";
+          readonly group: string;
+          /** The stream key, `events:<topic>`. */
+          readonly stream: string;
+          readonly connection: Exclude<RedisLifecycleConnection, "publisher">;
+      }
+    | {
           /** A lifecycle callback threw or returned a rejected promise. */
           readonly type: "lifecycle-error";
           readonly callback: string;
