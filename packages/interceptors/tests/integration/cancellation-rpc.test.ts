@@ -170,6 +170,11 @@ for (const transportKind of ["local", "http"] as const) {
                         const release = deferred<void>();
                         let observedSignal: AbortSignal | undefined;
                         let outerError: unknown;
+                        // The signal the outermost interceptor received, i.e. the caller's own, and what each
+                        // signal looked like at the moment the handler returned.
+                        let outerSignal: AbortSignal | undefined;
+                        let handlerSignalAbortedAtReturn: boolean | undefined;
+                        let callerSignalAbortedAtReturn: boolean | undefined;
                         let pendingSettled = false;
                         let executions = 0;
                         let cleanupCount = 0;
@@ -187,6 +192,7 @@ for (const transportKind of ["local", "http"] as const) {
                             }
                         };
                         const holdOuterTerminal: Interceptor = (next) => async (request) => {
+                            outerSignal = request.signal;
                             try {
                                 return await next(request);
                             } catch (error) {
@@ -216,6 +222,8 @@ for (const transportKind of ["local", "http"] as const) {
                                     }
                                     return create(EchoResponseSchema, { message: "late", timestamp: 0n });
                                 } finally {
+                                    handlerSignalAbortedAtReturn = context.signal.aborted;
+                                    callerSignalAbortedAtReturn = outerSignal?.aborted;
                                     cleanupCount++;
                                     settled.resolve();
                                 }
@@ -278,7 +286,22 @@ for (const transportKind of ["local", "http"] as const) {
                                 }
                                 await terminalReached.promise;
                                 releaseTerminal.resolve();
-                                assert.equal(await waitForAbort(observedSignal, 250), true, "the handler signal must receive cancellation");
+                                // Cancellation must reach work that is still running: whenever the caller's signal was
+                                // already aborted at the moment the handler returned, the handler's own signal must have
+                                // been aborted too. Checked where the interceptor stands in front of the handler (server
+                                // placement); a client-side interceptor only sees the client's own signal.
+                                if (placement === "server" && callerSignalAbortedAtReturn === true) {
+                                    assert.equal(handlerSignalAbortedAtReturn, true, "an abort the caller had already made must have reached the handler while it was still running");
+                                }
+                                // Over HTTP the server can learn of a caller's cancellation only after a signal-unaware
+                                // handler has returned: the caller's signal is still not aborted when the handler ends. The
+                                // call is finished by then and the interceptor has let go of the caller's signal, so the
+                                // finished call's signal is not required to be aborted afterwards. Everywhere else the
+                                // abort arrives while the handler runs, and its signal must end up aborted.
+                                const callerAbortCanArriveAfterTheCall = transportKind === "http" && placement === "server" && cancelKind === "caller" && handlerKind === "unaware" && callerSignalAbortedAtReturn === false;
+                                if (!callerAbortCanArriveAfterTheCall) {
+                                    assert.equal(await waitForAbort(observedSignal, 250), true, "the handler signal must receive cancellation");
+                                }
                                 assert.equal(executions, 1);
                                 await settled.promise;
                                 assert.equal(cleanupCount, 1);
