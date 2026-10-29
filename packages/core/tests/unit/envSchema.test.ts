@@ -567,3 +567,29 @@ describe("parseEnvConfig() OTEL_EXPORTER_OTLP_ENDPOINT scheme", () => {
         });
     }
 });
+
+// ---------------------------------------------------------------------------
+// An empty OTEL_* variable is the same as an unset one, the rule the
+// OpenTelemetry SDK applies to its own environment variables.
+// ---------------------------------------------------------------------------
+
+describe("parseEnvConfig() empty OTEL_* variables", () => {
+    it("should read an empty OTEL_SERVICE_NAME as unset", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_SERVICE_NAME: "" }).OTEL_SERVICE_NAME, undefined);
+    });
+
+    it("should read an empty OTEL_EXPORTER_OTLP_ENDPOINT as unset instead of rejecting it", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "" }).OTEL_EXPORTER_OTLP_ENDPOINT, undefined);
+    });
+
+    it("should keep a whitespace-only name as given: only the empty string is unset", () => {
+        assert.strictEqual(parseEnvConfig({ OTEL_SERVICE_NAME: " " }).OTEL_SERVICE_NAME, " ");
+    });
+
+    it("should still reject a whitespace-only endpoint", () => {
+        assert.throws(
+            () => parseEnvConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: " " }),
+            (err) => err instanceof ZodError && err.issues[0]?.path.join(".") === "OTEL_EXPORTER_OTLP_ENDPOINT",
+        );
+    });
+});

@@ -10,6 +10,13 @@
 import { z } from "zod";
 
 /**
+ * An empty environment variable is the same as an unset one (OpenTelemetry SDK
+ * rule for its `OTEL_*` variables), which orchestrators rely on when they pass
+ * a blank value for a variable the operator did not set.
+ */
+const emptyAsUnset = (value: unknown): unknown => (value === "" ? undefined : value);
+
+/**
  * Log level schema with validation
  */
 export const LogLevelSchema = z.enum(["debug", "info", "warn", "error"]).default("info");
@@ -105,16 +112,18 @@ export const ConnectumEnvSchema = z.object({
 
     /**
      * Optional OpenTelemetry service name. The core parser leaves it undefined
-     * when absent; provider defaults belong to the telemetry package.
+     * when absent or empty (the OpenTelemetry SDK reads an empty value of an
+     * environment variable as unset); provider defaults belong to the telemetry
+     * package.
      */
-    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_SERVICE_NAME: z.preprocess(emptyAsUnset, z.string().optional()),
 
     /**
      * OpenTelemetry exporter endpoint: an absolute `http:` or `https:` URL. A bare
      * `host:port` such as `localhost:4318` parses as a URL with the scheme
-     * `localhost:`, so the scheme is checked explicitly.
+     * `localhost:`, so the scheme is checked explicitly. An empty value is read as unset.
      */
-    OTEL_EXPORTER_OTLP_ENDPOINT: z.url({ protocol: /^https?$/ }).optional(),
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyAsUnset, z.url({ protocol: /^https?$/ }).optional()),
 
     /**
      * Enable graceful shutdown
