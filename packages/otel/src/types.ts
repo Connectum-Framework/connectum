@@ -9,6 +9,9 @@
 /**
  * Filter callback to skip specific RPC requests from instrumentation
  *
+ * A callback that throws never fails the call: the call is instrumented and the error is
+ * reported once per interceptor to the OpenTelemetry diagnostics channel.
+ *
  * @param context - RPC call context
  * @returns `true` to instrument, `false` to skip
  */
@@ -16,6 +19,10 @@ export type OtelFilter = (context: { service: string; method: string; stream: bo
 
 /**
  * Filter callback to exclude specific attributes from spans/metrics
+ *
+ * A callback that throws never fails the call: the attribute it was asked about is not
+ * recorded (an attribute is kept only if the filter approves it) and the error is
+ * reported once per interceptor to the OpenTelemetry diagnostics channel.
  *
  * @param key - Attribute key
  * @param value - Attribute value
