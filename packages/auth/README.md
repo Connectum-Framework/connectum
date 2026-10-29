@@ -70,8 +70,12 @@ handler for the whole call, including after its first `await` or `yield`.
 
 ## Security constraints
 
-- `createJwtAuthInterceptor` rejects a token without `sub` unless
-  `claimsMapping.subject` supplies the identity.
+- `createJwtAuthInterceptor` rejects a token whose subject is not a non-empty
+  string (a missing, empty or non-string `sub`) unless `claimsMapping.subject`
+  supplies a non-empty string. A present `issuer` or `audience` must be a
+  non-empty string (or an array of them) and a present `maxTokenAge` a number
+  of seconds above 0 or a duration string; omit the option to skip a check.
+  Anything else throws when the interceptor is created.
 - The generic and session interceptors accept `propagatedClaims` to limit the
   claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
 - `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length
@@ -81,6 +85,20 @@ handler for the whole call, including after its first `await` or `yield`.
   interceptor throws); list `Service/*` patterns, or do not register the
   interceptor. A cache `ttl` must be finite and greater than 0 and `maxSize` an
   integer of at least 1.
+- `createAuthzInterceptor` and `createProtoAuthzInterceptor` throw when
+  `defaultPolicy` or a rule `effect` is not exactly `"allow"` or `"deny"`, and
+  the `authorize` callback allows a call only when it returns `true`. A method
+  pattern other than `"*"`, `"Service/*"` or `"Service/Method"` in
+  `skipMethods`, a rule's `methods` or `internalMethods` throws at creation: a
+  partial wildcard such as `"Service/Write*"` never matches.
+- A proto method marked `internal` and without `requires` admits only an
+  identity established by `createInternalAuthInterceptor`; an identity from any
+  other interceptor, an end-user JWT included, is `Unauthenticated`.
+- The gateway, internal, generic and client interceptors check the options they
+  cannot work without when they are created (`trustSource`, `expectedValues`
+  entries, `internalMethods`, `verifyCredentials`, a client token or secret),
+  and a client token factory that returns nothing fails the call instead of
+  sending `Bearer undefined`.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
   LF, or a character above U+00FF (a header value is a byte string) is rejected
   with `Unauthenticated` before it is cached. Roles and claims are written as
