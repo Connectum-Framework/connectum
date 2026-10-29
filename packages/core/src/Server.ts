@@ -325,7 +325,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add service: routes have already been materialized (e.g. via server.localClient()). Add services before any local-transport access.");
+            throw new Error(
+                "Cannot add service: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add services before any local-transport access.",
+            );
         }
         this._routes.push(service);
     }
@@ -335,7 +337,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add interceptor: server is already ${this._state}. Add interceptors before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add interceptor: routes have already been materialized (e.g. via server.localClient()). Add interceptors before any local-transport access.");
+            throw new Error(
+                "Cannot add interceptor: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add interceptors before any local-transport access.",
+            );
         }
         this._interceptors.push(interceptor);
     }
@@ -345,7 +349,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add protocol: server is already ${this._state}. Add protocols before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add protocol: routes have already been materialized (e.g. via server.localClient()). Add protocols before any local-transport access.");
+            throw new Error(
+                "Cannot add protocol: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add protocols before any local-transport access.",
+            );
         }
         this._protocols.push(protocol);
     }
@@ -374,7 +380,15 @@ class ServerImpl extends EventEmitter implements Server {
 
     /**
      * Synchronous lookup: is the given proto service descriptor served locally
-     * by this `Server`? Triggers route materialization on first call.
+     * by this `Server`?
+     *
+     * A service the application defines (`services`, `addService()`, filtered by
+     * `enabledServices`) is answered from its definition, so a lookup before the
+     * routes exist runs no lazy factory and leaves `addService()`,
+     * `addInterceptor()` and `addProtocol()` available. A descriptor that no
+     * definition covers can only come from a protocol; when protocols are
+     * registered, what they mount is known only once the routes are built, so
+     * that lookup builds them (and closes those methods) on first call.
      *
      * @example
      * ```typescript
@@ -382,8 +396,21 @@ class ServerImpl extends EventEmitter implements Server {
      * ```
      */
     hasService(desc: DescService): boolean {
-        const names = this._getRegisteredServiceTypeNames();
-        return names.has(desc.typeName);
+        const { typeName } = desc;
+        if (this._builtRoutes === null) {
+            // Not built yet: the application's own definitions answer without
+            // running lazy factories or freezing addService()/addInterceptor().
+            const enabled = this._options.enabledServices;
+            if (this._routes.some((definition) => definition.descriptor.typeName === typeName && (enabled === undefined || enabled.includes(typeName)))) {
+                return true;
+            }
+            // Only protocols can still provide it, and what they mount is known
+            // only once they register on a router: with none, the answer is no.
+            if (this._protocols.length === 0) {
+                return false;
+            }
+        }
+        return this._getRegisteredServiceTypeNames().has(typeName);
     }
 
     /**

@@ -826,11 +826,16 @@ export interface Server extends EventEmitter {
 
     /**
      * Synchronous registry lookup: returns whether the given proto service
-     * descriptor is served locally by this `Server`. Triggers route
-     * materialization on first call.
+     * descriptor is served locally by this `Server`.
      *
-     * Source of truth is the same `ConnectRouter.service(desc, impl)` chain
-     * used to build the HTTP handler — no separate registration step.
+     * A service the application defines (`services`, `addService()`, filtered
+     * by `enabledServices`) is answered from its definition without building
+     * routes: no lazy factory runs and `addService()`, `addInterceptor()` and
+     * `addProtocol()` stay available. A descriptor only a protocol could
+     * provide (when protocols are registered) is answered from the built
+     * routes, which this call then builds and freezes the configuration.
+     * The answer is the same either way: routes are the same
+     * `ConnectRouter.service(desc, impl)` chain used to build the HTTP handler.
      *
      * @example
      * ```typescript
