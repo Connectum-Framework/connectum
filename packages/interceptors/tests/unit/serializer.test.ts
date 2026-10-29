@@ -101,6 +101,21 @@ describe('serializer interceptor', () => {
             await assert.rejects(() => createSerializerInterceptor({ ignoreUnknownFields: false })(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema))), /extraField/);
         });
 
+        // A real handler answers with a protobuf message, which carries its `$typeName` marker.
+        // Parsing it again as if it were JSON made strict unknown-field handling reject that
+        // marker, so every valid call failed. A response that already is a message of the
+        // output type stays as it is, whatever the option.
+        for (const ignoreUnknownFields of [true, false]) {
+            it(`should return a response that already is a message of the output type as it is (ignoreUnknownFields=${ignoreUnknownFields})`, async () => {
+                const response = create(ItemSchema, { value: 'x', sequence: 7 });
+                const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, response));
+
+                const result = await createSerializerInterceptor({ ignoreUnknownFields })(next as any)(unaryRequest(NAMESPACED_SERVICE, create(ItemSchema)));
+
+                assert.strictEqual(result.message, response);
+            });
+        }
+
         it('should let a downstream failure through unchanged', async () => {
             const failure = new Error('downstream failed');
             const next = mock.fn(async () => {
@@ -192,6 +207,19 @@ describe('serializer interceptor', () => {
                     [true, 'y', 2],
                 ],
             );
+        });
+
+        it('should return streamed response messages that already are messages as they are when ignoreUnknownFields=false', async () => {
+            const first = create(ItemSchema, { value: 'x', sequence: 1 });
+            const second = create(ItemSchema, { value: 'y', sequence: 2 });
+            const next = mock.fn(async (_req: unknown) => jsonResponse(NAMESPACED_SERVICE, items(first, second), true));
+
+            const result = await createSerializerInterceptor({ ignoreUnknownFields: false })(next as any)(unaryRequest(NAMESPACED_SERVICE, items(), true));
+
+            const received = await collect(result.message as AsyncIterable<Item>);
+            assert.strictEqual(received.length, 2);
+            assert.strictEqual(received[0], first);
+            assert.strictEqual(received[1], second);
         });
 
         it('should refuse an unknown field in a streamed response when ignoreUnknownFields=false', async () => {
