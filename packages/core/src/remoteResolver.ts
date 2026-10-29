@@ -15,10 +15,25 @@
 
 import type { Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
+import { CatalogConfigError } from "./catalogErrors.ts";
 
 /** Build a gRPC (HTTP/2) transport for a resolved base URL — the default for the URL-based resolvers. */
 function defaultCreateTransport(baseUrl: string): Transport {
     return createGrpcTransport({ baseUrl });
+}
+
+/** A resolver factory's map argument must be an object: anything else would only fail on the first call, as a lookup on `undefined`. */
+function assertMap(map: unknown, caller: string): void {
+    if (typeof map !== "object" || map === null) {
+        throw new CatalogConfigError(`${caller}: map must be an object keyed by service typeName, got ${map === null ? "null" : typeof map}.`);
+    }
+}
+
+/** `createTransport` is optional; when given it is called for every resolution, so a non-function would fail on the first call. */
+function assertCreateTransport(createTransport: unknown, caller: string): void {
+    if (createTransport !== undefined && typeof createTransport !== "function") {
+        throw new CatalogConfigError(`${caller}: createTransport must be a function that builds a Transport from a base URL, got ${typeof createTransport}.`);
+    }
 }
 
 /** Derive the short service name from a proto typeName: last segment, lower-cased, minus a trailing `Service`. */
@@ -59,6 +74,7 @@ export function singleTransportResolver(transport: Transport): RemoteResolver {
  * after the resolver was created are honoured.
  */
 export function mapResolver(map: Readonly<Record<string, Transport>>): RemoteResolver {
+    assertMap(map, "mapResolver");
     return ({ typeName }) => (Object.hasOwn(map, typeName) ? (map[typeName] ?? null) : null);
 }
 
@@ -82,6 +98,15 @@ export interface DnsResolverOptions {
  * service; use {@link mapResolver} for an explicit allow-list.
  */
 export function dnsResolver(options: DnsResolverOptions): RemoteResolver {
+    if (typeof options !== "object" || options === null) {
+        throw new CatalogConfigError(`dnsResolver: options must be an object with a template, got ${options === null ? "null" : typeof options}.`);
+    }
+    if (typeof options.template !== "string" || options.template.length === 0) {
+        throw new CatalogConfigError(
+            `dnsResolver: template must be a non-empty string such as "http://{shortName}.prod.svc.cluster.local:50051", got ${JSON.stringify(options.template) ?? String(options.template)}.`,
+        );
+    }
+    assertCreateTransport(options.createTransport, "dnsResolver");
     const create = options.createTransport ?? defaultCreateTransport;
     return ({ typeName }) => {
         const shortName = shortNameOf(typeName);
@@ -120,6 +145,8 @@ export interface PerServiceEnvResolverOptions {
  * ```
  */
 export function perServiceEnvResolver(map: Readonly<Record<string, string>>, options?: PerServiceEnvResolverOptions): RemoteResolver {
+    assertMap(map, "perServiceEnvResolver");
+    assertCreateTransport(options?.createTransport, "perServiceEnvResolver");
     const create = options?.createTransport ?? defaultCreateTransport;
     return ({ typeName }) => {
         const envVar = map[typeName];

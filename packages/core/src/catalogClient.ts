@@ -37,11 +37,12 @@ import {
     remoteTransportCacheKey,
     resolveRemoteTransportOrThrow,
 } from "./catalogDispatcher.ts";
+import { CatalogConfigError } from "./catalogErrors.ts";
 import { assertCallTimeout, normalizeEndpoint } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle } from "./context.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
-import type { ServiceCatalog } from "./serviceCatalog.ts";
+import { assertCatalogShape, type ServiceCatalog } from "./serviceCatalog.ts";
 
 /**
  * Options for {@link createCatalogClient}.
@@ -100,7 +101,8 @@ export interface CatalogClient {
 
 /**
  * Build a standalone {@link CatalogClient} from a {@link ServiceCatalog} and a
- * {@link RemoteResolver}.
+ * {@link RemoteResolver}. Throws `CatalogConfigError` when `catalog` has a key
+ * that differs from its descriptor's `typeName` or `resolver` is not a function.
  * The example assumes a catalog generated from the Quickstart Greeter proto
  * and that service running at the configured HTTP/2 endpoint.
  *
@@ -126,6 +128,12 @@ export interface CatalogClient {
  */
 export function createCatalogClient(options: CreateCatalogClientOptions): CatalogClient {
     const { catalog, resolver } = options;
+    assertCatalogShape(catalog, "createCatalogClient");
+    if (typeof resolver !== "function") {
+        throw new CatalogConfigError(
+            `createCatalogClient: resolver must be a function (a RemoteResolver, e.g. mapResolver(...)), got ${typeof resolver}. A catalog client has no local services, so every call goes through it.`,
+        );
+    }
     const outgoing = [...(options.outgoingInterceptors ?? [])];
 
     // Cache the resolved transport per unique (typeName, endpoint) key, matching

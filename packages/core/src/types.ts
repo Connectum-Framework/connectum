@@ -528,6 +528,10 @@ export interface CreateServerOptions {
      * (typically the generated `serviceCatalog`). Drives startup validation and
      * remote routing. Optional — a process that hosts everything locally and
      * makes no cross-service calls needs no catalog.
+     *
+     * A hand-built map is checked like {@link defineCatalog} output:
+     * `createServer()` throws `CatalogConfigError` when a key differs from its
+     * descriptor's `typeName`.
      */
     catalog?: ServiceCatalog;
 

@@ -23,6 +23,7 @@ import { createLocalTransport } from "./localTransport.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
+import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
 import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
@@ -85,6 +86,7 @@ class ServerImpl extends EventEmitter implements Server {
         validateAdmissionOptions(options);
         validateShutdownOptions(options.shutdown);
         validatePropagateHeaders(options.propagateHeaders);
+        if (options.catalog !== undefined) assertCatalogShape(options.catalog, "createServer");
         this._options = options;
         this._routes = [];
         for (const service of options.services) {
