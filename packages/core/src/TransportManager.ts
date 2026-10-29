@@ -16,7 +16,7 @@ import type { Http2SecureServer, Http2Server, SecureServerOptions, ServerHttp2Se
 import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { AddressInfo, Socket } from "node:net";
 import env from "env-var";
-import { readTLSCertificates } from "./TLSConfig.ts";
+import { explainTLSFailure, readTLSCertificates } from "./TLSConfig.ts";
 import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
 
 /**
@@ -91,17 +91,22 @@ export class TransportManager {
         if (tlsCerts) {
             // Mode 1: TLS + ALPN — both HTTP/1.1 and HTTP/2
             this._isHttp2 = true;
-            this._server = createSecureServer(
-                {
-                    enableTrace: false,
-                    handshakeTimeout,
-                    ...http2Options,
-                    key: tlsCerts.key,
-                    cert: tlsCerts.cert,
-                    allowHTTP1,
-                },
-                handler,
-            );
+            try {
+                this._server = createSecureServer(
+                    {
+                        enableTrace: false,
+                        handshakeTimeout,
+                        ...http2Options,
+                        key: tlsCerts.key,
+                        cert: tlsCerts.cert,
+                        allowHTTP1,
+                    },
+                    handler,
+                );
+            } catch (error) {
+                // The server did not accept the key or certificate; say which file and setting.
+                throw explainTLSFailure(tls ?? {}, error, { passphrase: http2Options?.passphrase, ciphers: http2Options?.ciphers });
+            }
         } else if (allowHTTP1) {
             // Mode 2: Plaintext HTTP/1.1 (default without TLS)
             this._isHttp2 = false;

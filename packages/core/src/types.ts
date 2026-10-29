@@ -151,6 +151,8 @@ export interface ProtocolRegistration {
  * Supply both explicit key and certificate paths or use a directory pair.
  * A single explicit path is a configuration error: it is rejected before any
  * file is read instead of being replaced by the directory files.
+ * A file that cannot be read or parsed fails startup with an error that names the
+ * file and the setting its path came from.
  */
 export interface TLSOptions {
     /**
@@ -245,13 +247,15 @@ export interface ShutdownOptions {
     timeout?: number;
 
     /**
-     * Signals to listen for graceful shutdown
+     * Signals to listen for graceful shutdown: a non-empty array of signal names the
+     * platform knows (`SIGKILL` and `SIGSTOP` cannot be handled). `createServer()`
+     * throws for anything else, also while `autoShutdown` is off.
      * @default ["SIGTERM", "SIGINT"]
      */
     signals?: NodeJS.Signals[];
 
     /**
-     * Enable automatic graceful shutdown on signals
+     * Enable automatic graceful shutdown on signals. Must be a boolean.
      * @default false
      */
     autoShutdown?: boolean;
@@ -287,13 +291,15 @@ export interface CreateServerOptions {
     services: readonly ServiceDefinition[];
 
     /**
-     * Server port
+     * Server port: an integer from 0 to 65535 (`0` lets the system pick a free port).
+     * `createServer()` throws for any other value, a numeric string included.
      * @default 5000
      */
     port?: number;
 
     /**
-     * Server host to bind
+     * Server host to bind: a non-empty string. `createServer()` throws for an empty
+     * or non-string value instead of binding every interface.
      * @default "0.0.0.0"
      */
     host?: string;
