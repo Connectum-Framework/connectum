@@ -774,6 +774,9 @@ export interface Server extends EventEmitter {
      * @param dependencies - Module names that must shut down first
      * @param handler - Shutdown hook function
      * @throws Error if server is already stopped
+     * @throws TypeError if the arguments match none of the three forms (for
+     *   example a string where the array of dependencies belongs, or a missing
+     *   hook function). A dependency on a name nobody registered is not an error.
      */
     onShutdown(name: string, dependencies: string[], handler: ShutdownHook): void;
 

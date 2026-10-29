@@ -510,4 +510,78 @@ describe("ShutdownManager", () => {
             );
         });
     });
+
+    // ---------------------------------------------------------------
+    // Argument validation: a call that matches none of the documented forms
+    // fails at registration with an error that names onShutdown, because an
+    // ordering mistake would otherwise show up only during the shutdown.
+    // ---------------------------------------------------------------
+
+    describe("addHook() argument validation", () => {
+        const noop = () => {};
+
+        function rejected(register: (manager: ShutdownManager) => void): TypeError {
+            const manager = new ShutdownManager();
+            try {
+                register(manager);
+            } catch (err) {
+                assert.ok(err instanceof TypeError, `expected a TypeError, got ${String(err)}`);
+                return err;
+            }
+            return assert.fail("expected the registration to throw");
+        }
+
+        // Called with `any` on purpose: these are the calls an untyped caller can make.
+        const malformed: Array<[string, (manager: ShutdownManager) => void, RegExp]> = [
+            ["no arguments", (m) => (m.addHook as (...args: unknown[]) => void)(), /first argument must be a hook function or a module name/],
+            ["null", (m) => (m.addHook as (...args: unknown[]) => void)(null), /first argument must be a hook function or a module name.*null/],
+            ["a number as the first argument", (m) => (m.addHook as (...args: unknown[]) => void)(5, noop), /first argument.*number 5/],
+            ["a name alone", (m) => (m.addHook as (...args: unknown[]) => void)("x"), /onShutdown\("x"\).*after the module name/],
+            ["a number where dependencies are expected", (m) => (m.addHook as (...args: unknown[]) => void)("x", 5, noop), /dependencies must be an array.*number 5/],
+            ["a string where an array of dependencies is expected", (m) => (m.addHook as (...args: unknown[]) => void)("x", "db", noop), /dependencies must be an array of module names, got the string "db"/],
+            ["a non-string dependency", (m) => (m.addHook as (...args: unknown[]) => void)("x", ["db", 3], noop), /dependencies\[1\] must be a module name.*number 3/],
+            ["dependencies without a hook", (m) => (m.addHook as (...args: unknown[]) => void)("x", ["db"]), /onShutdown\("x"\): the hook must be a function, got undefined/],
+            ["a hook that is not a function", (m) => (m.addHook as (...args: unknown[]) => void)("x", ["db"], "nope"), /the hook must be a function, got the string "nope"/],
+        ];
+
+        for (const [label, register, message] of malformed) {
+            it(`should throw a TypeError naming onShutdown for ${label}`, () => {
+                const error = rejected(register);
+                assert.match(error.message, /^onShutdown/);
+                assert.match(error.message, message);
+            });
+        }
+
+        it("should register nothing when a call is rejected", async () => {
+            const manager = new ShutdownManager();
+            const calls: string[] = [];
+            assert.throws(() => (manager.addHook as (...args: unknown[]) => void)("x", "db", () => calls.push("x")), TypeError);
+            // Had the string been spread into one dependency per character, "d" and "b" would
+            // now be registered as modules of their own.
+            await manager.executeAll();
+            assert.deepStrictEqual(calls, []);
+        });
+
+        it("should keep accepting the three documented forms, including an empty dependency array", async () => {
+            const manager = new ShutdownManager();
+            const order: string[] = [];
+            manager.addHook(() => {
+                order.push("anonymous");
+            });
+            manager.addHook("named", () => {
+                order.push("named");
+            });
+            manager.addHook("dependent", [], () => {
+                order.push("dependent");
+            });
+            manager.addHook("last", ["named"], () => {
+                order.push("last");
+            });
+
+            await manager.executeAll();
+
+            assert.ok(order.includes("anonymous") && order.includes("dependent"));
+            assert.ok(order.indexOf("named") < order.indexOf("last"));
+        });
+    });
 });

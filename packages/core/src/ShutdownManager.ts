@@ -18,6 +18,20 @@
  */
 export type ShutdownHook = () => void | Promise<void>;
 
+/** Short, unambiguous rendering of a rejected argument for an error message. */
+function describeValue(value: unknown): string {
+    if (typeof value === "string") {
+        return `the string ${JSON.stringify(value)}`;
+    }
+    if (value === null) {
+        return "null";
+    }
+    if (Array.isArray(value)) {
+        return "an array";
+    }
+    return value === undefined ? "undefined" : `${typeof value} ${String(value)}`;
+}
+
 /**
  * Instance-based manager for shutdown hooks with dependency ordering.
  *
@@ -115,6 +129,8 @@ export class ShutdownManager {
             handler = nameOrHandler;
             dependencies = [];
             name = `__anon_${this._anonCounter++}`;
+        } else if (typeof nameOrHandler !== "string") {
+            throw new TypeError(`onShutdown(): the first argument must be a hook function or a module name (string), got ${describeValue(nameOrHandler)}`);
         } else if (typeof depsOrHandler === "function") {
             // addHook(name, handler)
             name = nameOrHandler;
@@ -122,9 +138,24 @@ export class ShutdownManager {
             dependencies = [];
         } else {
             // addHook(name, dependencies, handler)
+            if (depsOrHandler === undefined) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): expected a hook function, or an array of dependencies and a hook function, after the module name`);
+            }
+            // A string is iterable: spread into the dependency list it would become one
+            // dependency per character and the intended order would silently be lost.
+            if (!Array.isArray(depsOrHandler)) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): dependencies must be an array of module names, got ${describeValue(depsOrHandler)}`);
+            }
+            const badIndex = depsOrHandler.findIndex((dependency) => typeof dependency !== "string");
+            if (badIndex !== -1) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): dependencies[${badIndex}] must be a module name (string), got ${describeValue(depsOrHandler[badIndex])}`);
+            }
+            if (typeof handlerArg !== "function") {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): the hook must be a function, got ${describeValue(handlerArg)}`);
+            }
             name = nameOrHandler;
-            dependencies = depsOrHandler as string[];
-            handler = handlerArg as ShutdownHook;
+            dependencies = depsOrHandler;
+            handler = handlerArg;
         }
 
         // Temporarily add dependencies to test for cycles
