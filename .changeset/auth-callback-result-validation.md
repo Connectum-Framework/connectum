@@ -1,0 +1,5 @@
+---
+"@connectum/auth": minor
+---
+
+fix: `createAuthInterceptor` and `createSessionAuthInterceptor` now check the value returned by `verifyCredentials` and `mapSession`. A result that is not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a string, or an object whose `subject`, `type`, `roles`, `scopes` or `claims` is missing or has the wrong type, or whose `name` or `expiresAt` is mistyped) ends the call with `Unauthenticated` (`Authentication failed` / `Session mapping failed`) and is not cached, with `propagateHeaders` on or off. Before, such a result made the call fail with `internal` when `propagateHeaders` was on, and let the handler run without an identity when it was off. A callback that returned a partial object and relied on it being accepted must now return the complete `AuthContext`.

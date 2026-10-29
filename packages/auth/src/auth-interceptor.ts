@@ -10,6 +10,7 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
@@ -128,6 +129,12 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             if (err instanceof ConnectError) {
                 throw err;
             }
+            throw new ConnectError("Authentication failed", Code.Unauthenticated);
+        }
+
+        // A callback that breaks its contract (null from a failed lookup, `{}`) must not
+        // authenticate the call; check before the result is propagated or cached.
+        if (!isAuthContext(authContext)) {
             throw new ConnectError("Authentication failed", Code.Unauthenticated);
         }
 

@@ -137,7 +137,9 @@ export interface AuthInterceptorOptions {
      *
      * Error contract: a thrown `ConnectError` reaches the client unchanged (its code and
      * message are sent verbatim, so keep the text public); any other thrown value becomes
-     * `Unauthenticated: Authentication failed` and its text is not sent.
+     * `Unauthenticated: Authentication failed` and its text is not sent. A returned value that is
+     * not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or mistyped `subject`,
+     * `type`, `roles`, `scopes` or `claims`) is treated the same way and is never cached.
      *
      * @param credentials - Extracted credential string
      * @returns AuthContext for valid credentials
@@ -544,6 +546,10 @@ export interface SessionAuthInterceptorOptions {
     readonly verifySession: (token: string, headers: Headers) => unknown | Promise<unknown>;
     /**
      * Map raw session data to AuthContext.
+     *
+     * A result that is not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or
+     * mistyped `subject`, `type`, `roles`, `scopes` or `claims`) ends the call with
+     * `Unauthenticated: Session mapping failed`; it is never cached.
      *
      * @param session - Raw session data from verifySession
      * @returns Normalized auth context
