@@ -855,6 +855,13 @@ export interface AmqpQueueOptions {
      * In the default `assert` mode, ungrouped subscriptions use private,
      * non-durable, auto-delete queues. `check` and `skip` do not create them.
      *
+     * `false` for a named group queue works only on a broker that still allows a
+     * non-durable queue that is not exclusive: RabbitMQ 4.3 and later refuse it
+     * with a connection exception (`541`, deprecated feature
+     * `transient_nonexcl_queues`) unless that feature is permitted. The refusal
+     * is reported as `AmqpTopologyError` whose message and `cause` carry the
+     * broker's reply code and text.
+     *
      * @default true
      */
     readonly durable?: boolean;

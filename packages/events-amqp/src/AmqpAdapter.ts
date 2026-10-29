@@ -209,6 +209,64 @@ export function explainAggregateError<E>(err: E): E {
     return err;
 }
 
+/** The part of a connection `watchConnectionCloseReason` listens to. */
+interface ConnectionCloseEvents {
+    on(event: "error" | "close", listener: (reason?: unknown) => void): unknown;
+    off(event: "error" | "close", listener: (reason?: unknown) => void): unknown;
+}
+
+/**
+ * Remember why the broker closed a connection while an operation on it was running.
+ *
+ * A connection exception (for example RabbitMQ 4.3 refusing a non-durable named
+ * queue with `541 INTERNAL_ERROR`) reaches amqplib as the connection's `error`
+ * and `close` events, and the operation in flight is rejected afterwards with
+ * the generic "Channel ended, no reply will be forthcoming". Without this the
+ * reply code and text are gone by the time the error is built. The first
+ * reason wins; `stop()` removes the listeners. Exported (not via the package
+ * barrel) for direct unit testing.
+ */
+export function watchConnectionCloseReason(connection: ConnectionCloseEvents): { reason(): Error | undefined; stop(): void } {
+    let seen: Error | undefined;
+    const remember = (reason?: unknown): void => {
+        if (seen === undefined && reason instanceof Error) {
+            seen = reason;
+        }
+    };
+    connection.on("error", remember);
+    connection.on("close", remember);
+    return {
+        reason: () => seen,
+        stop: () => {
+            connection.off("error", remember);
+            connection.off("close", remember);
+        },
+    };
+}
+
+/**
+ * Replace the generic channel failure inside a topology error with the reason
+ * the broker gave when it closed the connection.
+ *
+ * Only a failure that carries no broker reply of its own is replaced: a
+ * channel exception arrives with its reply `code`, and that reply is already
+ * the answer. The error keeps its message prefix (what was being declared) and
+ * its `object`; the broker's reply code and text are appended and the close
+ * reason becomes the `cause`. Anything else is returned unchanged. Exported
+ * (not via the package barrel) for direct unit testing.
+ */
+export function withConnectionCloseReason(err: unknown, reason: Error | undefined): unknown {
+    if (reason === undefined || !(err instanceof AmqpTopologyError) || !(err.cause instanceof Error)) {
+        return err;
+    }
+    if (typeof (err.cause as { code?: unknown }).code === "number") {
+        return err;
+    }
+    const prefix = err.message.endsWith(`: ${err.cause.message}`) ? err.message.slice(0, -(err.cause.message.length + 2)) : err.message;
+    const options = err.object !== undefined ? { cause: reason, object: err.object } : { cause: reason };
+    return new AmqpTopologyError(`${prefix}: ${reason.message}`, options);
+}
+
 /**
  * Classify a publisher-confirm failure into a typed error.
  *
@@ -1827,6 +1885,17 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
      * auto-delete queue that never had a consumer is not removed on its own.
      */
     async function startConsumer(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<ConsumerIncarnation | null> {
+        const closeWatch = watchConnectionCloseReason(model);
+        try {
+            return await startConsumerOn(model, record);
+        } catch (err) {
+            throw withConnectionCloseReason(err, closeWatch.reason());
+        } finally {
+            closeWatch.stop();
+        }
+    }
+
+    async function startConsumerOn(model: amqp.ChannelModel, record: SubscriptionRecord): Promise<ConsumerIncarnation | null> {
         const group = record.subOptions?.group;
         const isAutoGroup = !group;
         const override: AmqpQueueOverride | undefined = group ? options.queueOverrides?.[group] : undefined;
