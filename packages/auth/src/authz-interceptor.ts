@@ -14,6 +14,7 @@ import { getAuthContext } from "./context.ts";
 import type { AuthzDeniedDetails } from "./errors.ts";
 import { AuthzDeniedError } from "./errors.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertAuthzPolicy } from "./option-validation.ts";
 import type { AuthzInterceptorOptions, AuthzRule } from "./types.ts";
 import { AuthzEffect } from "./types.ts";
 
@@ -69,6 +70,7 @@ function evaluateRules(
  * @param options - Authorization options
  * @returns ConnectRPC interceptor
  * @throws {Error} When `skipMethods` contains `"*"` (the pattern `"*"` stays valid in rule `methods`)
+ * @throws {TypeError} When `defaultPolicy` or the `effect` of a rule is not exactly `"allow"` or `"deny"`
  *
  * @example RBAC with declarative rules
  * ```typescript
@@ -87,6 +89,7 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
     const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize, skipMethods = [] } = options;
 
     assertNoCatchAllSkip(skipMethods);
+    assertAuthzPolicy("createAuthzInterceptor", defaultPolicy, rules);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
@@ -107,7 +110,9 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
         if (rules.length > 0) {
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
-                if (ruleResult.effect === AuthzEffect.DENY) {
+                // Only the exact "allow" lets the call through. The factory refuses every other
+                // effect, but the rules array is held by reference: a value put there later must deny.
+                if (ruleResult.effect !== AuthzEffect.ALLOW) {
                     const details: AuthzDeniedDetails = {
                         ruleName: ruleResult.ruleName,
                         ...(ruleResult.requiredRoles && { requiredRoles: [...ruleResult.requiredRoles] }),
@@ -115,7 +120,6 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
                     };
                     throw new AuthzDeniedError(details);
                 }
-                // ALLOW — continue
                 return await next(req);
             }
         }
@@ -130,7 +134,7 @@ export function createAuthzInterceptor(options: AuthzInterceptorOptions = {}): I
         }
 
         // No rules matched, no callback — apply default policy
-        if (defaultPolicy === AuthzEffect.DENY) {
+        if (defaultPolicy !== AuthzEffect.ALLOW) {
             throw new ConnectError("Access denied by default policy", Code.PermissionDenied);
         }
 

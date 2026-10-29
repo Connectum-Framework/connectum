@@ -83,7 +83,7 @@ export interface AuthzRule {
     readonly name: string;
     /** Method patterns to match (e.g., "admin.v1.AdminService/*", "user.v1.UserService/DeleteUser") */
     readonly methods: ReadonlyArray<string>;
-    /** Effect when rule matches */
+    /** Effect when rule matches. Exactly `"allow"` or `"deny"`; any other value makes the factory throw. */
     readonly effect: AuthzEffect;
     /**
      * Required roles/scopes for this rule.
@@ -268,7 +268,8 @@ export interface JwtAuthInterceptorOptions {
  */
 export interface AuthzInterceptorOptions {
     /**
-     * Default policy when no rule matches.
+     * Default policy when no rule matches. Exactly `"allow"` or `"deny"`; any other value
+     * (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;
@@ -609,7 +610,8 @@ export interface ClientGatewayInterceptorOptions {
  */
 export interface ProtoAuthzInterceptorOptions {
     /**
-     * Default policy when no proto option and no rule match.
+     * Default policy when no proto option and no rule match. Exactly `"allow"` or `"deny"`;
+     * any other value (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;

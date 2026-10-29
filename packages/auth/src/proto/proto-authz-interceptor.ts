@@ -15,6 +15,7 @@ import { getAuthContext } from "../context.ts";
 import type { AuthzDeniedDetails } from "../errors.ts";
 import { AuthzDeniedError } from "../errors.ts";
 import { matchesMethodPattern } from "../method-match.ts";
+import { assertAuthzPolicy } from "../option-validation.ts";
 import type { AuthzRule, ProtoAuthzInterceptorOptions } from "../types.ts";
 import { AuthzEffect } from "../types.ts";
 import { resolveMethodAuth } from "./reader.ts";
@@ -107,6 +108,7 @@ function evaluateRules(
  *
  * @param options - Proto authorization interceptor options
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `defaultPolicy` or the `effect` of a rule is not exactly `"allow"` or `"deny"`
  *
  * @example Basic usage with proto options only
  * ```typescript
@@ -131,6 +133,8 @@ function evaluateRules(
  */
 export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOptions = {}): Interceptor {
     const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize } = options;
+
+    assertAuthzPolicy("createProtoAuthzInterceptor", defaultPolicy, rules);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
@@ -195,7 +199,9 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         if (rules.length > 0) {
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
-                if (ruleResult.effect === AuthzEffect.DENY) {
+                // Only the exact "allow" lets the call through. The factory refuses every other
+                // effect, but the rules array is held by reference: a value put there later must deny.
+                if (ruleResult.effect !== AuthzEffect.ALLOW) {
                     const details: AuthzDeniedDetails = {
                         ruleName: ruleResult.ruleName,
                         ...(ruleResult.requiredRoles && { requiredRoles: [...ruleResult.requiredRoles] }),
@@ -203,7 +209,6 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                     };
                     throw new AuthzDeniedError(details);
                 }
-                // ALLOW -- continue
                 return await next(req);
             }
         }
@@ -221,7 +226,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         }
 
         // Step 9: No proto config, no rules matched, no callback -- apply default policy
-        if (defaultPolicy === AuthzEffect.DENY) {
+        if (defaultPolicy !== AuthzEffect.ALLOW) {
             if (!authContext) {
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
