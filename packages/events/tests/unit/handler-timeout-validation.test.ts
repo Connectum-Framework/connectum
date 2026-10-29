@@ -52,8 +52,11 @@ describe("handlerTimeout validation", () => {
         });
     }
 
-    it("the limits match the runtime: AbortSignal.timeout() refuses what the bus refuses", () => {
-        for (const value of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY, 2 ** 32]) {
+    // Fractions and numbers above 32 bits are not in this list on purpose: Node refuses them and Bun
+    // accepts them. The bus refuses them so that a configuration that works on one runtime does not
+    // fail every delivery on the other.
+    it("AbortSignal.timeout() refuses the other values the bus refuses, on every runtime", () => {
+        for (const value of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
             assert.throws(() => AbortSignal.timeout(value), `${value} must fail in AbortSignal.timeout()`);
         }
     });
