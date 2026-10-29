@@ -332,6 +332,40 @@ describe("span lifetime of a traced generator", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
+            // A generator that the caller keeps (a cursor stored in a field) must not hold the
+            // finished span and its context through the methods that were put on it.
+            it("takes the protocol methods off the generator object once it has ended", async () => {
+                const own = (generator: object) => Object.getOwnPropertyNames(generator).sort();
+                const syncWork = makeTraced(function* () {
+                    yield 1;
+                });
+                const asyncWork = makeTraced(async function* () {
+                    yield 1;
+                });
+                const early = makeTraced(function* () {
+                    yield 1;
+                    yield 2;
+                });
+
+                await observe(async () => {
+                    const sync = syncWork() as Generator<number>;
+                    assert.deepStrictEqual(own(sync), ["next", "return", "throw"], "wrapped while it runs");
+                    assert.deepStrictEqual([...sync], [1]);
+                    assert.deepStrictEqual(own(sync), [], "released when exhausted");
+                    assert.deepStrictEqual(sync.next(), { value: undefined, done: true }, "a finished generator still answers");
+
+                    const asynchronous = asyncWork() as AsyncGenerator<number>;
+                    for await (const _ of asynchronous) {
+                        // Drain it.
+                    }
+                    assert.deepStrictEqual(own(asynchronous), [], "released when exhausted");
+
+                    const stopped = early() as Generator<number>;
+                    for (const _ of stopped) break;
+                    assert.deepStrictEqual(own(stopped), [], "released when closed early");
+                });
+            });
+
             it("keeps an optional protocol method absent when the generator object does not have it", async () => {
                 const work = makeTraced(() => {
                     const generator = (function* () {

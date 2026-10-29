@@ -50,16 +50,21 @@ function onceEnder(span: Span): (failure?: { error: unknown }) => void {
  * methods, which call `next` and `return` on it) and with any property the function
  * added to it. They are non-enumerable, so the shape of the object does not change.
  *
- * @returns `false` when the object does not accept own properties (it is frozen or sealed)
+ * @returns A function that puts the methods back (called when the generator has ended, so
+ *   that a generator the caller keeps does not hold the finished span and its context
+ *   through the closures), or `undefined` when the object does not accept own properties
+ *   (it is frozen or sealed)
  */
-function interceptSteps(generator: object, step: (run: () => unknown) => unknown): boolean {
+function interceptSteps(generator: object, step: (run: () => unknown) => unknown): (() => void) | undefined {
     const target = generator as Record<"next" | "return" | "throw", (...args: unknown[]) => unknown>;
+    const previous = new Map<string, PropertyDescriptor | undefined>();
     try {
         for (const method of ["next", "return", "throw"] as const) {
             const original = target[method];
             // `return` and `throw` are optional in the iterator protocol; a method the object
             // does not have stays absent, so a consumer that probes for it sees the same shape.
             if (typeof original !== "function") continue;
+            previous.set(method, Object.getOwnPropertyDescriptor(generator, method));
             Object.defineProperty(generator, method, {
                 value: (...args: unknown[]) => step(() => original.apply(generator, args)),
                 writable: true,
@@ -67,10 +72,19 @@ function interceptSteps(generator: object, step: (run: () => unknown) => unknown
                 enumerable: false,
             });
         }
-        return true;
     } catch {
-        return false;
+        return undefined;
     }
+    return () => {
+        for (const [method, descriptor] of previous) {
+            try {
+                if (descriptor) Object.defineProperty(generator, method, descriptor);
+                else delete (generator as Record<string, unknown>)[method];
+            } catch {
+                // Intentionally empty: the methods keep working, they only hold on to their closures.
+            }
+        }
+    };
 }
 
 /**
@@ -78,35 +92,47 @@ function interceptSteps(generator: object, step: (run: () => unknown) => unknown
  * generator is exhausted, throws, or is closed with `return()` / `throw()`.
  */
 function traceGenerator(generator: Generator, scope: Context, end: ReturnType<typeof onceEnder>): Generator {
+    let release: (() => void) | undefined;
+    const finish = (failure?: { error: unknown }) => {
+        end(failure);
+        release?.();
+    };
     const step = (run: () => IteratorResult<unknown, unknown>): IteratorResult<unknown, unknown> => {
         let result: IteratorResult<unknown, unknown>;
         try {
             result = context.with(scope, run);
         } catch (error) {
-            end({ error });
+            finish({ error });
             throw error;
         }
-        if (result.done) end();
+        if (result.done) finish();
         return result;
     };
-    if (!interceptSteps(generator, (run) => step(run as () => IteratorResult<unknown, unknown>))) end();
+    release = interceptSteps(generator, (run) => step(run as () => IteratorResult<unknown, unknown>));
+    if (release === undefined) end();
     return generator;
 }
 
 /** The async counterpart of {@link traceGenerator}. */
 function traceAsyncGenerator(generator: AsyncGenerator, scope: Context, end: ReturnType<typeof onceEnder>): AsyncGenerator {
+    let release: (() => void) | undefined;
+    const finish = (failure?: { error: unknown }) => {
+        end(failure);
+        release?.();
+    };
     const step = async (run: () => Promise<IteratorResult<unknown, unknown>>): Promise<IteratorResult<unknown, unknown>> => {
         let result: IteratorResult<unknown, unknown>;
         try {
             result = await context.with(scope, run);
         } catch (error) {
-            end({ error });
+            finish({ error });
             throw error;
         }
-        if (result.done) end();
+        if (result.done) finish();
         return result;
     };
-    if (!interceptSteps(generator, (run) => step(run as () => Promise<IteratorResult<unknown, unknown>>))) end();
+    release = interceptSteps(generator, (run) => step(run as () => Promise<IteratorResult<unknown, unknown>>));
+    if (release === undefined) end();
     return generator;
 }
 
