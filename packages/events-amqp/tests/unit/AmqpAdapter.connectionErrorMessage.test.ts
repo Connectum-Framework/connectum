@@ -6,7 +6,6 @@
  */
 
 import assert from "node:assert/strict";
-import { lookup } from "node:dns/promises";
 import { describe, it } from "node:test";
 import { explainAggregateError } from "../../src/AmqpAdapter.ts";
 import { AmqpAdapter, AmqpConnectionError, type AmqpLifecycleEvent } from "../../src/index.ts";
@@ -44,21 +43,30 @@ describe("explainAggregateError", () => {
 });
 
 /**
- * `localhost` yields an `AggregateError` only where it resolves to more than
- * one address (IPv6 and IPv4). Elsewhere the same failure already names its
- * address and there is nothing to assert.
+ * A host name that resolves to an IPv6 and an IPv4 address, whatever the machine's
+ * resolver says: the lookup is supplied through `socketOptions`, so the failure is
+ * the same `AggregateError` (one member per address) on every host and runtime. Port
+ * 1 has no listener, so both attempts are refused.
  */
-const localhostAddresses = await lookup("localhost", { all: true }).then(
-    (addresses) => addresses.length,
-    () => 0,
-);
+const twoAddressLookup = (_host: string, lookupOptions: { all?: boolean }, callback: (...args: unknown[]) => void): void => {
+    const addresses = [
+        { address: "::1", family: 6 },
+        { address: "127.0.0.1", family: 4 },
+    ];
+    if (lookupOptions?.all) {
+        callback(null, addresses);
+    } else {
+        callback(null, "127.0.0.1", 4);
+    }
+};
 
-describe("a connect failure against a multi-address hostname", { skip: localhostAddresses > 1 ? false : "localhost resolves to a single address" }, () => {
-    const URL = "amqp://localhost:1";
+describe("a connect failure against a multi-address hostname", () => {
+    const URL = "amqp://multi-address.invalid:1";
     const NAMES_ADDRESS = /ECONNREFUSED/;
+    const socketOptions = { lookup: twoAddressLookup };
 
     it("initialConnectMaxRetries: the AmqpConnectionError cause states the reason and the address", { timeout: 20_000 }, async () => {
-        const adapter = AmqpAdapter({ url: URL, recovery: { initialConnectMaxRetries: 1, initialDelay: 5, maxDelay: 10 } });
+        const adapter = AmqpAdapter({ url: URL, socketOptions, recovery: { initialConnectMaxRetries: 1, initialDelay: 5, maxDelay: 10 } });
         const error = await adapter.connect().then(
             () => null,
             (e: unknown) => e,
@@ -69,7 +77,7 @@ describe("a connect failure against a multi-address hostname", { skip: localhost
     });
 
     it("a finite maxRetries without a startup budget: the give-up error's cause is readable", { timeout: 20_000 }, async () => {
-        const adapter = AmqpAdapter({ url: URL, recovery: { maxRetries: 1, initialDelay: 5, maxDelay: 10 } });
+        const adapter = AmqpAdapter({ url: URL, socketOptions, recovery: { maxRetries: 1, initialDelay: 5, maxDelay: 10 } });
         const error = await adapter.connect().then(
             () => null,
             (e: unknown) => e,
@@ -80,7 +88,7 @@ describe("a connect failure against a multi-address hostname", { skip: localhost
     });
 
     it("recovery: false: the thrown error keeps its class and gains a message", { timeout: 20_000 }, async () => {
-        const adapter = AmqpAdapter({ url: URL, recovery: false });
+        const adapter = AmqpAdapter({ url: URL, socketOptions, recovery: false });
         const error = await adapter.connect().then(
             () => null,
             (e: unknown) => e,
@@ -93,6 +101,7 @@ describe("a connect failure against a multi-address hostname", { skip: localhost
         const events: AmqpLifecycleEvent[] = [];
         const adapter = AmqpAdapter({
             url: URL,
+            socketOptions,
             recovery: { initialConnectMaxRetries: 2, initialDelay: 5, maxDelay: 10 },
             lifecycle: { onLifecycle: (event) => events.push(event) },
         });
