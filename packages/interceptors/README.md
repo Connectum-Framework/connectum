@@ -124,7 +124,12 @@ array instead of the object; a key that is not a field (nested objects included)
 of another kind than the field takes (a number in a string field, a non-boolean in a bool field,
 a string in an int32 field, a non-array in a repeated field, an enum name instead of its
 number, a bare oneof member name); and a number the encoder cannot write (a fraction or a value
-beyond the range in an int32, `NaN`). An enum number that the enum does not name is accepted.
+beyond the range in an int32, `NaN`). Keys of a map are held to the form the encoder writes back unchanged:
+an integer key must be the canonical decimal form (no `01`, `+1`, `" 1"`, `1e3`, `0x10`, `""`, `-0`) inside the
+range of the key type, a bool key is `"true"` or `"false"`. A 64-bit integer value is a bigint or a safe
+integer inside its range, or a canonical decimal string. Bytes are a `Uint8Array` or an array of integers 0 to
+255 without holes (an `ArrayBuffer` or a `DataView` is refused). A string must be well formed (no lone surrogate).
+The object of a oneof holds only `case` and `value`. An enum number that the enum does not name is accepted.
 The forms are those of protobuf-es: a wrapper (`StringValue`, `Int64Value`, ...) in a singular
 field outside a oneof is its bare value (`name: "cached"`, not `{ value: "cached" }`), and a
 `Struct` is a plain JSON object (a message object is refused in both places); `Timestamp`,

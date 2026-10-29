@@ -122,10 +122,10 @@ describe("fallback handler: well-known types in a field", () => {
     });
 
     const refused: Array<[string, unknown, RegExp]> = [
-        ["a message object in a StringValue field", { str: { value: "x" } }, /str \(google\.protobuf\.StringValue\) must be a string, not a message object/],
-        ["a number in a StringValue field", { str: 5 }, /str \(google\.protobuf\.StringValue\) must be a string/],
+        ["a message object in a StringValue field", { str: { value: "x" } }, /str \(google\.protobuf\.StringValue\) must be a well-formed string, not a message object/],
+        ["a number in a StringValue field", { str: 5 }, /str \(google\.protobuf\.StringValue\) must be a well-formed string/],
         ["a message object in a BytesValue field", { byt: { value: new Uint8Array([1]) } }, /byt \(google\.protobuf\.BytesValue\) must be a Uint8Array/],
-        ["a message object in an Int64Value field", { i64: { value: 5n } }, /i64 \(google\.protobuf\.Int64Value\) must be a bigint/],
+        ["a message object in an Int64Value field", { i64: { value: 5n } }, /i64 \(google\.protobuf\.Int64Value\) must be an integer inside the range of the type/],
         ["a message object in a BoolValue field", { bl: { value: true } }, /bl \(google\.protobuf\.BoolValue\) must be a boolean/],
         ["a Date for a Timestamp", { ts: new Date() }, /ts must be a google\.protobuf\.Timestamp message or a plain object/],
         ["an RFC 3339 string for a Timestamp", { ts: "2020-01-01T00:00:00Z" }, /ts must be a google\.protobuf\.Timestamp message or a plain object/],

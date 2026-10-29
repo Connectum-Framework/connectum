@@ -103,7 +103,9 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * interceptor and the expected type. A plain object is checked field by field first: a key that
  * is not a field, a value of another kind than its field takes (a number in a string field, a
  * non-boolean in a bool field, a non-array in a repeated field) and a number the encoder cannot
- * write fail the same way, with the path of the problem. A oneof is set as `{ case, value }`
+ * write fail the same way, with the path of the problem; so do a map key that is not in the canonical
+ * form of its key type, a non-canonical string for a 64-bit integer, a lone surrogate and bytes that are
+ * not a `Uint8Array` or an array of integers 0 to 255. A oneof is set as `{ case, value }`
  * under the oneof's name. Behind the error handler the client sees `Internal: internal error`.
  * In the server example, getCachedData is application code that returns that message.
  *

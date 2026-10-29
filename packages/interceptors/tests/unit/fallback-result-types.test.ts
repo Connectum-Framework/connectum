@@ -103,9 +103,9 @@ describe("fallback handler: plain objects against every field kind", () => {
 
     const refused: Array<[string, unknown, RegExp]> = [
         ["a key the type does not have", { nope: 1 }, /nope is not a field of kinds\.v1\.Kinds/],
-        ["a number in a string field", { s: 5 }, /s must be a string/],
-        ["an object in a string field", { s: {} }, /s must be a string/],
-        ["null in a string field", { s: null }, /s must be a string/],
+        ["a number in a string field", { s: 5 }, /s must be a well-formed string/],
+        ["an object in a string field", { s: {} }, /s must be a well-formed string/],
+        ["null in a string field", { s: null }, /s must be a well-formed string/],
         ["a string in a bool field", { b: "yes" }, /b must be a boolean/],
         ["1 in a bool field", { b: 1 }, /b must be a boolean/],
         ["a string in an int32 field", { i: "7" }, /i must be a number/],
@@ -122,8 +122,8 @@ describe("fallback handler: plain objects against every field kind", () => {
         ["the key of a oneof member instead of the oneof", { a: "z" }, /a belongs to the oneof pick; set it as pick: \{ case: "a", value \}/],
         ["an unknown case of a oneof", { pick: { case: "nope", value: 1 } }, /pick\.case must be one of a, c/],
         ["a wrong value inside a oneof", { pick: { case: "c", value: "x" } }, /pick\.value must be a number/],
-        ["a string that is no number for an int64", { big: "x" }, /cannot be converted/],
-        ["a fraction for an int64", { big: 1.5 }, /big must be a bigint, a safe integer or a numeric string/],
+        ["a string that is no number for an int64", { big: "x" }, /big must be an integer inside the range of the type/],
+        ["a fraction for an int64", { big: 1.5 }, /big must be an integer inside the range of the type, as a bigint, a safe integer or a canonical decimal string/],
         ["a string for bytes", { data: "abc" }, /data must be a Uint8Array/],
         ["a wrong value in a map", { tags: { a: "x" } }, /tags\["a"\] must be a number/],
         ["a non-object for a map", { tags: 5 }, /tags must be a plain object/],

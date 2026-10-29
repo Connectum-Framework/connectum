@@ -23,26 +23,103 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return prototype === Object.prototype || prototype === null;
 }
 
-/** What a scalar field accepts, as `MessageInitShape` types it. Range and NaN are left to the encoder dry run. */
+/** Inclusive range of the integer scalar types, which map keys and 64-bit string values are held to. */
+function integerRange(scalar: ScalarType): readonly [bigint, bigint] | undefined {
+    switch (scalar) {
+        case ScalarType.INT32:
+        case ScalarType.SINT32:
+        case ScalarType.SFIXED32:
+            return [-(2n ** 31n), 2n ** 31n - 1n];
+        case ScalarType.UINT32:
+        case ScalarType.FIXED32:
+            return [0n, 2n ** 32n - 1n];
+        case ScalarType.INT64:
+        case ScalarType.SINT64:
+        case ScalarType.SFIXED64:
+            return [-(2n ** 63n), 2n ** 63n - 1n];
+        case ScalarType.UINT64:
+        case ScalarType.FIXED64:
+            return [0n, 2n ** 64n - 1n];
+        default:
+            return undefined;
+    }
+}
+
+const CANONICAL_INTEGER = /^(0|-?[1-9][0-9]*)$/;
+
+/**
+ * Whether a string is the canonical decimal form of an integer inside the range of the type.
+ * The encoder reads `"01"`, `" 1"`, `"+1"`, `"0x10"`, `"1e3"` and `""` as 1, 1, 1, 16, 1000 or 0 and
+ * `"-0"` as 0, so what it writes is not the string that was given; only the canonical form survives.
+ */
+function isCanonicalInteger(scalar: ScalarType, text: string): boolean {
+    const range = integerRange(scalar);
+    if (range === undefined || !CANONICAL_INTEGER.test(text)) {
+        return false;
+    }
+    const number = BigInt(text);
+    return number >= range[0] && number <= range[1];
+}
+
+/** Whether a string survives UTF-8 encoding: a lone surrogate would be written as U+FFFD. */
+function isWellFormed(text: string): boolean {
+    return text.isWellFormed();
+}
+
+/**
+ * Problem of a map key. A key is a string in a JS object, and the encoder parses it by the key type, so
+ * the string must be the canonical form of the key it stands for: an integer in its range without leading
+ * zeros, sign `+`, spaces or exponent, `"true"` or `"false"` for a bool (any other string is `true`).
+ */
+function mapKeyProblem(scalar: ScalarType, key: string): string | undefined {
+    if (scalar === ScalarType.STRING) {
+        return isWellFormed(key) ? undefined : "a well-formed string (it has a lone surrogate)";
+    }
+    if (scalar === ScalarType.BOOL) {
+        return key === "true" || key === "false" ? undefined : '"true" or "false"';
+    }
+    return isCanonicalInteger(scalar, key) ? undefined : "the canonical decimal form of an integer inside the range of the key type";
+}
+
+/** What a scalar field accepts, as `MessageInitShape` types it. Range of 32-bit numbers and NaN are left to the encoder dry run. */
 function scalarProblem(scalar: ScalarType, value: unknown): string | undefined {
     switch (scalar) {
         case ScalarType.STRING:
-            return typeof value === "string" ? undefined : "a string";
+            return typeof value === "string" && isWellFormed(value) ? undefined : "a well-formed string";
         case ScalarType.BOOL:
             return typeof value === "boolean" ? undefined : "a boolean";
-        case ScalarType.BYTES:
-            // `create()` turns an array of byte values into a Uint8Array.
-            return value instanceof Uint8Array || (Array.isArray(value) && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255))
-                ? undefined
-                : "a Uint8Array or an array of byte values";
+        case ScalarType.BYTES: {
+            // `create()` turns an array of byte values into a Uint8Array. An ArrayBuffer or a DataView is not
+            // one and would be written as empty bytes; a hole, 256, 1.5 or -1 in an array would be wrapped to a byte.
+            if (value instanceof Uint8Array) {
+                return undefined;
+            }
+            if (Array.isArray(value)) {
+                for (let index = 0; index < value.length; index++) {
+                    const byte: unknown = value[index];
+                    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+                        return "a Uint8Array or an array of byte values (integers from 0 to 255, no holes)";
+                    }
+                }
+                return undefined;
+            }
+            return "a Uint8Array or an array of byte values";
+        }
         case ScalarType.INT64:
         case ScalarType.UINT64:
         case ScalarType.SINT64:
         case ScalarType.FIXED64:
-        case ScalarType.SFIXED64:
-            return typeof value === "bigint" || typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value))
-                ? undefined
-                : "a bigint, a safe integer or a numeric string";
+        case ScalarType.SFIXED64: {
+            const range = integerRange(scalar);
+            const expected = "an integer inside the range of the type, as a bigint, a safe integer or a canonical decimal string";
+            if (typeof value === "bigint") {
+                return range !== undefined && value >= range[0] && value <= range[1] ? undefined : expected;
+            }
+            if (typeof value === "number") {
+                return Number.isSafeInteger(value) && range !== undefined && BigInt(value) >= range[0] && BigInt(value) <= range[1] ? undefined : expected;
+            }
+            return typeof value === "string" && isCanonicalInteger(scalar, value) ? undefined : expected;
+        }
         default:
             return typeof value === "number" ? undefined : "a number";
     }
@@ -50,7 +127,7 @@ function scalarProblem(scalar: ScalarType, value: unknown): string | undefined {
 
 /** A JSON value, as a `google.protobuf.Struct` field holds it. `undefined` inside an object is an absent key. */
 function jsonValueProblem(value: unknown, path: string): string | undefined {
-    if (value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
+    if (value === null || (typeof value === "string" && isWellFormed(value)) || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
         return undefined;
     }
     if (Array.isArray(value)) {
@@ -131,6 +208,10 @@ function fieldProblem(field: DescField, value: unknown, path: string): string | 
                 return `${path} must be a plain object`;
             }
             for (const [key, item] of Object.entries(value)) {
+                const keyProblem = mapKeyProblem((field as { mapKey: ScalarType }).mapKey, key);
+                if (keyProblem !== undefined) {
+                    return `the key ${JSON.stringify(key)} of ${path} must be ${keyProblem}`;
+                }
                 const problem = elementProblem(field.mapKind, field, item, `${path}[${JSON.stringify(key)}]`);
                 if (problem !== undefined) {
                     return problem;
@@ -160,7 +241,8 @@ export function initProblem(schema: DescMessage, init: Record<string, unknown>, 
             if (value === undefined) {
                 continue;
             }
-            if (!isPlainObject(value) || (value.case !== undefined && typeof value.case !== "string")) {
+            // Only `case` and `value` mean anything; `create()` drops any other key, such as a second member set next to the first.
+            if (!isPlainObject(value) || (value.case !== undefined && typeof value.case !== "string") || Object.keys(value).some((name) => name !== "case" && name !== "value")) {
                 return `${where} must be { case, value } of the oneof`;
             }
             if (value.case === undefined) {
