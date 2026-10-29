@@ -10,8 +10,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { StreamRequest, StreamResponse } from "@connectrpc/connect";
-import { finishStreamOnAbort } from "../../src/finishStreamOnAbort.ts";
+import { Code, ConnectError, type StreamRequest, type StreamResponse } from "@connectrpc/connect";
+import { createShutdownReason, finishStreamOnAbort } from "../../src/finishStreamOnAbort.ts";
 
 interface Recorder {
     returnCalls: number;
@@ -137,5 +137,144 @@ describe("finishStreamOnAbort", () => {
         await iterator.return?.();
 
         assert.strictEqual(source.recorder.returnCalls, 1);
+    });
+});
+
+/** A finite source: `next()` hands out the given items at once, then reports the end. */
+function makeFiniteSource(items: string[]) {
+    let index = 0;
+    const iterator: AsyncIterator<string> = {
+        async next() {
+            return index < items.length ? { done: false, value: items[index++] as string } : { done: true, value: undefined };
+        },
+        async return() {
+            index = items.length;
+            return { done: true, value: undefined };
+        },
+    };
+    return { [Symbol.asyncIterator]: () => iterator } as AsyncIterable<string>;
+}
+
+/** The error a read of `iterator` rejects with, or `undefined` when it resolves. */
+async function readError(iterator: AsyncIterator<string>): Promise<ConnectError | undefined> {
+    try {
+        await iterator.next();
+    } catch (err) {
+        return ConnectError.from(err);
+    }
+    return undefined;
+}
+
+// A stream the interceptor had to cut must not look like a handler that finished: the
+// response iterable would end normally and the transport would write a successful end
+// of stream for a message list that is incomplete.
+describe("finishStreamOnAbort: the read after a cut fails", () => {
+    it("reports unavailable when the abort reason is the one server.stop() uses", async () => {
+        const source = makeSource();
+        const abort = new AbortController();
+        const iterator = await wrap(source.iterable, abort.signal);
+
+        abort.abort(createShutdownReason());
+        await settle();
+
+        const error = await readError(iterator);
+        assert.ok(error, "the read after the cut must fail instead of reporting the end of the stream");
+        assert.strictEqual(error.code, Code.Unavailable);
+        assert.match(error.rawMessage, /shutting down/);
+    });
+
+    it("reports canceled when the client aborted, and for an abort without a reason", async () => {
+        for (const reason of [undefined, "gone", new Error("client went away")]) {
+            const abort = new AbortController();
+            const iterator = await wrap(makeSource().iterable, abort.signal);
+            abort.abort(reason);
+            await settle();
+            const error = await readError(iterator);
+            assert.strictEqual(error?.code, Code.Canceled, `reason ${String(reason)}`);
+        }
+    });
+
+    it("passes a ConnectError reason through, so a deadline stays deadline_exceeded", async () => {
+        const abort = new AbortController();
+        const iterator = await wrap(makeSource().iterable, abort.signal);
+        const deadline = new ConnectError("the operation timed out", Code.DeadlineExceeded);
+
+        abort.abort(deadline);
+        await settle();
+
+        const error = await readError(iterator);
+        assert.strictEqual(error, deadline);
+    });
+
+    it("an abort that arrives while the handler is inside next() still delivers that message, then fails the next read", async () => {
+        const source = makeSource();
+        const abort = new AbortController();
+        const iterator = await wrap(source.iterable, abort.signal);
+
+        const pending = iterator.next();
+        await settle();
+        abort.abort(createShutdownReason());
+        source.releaseNext();
+
+        assert.deepStrictEqual(await pending, { done: false, value: "item" }, "the message the handler already produced is not lost");
+        await settle();
+        assert.strictEqual((await readError(iterator))?.code, Code.Unavailable);
+        assert.strictEqual(source.recorder.returnCalls, 1);
+    });
+
+    it("keeps failing every later read with the same error", async () => {
+        const abort = new AbortController();
+        const iterator = await wrap(makeSource().iterable, abort.signal);
+        abort.abort(createShutdownReason());
+        await settle();
+        const first = await readError(iterator);
+        const second = await readError(iterator);
+        assert.strictEqual(first?.code, Code.Unavailable);
+        assert.strictEqual(second, first);
+    });
+
+    it("does not fail a handler that ended by itself, even when the abort comes right after", async () => {
+        const abort = new AbortController();
+        const iterator = await wrap(makeFiniteSource(["a"]), abort.signal);
+
+        assert.deepStrictEqual(await iterator.next(), { done: false, value: "a" });
+        assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined });
+
+        abort.abort(createShutdownReason());
+        await settle();
+        assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined }, "a finished stream stays finished, not cut");
+    });
+
+    it("does not fail a handler that ends by itself while the abort is arriving", async () => {
+        const abort = new AbortController();
+        const source: AsyncIterable<string> = {
+            [Symbol.asyncIterator]: () => ({
+                async next() {
+                    abort.abort(createShutdownReason());
+                    return { done: true, value: undefined };
+                },
+            }),
+        };
+        const iterator = await wrap(source, abort.signal);
+
+        assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined });
+        await settle();
+        assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined });
+    });
+
+    it("does not fail a consumer that stops reading with return(), before or after the abort", async () => {
+        const abort = new AbortController();
+        const iterator = await wrap(makeFiniteSource(["a"]), abort.signal);
+        assert.deepStrictEqual(await iterator.return?.(), { done: true, value: undefined });
+        abort.abort(createShutdownReason());
+        await settle();
+        assert.strictEqual(await readError(iterator), undefined, "the consumer left on its own: nothing to report");
+    });
+
+    it("createShutdownReason() is an AbortError, so a handler that rethrows it is still reported as canceled", () => {
+        const reason = createShutdownReason();
+        assert.strictEqual(reason.name, "AbortError");
+        assert.strictEqual(ConnectError.from(reason).code, Code.Canceled);
+        assert.notStrictEqual(createShutdownReason(), reason, "every call makes its own marker");
     });
 });
