@@ -146,7 +146,8 @@ export interface AuthInterceptorOptions {
 
     /**
      * Methods to skip authentication for.
-     * Patterns: "Service/Method" or "Service/*". The catch-all `"*"` is refused: creating the
+     * Patterns: "Service/Method" or "Service/*"; any other pattern, a partial wildcard included, throws
+     * when the interceptor is created. The catch-all `"*"` is refused: creating the
      * interceptor throws, because it would switch authentication off for every method
      * (to disable the interceptor, do not register it).
      * @default [] (health and reflection methods are NOT auto-skipped)
@@ -399,7 +400,8 @@ export interface InternalAuthInterceptorOptions {
      * trust marker only on these methods; all other methods pass through
      * unchanged (no-op).
      *
-     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`.
+     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`. Any other pattern, a partial
+     * wildcard included, throws when the interceptor is created.
      */
     readonly internalMethods: readonly string[];
 }

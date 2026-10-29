@@ -24,6 +24,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
 import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { assertMethodPatterns } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
     AuthContext,
@@ -61,6 +62,8 @@ import type {
  *
  * @param options - Internal auth configuration.
  * @returns ConnectRPC interceptor.
+ * @throws {Error} When `trustSource` is not a function
+ * @throws {TypeError} When `internalMethods` is not an array, or holds a pattern other than `"*"`, `"Service/*"` or `"Service/Method"`
  *
  * @example Mesh deployment (production default)
  * ```typescript
@@ -97,6 +100,7 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
     if (typeof trustSource !== "function") {
         throw new Error("@connectum/auth: createInternalAuthInterceptor requires a trustSource function");
     }
+    assertMethodPatterns("createInternalAuthInterceptor internalMethods", internalMethods);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;

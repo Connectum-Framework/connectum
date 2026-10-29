@@ -16,7 +16,7 @@ import type { AuthzDeniedDetails } from "../errors.ts";
 import { AuthzDeniedError } from "../errors.ts";
 import { isInternalContext } from "../internal-context.ts";
 import { matchesMethodPattern } from "../method-match.ts";
-import { assertAuthzPolicy } from "../option-validation.ts";
+import { assertAuthzPolicy, assertRuleMethods } from "../option-validation.ts";
 import type { AuthzRule, ProtoAuthzInterceptorOptions } from "../types.ts";
 import { AuthzEffect } from "../types.ts";
 import { resolveMethodAuth } from "./reader.ts";
@@ -111,7 +111,8 @@ function evaluateRules(
  *
  * @param options - Proto authorization interceptor options
  * @returns ConnectRPC interceptor
- * @throws {TypeError} When `defaultPolicy` or the `effect` of a rule is not exactly `"allow"` or `"deny"`
+ * @throws {TypeError} When `defaultPolicy` or the `effect` of a rule is not exactly `"allow"` or `"deny"`,
+ *   or when the `methods` of a rule hold a pattern other than `"*"`, `"Service/*"` or `"Service/Method"`
  *
  * @example Basic usage with proto options only
  * ```typescript
@@ -138,6 +139,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
     const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize } = options;
 
     assertAuthzPolicy("createProtoAuthzInterceptor", defaultPolicy, rules);
+    assertRuleMethods("createProtoAuthzInterceptor", rules);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;

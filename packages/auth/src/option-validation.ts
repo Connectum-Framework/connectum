@@ -13,7 +13,7 @@ import type { AuthzEffect, AuthzRule } from "./types.ts";
 
 /** Render a rejected value for an error message. Only used for values that are not secrets (policies, effects). */
 export function describeValue(value: unknown): string {
-    return inspect(value, { depth: 0, breakLength: Number.POSITIVE_INFINITY });
+    return typeof value === "string" ? JSON.stringify(value) : inspect(value, { depth: 0, breakLength: Number.POSITIVE_INFINITY });
 }
 
 /**
@@ -93,4 +93,46 @@ export function assertMaxTokenAge(factory: string, value: unknown): void {
         return;
     }
     throw new TypeError(`@connectum/auth: ${factory} maxTokenAge must be a number of seconds or a duration string such as "2h"; got ${describeValue(value)}`);
+}
+
+/** `*`, `Service/*` or `Service/Method`, where neither part is empty or holds `/`, `*` or whitespace. */
+const SUPPORTED_PATTERN = /^(?:\*|[^\s/*]+\/(?:\*|[^\s/*]+))$/;
+
+/**
+ * Check that `patterns` is an array of method patterns this package can match.
+ *
+ * `matchesMethodPattern` compares only `*`, `Service/*` and the exact `Service/Method`. Any
+ * other string (`Service/Write*`, a wildcard inside the service name, a bare service name, a
+ * leading slash) matches nothing, so a `deny` rule or a `skipMethods` entry written that way
+ * would be accepted and stay silently inactive. It is refused here instead.
+ *
+ * @param option - Where the patterns came from, for the message (for example `skipMethods`)
+ * @param patterns - The value of the option
+ * @throws {TypeError} When `patterns` is not an array of strings, or holds an unsupported pattern
+ */
+export function assertMethodPatterns(option: string, patterns: unknown): void {
+    if (!Array.isArray(patterns)) {
+        throw new TypeError(`@connectum/auth: ${option} must be an array of method patterns; got ${describeValue(patterns)}`);
+    }
+    for (const pattern of patterns) {
+        if (typeof pattern !== "string" || !SUPPORTED_PATTERN.test(pattern)) {
+            throw new TypeError(
+                `@connectum/auth: ${option} contains the unsupported method pattern ${describeValue(pattern)}; ` +
+                    `use "*", "Service/*" or "Service/Method" (partial wildcards such as "Service/Write*" never match)`,
+            );
+        }
+    }
+}
+
+/**
+ * Check the `methods` of every authorization rule.
+ *
+ * @param factory - Name of the factory, for the message
+ * @param rules - The `rules` option after its default was applied
+ * @throws {TypeError} When a rule's `methods` is not an array of supported patterns
+ */
+export function assertRuleMethods(factory: string, rules: readonly AuthzRule[]): void {
+    rules.forEach((rule, index) => {
+        assertMethodPatterns(`${factory} rules[${index}].methods (rule ${describeValue(rule?.name)})`, rule?.methods);
+    });
 }
