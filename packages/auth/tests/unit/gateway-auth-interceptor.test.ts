@@ -625,5 +625,69 @@ describe("gateway-auth-interceptor", () => {
                 assert.strictEqual(req.header.get(name), null, `${name} must stay absent without propagateHeaders`);
             }
         });
+
+        // An absent identity field is not written by propagation, so a client value for it
+        // would survive unless it is deleted. Every field is forged here and the verified
+        // identity has none of roles, scopes, name or claims.
+        const FORGED_IDENTITY_HEADERS = {
+            "x-auth-subject": "root",
+            "x-auth-type": "forged",
+            "x-auth-name": "Spoofed",
+            "x-auth-roles": '["admin"]',
+            "x-auth-scopes": "admin:all",
+            "x-auth-claims": '{"suspended":false}',
+        } as const;
+
+        for (const propagateHeaders of [true, false]) {
+            it(`should not let client-supplied x-auth-* headers reach the next hop (propagateHeaders: ${propagateHeaders})`, async () => {
+                const interceptor = createGatewayAuthInterceptor({
+                    headerMapping: { subject: "x-user-id" },
+                    trustSource: { header: "x-gateway-secret", expectedValues: ["my-secret-123"] },
+                    propagateHeaders,
+                });
+                const handler = interceptor(createMockNext());
+
+                const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+                req.header.set("x-gateway-secret", "my-secret-123");
+                req.header.set("x-user-id", "erin");
+                for (const [name, value] of Object.entries(FORGED_IDENTITY_HEADERS)) req.header.set(name, value);
+
+                await handler(req);
+
+                const expected = propagateHeaders ? { "x-auth-subject": "erin", "x-auth-type": "gateway" } : {};
+                const actual: Record<string, string> = {};
+                for (const name of Object.keys(FORGED_IDENTITY_HEADERS)) {
+                    const value = req.header.get(name);
+                    if (value !== null) actual[name] = value;
+                }
+                assert.deepStrictEqual(actual, expected);
+            });
+        }
+
+        it("should read identity from x-auth-* names when they are mapped, then replace them with the verified values", async () => {
+            const interceptor = createGatewayAuthInterceptor({
+                headerMapping: { subject: "x-auth-subject", roles: "x-auth-roles", scopes: "x-auth-scopes", name: "x-auth-name", claims: "x-auth-claims", type: "x-auth-type" },
+                trustSource: { header: "x-gateway-secret", expectedValues: ["my-secret-123"] },
+                propagateHeaders: true,
+            });
+            let seen: AuthContext | undefined;
+            const handler = interceptor((async () => {
+                seen = getAuthContext();
+                return { message: {} };
+            }) as any);
+
+            const req = createMockRequest(MOCK_REQUEST_DEFAULTS);
+            req.header.set("x-gateway-secret", "my-secret-123");
+            req.header.set("x-auth-subject", "svc-a-user");
+            req.header.set("x-auth-roles", '["reader"]');
+            req.header.set("x-auth-type", "jwt");
+
+            await handler(req);
+
+            assert.strictEqual(seen?.subject, "svc-a-user");
+            assert.deepStrictEqual(seen?.roles, ["reader"]);
+            assert.strictEqual(req.header.get("x-auth-roles"), '["reader"]');
+            assert.strictEqual(req.header.get("x-auth-scopes"), null);
+        });
     });
 });

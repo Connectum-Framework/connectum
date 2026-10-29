@@ -16,6 +16,7 @@ import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
+import { AUTH_HEADERS } from "./types.ts";
 
 /** One decimal octet: `0` or 1-3 digits without a leading zero, so `010` and `1e1` are not octets. */
 const OCTET = /^(?:0|[1-9]\d{0,2})$/;
@@ -114,6 +115,11 @@ function parseRoles(raw: string): string[] {
  * a list of expected values (shared secrets or CIDR ranges applied to the header value).
  * A trusted gateway must overwrite this header; it is not the connection's peer address.
  *
+ * Once the identity is read, the interceptor deletes every standard `x-auth-*` identity header
+ * together with the mapped headers, the trust header and `stripHeaders` (also on `skipMethods`).
+ * With `propagateHeaders` the verified identity is then written back, so an `x-auth-*` header seen
+ * downstream always comes from the verified identity, never from the client.
+ *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
  * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
@@ -151,8 +157,14 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters, or characters above U+00FF");
     }
 
-    // Pre-compute headers to strip (prevents downstream spoofing on all routes)
+    // Pre-compute headers to strip (prevents downstream spoofing on all routes).
+    // The standard identity headers are always included, whatever the mapping says: with
+    // propagateHeaders only the fields the verified identity has are written back, so a
+    // client-supplied value for an absent field (roles, scopes, name, claims) would
+    // otherwise reach the next hop as if it were verified. Stripping happens after the
+    // mapped input is read, because a gateway behind another gateway maps these very names.
     const headersToStrip = [
+        ...Object.values(AUTH_HEADERS),
         headerMapping.subject,
         headerMapping.name,
         headerMapping.roles,

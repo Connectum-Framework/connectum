@@ -87,7 +87,9 @@ handler for the whole call, including after its first `await` or `yield`.
   JSON with `\uXXXX` escapes for such characters and read back unchanged.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
   headers before setting verified auth
-  context. Header values for roles, scopes, and claims are bounded; oversized
+  context. The gateway interceptor strips them too, after it has read its own
+  mapped input, so a client-supplied `x-auth-*` header never reaches the next
+  hop. Header values for roles, scopes, and claims are bounded; oversized
   values are omitted.
 
 For gateway and service-to-service trust boundaries, see the
