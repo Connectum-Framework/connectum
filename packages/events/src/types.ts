@@ -448,6 +448,10 @@ export interface EventBusOptions {
      * are force-aborted via AbortSignal.
      *
      * Default: 30000 (30 seconds). Set to 0 for immediate abort.
+     *
+     * Must be a finite number from 0 to 2147483647 (the longest delay a timer keeps). `NaN`, a
+     * negative number, `Infinity`, a larger number or a non-number makes `createEventBus` throw a
+     * `RangeError` or `TypeError` naming the option; leave it unset for the default.
      */
     drainTimeout?: number;
     /**
