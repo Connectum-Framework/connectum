@@ -135,10 +135,13 @@ export const ConnectumEnvSchema = z.object({
         .transform((v) => v === "true" || v === "1" || v === "yes"),
 
     /**
-     * Graceful shutdown timeout in milliseconds
+     * Graceful shutdown timeout in milliseconds: a whole number from 0 to
+     * 300000, the same kind of value `createServer({ shutdown: { timeout } })`
+     * accepts (a fraction is rejected here, naming this variable, instead of at
+     * server creation)
      * @default 30000
      */
-    GRACEFUL_SHUTDOWN_TIMEOUT_MS: z.coerce.number().min(0).max(300000).default(30000),
+    GRACEFUL_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(0).max(300000).default(30000),
 });
 
 /**

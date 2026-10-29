@@ -13,6 +13,7 @@ import {
     parseEnvConfig,
     safeParseEnvConfig,
 } from "../../src/config/envSchema.ts";
+import { createServer } from "../../src/Server.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -485,6 +486,29 @@ describe("parseEnvConfig() GRACEFUL_SHUTDOWN_TIMEOUT_MS validation errors", () =
             );
         });
     }
+
+    // `createServer({ shutdown: { timeout } })` accepts only whole milliseconds, and the
+    // configuration guide passes this variable straight into it. A fraction accepted here
+    // would fail later, at server creation, with an error that does not name the variable.
+    for (const timeout of ["1.5", "0.5", "29999.9", "299999.999"]) {
+        it(`should reject the fractional ${timeout}, naming GRACEFUL_SHUTDOWN_TIMEOUT_MS and the integer requirement`, () => {
+            assert.throws(
+                () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout }),
+                (err) =>
+                    err instanceof ZodError &&
+                    err.issues.length === 1 &&
+                    err.issues[0]?.path.join(".") === "GRACEFUL_SHUTDOWN_TIMEOUT_MS" &&
+                    /int/i.test(err.issues[0]?.message ?? ""),
+            );
+        });
+    }
+
+    it("should only accept values that createServer({ shutdown: { timeout } }) accepts", () => {
+        for (const timeout of ["0", "1", "5000", "30000", "300000"]) {
+            const env = parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout });
+            assert.doesNotThrow(() => createServer({ services: [], shutdown: { timeout: env.GRACEFUL_SHUTDOWN_TIMEOUT_MS } }), `timeout ${timeout}`);
+        }
+    });
 });
 
 // ---------------------------------------------------------------------------
