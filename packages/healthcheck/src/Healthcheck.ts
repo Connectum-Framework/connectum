@@ -18,7 +18,7 @@ import { HealthcheckManager } from "./HealthcheckManager.ts";
 import { createHttpHealthHandler } from "./httpHandler.ts";
 import type { HealthcheckOptions } from "./types.ts";
 import { ServingStatus } from "./types.ts";
-import { assertHttpPaths, assertWatchInterval } from "./validation.ts";
+import { assertBooleanOption, assertHttpPaths, assertManager, assertOptionsObject, assertWatchInterval } from "./validation.ts";
 
 /**
  * Default watch interval for streaming health updates (ms)
@@ -95,9 +95,16 @@ function boundedName(name: string): string {
  * @returns ProtocolRegistration for createServer
  * @throws {RangeError} when `httpPaths` is an empty array, or `watchInterval`
  *   is a number that is not an integer from 1 to 2147483647
- * @throws {TypeError} when `httpPaths` is not an array, or an entry is not a
- *   string, does not start with `/`, or contains `?` or `#`; or when
- *   `watchInterval` is not a number (including `null`)
+ * @throws {TypeError} when `options` is not an object (`null` included),
+ *   `manager` is not a HealthcheckManager, `httpEnabled` is not a boolean,
+ *   `httpPaths` is not an array, or an entry is not a string, does not start
+ *   with `/`, or contains `?` or `#`; or when `watchInterval` is not a number
+ *   (including `null`)
+ *
+ * A second `Healthcheck()` in one server (or an application service that
+ * already is `grpc.health.v1.Health`) cannot be seen from here. It is refused
+ * with an `Error` when the server builds its routes: `start()` rejects, and so
+ * does the first `localClient()`.
  *
  * @example
  * ```typescript
@@ -117,9 +124,13 @@ function boundedName(name: string): string {
  * ```
  */
 export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistration {
+    assertOptionsObject(options);
     const { httpEnabled = false, httpPaths, watchInterval = DEFAULT_WATCH_INTERVAL } = options;
-    const manager = options.manager ?? healthcheckManager;
+    // Only an omitted manager selects the singleton; null is a mistake.
+    const manager = options.manager === undefined ? healthcheckManager : options.manager;
 
+    assertBooleanOption(httpEnabled, "httpEnabled");
+    assertManager(manager);
     assertWatchInterval(watchInterval);
 
     if (httpPaths !== undefined) {
@@ -136,6 +147,15 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
         // without mounting it, because initialize keeps only the services in its
         // input (with their status) and removes the rest.
         setup(context: ProtocolContext): void {
+            // `context.services` includes those of the protocols before this
+            // one, so a second Healthcheck() (or an application that mounts its
+            // own Health service) shows up here. Two answers for one service
+            // would silently ignore one of the managers.
+            if (context.services.some((service) => service.typeName === Health.typeName)) {
+                throw new Error(
+                    `Healthcheck(): the '${Health.typeName}' service is already registered by the application or by an earlier Healthcheck(); register Healthcheck() once per server`,
+                );
+            }
             // The mounted services, not every service of their files.
             const serviceNames = context.services.map((service) => service.typeName);
             manager.initialize(serviceNames);

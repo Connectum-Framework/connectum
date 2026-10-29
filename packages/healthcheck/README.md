@@ -58,6 +58,10 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   `RangeError` and leaves the registry unchanged.
 - `watchInterval` must be an integer from 1 to 2147483647 milliseconds;
   `Healthcheck()` throws otherwise.
+- `Healthcheck()` throws when `options` is `null`, `manager` is not a
+  `HealthcheckManager` or `httpEnabled` is not a boolean. Register it once per
+  server: a second `Healthcheck()` (or your own `grpc.health.v1.Health`
+  service) makes `start()` reject, because only one registration may answer.
 - `Health.Check` answers `NOT_FOUND` for an unknown service. The message repeats
   at most the first 128 characters of the requested name.
 

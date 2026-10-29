@@ -109,3 +109,45 @@ export function assertWatchInterval(value: unknown): asserts value is number {
         throw new RangeError(rule);
     }
 }
+
+/** The manager methods `Healthcheck()` and the HTTP handler call. */
+const MANAGER_METHODS = ["initialize", "getStatus", "getAllStatuses", "areAllHealthy"] as const;
+
+/**
+ * Require the `options` argument of `Healthcheck()` to be a plain options
+ * object. `undefined` is handled by the caller (it means no options).
+ *
+ * @throws {TypeError} when `options` is `null`, an array or not an object
+ */
+export function assertOptionsObject(options: unknown): void {
+    if (typeof options !== "object" || options === null || Array.isArray(options)) {
+        throw new TypeError(`Healthcheck(): argument 'options' must be an object, got ${describeValue(options)}`);
+    }
+}
+
+/**
+ * Require something that can serve as the status registry: an object with the
+ * methods the protocol and the HTTP handler call. Checked here so a wrong value
+ * fails when `Healthcheck()` is called, not on the first probe.
+ *
+ * @throws {TypeError} when `manager` is not an object with those methods
+ */
+export function assertManager(manager: unknown): void {
+    const missing =
+        typeof manager === "object" && manager !== null ? MANAGER_METHODS.filter((name) => typeof (manager as Record<string, unknown>)[name] !== "function") : MANAGER_METHODS;
+    if (missing.length > 0) {
+        throw new TypeError(`Healthcheck(): option 'manager' must be a HealthcheckManager (an object with ${MANAGER_METHODS.join(", ")}), got ${describeValue(manager)}`);
+    }
+}
+
+/**
+ * Require a real boolean for a flag option; a string such as "no" or the
+ * number 1 would otherwise count as true.
+ *
+ * @throws {TypeError} when `value` is not `true` or `false`
+ */
+export function assertBooleanOption(value: unknown, option: string): asserts value is boolean {
+    if (typeof value !== "boolean") {
+        throw new TypeError(`Healthcheck(): option '${option}' must be a boolean, got ${describeValue(value)}`);
+    }
+}
