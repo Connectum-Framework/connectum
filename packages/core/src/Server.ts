@@ -15,7 +15,7 @@ import { validateAdmissionOptions, validateShutdownOptions } from "./admission.t
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
-import { assertEnabledServicesAreSupplied, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
+import { assertEnabledServicesAreSupplied, assertNoDuplicateService, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -86,7 +86,11 @@ class ServerImpl extends EventEmitter implements Server {
         validateShutdownOptions(options.shutdown);
         validatePropagateHeaders(options.propagateHeaders);
         this._options = options;
-        this._routes = [...options.services];
+        this._routes = [];
+        for (const service of options.services) {
+            assertNoDuplicateService(this._routes, service, "createServer");
+            this._routes.push(service);
+        }
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
         this._outgoingInterceptors = [...(options.outgoingInterceptors ?? [])];
@@ -329,6 +333,7 @@ class ServerImpl extends EventEmitter implements Server {
                 "Cannot add service: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add services before any local-transport access.",
             );
         }
+        assertNoDuplicateService(this._routes, service, "addService");
         this._routes.push(service);
     }
 

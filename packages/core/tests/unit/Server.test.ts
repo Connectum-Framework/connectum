@@ -21,10 +21,14 @@ import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/
 // These lifecycle/state unit tests never invoke an RPC, so the service must
 // register NOTHING (mirrors the previous `(router) => {}` no-op route). The
 // descriptor is required by `ServiceDefinition` but unused: `register` is a
-// no-op, so `EchoService` is never mounted and `hasService`/registry stay empty.
+// no-op, so nothing is ever mounted and `hasService`/registry stay empty. Each
+// mock carries its own type name, because a server rejects two definitions of
+// one service and these tests hold several mocks at once.
+let mockServiceCount = 0;
 const createMockService = (): ServiceDefinition => {
+    mockServiceCount += 1;
     return {
-        descriptor: EchoService,
+        descriptor: { ...EchoService, typeName: `mock.v1.Service${mockServiceCount}` },
         register: () => {
             // Mock service registration - no actual service needed for unit tests
         },

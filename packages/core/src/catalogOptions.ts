@@ -8,8 +8,10 @@
  * @module catalogOptions
  */
 
+import type { DescService } from "@bufbuild/protobuf";
 import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 import { CatalogConfigError } from "./catalogErrors.ts";
+import type { ServiceDefinition } from "./defineService.ts";
 
 /**
  * Check a caller-supplied `CallOptions.timeoutMs` and return it (or `undefined`
@@ -141,4 +143,47 @@ export function assertResolvedTransport(resolved: unknown, typeName: string): Tr
  */
 export function normalizeEndpoint(endpoint: string | undefined): string | undefined {
     return endpoint === "" ? undefined : endpoint;
+}
+
+/**
+ * Check the handler object of a service definition. A missing or wrong-typed
+ * value used to fail far from the cause ("Cannot convert undefined or null to
+ * object" at `start()`), and an `async` lazy factory silently mounted a service
+ * whose every method was `unimplemented`, because a `Promise` has none of the
+ * service's methods. A method left out is not an error (it answers
+ * `unimplemented`); a member that is present must be a function.
+ *
+ * @param caller - `defineService` or `defineLazyService`, to prefix the message
+ * @throws TypeError naming the service, and the method for a member that is not a function
+ * @internal
+ */
+export function assertServiceHandlers(descriptor: DescService, handlers: unknown, caller: string): void {
+    const where = `${caller}(${descriptor.typeName})`;
+    if (typeof handlers === "object" && handlers !== null && typeof (handlers as { then?: unknown }).then === "function") {
+        (handlers as Promise<unknown>).then(undefined, () => {});
+        throw new TypeError(`${where}: the handlers must be an object, not a Promise. A lazy factory must be synchronous: it cannot be declared async or return a Promise.`);
+    }
+    if (typeof handlers !== "object" || handlers === null) {
+        throw new TypeError(`${where}: the handlers must be an object with one function per method, got ${describeValue(handlers)}.`);
+    }
+    for (const method of descriptor.methods) {
+        const impl = (handlers as Record<string, unknown>)[method.localName];
+        if (impl !== undefined && typeof impl !== "function") {
+            throw new TypeError(`${where}: the handler for method "${method.localName}" must be a function, got ${describeValue(impl)}.`);
+        }
+    }
+}
+
+/**
+ * Reject a second definition of the same service. Two definitions for one type
+ * name would mount twice on the router and the last one would silently win.
+ *
+ * @throws CatalogConfigError naming the type name
+ * @internal
+ */
+export function assertNoDuplicateService(existing: readonly ServiceDefinition[], added: ServiceDefinition, caller: string): void {
+    const { typeName } = added.descriptor;
+    if (existing.some((definition) => definition.descriptor.typeName === typeName)) {
+        throw new CatalogConfigError(`${caller}: service "${typeName}" is defined more than once. Each service type name may be mounted by one definition only.`);
+    }
 }
