@@ -50,7 +50,8 @@ const DEFAULT_HTTP_PATHS = ["/healthz", "/health", "/readyz"];
  *
  * Configured paths return JSON with the service name, status, and timestamp.
  * A `service` query parameter checks one service or component; without it,
- * the handler reports overall health (an empty `service=` counts as absent).
+ * the handler reports overall health (an empty `service=` counts as absent:
+ * same status, same HTTP code, and `"service": "overall"` in the body).
  * Unknown named services return 404 with the requested name in the body,
  * unhealthy overall status returns 503, and unconfigured paths are not handled.
  *
@@ -95,7 +96,9 @@ export function createHttpHealthHandler(manager: HealthcheckManager, healthPaths
 
         const body: HttpHealthResponse = {
             status: STATUS_NAMES.get(status) ?? "UNKNOWN",
-            service: service ?? "overall",
+            // An empty `service=` selected the overall state above; the body
+            // must say so too, so `||` and not `??`.
+            service: service || "overall",
             timestamp: new Date().toISOString(),
         };
 
