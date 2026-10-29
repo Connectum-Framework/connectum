@@ -144,6 +144,21 @@ describe("reflection with external clients", () => {
             });
         }
 
+        // grpcurl asks for the symbol, so a server that lists a service must also be able to
+        // resolve it; the reflection services are not listed but are mounted.
+        for (const version of ["v1", "v1alpha"] as const) {
+            it(`describes the reflection service grpc.reflection.${version}.ServerReflection it is talking to`, async () => {
+                const output = await grpcurl(address, "describe", `grpc.reflection.${version}.ServerReflection`);
+                assert.match(output, new RegExp(`grpc\\.reflection\\.${version}\\.ServerReflection is a service:`));
+                assert.match(
+                    output,
+                    new RegExp(
+                        `rpc ServerReflectionInfo \\( stream \\.grpc\\.reflection\\.${version}\\.ServerReflectionRequest \\) returns \\( stream \\.grpc\\.reflection\\.${version}\\.ServerReflectionResponse \\)`,
+                    ),
+                );
+            });
+        }
+
         it("calls a method using only reflection for the schema", async () => {
             const output = await grpcurl("-d", '{"id":"x"}', address, "fixture.v1.FixtureService/Get");
             assert.deepStrictEqual(JSON.parse(output), { labels: { key: "x" }, level: "LEVEL_HIGH" });
@@ -266,6 +281,9 @@ describe("reflection with external clients", () => {
                     ["fixture.v1.audit", "fixture/v1/options.proto"],
                     ["fixture.v1.UnmountedPeerService", "fixture/v1/multi.proto"],
                     ["fixture.v1.UnmountedPeerService.Chat", "fixture/v1/multi.proto"],
+                    [`grpc.reflection.${version}.ServerReflection`, `grpc/reflection/${version}/reflection.proto`],
+                    [`grpc.reflection.${version}.ServerReflection.ServerReflectionInfo`, `grpc/reflection/${version}/reflection.proto`],
+                    [`grpc.reflection.${version}.ServerReflectionRequest`, `grpc/reflection/${version}/reflection.proto`],
                 ];
                 const responses = await exchange([...expected.map(([symbol]) => ({ fileContainingSymbol: symbol })), { fileContainingSymbol: "no.such.Symbol" }]);
                 for (const [index, [symbol, file]] of expected.entries()) {

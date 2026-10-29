@@ -2,6 +2,7 @@
  * Group 8 — gRPC Server Reflection parity.
  *
  *   8.1 one bidi reflection stream carrying every request kind
+ *   8.2 the reflection service describes itself by symbol, and stays out of the listing
  *
  * Reflection is a protocol registered by `@connectum/reflection`, not a user
  * service, and it keeps per-stream state (files already sent). The scenario
@@ -15,9 +16,9 @@
  */
 
 import assert from "node:assert";
-import { create, fromBinary, type MessageShape, toJson } from "@bufbuild/protobuf";
+import { create, fromBinary, type MessageInitShape, type MessageShape, toJson } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { createClient } from "@connectrpc/connect";
+import { type Client, createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { Reflection } from "@connectum/reflection";
@@ -150,6 +151,46 @@ transportParityTest("parity 8.1: a reflection stream answers identically", {
             assert.ok(r.errors.unknownSymbol?.message.includes("no.such.Symbol"), `${name}: the error names the symbol`);
             assert.strictEqual(r.errors.emptyRequest?.code, 3, `${name}: a request without a query is INVALID_ARGUMENT`);
         }
+        defaultCompare(http, local);
+    },
+});
+
+/** One request on a fresh stream; the single response, or the error that ended the stream. */
+async function askOnce(client: Client<typeof ServerReflection>, messageRequest: MessageInitShape<typeof ServerReflectionRequestSchema>["messageRequest"]): Promise<ReflectionResponse> {
+    async function* send() {
+        yield create(ServerReflectionRequestSchema, { messageRequest });
+    }
+    for await (const response of client.serverReflectionInfo(send())) {
+        return response;
+    }
+    throw new Error("the reflection stream ended without a response");
+}
+
+// 8.2
+transportParityTest("parity 8.2: the reflection service describes itself by symbol and stays out of the listing", {
+    services: [fixtureService],
+    protocols: [Healthcheck(), Reflection()],
+    scenario: async ({ transport }) => {
+        const client = createClient(ServerReflection, transport);
+        const own = await askOnce(client, { case: "fileContainingSymbol", value: "grpc.reflection.v1.ServerReflection" });
+        const alpha = await askOnce(client, { case: "fileContainingSymbol", value: "grpc.reflection.v1alpha.ServerReflection" });
+        const listing = await askOnce(client, { case: "listServices", value: "" });
+        return {
+            response: {
+                own: own.messageResponse.case === "fileDescriptorResponse" ? own.messageResponse.value.fileDescriptorProto.map((bytes) => fromBinary(FileDescriptorProtoSchema, bytes).name) : own.messageResponse.case,
+                alpha: alpha.messageResponse.case === "fileDescriptorResponse" ? alpha.messageResponse.value.fileDescriptorProto.map((bytes) => fromBinary(FileDescriptorProtoSchema, bytes).name) : alpha.messageResponse.case,
+                listed: listing.messageResponse.case === "listServicesResponse" ? listing.messageResponse.value.service.map((s) => s.name) : listing.messageResponse.case,
+            },
+        };
+    },
+    compare: (http, local) => {
+        const expected = {
+            own: ["grpc/reflection/v1/reflection.proto"],
+            alpha: ["grpc/reflection/v1alpha/reflection.proto"],
+            listed: ["fixture.v1.FixtureService", "grpc.health.v1.Health"],
+        };
+        assert.deepStrictEqual(http.response, expected, "HTTP transport result");
+        assert.deepStrictEqual(local.response, expected, "Local transport result");
         defaultCompare(http, local);
     },
 });
