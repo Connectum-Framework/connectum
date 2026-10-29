@@ -173,7 +173,7 @@ describe("initialConnectMaxRetries normalization", () => {
         assert.equal(normalizeInitialConnectBudget(undefined), null);
     });
 
-    it("forwards the budget to amqplib as initialMaxRetries with waitForConnect: false, and neither key when unset", () => {
+    it("always asks amqplib for waitForConnect: false, and forwards the budget as initialMaxRetries only when set", () => {
         const setup = async (): Promise<void> => undefined;
         const recovery = { initialDelay: 10, maxDelay: 20, factor: 3, jitter: 0.1, maxRetries: 7 };
 
@@ -184,13 +184,13 @@ describe("initialConnectMaxRetries normalization", () => {
             jitter: 0.1,
             maxRetries: 7,
             setup,
-            initialMaxRetries: 2,
             waitForConnect: false,
+            initialMaxRetries: 2,
         });
 
         const unset = buildRecoveryConnectOptions({ recovery, setup, initialBudget: null });
         assert.equal(Object.hasOwn(unset, "initialMaxRetries"), false);
-        assert.equal(Object.hasOwn(unset, "waitForConnect"), false, "amqplib keeps resolving connect() only after the first success");
+        assert.equal(unset.waitForConnect, false, "the adapter must hold the recovering connection before the first attempt, or disconnect() cannot cancel a waiting connect()");
     });
 
     /**
