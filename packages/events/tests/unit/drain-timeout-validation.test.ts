@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { EventOptionsSchema } from "../../gen/connectum/events/v1/options_pb.js";
+import { createBroadcastSubscribers } from "../../src/broadcast.ts";
 import { createEventBus } from "../../src/EventBus.ts";
 import { MemoryAdapter } from "../../src/MemoryAdapter.ts";
 
@@ -47,6 +48,13 @@ describe("drainTimeout validation", () => {
             );
         });
     }
+
+    it("createBroadcastSubscribers passes the option through, so it is refused there too", () => {
+        assert.throws(
+            () => createBroadcastSubscribers({ adapter: MemoryAdapter(), drainTimeout: Number.NaN, reactors: [{ group: "audit", routes: [] }] }),
+            (error: unknown) => error instanceof RangeError && error.message.includes("drainTimeout"),
+        );
+    });
 
     for (const value of [0, 1.5, 30, 2_147_483_647]) {
         it(`accepts ${value}`, () => {
