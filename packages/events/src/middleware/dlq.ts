@@ -8,6 +8,7 @@
  * @module middleware/dlq
  */
 
+import { handlerRunsOf } from "../handlerRuns.ts";
 import { assertNonEmptyString } from "../optionValidation.ts";
 import type { DlqOptions, EventAdapter, EventMiddleware } from "../types.ts";
 
@@ -69,7 +70,10 @@ export function dlqMiddleware(
                 "dlq.original-topic": event.eventType,
                 "dlq.original-id": event.eventId,
                 "dlq.error": serializeError(error),
+                // The broker's delivery number of the original; in-process retries are not in it.
                 "dlq.attempt": String(event.attempt),
+                // Handler invocations of this delivery, first run included (1 without retry).
+                "dlq.handler-runs": String(handlerRunsOf(ctx)),
             };
 
             try {

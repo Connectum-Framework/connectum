@@ -8,6 +8,7 @@
  */
 
 import { NonRetryableError, RetryableError } from "../errors.ts";
+import { recordHandlerRun } from "../handlerRuns.ts";
 import { assertNumberOption, describeValue, MAX_TIMER_DELAY_MS } from "../optionValidation.ts";
 import type { EventContext, EventMiddleware, RetryOptions } from "../types.ts";
 
@@ -174,6 +175,8 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
             if (attempt > 1 && ctx.signal.aborted) {
                 return endOnAbort(ctx);
             }
+
+            recordHandlerRun(ctx, attempt);
 
             try {
                 // Propagate attempt number to inner middleware/handler via shallow copy
