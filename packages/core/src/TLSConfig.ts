@@ -110,7 +110,7 @@ function readTLSFiles(files: TLSFiles): { key: Buffer; cert: Buffer } {
  * with a certificate other than the one the operator named.
  *
  * The files are only read, not parsed; when the server cannot use them,
- * {@link explainTLSFailure} names the file behind the failure.
+ * `explainTLSFailure` (internal) names the file behind the failure.
  *
  * @param options - TLS options
  * @returns TLS key and cert buffers
@@ -138,11 +138,11 @@ export function readTLSCertificates(options: TLSOptions = {}): {
  *
  * @param options - TLS options the files were read with
  * @param failure - What `createSecureServer()` threw
- * @param secureOptions - `passphrase` of an encrypted key, as the server received it from `http2Options`
+ * @param secureOptions - `passphrase` and `ciphers` as the server received them from `http2Options`: the key is parsed with the same security policy
  * @returns An error naming the file, with `failure` as its cause, or `failure` itself
  * @internal
  */
-export function explainTLSFailure(options: TLSOptions, failure: unknown, secureOptions: { passphrase?: string | undefined } = {}): unknown {
+export function explainTLSFailure(options: TLSOptions, failure: unknown, secureOptions: { passphrase?: string | undefined; ciphers?: string | undefined } = {}): unknown {
     let files: TLSFiles;
     let certificates: { key: Buffer; cert: Buffer };
     try {
@@ -153,13 +153,13 @@ export function explainTLSFailure(options: TLSOptions, failure: unknown, secureO
     }
 
     const describe = (source: TLSFile, role: "key" | "certificate"): string => `TLS ${role} file "${source.file}" (from ${source.origin})`;
-    const { passphrase } = secureOptions;
+    const { passphrase, ciphers } = secureOptions;
     const check = (description: string, material: { key?: Buffer; cert?: Buffer }): Error | undefined => {
         try {
-            createSecureContext(passphrase === undefined ? material : { ...material, passphrase });
+            createSecureContext({ ...material, ...(passphrase === undefined ? {} : { passphrase }), ...(ciphers === undefined ? {} : { ciphers }) });
         } catch (cause) {
             const reason = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
-            return new Error(`${description}: ${reason}`, { cause });
+            return new Error(`${description}: ${reason}`, { cause: failure });
         }
         return undefined;
     };

@@ -359,7 +359,7 @@ describe("TLSConfig", () => {
 		const SERVER_FAILURE = new Error("server could not use the files");
 
 		/** What a failed server start reports: the read result, or the error that names the file. */
-		function loadTLSCertificates(options: Parameters<typeof readTLSCertificates>[0], secureOptions?: { passphrase?: string }): { key: Buffer; cert: Buffer } {
+		function loadTLSCertificates(options: Parameters<typeof readTLSCertificates>[0], secureOptions?: { passphrase?: string; ciphers?: string }): { key: Buffer; cert: Buffer } {
 			const certificates = readTLSCertificates(options);
 			const explained = explainTLSFailure(options ?? {}, SERVER_FAILURE, secureOptions);
 			if (explained !== SERVER_FAILURE) throw explained;
@@ -443,7 +443,7 @@ describe("TLSConfig", () => {
 						assert.ok(error.message.includes(keyPath), error.message);
 						assert.ok(error.message.includes("tls.keyPath"), error.message);
 						assert.ok(error.message.includes("private key"), error.message);
-						assert.ok(error.cause instanceof Error, "the OpenSSL error is kept as cause");
+						assert.strictEqual(error.cause, SERVER_FAILURE, "the error the server threw is kept as cause");
 						return true;
 					},
 				);
@@ -528,6 +528,22 @@ describe("TLSConfig", () => {
 			} finally {
 				await server.stop();
 			}
+		});
+
+		it("judges the files under the security level the server used, so a weak but mismatched pair is reported as a mismatch", { skip: process.versions.bun !== undefined && "Bun has no OpenSSL security levels" }, () => {
+			const weak = (name: string): { keyPath: string; certPath: string } => {
+				const keyPath = resolve(testDir, `${name}.key`);
+				const certPath = resolve(testDir, `${name}.crt`);
+				execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:1024", "-nodes", "-days", "1", "-subj", `/CN=${name}`, "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+				return { keyPath, certPath };
+			};
+			const first = weak("weak-a");
+			const second = weak("weak-b");
+
+			assert.throws(
+				() => loadTLSCertificates({ keyPath: first.keyPath, certPath: second.certPath }, { ciphers: "DEFAULT:@SECLEVEL=0" }),
+				(error: Error) => error.message.includes("does not match") && error.cause === SERVER_FAILURE,
+			);
 		});
 
 		it("makes server.start() reject with the file and the option, and leaves no listener", async () => {

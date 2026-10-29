@@ -105,7 +105,7 @@ export class TransportManager {
                 );
             } catch (error) {
                 // The server did not accept the key or certificate; say which file and setting.
-                throw explainTLSFailure(tls ?? {}, error, { passphrase: http2Options?.passphrase });
+                throw explainTLSFailure(tls ?? {}, error, { passphrase: http2Options?.passphrase, ciphers: http2Options?.ciphers });
             }
         } else if (allowHTTP1) {
             // Mode 2: Plaintext HTTP/1.1 (default without TLS)
