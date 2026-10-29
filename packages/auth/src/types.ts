@@ -164,6 +164,11 @@ export interface AuthInterceptorOptions {
     /**
      * LRU cache for credentials verification results.
      * Caches AuthContext by credential string to reduce verification overhead.
+     *
+     * The stored identity is an immutable snapshot: the `AuthContext` a handler receives, including
+     * its `roles`, `scopes` and `claims` (nested plain objects and arrays too), is frozen, so a handler
+     * cannot change what a later request with the same credential receives. Without a cache the object
+     * returned by `verifyCredentials` is passed through as is.
      */
     cache?: CacheOptions | undefined;
 
@@ -560,7 +565,10 @@ export interface SessionAuthInterceptorOptions {
      * Default: extracts Bearer token from Authorization header.
      */
     readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
-    /** LRU cache for session verification results */
+    /**
+     * LRU cache for session verification results. The stored identity is an immutable snapshot,
+     * frozen as described for `AuthInterceptorOptions.cache`.
+     */
     readonly cache?: CacheOptions | undefined;
     /** Methods to skip authentication for. The catch-all `"*"` is refused (creation throws). */
     readonly skipMethods?: string[] | undefined;

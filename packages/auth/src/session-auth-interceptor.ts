@@ -12,6 +12,7 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
+import { snapshotAuthContext, viewOfSnapshot } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
@@ -96,7 +97,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             if (propagateHeaders) {
                 propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await runWithAuthContext(cached, () => next(req));
+            return await runWithAuthContext(viewOfSnapshot(cached), () => next(req));
         }
 
         // Verify session — pass full headers for cookie-based auth
@@ -129,9 +130,15 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             propagateAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
-        // Cache result
-        cache?.set(token, authContext);
+        // Cache the result as an immutable snapshot, and serve this request from that snapshot
+        // too, so the request that fills the cache sees what later ones will see.
+        let identity = authContext;
+        if (cache) {
+            const snapshot = snapshotAuthContext(authContext);
+            cache.set(token, snapshot);
+            identity = viewOfSnapshot(snapshot);
+        }
 
-        return await runWithAuthContext(authContext, () => next(req));
+        return await runWithAuthContext(identity, () => next(req));
     };
 }

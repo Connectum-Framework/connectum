@@ -90,6 +90,11 @@ handler for the whole call, including after its first `await` or `yield`.
   that contains a space (the reader splits scopes on spaces), is rejected
   with `Unauthenticated` before it is cached. Roles and claims are written as
   JSON with `\uXXXX` escapes for such characters and read back unchanged.
+- With the `cache` option of the generic and session interceptors, the identity
+  a handler receives is a frozen snapshot (`roles`, `scopes` and `claims`
+  included), so a handler cannot change what a later request with the same
+  credential gets; mutating it throws a `TypeError`. Without `cache` the
+  verifier's own object is passed through.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
   headers before setting verified auth
   context. The gateway interceptor strips them too, after it has read its own
