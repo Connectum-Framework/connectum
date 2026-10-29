@@ -52,7 +52,8 @@ export interface ErrorHandlerOptions {
      * `SanitizableError` (an `Error`, a thrown string, an object with a numeric
      * `code`) never leaves the server: the client receives the fixed text
      * `"internal error"` for code `Internal`, and an empty text when the exception
-     * carried its own numeric code from 1 to 16 other than `Internal`. Such text
+     * carried its own numeric code from 1 to 16 other than `Internal`, or is an
+     * `AbortError` or `TimeoutError` (sent as `Canceled`). Such text
      * routinely contains connection strings, queries, file paths or values from the
      * request (CWE-209).
      *
