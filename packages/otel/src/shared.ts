@@ -249,17 +249,38 @@ export function buildErrorAttributes(error: unknown): Record<string, string> {
 }
 
 /**
+ * Connect error codes that the OpenTelemetry Connect RPC conventions treat as errors of a
+ * server span: unknown, deadline_exceeded, unimplemented, internal, unavailable, data_loss.
+ * Any other code (not_found, invalid_argument, canceled, ...) is the caller's outcome, not
+ * a failure of the server, and leaves the span status unset. The numbers are the Connect
+ * protocol's error codes.
+ */
+const SERVER_ERROR_CODES: ReadonlySet<number> = new Set([2, 4, 12, 13, 14, 15]);
+
+/**
+ * Whether an error that ended a call counts as an error of its server span. An error that
+ * is not a `ConnectError` is turned into `unknown` by the server and counts.
+ *
+ * @param error - The error, exactly as caught
+ */
+export function isServerErrorStatus(error: unknown): boolean {
+    return !(error instanceof ConnectError) || SERVER_ERROR_CODES.has(error.code);
+}
+
+/**
  * Marks a span as failed by the error a call ended with: the failure itself (status and
  * exception, see {@link recordFailure}) and the error attributes of {@link buildErrorAttributes}.
- * It does not end the span. Never throws.
+ * The span status becomes `ERROR` for every failure of a client span, and for a server span
+ * only when {@link isServerErrorStatus} says so. It does not end the span. Never throws.
  *
  * @param span - The span of the call
  * @param error - The error, exactly as caught
+ * @param side - Which side of the call the span belongs to
  * @returns The error attributes, for the metric points of the same call
  */
-export function markSpanFailed(span: Span, error: unknown): Record<string, string> {
+export function markSpanFailed(span: Span, error: unknown, side: "server" | "client"): Record<string, string> {
     const errorAttrs = buildErrorAttributes(error);
-    recordFailure(span, error);
+    recordFailure(span, error, side === "client" || isServerErrorStatus(error));
     try {
         span.setAttributes(errorAttrs);
     } catch {

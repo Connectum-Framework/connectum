@@ -376,7 +376,7 @@ test("parity: server-streaming emits identical rpc.message events", async () => 
 // Error span parity
 // ---------------------------------------------------------------------------
 
-test("parity: error case → span status=ERROR identical on both transports", async () => {
+test("parity: error case → span status and error attributes identical on both transports", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes({ throwError: true })],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -386,14 +386,21 @@ test("parity: error case → span status=ERROR identical on both transports", as
         },
     });
 
-    // Both runs must record ERROR status with matching rpc.response.status_code.
+    // Oracle: the Connect RPC conventions. A client span is an error for every status code
+    // except OK; a server span only for unknown, deadline_exceeded, unimplemented, internal,
+    // unavailable and data_loss, so FAILED_PRECONDITION is an error on the client and leaves
+    // the server span status unset. Both spans carry the code name.
     for (const run of [http, local]) {
         const serverSpan = run.spans.find((s) => s.kind === SpanKind.SERVER);
         assert.ok(serverSpan, "server span missing");
-        assert.strictEqual(serverSpan.status.code, 2 /* SpanStatusCode.ERROR */, "server span must be ERROR");
+        assert.strictEqual(serverSpan.status.code, 0 /* SpanStatusCode.UNSET */, "server span: FAILED_PRECONDITION is not a server error");
         assert.strictEqual(serverSpan.attributes["rpc.response.status_code"], "FAILED_PRECONDITION", "rpc.response.status_code mismatch");
         assert.strictEqual(serverSpan.attributes["error.type"], "FAILED_PRECONDITION", "error.type mismatch");
         assert.ok(!("rpc.connect_rpc.status_code" in serverSpan.attributes), "the replaced attribute must not be emitted");
+        const clientSpan = run.spans.find((s) => s.kind === SpanKind.CLIENT);
+        assert.ok(clientSpan, "client span missing");
+        assert.strictEqual(clientSpan.status.code, 2 /* SpanStatusCode.ERROR */, "client span must be ERROR");
+        assert.strictEqual(clientSpan.attributes["rpc.response.status_code"], "FAILED_PRECONDITION");
     }
 
     // Strip `exception.stacktrace` event attributes before structural diff —

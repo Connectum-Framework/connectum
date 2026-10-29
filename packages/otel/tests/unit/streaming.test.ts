@@ -802,6 +802,26 @@ for (const side of SIDES) {
 			});
 		}
 
+		// Oracle: the Connect RPC conventions: on a client span every status code but OK is an
+		// error; on a server span only unknown, deadline_exceeded, unimplemented, internal,
+		// unavailable and data_loss are, so a stream that fails with NOT_FOUND leaves a server
+		// span unset and marks a client span ERROR. The code is reported either way.
+		it("should set the span status of a stream that fails with NOT_FOUND by the side of the call", async () => {
+			const failure = new ConnectError("no such user", Code.NotFound);
+			const next: any = async () => ({ stream: true, message: slowMessages(2, { messages: 1, error: failure }) });
+			const handler = side.create({})(next);
+
+			const observed = await observe(async () => {
+				const response = await handler(createMockRequest({ stream: false, message: OTEL_REQUEST_MESSAGE }));
+				await assert.rejects(() => collectAll(streamOf(response)), failure);
+			});
+
+			const span = onlySpan(observed);
+			assert.strictEqual(span.status.code, side.spanKind === SpanKind.SERVER ? SpanStatusCode.UNSET : SpanStatusCode.ERROR);
+			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
+			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
+		});
+
 		it("should pass stream=true to the filter for streaming requests", async () => {
 			let receivedStream: boolean | undefined;
 			const interceptor = side.create({

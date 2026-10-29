@@ -151,7 +151,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         // is recorded; a failure of the stream is recorded the same way as one of a unary call.
         const recordStreamEnd = (span: Span, outcome: StreamOutcome) => {
             const duration = (performance.now() - startTime) / 1000;
-            recordMetrics(duration, 0, outcome.failed ? markSpanFailed(span, outcome.error) : undefined);
+            recordMetrics(duration, 0, outcome.failed ? markSpanFailed(span, outcome.error, "server") : undefined);
         };
 
         // 8. Metrics-only mode (tracing disabled)
@@ -264,7 +264,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                 return response;
             } catch (error) {
                 const duration = (performance.now() - startTime) / 1000;
-                const errorAttrs = markSpanFailed(span, error);
+                const errorAttrs = markSpanFailed(span, error, "server");
 
                 span.end();
 
