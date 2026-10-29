@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 import type amqp from "amqplib";
-import { handleDelivery } from "../../src/AmqpAdapter.ts";
+import { createRedeliveryHold, handleDelivery, stopRedeliveryHold } from "../../src/AmqpAdapter.ts";
 import { AmqpAdapter, type AmqpAdapterOptions, type AmqpLifecycleEvent } from "../../src/index.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,6 +108,9 @@ describe("redeliveryDelay on a failed handler", () => {
         const { channel, calls } = makeChannel();
         const events: AmqpLifecycleEvent[] = [];
         const startedAt = Date.now();
+        // The adapter ends the holds of a channel with one listener on that channel.
+        const hold = createRedeliveryHold();
+        channel.once("close", () => stopRedeliveryHold(hold));
         const done = handleDelivery({
             channel,
             message: makeMessage(),
@@ -116,6 +119,7 @@ describe("redeliveryDelay on a failed handler", () => {
             decode: undefined,
             lifecycle: { onLifecycle: (event) => events.push(event) },
             redeliveryDelay: 5_000,
+            redeliveryHold: hold,
         });
         await sleep(30);
         channel.close();
@@ -127,14 +131,38 @@ describe("redeliveryDelay on a failed handler", () => {
             events.map((event) => (event.type === "settlement-skipped" ? `${event.type}:${event.action}` : event.type)),
             ["settlement-skipped:requeue"],
         );
-        assert.equal(channel.listenerCount("close"), 0, "the wait leaves no listener behind");
+        assert.equal(hold.releases.size, 0, "the wait leaves nothing registered");
+    });
+
+    it("a handler that fails after the channel closed does not wait for the delay", async () => {
+        const { channel } = makeChannel();
+        const hold = createRedeliveryHold();
+        channel.once("close", () => stopRedeliveryHold(hold));
+        channel.close();
+        const startedAt = Date.now();
+        await handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 60_000, redeliveryHold: hold });
+        assert.ok(Date.now() - startedAt < 1_000, "a stopped hold refuses new waits, so no timer outlives the disconnect");
+    });
+
+    it("twelve deliveries waiting at once add no listener to the channel", async () => {
+        const { channel } = makeChannel();
+        const hold = createRedeliveryHold();
+        const before = channel.listenerCount("close");
+        const waits = Array.from({ length: 12 }, () =>
+            handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 60_000, redeliveryHold: hold }),
+        );
+        await sleep(30);
+        assert.equal(hold.releases.size, 12);
+        assert.equal(channel.listenerCount("close"), before, "the wait must not add a close listener per message (the emitter warns above ten)");
+        stopRedeliveryHold(hold);
+        await Promise.all(waits);
     });
 });
 
 describe("redeliveryDelay and a subscription that is being stopped", () => {
     it("releasing the held deliveries requeues them at once and leaves nothing registered", async () => {
         const { channel, calls } = makeChannel();
-        const held = new Set<() => void>();
+        const hold = createRedeliveryHold();
         const startedAt = Date.now();
         const done = handleDelivery({
             channel,
@@ -144,15 +172,13 @@ describe("redeliveryDelay and a subscription that is being stopped", () => {
             decode: undefined,
             lifecycle: undefined,
             redeliveryDelay: 60_000,
-            heldDeliveries: held,
+            redeliveryHold: hold,
         });
         await sleep(30);
-        assert.equal(held.size, 1, "the delivery registers itself while it waits");
+        assert.equal(hold.releases.size, 1, "the delivery registers itself while it waits");
         assert.equal(calls.length, 0);
 
-        for (const release of [...held]) {
-            release();
-        }
+        stopRedeliveryHold(hold);
         await done;
 
         assert.ok(Date.now() - startedAt < 2_000, "releasing must not wait for the delay");
@@ -161,15 +187,27 @@ describe("redeliveryDelay and a subscription that is being stopped", () => {
             ["nack-requeue"],
             "a released delivery is requeued on the still-open channel",
         );
-        assert.equal(held.size, 0);
-        assert.equal(channel.listenerCount("close"), 0);
+        assert.equal(hold.releases.size, 0);
+    });
+
+    it("a delivery that fails after the subscription was stopped is requeued at once", async () => {
+        const { channel, calls } = makeChannel();
+        const hold = createRedeliveryHold();
+        stopRedeliveryHold(hold);
+        const startedAt = Date.now();
+        await handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 60_000, redeliveryHold: hold });
+        assert.ok(Date.now() - startedAt < 1_000, "a handler still running at unsubscribe() must not be held for the delay");
+        assert.deepEqual(
+            calls.map((c) => c.call),
+            ["nack-requeue"],
+        );
     });
 
     it("a delivery that finished waiting by itself is no longer registered", async () => {
         const { channel } = makeChannel();
-        const held = new Set<() => void>();
-        await handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 20, heldDeliveries: held });
-        assert.equal(held.size, 0);
+        const hold = createRedeliveryHold();
+        await handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 20, redeliveryHold: hold });
+        assert.equal(hold.releases.size, 0);
     });
 });
 

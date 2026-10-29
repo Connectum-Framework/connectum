@@ -977,33 +977,57 @@ function parseHeaders(headers: Record<string, unknown> | undefined): Map<string,
 interface DeliveryChannel {
     ack(message: amqp.Message): void;
     nack(message: amqp.Message, allUpTo: boolean, requeue: boolean): void;
-    /** Present on a real channel; lets a redelivery pause end as soon as the channel closes. */
-    once?(event: "close", listener: () => void): unknown;
-    off?(event: "close", listener: () => void): unknown;
 }
 
 /**
- * Wait `delayMs` before a failed delivery is requeued, or less when its channel
- * closes first (a closed channel returns the unacknowledged message to the queue
- * by itself, so a timer that outlived it would only delay shutdown) or when the
- * subscription is being stopped.
+ * The deliveries of one consumer channel that wait out `redeliveryDelay`.
  *
- * While it waits, the delivery registers its release function in `held`;
- * `unsubscribe()` calls them so the message goes back to the queue on the
- * still-open channel at once, instead of staying unacknowledged for the rest of
- * the delay with nobody left to consume it.
+ * One object per channel, ended by one listener on that channel: a listener per
+ * delivery would exceed the emitter's limit of ten with the default `prefetch`.
  */
-function pauseBeforeRequeue(channel: DeliveryChannel, delayMs: number, held: Set<() => void> | undefined): Promise<void> {
+export interface RedeliveryHold {
+    /** Set when the channel closed or the subscription is being stopped; no delivery waits after that. */
+    stopped: boolean;
+    /** The release functions of the deliveries that are waiting now. */
+    readonly releases: Set<() => void>;
+}
+
+/** A hold with nothing waiting that has not been stopped. */
+export function createRedeliveryHold(): RedeliveryHold {
+    return { stopped: false, releases: new Set() };
+}
+
+/**
+ * End the waits of a hold and refuse new ones. Called when the channel closes (it
+ * returns the unacknowledged messages to the queue by itself, so a timer that
+ * outlived it would only delay shutdown) and when the subscription is stopped (the
+ * messages go back to the queue on the still-open channel at once, instead of
+ * staying unacknowledged for the rest of the delay with nobody left to consume them).
+ */
+export function stopRedeliveryHold(hold: RedeliveryHold): void {
+    hold.stopped = true;
+    for (const release of [...hold.releases]) {
+        release();
+    }
+}
+
+/**
+ * Wait `delayMs` before a failed delivery is requeued, or less when the hold is
+ * stopped. A hold that is already stopped (the handler failed after the channel
+ * closed or the subscription ended) does not wait at all.
+ */
+function pauseBeforeRequeue(delayMs: number, hold: RedeliveryHold | undefined): Promise<void> {
+    if (hold?.stopped === true) {
+        return Promise.resolve();
+    }
     return new Promise((resolve) => {
         const finish = (): void => {
             clearTimeout(timer);
-            channel.off?.("close", finish);
-            held?.delete(finish);
+            hold?.releases.delete(finish);
             resolve();
         };
         const timer = setTimeout(finish, delayMs);
-        channel.once?.("close", finish);
-        held?.add(finish);
+        hold?.releases.add(finish);
     });
 }
 
@@ -1065,10 +1089,10 @@ export function handleDelivery(params: {
     readonly lifecycle: AmqpLifecycleCallbacks | undefined;
     /** Milliseconds to hold a message the handler failed on before requeueing it; unset or 0 requeues at once. */
     readonly redeliveryDelay?: number | undefined;
-    /** Where a delivery that waits out `redeliveryDelay` registers the function that ends its wait early. */
-    readonly heldDeliveries?: Set<() => void> | undefined;
+    /** The hold of the delivery's channel: where it registers its wait and learns that the wait must end. */
+    readonly redeliveryHold?: RedeliveryHold | undefined;
 }): Promise<void> {
-    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay, heldDeliveries } = params;
+    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay, redeliveryHold } = params;
     const delivery = { queue, message: msg };
 
     // A second settlement of the same delivery tag makes the broker close the
@@ -1162,7 +1186,7 @@ export function handleDelivery(params: {
         // handler that keeps failing is not fed the same message as fast as the
         // broker can send it. The wait ends early when the channel closes.
         if (!settled && redeliveryDelay !== undefined && redeliveryDelay > 0) {
-            await pauseBeforeRequeue(channel, redeliveryDelay, heldDeliveries);
+            await pauseBeforeRequeue(redeliveryDelay, redeliveryHold);
         }
         try {
             settleOnce("requeue", () => channel.nack(msg, false, true));
@@ -1185,8 +1209,11 @@ interface SubscriptionRecord extends RestorableSubscription {
      * makes the broker take the message back and deliver it again.
      */
     readonly inFlight: Set<Promise<void>>;
-    /** Release functions of the deliveries waiting out `redeliveryDelay`; `unsubscribe()` calls them. */
-    readonly heldDeliveries: Set<() => void>;
+    /**
+     * The hold of the current consumer channel (see {@link RedeliveryHold}); `unsubscribe()` stops it.
+     * Replaced by a fresh one with each channel, so a delivery of an earlier channel never waits on it.
+     */
+    redeliveryHold: RedeliveryHold;
 }
 
 /** A timer handle the restorer can hold without keeping the process alive. */
@@ -1981,6 +2008,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             }
             throw err;
         }
+        // One listener ends every redelivery wait of this channel when it closes.
+        const redeliveryHold = createRedeliveryHold();
+        record.redeliveryHold = redeliveryHold;
+        ch.once("close", () => stopRedeliveryHold(redeliveryHold));
         watchConsumerChannel(ch, incarnation, (cause, error) => {
             restorer.lost({ record, generation: mine, incarnation, channel: ch, queue: queueName, cause, error });
         });
@@ -2110,7 +2141,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         decode,
                         lifecycle,
                         redeliveryDelay: options.consumerOptions?.redeliveryDelay,
-                        heldDeliveries: record.heldDeliveries,
+                        redeliveryHold,
                     });
                     record.inFlight.add(delivery);
                     void delivery.then(() => record.inFlight.delete(delivery));
@@ -2917,7 +2948,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 queueName: "",
                 isAutoGroup: !subOptions?.group,
                 inFlight: new Set(),
-                heldDeliveries: new Set(),
+                redeliveryHold: createRedeliveryHold(),
                 active: true,
                 generation: 0,
                 restore: { attempt: 0, timer: null, stabilityTimer: null, pending: false },
@@ -2968,9 +2999,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         // new delivery starts, and unsubscribe() itself does not wait for a slow handler.
                         // A delivery that is only waiting out `redeliveryDelay` is not working: it is
                         // requeued now, on this still-open channel, rather than after the delay.
-                        for (const release of [...record.heldDeliveries]) {
-                            release();
-                        }
+                        stopRedeliveryHold(record.redeliveryHold);
                         const closeWhenIdle = async (): Promise<void> => {
                             await Promise.allSettled([...record.inFlight]);
                             await ch.close().catch(() => undefined);
