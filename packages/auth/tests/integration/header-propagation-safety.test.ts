@@ -31,6 +31,7 @@ const UNSAFE: Array<[string, Partial<AuthContext>]> = [
     ["a name with CR", { name: "Al\rice" }],
     ["a scope with LF", { scopes: ["read", "wri\nte"] }],
     ["a scope with NUL", { scopes: ["re\0ad"] }],
+    ["a scope with a space", { scopes: ["reports read admin"] }],
     // Not representable in a header (a byte string): the platform would otherwise surface it as an internal error.
     ["a Cyrillic subject", { subject: "Иван" }],
     ["a name above U+00FF", { name: "名前" }],

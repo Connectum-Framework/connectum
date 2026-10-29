@@ -31,14 +31,16 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 /**
  * Thrown by {@link setAuthHeaders} when an identity field holds a character that cannot be
  * written into a header: NUL, CR, LF, or any character above U+00FF (a header value is a
- * byte string, so the platform refuses such a value). `field` names the offending
+ * byte string, so the platform refuses such a value), or a scope holds a space (the next hop splits
+ * the scopes header on spaces and would read one scope as several). `field` names the offending
  * `AuthContext` field.
  */
 export class UnsafeHeaderValueError extends TypeError {
     readonly field: "subject" | "type" | "name" | "scopes";
 
     constructor(field: UnsafeHeaderValueError["field"]) {
-        super(`AuthContext.${field} must not contain NUL, CR or LF characters, or characters above U+00FF, when auth headers are propagated`);
+        const spaceRule = field === "scopes" ? ", and no scope may contain a space" : "";
+        super(`AuthContext.${field} must not contain NUL, CR or LF characters, or characters above U+00FF${spaceRule}, when auth headers are propagated`);
         this.name = "UnsafeHeaderValueError";
         this.field = field;
     }
@@ -55,14 +57,16 @@ export const HEADER_BREAKING_CHARS = /[\x00\r\nĀ-￿]/;
  * the same header value, merging their identities downstream, and the platform refuses
  * a header value that is not a byte string (a Cyrillic name, for example). Scopes are
  * checked one by one and are otherwise left exactly as granted, because an edited scope
- * could match a privilege nobody granted. Whitespace at the edges of a value keeps the
- * behavior of the platform.
+ * could match a privilege nobody granted. A scope that contains a space is refused for the
+ * same reason: scopes are joined and split on a space, so the next hop would read the one
+ * granted scope `reports read admin` as three, `admin` among them. Whitespace at the edges
+ * of the other values keeps the behavior of the platform.
  */
 function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] | undefined {
     if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
     if (HEADER_BREAKING_CHARS.test(context.type)) return "type";
     if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
-    if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope))) return "scopes";
+    if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope) || scope.includes(" "))) return "scopes";
     return undefined;
 }
 
@@ -85,7 +89,7 @@ function jsonForHeader(value: unknown): string {
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR, LF or a character above U+00FF
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR, LF or a character above U+00FF, or a scope with a space
  */
 export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
     try {
@@ -107,12 +111,13 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * `subject`, `type`, `name` are stripped of control characters (tab is kept) and truncated;
  * roles and claims are JSON (characters above U+00FF are written as `\uXXXX` escapes, which
  * the reader restores); scopes are written as granted. A `subject`, `type`, `name` or
- * scope containing NUL, CR, LF or a character above U+00FF is not sanitised but refused.
+ * scope containing NUL, CR, LF or a character above U+00FF is not sanitised but refused, and so
+ * is a scope containing a space.
  *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR, LF or a character above U+00FF; the message
+ * @throws {TypeError} When `subject`, `type`, `name` or a scope contains NUL, CR, LF or a character above U+00FF, or a scope contains a space; the message
  *   names the field and no header has been set
  */
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {

@@ -384,6 +384,9 @@ describe("headers", () => {
             ["a scope with LF", "scopes", { scopes: ["ok", "re\nad"] }],
             ["a scope with CR", "scopes", { scopes: ["re\rad"] }],
             ["a scope with NUL", "scopes", { scopes: ["re\0ad"] }],
+            // Scopes are joined and split on a space: one granted scope with a space would be read back as several.
+            ["a scope with a space", "scopes", { scopes: ["reports read admin"] }],
+            ["a scope with a leading space", "scopes", { scopes: ["ok", " admin"] }],
             // A header value is a byte string: the platform refuses a character above U+00FF.
             ["a Cyrillic subject", "subject", { subject: "Иван" }],
             ["a subject with an emoji", "subject", { subject: "user-\u{1F600}" }],
