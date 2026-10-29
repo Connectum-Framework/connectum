@@ -10,7 +10,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { create } from "@bufbuild/protobuf";
+import { create, createFileRegistry, type DescService } from "@bufbuild/protobuf";
+import { FieldDescriptorProto_Label, FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { CatalogConfigError } from "../../src/catalogErrors.ts";
 import { defineLazyService, defineService } from "../../src/defineService.ts";
 import { createServer } from "../../src/Server.ts";
@@ -133,5 +134,58 @@ describe("the same service defined twice", () => {
             }),
         );
         assert.strictEqual(server.routes.length, 2);
+    });
+});
+
+describe("a service whose method is named Then", () => {
+    // protobuf-es turns the RPC `Then` into the handler key `then`, which makes
+    // a correct handler object look like a thenable. It must still be accepted,
+    // and the check must not call it.
+    const file = create(FileDescriptorProtoSchema, {
+        name: "thenable/v1/svc.proto",
+        package: "thenable.v1",
+        syntax: "proto3",
+        messageType: [{ name: "Msg", field: [{ name: "text", number: 1, type: FieldDescriptorProto_Type.STRING, label: FieldDescriptorProto_Label.OPTIONAL, jsonName: "text" }] }],
+        service: [{ name: "Svc", method: [{ name: "Then", inputType: ".thenable.v1.Msg", outputType: ".thenable.v1.Msg" }] }],
+    });
+    const ThenService = createFileRegistry(file, () => undefined).getService("thenable.v1.Svc") as DescService;
+
+    it("has the handler key then", () => {
+        assert.strictEqual(ThenService.methods[0]?.localName, "then");
+    });
+
+    it("is accepted by defineService without calling the handler", () => {
+        let calls = 0;
+        defineService(ThenService, {
+            then: () => {
+                calls++;
+                return {};
+            },
+        } as never);
+        assert.strictEqual(calls, 0, "the check must not invoke a handler");
+    });
+
+    it("is mounted and served through defineLazyService", async () => {
+        let calls = 0;
+        const server = createServer({
+            ...base,
+            services: [
+                defineLazyService(ThenService, (() => ({
+                    then: (request: { text: string }) => {
+                        calls++;
+                        return { text: `then:${request.text}` };
+                    },
+                })) as never),
+            ],
+        });
+        await server.start();
+        try {
+            const client = server.localClient(ThenService) as unknown as { then: (request: { text: string }) => Promise<{ text: string }> };
+            const response = await client.then({ text: "x" });
+            assert.strictEqual(response.text, "then:x");
+            assert.strictEqual(calls, 1, "the handler runs for the call only");
+        } finally {
+            await server.stop();
+        }
     });
 });

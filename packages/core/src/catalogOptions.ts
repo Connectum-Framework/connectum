@@ -8,6 +8,7 @@
  * @module catalogOptions
  */
 
+import { types } from "node:util";
 import type { DescService } from "@bufbuild/protobuf";
 import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 import { CatalogConfigError } from "./catalogErrors.ts";
@@ -123,10 +124,10 @@ export function assertResolvedTransport(resolved: unknown, typeName: string): Tr
     }
     let what = describeValue(resolved);
     let hint = "A remoteResolver must return a Transport (an object with unary and stream functions) or null.";
-    if (typeof (resolved as { then?: unknown } | null)?.then === "function") {
+    if (types.isPromise(resolved)) {
         // The promise is abandoned here: without a handler its rejection would
         // crash the process on top of the configuration error reported below.
-        (resolved as Promise<unknown>).then(undefined, () => {});
+        resolved.then(undefined, () => {});
         what = "a Promise";
         hint = "A remoteResolver must be synchronous: it cannot be declared async or return a Promise, because the framework caches its result per route and cannot await it.";
     }
@@ -159,8 +160,11 @@ export function normalizeEndpoint(endpoint: string | undefined): string | undefi
  */
 export function assertServiceHandlers(descriptor: DescService, handlers: unknown, caller: string): void {
     const where = `${caller}(${descriptor.typeName})`;
-    if (typeof handlers === "object" && handlers !== null && typeof (handlers as { then?: unknown }).then === "function") {
-        (handlers as Promise<unknown>).then(undefined, () => {});
+    // A real Promise, not "has a then": an RPC named `Then` is the handler key
+    // `then`, and a correct handler object must not be mistaken for a thenable
+    // (nor have that handler called as if it were `Promise.prototype.then`).
+    if (types.isPromise(handlers)) {
+        handlers.then(undefined, () => {});
         throw new TypeError(`${where}: the handlers must be an object, not a Promise. A lazy factory must be synchronous: it cannot be declared async or return a Promise.`);
     }
     if (typeof handlers !== "object" || handlers === null) {
