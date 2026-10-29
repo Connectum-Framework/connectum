@@ -27,7 +27,7 @@ describe("Redis connect timeout on the subscription connection", { skip: REDIS_T
             client.on("error", () => undefined);
             client.on("close", () => sockets.delete(client));
             if (connections === 1) {
-                const upstream = net.connect(Number(target.port), target.hostname);
+                const upstream = net.connect(Number(target.port || 6379), target.hostname);
                 sockets.add(upstream);
                 upstream.on("error", () => undefined);
                 upstream.on("close", () => sockets.delete(upstream));
@@ -40,7 +40,11 @@ describe("Redis connect timeout on the subscription connection", { skip: REDIS_T
 
         const topic = `integration.connect-timeout.${randomUUID()}`;
         const control = new Redis(REDIS_TEST_URL as string);
-        const adapter = RedisAdapter({ url: `redis://127.0.0.1:${proxyPort}`, redisOptions: { connectTimeout: 300 } });
+        // The adapter dials the proxy but keeps the credentials and the database of the test endpoint.
+        const proxied = new URL(target);
+        proxied.hostname = "127.0.0.1";
+        proxied.port = String(proxyPort);
+        const adapter = RedisAdapter({ url: proxied.toString(), redisOptions: { connectTimeout: 300 } });
         try {
             await adapter.connect();
 
