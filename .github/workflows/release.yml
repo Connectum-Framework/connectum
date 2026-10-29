@@ -163,37 +163,23 @@ jobs:
           gh api -X PATCH "repos/${{ github.repository }}/pulls/${PR}" -F body=@"${BODY}"
           echo "::notice::Updated Version Packages PR #${PR} body with generated release notes"
 
-      - name: Check proto changes
-        id: proto-changes
-        if: steps.changesets.outputs.published == 'true'
-        run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            CHANGED=$(git diff --name-only "$LAST_TAG"..HEAD -- 'packages/auth/proto/' 'packages/events/proto/')
-          else
-            CHANGED="initial"
-          fi
-          if [ -n "$CHANGED" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Buf CLI
-        if: steps.proto-changes.outputs.changed == 'true'
+        if: steps.changesets.outputs.published == 'true'
         uses: bufbuild/buf-action@v1
         with:
           token: ${{ secrets.BUF_TOKEN }}
           setup_only: true
 
       - name: Push proto to BSR
-        if: steps.proto-changes.outputs.changed == 'true'
+        # Every npm release needs its contract label, even when the schema is unchanged.
+        if: steps.changesets.outputs.published == 'true'
         env:
           # buf push reads the token from env; the buf-action `setup_only` login
           # does NOT reliably persist auth into this run step (it failed on the
           # 1.1.0 release with "not authenticated for buf.build").
           BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p .bsr/connectum
           for proto_root in packages/*/proto/connectum/*/; do
             [ -d "$proto_root" ] || continue
@@ -221,11 +207,13 @@ jobs:
             '    - FILE' \
             > .bsr/buf.yaml
 
+          buf lint .bsr
+
           buf push .bsr \
             --label "${{ github.ref_name }}" \
             --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
 
-          # Also publish the immutable versioned label (vX.Y.Z) for this release,
+          # Also publish the versioned label (vX.Y.Z) for this release,
           # so consumers can pin the exact contract that ships with the npm
           # version. The version comes from a fixed-group package's package.json
           # (already bumped on main by the merged Version Packages PR). This
