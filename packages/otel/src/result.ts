@@ -57,6 +57,9 @@ function interceptSteps(generator: object, step: (run: () => unknown) => unknown
     try {
         for (const method of ["next", "return", "throw"] as const) {
             const original = target[method];
+            // `return` and `throw` are optional in the iterator protocol; a method the object
+            // does not have stays absent, so a consumer that probes for it sees the same shape.
+            if (typeof original !== "function") continue;
             Object.defineProperty(generator, method, {
                 value: (...args: unknown[]) => step(() => original.apply(generator, args)),
                 writable: true,

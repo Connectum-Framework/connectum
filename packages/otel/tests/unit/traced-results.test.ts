@@ -332,6 +332,23 @@ describe("span lifetime of a traced generator", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
+            it("keeps an optional protocol method absent when the generator object does not have it", async () => {
+                const work = makeTraced(() => {
+                    const generator = (function* () {
+                        yield 1;
+                        yield 2;
+                    })();
+                    Object.defineProperty(generator, "return", { value: undefined, writable: true, configurable: true });
+                    return generator;
+                });
+
+                await observe(async () => {
+                    const generator = work() as Generator<number>;
+                    assert.strictEqual(generator.return, undefined);
+                    for (const _ of generator) break;
+                });
+            });
+
             it("returns a frozen generator as it is and ends the span at once, because it accepts no own methods", async () => {
                 const work = makeTraced(() =>
                     Object.freeze(

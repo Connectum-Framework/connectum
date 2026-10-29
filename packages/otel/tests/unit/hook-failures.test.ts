@@ -214,6 +214,35 @@ describe("a throwing user callback", () => {
                 assert.strictEqual(printed.filter((line) => line.includes("filterbug")).length, 1, `printed: ${JSON.stringify(printed)}`);
             });
 
+            // A diagnostics logger that the application registered itself receives the report
+            // without any provider, and the reporting does not create one.
+            it("reports to a logger the application registered, without creating the provider", async () => {
+                const handler = side.create({
+                    withoutTracing: true,
+                    withoutMetrics: true,
+                    filter: () => {
+                        throw new Error("filterbug");
+                    },
+                })(createMockNext({ message: { ok: true } }));
+                const reports: string[] = [];
+                let providerExisted = true;
+
+                await observe(async () => {
+                    diag.setLogger({ error: (message) => void reports.push(message), warn: () => {}, info: () => {}, debug: () => {}, verbose: () => {} }, { logLevel: DiagLogLevel.ERROR, suppressOverrideMessage: true });
+                    try {
+                        await handler(request());
+                        await handler(request());
+                        providerExisted = hasProvider();
+                    } finally {
+                        diag.disable();
+                    }
+                });
+
+                assert.strictEqual(providerExisted, false);
+                assert.strictEqual(reports.length, 1, `reports: ${JSON.stringify(reports)}`);
+                assert.match(reports[0] ?? "", /filterbug/);
+            });
+
             // Reporting must not start the exporters of an application that has switched
             // instrumentation off.
             it("does not create the provider when a throwing filter is met with instrumentation switched off", async () => {

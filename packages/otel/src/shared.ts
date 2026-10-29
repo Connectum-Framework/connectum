@@ -379,18 +379,19 @@ export type HookFailureReporter = (hook: "filter" | "attributeFilter", error: un
 export function createHookFailureReporter(owner: string): HookFailureReporter {
     const reported = new Set<string>();
     return (hook, error) => {
-        if (reported.has(hook)) return;
-        const consequence = hook === "filter" ? "the call is instrumented" : "the attribute it was asked about is not recorded";
         try {
-            // The provider registers the diagnostics logger when it is created, and the
+            // The provider registers its own diagnostics logger when it is created, and the
             // callbacks run before the tracer and the meter are first used. A report made
-            // before the provider exists would go nowhere, and would count as made, so it
-            // waits: the callback fails again on the next call, by which time the call
-            // before it has created the provider. Creating the provider here would start
-            // the exporters of an application that has switched instrumentation off.
-            if (!hasProvider()) return;
-            reported.add(hook);
-            diag.error(`@connectum/otel: the ${hook} option of ${owner} threw, ${consequence} (reported once per ${owner}): ${describeThrown(error)}`);
+            // before the provider exists reaches only a logger that the application
+            // registered itself, and the provider's logger would miss it, so a failure is
+            // reported once before the provider exists and once after. Creating the
+            // provider here instead would start the exporters of an application that has
+            // switched instrumentation off.
+            const key = `${hook}:${hasProvider()}`;
+            if (reported.has(key)) return;
+            reported.add(key);
+            const consequence = hook === "filter" ? "the call is instrumented" : "the attribute it was asked about is not recorded";
+            diag.error(`@connectum/otel: the ${hook} option of ${owner} threw, ${consequence} (further failures of this option are not reported again): ${describeThrown(error)}`);
         } catch {
             // Intentionally empty: a failing diagnostics logger must not fail the call either.
         }
