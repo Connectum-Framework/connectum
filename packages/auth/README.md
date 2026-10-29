@@ -72,6 +72,10 @@ handler for the whole call, including after its first `await` or `yield`.
 
 - `createJwtAuthInterceptor` rejects a token without `sub` unless
   `claimsMapping.subject` supplies the identity.
+- `createGatewayAuthInterceptor` trusts a shared secret in `trustSource`. A CIDR
+  block in `expectedValues` is matched against a header the caller chooses, so
+  creating the interceptor with one throws unless `allowCallerControlledCidr: true`
+  is set.
 - `verifyCredentials` and `mapSession` must return a complete `AuthContext`;
   `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
   field ends the call with `Unauthenticated`, with or without `propagateHeaders`,
@@ -90,11 +94,10 @@ handler for the whole call, including after its first `await` or `yield`.
   that contains a space (the reader splits scopes on spaces), is rejected
   with `Unauthenticated` before it is cached. Roles and claims are written as
   JSON with `\uXXXX` escapes for such characters and read back unchanged.
-- With the `cache` option of the generic and session interceptors, the identity
-  a handler receives is a frozen snapshot (`roles`, `scopes` and `claims`
-  included), so a handler cannot change what a later request with the same
-  credential gets; mutating it throws a `TypeError`. Without `cache` the
-  verifier's own object is passed through.
+- With the `cache` option of the generic and session interceptors, every request
+  gets its own copy of the cached identity (`roles`, `scopes` and `claims`
+  included), so a handler that changes its `AuthContext` does not change what a
+  later request with the same credential receives.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
   headers before setting verified auth
   context. The gateway interceptor strips them too, after it has read its own

@@ -44,6 +44,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -65,6 +66,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -91,6 +93,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["0.0.0.0/0"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -112,6 +115,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/33"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -168,6 +172,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -194,6 +199,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 

@@ -342,8 +342,23 @@ export interface GatewayAuthInterceptorOptions {
     readonly trustSource: {
         /** Header set by the gateway to prove trust */
         readonly header: string;
-        /** Accepted values for the trust header */
+        /**
+         * Accepted values for the trust header: shared secrets compared exactly, and, only with
+         * {@link allowCallerControlledCidr}, IPv4 CIDR blocks such as `10.0.0.0/8`.
+         */
         readonly expectedValues: string[];
+        /**
+         * Allow IPv4 CIDR blocks in `expectedValues`. Off by default: with a CIDR block present and
+         * this option unset, creating the interceptor throws.
+         *
+         * A block is matched against the value of the trust header, and a caller that reaches the
+         * service directly chooses that value itself, so `10.0.0.0/8` admits anyone who sends
+         * `10.9.9.9`. Enable it only when a trusted upstream overwrites the header on every request
+         * and no client can reach the service without passing through it. Trust based on the peer
+         * address of the connection belongs in the mTLS or mesh-identity trust helpers.
+         * @default false
+         */
+        readonly allowCallerControlledCidr?: boolean | undefined;
     };
     /** Headers to strip from the request after extraction (prevent spoofing) */
     readonly stripHeaders?: string[] | undefined;

@@ -45,6 +45,18 @@ function parseIPv4(text: string): number | null {
     return value;
 }
 
+/** The network and prefix length of a well-formed `a.b.c.d/prefix` block, or `null` for any other text. */
+function parseCidrBlock(pattern: string): { network: number; prefix: number } | null {
+    const slash = pattern.indexOf("/");
+    if (slash === -1) return null;
+    const prefixText = pattern.slice(slash + 1);
+    if (!PREFIX.test(prefixText)) return null;
+    const prefix = Number(prefixText);
+    if (prefix > 32) return null;
+    const network = parseIPv4(pattern.slice(0, slash));
+    return network === null ? null : { network, prefix };
+}
+
 /**
  * Match an IPv4 address against a `a.b.c.d/prefix` block.
  *
@@ -55,15 +67,10 @@ function parseIPv4(text: string): number | null {
  * secret and must not widen trust.
  */
 function matchesIp(address: string, pattern: string): boolean {
-    const slash = pattern.indexOf("/");
-    if (slash === -1) return false;
-    const prefixText = pattern.slice(slash + 1);
-    if (!PREFIX.test(prefixText)) return false;
-    const prefix = Number(prefixText);
-    if (prefix > 32) return false;
-    const network = parseIPv4(pattern.slice(0, slash));
+    const block = parseCidrBlock(pattern);
     const peer = parseIPv4(address);
-    if (network === null || peer === null) return false;
+    if (block === null || peer === null) return false;
+    const { network, prefix } = block;
     // Two addresses share the first `prefix` bits exactly when they fall into
     // the same aligned block of 2^(32 - prefix) addresses.
     const blockSize = 2 ** (32 - prefix);
@@ -84,11 +91,11 @@ function digest(text: string): Buffer {
  * `timingSafeEqual`, so neither the position of the first differing byte nor the length of the
  * guess shows in the response time.
  */
-function isTrusted(headerValue: string, expectedValues: readonly string[]): boolean {
+function isTrusted(headerValue: string, expectedValues: readonly string[], allowCidr: boolean): boolean {
     const headerDigest = digest(headerValue);
     for (const expected of expectedValues) {
         if (timingSafeEqual(headerDigest, digest(expected))) return true;
-        if (expected.includes("/") && matchesIp(headerValue, expected)) return true;
+        if (allowCidr && expected.includes("/") && matchesIp(headerValue, expected)) return true;
     }
     return false;
 }
@@ -122,7 +129,8 @@ function parseRoles(raw: string): string[] {
  *
  * Reads pre-authenticated identity from gateway-injected headers.
  * Trust is established by checking a designated header value against
- * a list of expected values (shared secrets or CIDR ranges applied to the header value).
+ * a list of expected values: shared secrets, compared exactly, and, only with
+ * `trustSource.allowCallerControlledCidr`, IPv4 CIDR blocks applied to the header value.
  * A trusted gateway must overwrite this header; it is not the connection's peer address.
  *
  * Once the identity is read, the interceptor deletes every standard `x-auth-*` identity header
@@ -133,7 +141,8 @@ function parseRoles(raw: string): string[] {
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
  * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
- *   contains `"*"`, or `defaultType` contains NUL, CR or LF
+ *   contains `"*"`, `defaultType` contains NUL, CR or LF, or `trustSource.expectedValues` contains a CIDR block
+ *   while `trustSource.allowCallerControlledCidr` is not `true`
  *
  * @example Kong/Envoy gateway with shared secret
  * ```typescript
@@ -161,6 +170,17 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         throw new Error("@connectum/auth: Gateway auth requires non-empty trustSource.expectedValues");
     }
     assertNoCatchAllSkip(skipMethods);
+    // A CIDR block is matched against a header the caller itself chooses, so it proves nothing
+    // about who the caller is. Refuse it unless the deployment asked for it by name.
+    const allowCidr = trustSource.allowCallerControlledCidr === true;
+    if (!allowCidr) {
+        const block = trustSource.expectedValues.find((value) => parseCidrBlock(value) !== null);
+        if (block !== undefined) {
+            throw new Error(
+                `@connectum/auth: Gateway auth trustSource.expectedValues contains the CIDR block "${block}". A block is matched against the value of the "${trustSource.header}" header, which a caller that reaches the service directly chooses itself, so it does not prove the request came through the gateway. Use a shared secret, or set trustSource.allowCallerControlledCidr: true only when a trusted upstream overwrites that header on every request and no client can reach the service without passing through it.`,
+            );
+        }
+    }
     // defaultType becomes AuthContext.type of every request that sends no type header, and
     // is propagated as a header; a value that cannot be a header would fail every such request.
     if (HEADER_BREAKING_CHARS.test(defaultType)) {
@@ -203,7 +223,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
 
         // Verify trust
         const trustHeaderValue = req.header.get(trustSource.header);
-        if (!trustHeaderValue || !isTrusted(trustHeaderValue, trustSource.expectedValues)) {
+        if (!trustHeaderValue || !isTrusted(trustHeaderValue, trustSource.expectedValues, allowCidr)) {
             throw new ConnectError("Untrusted request source", Code.Unauthenticated);
         }
 

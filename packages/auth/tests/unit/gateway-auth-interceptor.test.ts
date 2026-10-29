@@ -477,6 +477,7 @@ describe("gateway-auth-interceptor", () => {
                 trustSource: {
                     header: "x-real-ip",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -503,6 +504,7 @@ describe("gateway-auth-interceptor", () => {
                 trustSource: {
                     header: "x-real-ip",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
             const next = createMockNext();
@@ -556,7 +558,7 @@ describe("gateway-auth-interceptor", () => {
             for (const [cidr, ip, trusted] of cases) {
                 const interceptor = createGatewayAuthInterceptor({
                     ...DEFAULT_OPTIONS,
-                    trustSource: { header: "x-real-ip", expectedValues: [cidr] },
+                    trustSource: { header: "x-real-ip", expectedValues: [cidr], allowCallerControlledCidr: true },
                 });
                 const next = mock.fn(async (_req: any) => ({ message: {} })) as any;
                 const handler = interceptor(next);
