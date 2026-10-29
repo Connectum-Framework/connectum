@@ -8,6 +8,7 @@
  */
 
 import { type ServiceStatus, ServingStatus } from "./types.ts";
+import { assertName, assertServingStatus } from "./validation.ts";
 
 /**
  * Registry entry kind.
@@ -45,7 +46,8 @@ interface HealthEntry {
  * check in `register`/`set`/`unregister` and `initialize` covers it
  * defensively. The dot syntax is reserved for service typeNames.
  */
-function assertValidComponentName(component: string): void {
+function assertValidComponentName(component: string, where: string): void {
+    assertName(component, "component", where);
     if (component === "") {
         throw new Error("Component name must not be empty");
     }
@@ -86,11 +88,15 @@ export class HealthcheckManager {
      * (services and components alike).
      * When called with an unknown service name, throws an error.
      *
-     * @param status - New serving status
+     * @param status - New serving status: one of the four `ServingStatus` values
      * @param service - Service name (if not provided, updates all entries)
+     * @throws {TypeError} if `status` is not a number, or `service` is given and is not a string
+     * @throws {RangeError} if `status` is a number other than 0, 1, 2 or 3
      * @throws Error if service name is provided but not registered
      */
     update(status: ServingStatus, service?: string): void {
+        assertServingStatus(status, "HealthcheckManager.update()");
+
         // No service specified: update ALL registered entries
         if (service === undefined) {
             for (const [key, entry] of this.entries) {
@@ -98,6 +104,8 @@ export class HealthcheckManager {
             }
             return;
         }
+
+        assertName(service, "service", "HealthcheckManager.update()");
 
         // Specific service: validate it exists
         const existing = this.entries.get(service);
@@ -117,11 +125,14 @@ export class HealthcheckManager {
      * its status. Component names must be non-empty and dot-free.
      *
      * @param component - Component name (e.g. "process", "amqp")
-     * @param initialStatus - Initial status (default UNKNOWN)
-     * @throws Error on invalid name or when the name belongs to an RPC service
+     * @param initialStatus - Initial status (default UNKNOWN when omitted)
+     * @throws {TypeError} when `component` is not a string, or `initialStatus` is given and is not a number
+     * @throws {RangeError} when `initialStatus` is a number other than 0, 1, 2 or 3
+     * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     register(component: string, initialStatus: ServingStatus = ServingStatus.UNKNOWN): void {
-        assertValidComponentName(component);
+        assertValidComponentName(component, "HealthcheckManager.register()");
+        assertServingStatus(initialStatus, "HealthcheckManager.register()");
 
         const existing = this.entries.get(component);
         if (existing !== undefined) {
@@ -143,11 +154,14 @@ export class HealthcheckManager {
      * dot-free.
      *
      * @param component - Component name
-     * @param status - New serving status
-     * @throws Error on invalid name or when the name belongs to an RPC service
+     * @param status - New serving status: one of the four `ServingStatus` values
+     * @throws {TypeError} when `component` is not a string or `status` is not a number
+     * @throws {RangeError} when `status` is a number other than 0, 1, 2 or 3
+     * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     set(component: string, status: ServingStatus): void {
-        assertValidComponentName(component);
+        assertValidComponentName(component, "HealthcheckManager.set()");
+        assertServingStatus(status, "HealthcheckManager.set()");
 
         const existing = this.entries.get(component);
         if (existing !== undefined && existing.kind === EntryKind.SERVICE) {

@@ -53,6 +53,9 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   registered services and components.
   Use a dedicated manager when separate servers or components need independent
   status.
+- `update()`, `register()` and `set()` accept only the four `ServingStatus`
+  values (0 to 3) and string names. Anything else throws `TypeError` or
+  `RangeError` and leaves the registry unchanged.
 
 ## Learn and reference
 
