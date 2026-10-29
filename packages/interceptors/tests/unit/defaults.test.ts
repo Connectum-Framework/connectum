@@ -368,15 +368,67 @@ describe('createDefaultInterceptors', () => {
         it('should put fallback inside retry', async () => {
             const chain = createDefaultInterceptors({
                 retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
-                fallback: { handler: () => ({ fallback: true }) },
+                fallback: { handler: () => ({ message: 'fallback' }) },
                 validation: false,
             });
             const next = createMockNextError(Code.Unavailable, 'upstream down');
 
-            const result = await compose(chain, next)(request());
+            const result = await compose(chain, next)(validatedRequest('abc'));
 
-            assert.deepStrictEqual(result.message, { fallback: true });
+            assert.ok(isMessage(result.message, EchoResponseSchema), 'the fallback value must be a response message');
+            assert.strictEqual((result.message as { message: string }).message, 'fallback');
             assert.strictEqual(next.mock.calls.length, 1);
+        });
+
+        // A request that fails validation is a client error, not a failed dependency: the
+        // fallback value must not stand in for it. Validation therefore stands outside the
+        // fallback, while a failure of the handler is still answered by the fallback.
+        describe('validation together with fallback', () => {
+            const fallbackMessage = create(EchoResponseSchema, { message: 'FALLBACK' });
+
+            it('should reject an invalid request with InvalidArgument, calling neither the handler nor the fallback', async () => {
+                const fallbackHandler = mock.fn(() => fallbackMessage);
+                const next = createMockNext();
+
+                await assert.rejects(
+                    () => compose(createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: fallbackHandler } }), next)(validatedRequest('ab')),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.InvalidArgument);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0, 'an invalid request must not reach the handler');
+                assert.strictEqual(fallbackHandler.mock.calls.length, 0, 'the fallback must not answer a rejected request');
+            });
+
+            it('should still answer a failure of the handler with the fallback value', async () => {
+                const fallbackHandler = mock.fn(() => fallbackMessage);
+                const next = createMockNextError(Code.Unavailable, 'upstream down');
+
+                const result = await compose(createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: fallbackHandler } }), next)(validatedRequest('abc'));
+
+                assert.strictEqual(result.message, fallbackMessage);
+                assert.strictEqual(next.mock.calls.length, 1);
+                assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+            });
+
+            it('should place validation before fallback and fallback before the serializer', async () => {
+                // The order is observed through behaviour: a validation error thrown below the
+                // fallback would reach the fallback handler, so it must not be called for it.
+                const seen: string[] = [];
+                const tag = (name: string): Interceptor => (next) => async (req) => {
+                    seen.push(name);
+                    return await next(req);
+                };
+                const chain = createDefaultInterceptors({ retry: { maxRetries: 0 }, fallback: { handler: () => fallbackMessage }, serializer: true });
+                // errorHandler, retry, validation, fallback, serializer
+                assert.strictEqual(chain.length, 5);
+                const instrumented = [chain[0]!, chain[1]!, tag('after-retry'), chain[2]!, tag('after-validation'), chain[3]!, tag('after-fallback'), chain[4]!];
+
+                await compose(instrumented, createMockNext())(validatedRequest('ab')).catch(() => undefined);
+
+                assert.deepStrictEqual(seen, ['after-retry'], 'an invalid request stops at validation, before the fallback');
+            });
         });
 
         it('should reject an invalid request with InvalidArgument before the handler by default', async () => {

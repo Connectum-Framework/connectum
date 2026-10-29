@@ -7,9 +7,24 @@
  */
 
 import type { DescMessage, JsonValue, Message } from "@bufbuild/protobuf";
-import { fromJson, toJson } from "@bufbuild/protobuf";
+import { fromJson, isMessage, toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import type { SerializerOptions } from "./types.ts";
+
+/**
+ * Turn one response value into a message of the output type.
+ *
+ * A value that already is such a message (what a handler returns) is kept as it is:
+ * it carries the `$typeName` marker, which a strict `fromJson` rejects as an unknown key,
+ * and re-parsing it would also lose values JSON cannot hold. Only a value that is JSON
+ * goes through `fromJson`.
+ */
+function responseMessage(schema: DescMessage, value: unknown, ignoreUnknownFields: boolean): Message {
+    if (isMessage(value, schema)) {
+        return value;
+    }
+    return fromJson(schema, value as JsonValue, { ignoreUnknownFields });
+}
 
 /**
  * Convert stream messages from JSON
@@ -21,7 +36,7 @@ import type { SerializerOptions } from "./types.ts";
  */
 async function* fromJsonStream<T>(schema: DescMessage, stream: AsyncIterable<unknown>, ignoreUnknownFields: boolean): AsyncGenerator<T, void, void> {
     for await (const message of stream) {
-        yield fromJson(schema, message as JsonValue, { ignoreUnknownFields }) as T;
+        yield responseMessage(schema, message, ignoreUnknownFields) as T;
     }
 }
 
@@ -46,6 +61,11 @@ async function* toJsonStream<T>(schema: DescMessage, stream: AsyncIterable<T>, a
  * By default, skips services whose protobuf type name starts with `grpc.`,
  * including the standard Health and Reflection services. This checks the
  * service namespace, regardless of the wire protocol used for the call.
+ *
+ * A response that already is a message of the method's output type, which is what a handler
+ * returns, is passed on as it is. Only a response that is JSON is parsed with
+ * `ignoreUnknownFields`, so `ignoreUnknownFields: false` rejects unknown keys of such JSON and
+ * never the `$typeName` marker of a message.
  *
  * @param options - Serializer options
  * @returns ConnectRPC interceptor
@@ -117,9 +137,7 @@ export function createSerializerInterceptor(options: SerializerOptions = {}): In
         }
         return {
             ...res,
-            message: fromJson(res.method.output, res.message as unknown as JsonValue, {
-                ignoreUnknownFields,
-            }),
+            message: responseMessage(res.method.output, res.message, ignoreUnknownFields),
         };
     };
 }

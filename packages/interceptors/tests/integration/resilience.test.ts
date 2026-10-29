@@ -13,6 +13,7 @@ import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { Code, ConnectError } from '@connectrpc/connect';
 import { assertConnectError, createMockNextError } from '@connectum/test-fixtures';
+import { ItemSchema } from '../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts';
 import { createCircuitBreakerInterceptor } from '../../src/circuit-breaker.ts';
 import { createFallbackInterceptor } from '../../src/fallback.ts';
 import { createRetryInterceptor } from '../../src/retry.ts';
@@ -132,7 +133,7 @@ describe('Resilience Pattern Integration', () => {
         const fallbackInterceptor = createFallbackInterceptor({
             handler: (error) => {
                 console.debug('Fallback activated:', error.message);
-                return { result: 'cached data' };
+                return { value: 'cached data' };
             },
             skipStreaming: true,
         });
@@ -147,6 +148,7 @@ describe('Resilience Pattern Integration', () => {
             method: {
                 name: 'Method',
                 kind: 'unary',
+                output: ItemSchema,
             },
         } as any;
 
@@ -159,12 +161,12 @@ describe('Resilience Pattern Integration', () => {
         for (let i = 0; i < 2; i++) {
             const result = await handler(mockReq);
             // Fallback should return cached data
-            assert.strictEqual((result.message as any).result, 'cached data');
+            assert.strictEqual((result.message as any).value, 'cached data');
         }
 
         // Third request: circuit is open, fallback returns cached data
         const result = await handler(mockReq);
-        assert.strictEqual((result.message as any).result, 'cached data');
+        assert.strictEqual((result.message as any).value, 'cached data');
 
         // Verify: circuit breaker allowed only 2 calls before opening
         assert.strictEqual(next.mock.calls.length, 2);
@@ -239,7 +241,7 @@ describe('Resilience Pattern Integration', () => {
         const fallbackInterceptor = createFallbackInterceptor({
             handler: (error) => {
                 failureCodes.push(ConnectError.from(error).code);
-                return { result: 'fallback response' };
+                return { value: 'fallback response' };
             },
         });
 
@@ -253,6 +255,7 @@ describe('Resilience Pattern Integration', () => {
             method: {
                 name: 'Method',
                 kind: 'unary',
+                output: ItemSchema,
             },
         } as any;
 
@@ -274,19 +277,19 @@ describe('Resilience Pattern Integration', () => {
         // First call: the timeout fires (DeadlineExceeded). That code is not retryable by default, so the
         // downstream is tried once; the breaker counts one failure of two and stays closed.
         const result1 = await handler(mockReq);
-        assert.strictEqual((result1.message as any).result, 'fallback response');
+        assert.strictEqual((result1.message as any).value, 'fallback response');
         assert.strictEqual(next.mock.calls.length, 1);
 
         // Second call: the breaker is still closed, the timeout fires again and this second
         // consecutive failure opens it.
         const result2 = await handler(mockReq);
-        assert.strictEqual((result2.message as any).result, 'fallback response');
+        assert.strictEqual((result2.message as any).value, 'fallback response');
         assert.strictEqual(next.mock.calls.length, 2);
 
         // Third call: the open circuit refuses (Unavailable, which retry does repeat once, and the breaker
         // refuses again) without reaching the downstream; the fallback still answers.
         const result3 = await handler(mockReq);
-        assert.strictEqual((result3.message as any).result, 'fallback response');
+        assert.strictEqual((result3.message as any).value, 'fallback response');
         assert.strictEqual(next.mock.calls.length, 2);
 
         assert.deepStrictEqual(failureCodes, [Code.DeadlineExceeded, Code.DeadlineExceeded, Code.Unavailable]);
