@@ -61,6 +61,9 @@ export interface AmqpAdapterOptions {
      *   what it excludes; use `"check"` or `"skip"` for such bindings, or
      *   declare them in the topology.
      *
+     * Any other value (a different casing, a typo) makes `AmqpAdapter()` throw
+     * a `TypeError` instead of failing at `connect()` with the broker's refusal.
+     *
      * @default "topic"
      */
     readonly exchangeType?: "topic" | "direct" | "fanout" | "headers";
@@ -117,6 +120,9 @@ export interface AmqpAdapterOptions {
      *   verifiable in this mode (a conflicting redeclare elsewhere is
      *   PRECONDITION_FAILED 406);
      * - `"skip"` — no topology operations at all; the application owns topology.
+     *
+     * Any other value (a different casing, a typo, `null`) makes `AmqpAdapter()`
+     * throw a `TypeError`; it is never read as `"assert"`.
      *
      * @default "assert"
      */
@@ -849,6 +855,13 @@ export interface AmqpQueueOptions {
      * In the default `assert` mode, ungrouped subscriptions use private,
      * non-durable, auto-delete queues. `check` and `skip` do not create them.
      *
+     * `false` for a named group queue works only on a broker that still allows a
+     * non-durable queue that is not exclusive: RabbitMQ 4.3 and later refuse it
+     * with a connection exception (`541`, deprecated feature
+     * `transient_nonexcl_queues`) unless that feature is permitted. The refusal
+     * is reported as `AmqpTopologyError` whose message and `cause` carry the
+     * broker's reply code and text.
+     *
      * @default true
      */
     readonly durable?: boolean;
@@ -880,11 +893,38 @@ export interface AmqpQueueOptions {
 export interface AmqpConsumerOptions {
     /**
      * Prefetch count (QoS) — how many unacknowledged messages
-     * a consumer can have at a time.
+     * a consumer can have at a time. An integer from 0 (no limit) to 65535;
+     * any other value makes `AmqpAdapter()` throw a `RangeError`.
      *
      * @default 10
      */
     readonly prefetch?: number;
+
+    /**
+     * Milliseconds to hold a message unacknowledged after its handler threw,
+     * before it is requeued. Opt-in: unset or `0` requeues at once, so a
+     * handler that always throws receives the same message as fast as the
+     * broker can deliver it (tens of thousands of times in a few seconds,
+     * measured against RabbitMQ 4.3), which keeps a CPU core busy and floods
+     * the logs.
+     *
+     * The held message occupies one `prefetch` slot for the whole delay, and
+     * the delay applies to every handler failure of this adapter's
+     * subscriptions, not only to a poison message. It does not apply to a
+     * message the handler already settled with `ack()` or `nack()`.
+     * `unsubscribe()` ends the wait and requeues a held message at once. When the
+     * channel closes during the wait (`disconnect()`, a lost connection) the wait
+     * ends and the broker returns the message itself.
+     * The attempt number stays 1 or 2: `redelivered` is a flag, not a counter,
+     * so a delay does not replace `retry` and `dlq` middleware for a message
+     * that can never succeed.
+     *
+     * A finite number of milliseconds from `0` to `2147483647` (the largest
+     * delay a timer honors); anything else makes `AmqpAdapter()` throw.
+     *
+     * @default 0
+     */
+    readonly redeliveryDelay?: number;
 
     /**
      * Whether the private queue of a subscription without `group` is exclusive

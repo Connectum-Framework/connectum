@@ -16,6 +16,12 @@
  * | `AmqpUnroutableError`     | sent, dropped      | No (deterministic)        |
  * | `AmqpSerializationError`  | never sent         | No (deterministic)        |
  * | `AmqpTopologyError`       | N/A                | No (fix config)           |
+ * | `TypeError`/`RangeError`  | never sent         | No (fix the argument)     |
+ *
+ * The last row is a publish argument amqplib cannot encode (a routing key or
+ * message id over 255 bytes, a timestamp that is not a non-negative integer):
+ * the encoder's own error passes through. It is neither a connection failure
+ * nor retried by `publishRetry`.
  *
  * `AmqpConnectionError` is thrown pre-send (never sent) or on an in-flight
  * confirm loss (UNKNOWN); both are republish-safe. The `AmqpSerializationError`
