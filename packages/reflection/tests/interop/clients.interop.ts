@@ -27,7 +27,7 @@ import { create } from "@bufbuild/protobuf";
 import { createServer, defineService, type Server } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { readFileDescriptor } from "../../../../tests/interop/descriptors.ts";
-import { PROTO_DIR, parseJsonStream, runTool, type ToolResult } from "../../../../tests/interop/tools.ts";
+import { PROTO_DIR, parseJsonStream, runTool, startTool, type ToolResult } from "../../../../tests/interop/tools.ts";
 import { Reflection } from "../../src/Reflection.ts";
 import { Level, MetaSchema } from "../fixtures/fixture/v1/common_pb.ts";
 import { MountedService } from "../fixtures/fixture/v1/multi_pb.ts";
@@ -381,4 +381,63 @@ describe("reflection with external clients", () => {
         assert.strictEqual(v1?.length, requests.length);
         assert.deepStrictEqual(v1alpha, v1);
     });
+});
+
+// grpcurl reading its requests from a terminal that stays open is what an
+// interactive session looks like to the server: one answered request, then a
+// stream that stays open without a client message to wake it.
+describe("stopping a server while grpcurl keeps a reflection stream open", () => {
+    for (const version of ["v1", "v1alpha"] as const) {
+        it(`ends the ${version} stream with the shutdown instead of waiting for shutdown.timeout`, async () => {
+            const server = createServer({
+                services: [],
+                port: 0,
+                protocols: [Reflection()],
+                interceptors: [],
+                allowHTTP1: false,
+                shutdown: { timeout: 20_000 },
+            });
+            await server.start();
+            assert.ok(server.address?.port);
+            const grpcurlSession = startTool(
+                "grpcurl",
+                [
+                    "-plaintext",
+                    "-import-path",
+                    PROTO_DIR,
+                    "-proto",
+                    `grpc/reflection/${version}/reflection.proto`,
+                    "-d",
+                    "@",
+                    `127.0.0.1:${server.address.port}`,
+                    `grpc.reflection.${version}.ServerReflection/ServerReflectionInfo`,
+                ],
+                { stdin: `${JSON.stringify({ listServices: "" })}\n` },
+            );
+            try {
+                // The answer proves the stream is established and the server is now idle on it.
+                await grpcurlSession.messages(1, 30_000);
+
+                const startedAt = Date.now();
+                await server.stop();
+                const stopMs = Date.now() - startedAt;
+                assert.ok(stopMs < 5_000, `stop() took ${stopMs} ms with a grpcurl reflection session open; shutdown.timeout is 20000 ms`);
+
+                // grpcurl itself does not exit until its stdin ends, however the call ended, so
+                // the client's view is read once the terminal is closed: one answer, and a
+                // status that is not an error.
+                grpcurlSession.closeStdin();
+                const result = await grpcurlSession.done;
+                assert.strictEqual(result.code, 0, `grpcurl exited with ${result.code}: ${result.stderr}`);
+                assert.strictEqual(result.stderr, "", "the stream must end without an error status");
+                assert.strictEqual(parseJsonStream(result.stdout).length, 1, "exactly the one answer");
+            } finally {
+                grpcurlSession.closeStdin();
+                await grpcurlSession.done;
+                if (server.isRunning) {
+                    await server.stop();
+                }
+            }
+        });
+    }
 });

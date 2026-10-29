@@ -59,6 +59,9 @@ buf curl --protocol grpc --http2-prior-knowledge http://localhost:5000 --list-me
 - Enabling reflection exposes mounted service names and schemas to clients that
   can reach the server. Restrict network access where that information must
   remain private.
+- A `ServerReflectionInfo` stream that a client keeps open ends when the server
+  stops (`server.stop()`), like the other in-flight calls; the client sees the
+  stream end without an error.
 - Each request message is read up to 64 KiB (65536 bytes); a larger one ends the
   call with `resource_exhausted`. This limit is set on the reflection services
   themselves, so it applies instead of the server-wide `readMaxBytes`, a
