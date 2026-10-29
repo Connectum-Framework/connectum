@@ -132,7 +132,7 @@ integer inside its range, or a canonical decimal string. Bytes are a `Uint8Array
 The object of a oneof holds only `case` and `value`. An enum number that the enum does not name is accepted.
 The forms are those of protobuf-es: a wrapper (`StringValue`, `Int64Value`, ...) in a singular
 field outside a oneof is its bare value (`name: "cached"`, not `{ value: "cached" }`), and a
-`Struct` is a plain JSON object (a message object is refused in both places); `Timestamp`,
+`Struct` is a plain JSON object (a ready message is refused in both places; a plain object that only carries another `$typeName` is just a JSON object in a `Struct` field); `Timestamp`,
 `Duration`, `Value`, `ListValue`, `Any`, `FieldMask` and `Empty` are objects with their own
 fields (`{ seconds: 1n }`), and a wrapper in a list or a oneof is an object with `value`.
 Behind the error handler the client sees `Internal: internal error` and the server side sees the

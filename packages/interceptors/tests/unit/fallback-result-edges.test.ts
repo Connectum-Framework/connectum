@@ -86,6 +86,7 @@ async function answer(value: unknown): Promise<unknown> {
     return (await createFallbackInterceptor({ handler: () => value })(createMockNextError(Code.Internal, "down") as never)(request)).message;
 }
 
+/** Whether the fallback interceptor lets the initialiser through (true) or refuses it with a TypeError (false). */
 async function accepted(value: unknown): Promise<boolean> {
     try {
         await answer(value);

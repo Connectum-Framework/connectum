@@ -216,6 +216,7 @@ function fallbackChain() {
     });
 }
 
+/** Routes whose echo always fails, so that only a fallback can answer a valid request. */
 function failingRoutes() {
     return defineService(ValidatedService, {
         echo: () => {

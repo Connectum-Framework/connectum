@@ -15,7 +15,8 @@ import type { DescField, DescMessage } from "@bufbuild/protobuf";
 import { isMessage, ScalarType } from "@bufbuild/protobuf";
 import { isWrapperDesc } from "@bufbuild/protobuf/wkt";
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Whether a value is a plain object: not null, not an array, not an instance of a class. A protobuf message is one too. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return false;
     }
@@ -145,6 +146,10 @@ function jsonValueProblem(value: unknown, path: string): string | undefined {
     return `${path} must be a JSON value`;
 }
 
+/**
+ * First problem of a value held in a `google.protobuf.Struct` field: it must be a plain JSON object whose
+ * keys are well formed and whose values are JSON values. A ready Struct message is refused by the caller.
+ */
 function jsonObjectProblem(value: unknown, path: string): string | undefined {
     if (!isPlainObject(value)) {
         return `${path} (google.protobuf.Struct) must be a plain JSON object`;
@@ -185,6 +190,12 @@ function elementProblem(kind: "scalar" | "enum" | "message", field: DescField, v
         return expected === undefined ? undefined : `${path} (${schema.typeName}) must be ${expected}, not a message object`;
     }
     if (schema.typeName === "google.protobuf.Struct" && field.parent.typeName !== "google.protobuf.Value") {
+        // A ready Struct message is accepted by `create()` but its `$typeName` and `fields` keys would be
+        // written as the entries of the JSON object. A plain object that only carries some other `$typeName`
+        // is just a JSON object and passes.
+        if (isMessage(value, schema)) {
+            return `${path} (google.protobuf.Struct) must be a plain JSON object, not a Struct message`;
+        }
         return jsonObjectProblem(value, path);
     }
     if (isMessage(value, schema)) {
@@ -193,6 +204,10 @@ function elementProblem(kind: "scalar" | "enum" | "message", field: DescField, v
     return isPlainObject(value) ? initProblem(schema, value, path) : `${path} must be a ${schema.typeName} message or a plain object`;
 }
 
+/**
+ * First problem of a value for a field of any cardinality: a list must be an array and a map a plain object
+ * with canonical keys, each element then goes through the same check as a singular value.
+ */
 function fieldProblem(field: DescField, value: unknown, path: string): string | undefined {
     switch (field.fieldKind) {
         case "list": {

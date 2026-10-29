@@ -33,6 +33,7 @@ async function* items<T>(...values: T[]): AsyncGenerator<T> {
     for (const value of values) yield value;
 }
 
+/** Drains an async iterable into an array. */
 async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
     const out: T[] = [];
     for await (const value of stream) out.push(value);

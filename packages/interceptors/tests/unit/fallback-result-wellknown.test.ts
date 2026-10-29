@@ -77,6 +77,7 @@ const registry = createFileRegistry(
 const Holder = registry.getMessage("wk.v1.Holder");
 assert.ok(Holder);
 
+/** The message the fallback interceptor answers with for a handler that returns `value`; rejects when it refuses the value. */
 async function answer(value: unknown): Promise<Record<string, unknown>> {
     const request = createMockRequest();
     request.method.output = Holder;

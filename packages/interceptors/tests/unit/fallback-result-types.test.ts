@@ -60,12 +60,14 @@ const registry = createFileRegistry(
 const Kinds = registry.getMessage("kinds.v1.Kinds");
 assert.ok(Kinds);
 
+/** A mock request whose method answers with the `Kinds` message. */
 function request() {
     const req = createMockRequest();
     req.method.output = Kinds;
     return req;
 }
 
+/** The message the fallback interceptor answers with for a handler that returns `value`; rejects when it refuses the value. */
 async function answer(value: unknown): Promise<unknown> {
     const result = await createFallbackInterceptor({ handler: () => value })(createMockNextError(Code.Internal, "down") as never)(request());
     return result.message;

@@ -726,6 +726,7 @@ describe("errorHandler interceptor", () => {
     // One handled error is one console entry; a second line appears only when the client
     // receives something other than what was thrown, and it is a short text.
     describe("console log of a handled error", () => {
+        /** Every console.error call the error handler makes for a handler that throws `thrown`. */
         async function logOf(thrown: unknown, options: NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]> = {}): Promise<unknown[][]> {
             const original = console.error;
             const calls: unknown[][] = [];
@@ -819,6 +820,7 @@ describe("errorHandler interceptor", () => {
             return { consoleErrors, unhandled };
         }
 
+        /** The error the interceptor throws for a handler that throws `thrown`. */
         async function failureWith(thrown: unknown, options: Options): Promise<unknown> {
             const next = mock.fn(async () => {
                 throw thrown;

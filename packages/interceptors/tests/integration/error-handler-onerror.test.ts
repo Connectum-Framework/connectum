@@ -27,6 +27,7 @@ const thrown: Record<string, () => unknown> = {
     sanitizable: () => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { query: "SELECT 1" }, code: Code.Unavailable }),
 };
 
+/** Echo service whose handler throws what the request message names in the `thrown` table. */
 function routes() {
     return defineService(EchoService, {
         echo: (req) => {
@@ -39,6 +40,7 @@ function routes() {
     });
 }
 
+/** The error a call with the scenario message fails with, as the client sees it. */
 async function failureOf(client: Client<typeof EchoService>, scenario: string): Promise<ConnectError> {
     try {
         await client.echo(create(EchoRequestSchema, { message: scenario }));

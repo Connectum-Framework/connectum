@@ -52,6 +52,7 @@ const scenarios: Record<string, number> = { ...outOfRange, ...valid };
 const SANITIZABLE = "sanitizable:";
 const CLIENT_MESSAGE = "safe text for the client";
 
+/** Echo service whose handler throws a plain or sanitizable error carrying the code the request message names. */
 function routes() {
     return defineService(EchoService, {
         echo: (req) => {
@@ -66,6 +67,7 @@ function routes() {
     });
 }
 
+/** The error a call with the scenario message fails with, as the client sees it. */
 async function failureOf(client: Client<typeof EchoService>, scenario: string): Promise<ConnectError> {
     try {
         await client.echo(create(EchoRequestSchema, { message: scenario }));

@@ -10,7 +10,7 @@ import type { DescMessage, Message, MessageInitShape } from "@bufbuild/protobuf"
 import { create, isMessage, toBinary } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { initProblem } from "./response-init.ts";
+import { initProblem, isPlainObject } from "./response-init.ts";
 import type { FallbackOptions } from "./types.ts";
 
 /**
@@ -20,15 +20,6 @@ import type { FallbackOptions } from "./types.ts";
 function isAccessRefusal(err: unknown): boolean {
     const code = ConnectError.from(err).code;
     return code === Code.Unauthenticated || code === Code.PermissionDenied;
-}
-
-/** Whether a value is a plain object: not null, not an array, not an instance of a class. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return false;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
 }
 
 /**

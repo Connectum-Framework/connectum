@@ -111,6 +111,7 @@ function roundTripUnchanged(init: unknown): boolean {
     }
 }
 
+/** Whether the fallback interceptor lets the initialiser through (true) or refuses it with a TypeError (false). */
 async function accepted(init: unknown): Promise<boolean> {
     const request = createMockRequest();
     request.method.output = Holder;
