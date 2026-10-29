@@ -92,4 +92,51 @@ describe("HealthcheckManager.subscribe", () => {
 
         assert.throws(() => manager.subscribe("x" as unknown as () => void), (err: unknown) => err instanceof TypeError && /listener/.test(err.message));
     });
+
+    // A listener that changed the registry again would let the listeners after
+    // it read only the final state: a watcher subscribed later would never see
+    // the first transition. Each of the six mutators refuses to run from a
+    // listener, and the registry stays as the notifying mutation left it.
+    const mutators: Array<[string, (manager: HealthcheckManager) => void]> = [
+        ["update", (m) => m.update(ServingStatus.SERVING)],
+        ["register", (m) => m.register("other")],
+        ["set", (m) => m.set("db", ServingStatus.SERVING)],
+        ["unregister", (m) => m.unregister("db")],
+        ["initialize", (m) => m.initialize(["svc.v1.S"])],
+        ["clear", (m) => m.clear()],
+    ];
+    for (const [name, mutate] of mutators) {
+        it(`refuses ${name}() from inside a listener and lets the later listeners see the notifying state`, () => {
+            const manager = new HealthcheckManager();
+            let refusal: unknown;
+            const seenLater: Array<ServingStatus | undefined> = [];
+            manager.subscribe(() => {
+                try {
+                    mutate(manager);
+                } catch (err) {
+                    refusal ??= err;
+                }
+            });
+            manager.subscribe(() => seenLater.push(manager.getStatus("db")?.status));
+
+            manager.set("db", ServingStatus.NOT_SERVING);
+
+            assert.ok(refusal instanceof Error && /inside a subscribe\(\) listener/.test(refusal.message), `expected a refusal, got ${String(refusal)}`);
+            assert.deepStrictEqual(seenLater, [ServingStatus.NOT_SERVING]);
+            assert.strictEqual(manager.getStatus("db")?.status, ServingStatus.NOT_SERVING);
+        });
+    }
+
+    it("accepts changes again once the notification is over, even after a listener threw", () => {
+        const manager = new HealthcheckManager();
+        const unsubscribe = manager.subscribe(() => {
+            throw new Error("listener failed");
+        });
+        assert.throws(() => manager.set("db", ServingStatus.SERVING), /listener failed/);
+        unsubscribe();
+
+        manager.set("db", ServingStatus.NOT_SERVING);
+
+        assert.strictEqual(manager.getStatus("db")?.status, ServingStatus.NOT_SERVING);
+    });
 });

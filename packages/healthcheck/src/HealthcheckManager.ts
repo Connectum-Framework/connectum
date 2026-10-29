@@ -87,6 +87,26 @@ export class HealthcheckManager {
      */
     private subscribers: Set<{ listener: () => void }> = new Set();
 
+    /** True while listeners are being called; see {@link assertNotNotifying}. */
+    private notifying = false;
+
+    /**
+     * Refuse a registry change made from inside a listener.
+     *
+     * Listeners read the state when they are called. A listener that changed
+     * the registry again would let the listeners after it see only the final
+     * state, and a watcher would lose the first transition. Refusing the nested
+     * change keeps every listener's view in step with the mutation that
+     * notified it.
+     */
+    private assertNotNotifying(method: string): void {
+        if (this.notifying) {
+            throw new Error(
+                `HealthcheckManager.${method}: the registry cannot be changed from inside a subscribe() listener; schedule the change instead (for example with queueMicrotask)`,
+            );
+        }
+    }
+
     /**
      * Be told about every change of the registry.
      *
@@ -101,6 +121,12 @@ export class HealthcheckManager {
      * A listener that throws does not stop the others: every listener runs,
      * then the first error is rethrown to the caller of the mutation. The
      * mutation itself is not undone.
+     *
+     * A listener must not change the registry: `update`, `register`, `set`,
+     * `unregister`, `initialize` and `clear` called from inside a listener
+     * throw. Each listener sees the state of the mutation that notified it,
+     * and a nested change would hide that transition from the listeners after
+     * it. Defer the change (for example with `queueMicrotask`) instead.
      *
      * @param listener - Function called after each change
      * @returns Function that removes the listener; calling it again does nothing
@@ -124,15 +150,20 @@ export class HealthcheckManager {
      */
     private notify(): void {
         let failure: { error: unknown } | undefined;
-        for (const subscription of [...this.subscribers]) {
-            if (!this.subscribers.has(subscription)) {
-                continue;
+        this.notifying = true;
+        try {
+            for (const subscription of [...this.subscribers]) {
+                if (!this.subscribers.has(subscription)) {
+                    continue;
+                }
+                try {
+                    subscription.listener();
+                } catch (error) {
+                    failure ??= { error };
+                }
             }
-            try {
-                subscription.listener();
-            } catch (error) {
-                failure ??= { error };
-            }
+        } finally {
+            this.notifying = false;
         }
         if (failure !== undefined) {
             throw failure.error;
@@ -153,6 +184,7 @@ export class HealthcheckManager {
      * @throws Error if service name is provided but not registered
      */
     update(status: ServingStatus, service?: string): void {
+        this.assertNotNotifying("update()");
         assertServingStatus(status, "HealthcheckManager.update()");
 
         // No service specified: update ALL registered entries
@@ -191,6 +223,7 @@ export class HealthcheckManager {
      * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     register(component: string, initialStatus: ServingStatus = ServingStatus.UNKNOWN): void {
+        this.assertNotNotifying("register()");
         assertValidComponentName(component, "HealthcheckManager.register()");
         assertServingStatus(initialStatus, "HealthcheckManager.register()");
 
@@ -221,6 +254,7 @@ export class HealthcheckManager {
      * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     set(component: string, status: ServingStatus): void {
+        this.assertNotNotifying("set()");
         assertValidComponentName(component, "HealthcheckManager.set()");
         assertServingStatus(status, "HealthcheckManager.set()");
 
@@ -240,6 +274,7 @@ export class HealthcheckManager {
      * @throws Error when the name belongs to an RPC service
      */
     unregister(component: string): void {
+        this.assertNotNotifying("unregister()");
         const existing = this.entries.get(component);
         if (existing === undefined) {
             return;
@@ -304,6 +339,7 @@ export class HealthcheckManager {
      * @param serviceNames - Array of RPC service typeNames to track
      */
     initialize(serviceNames: string[]): void {
+        this.assertNotNotifying("initialize()");
         const incoming = new Set(serviceNames);
 
         // Remove stale services (never components): a service absent from the
@@ -330,6 +366,7 @@ export class HealthcheckManager {
      * Clear all services and components
      */
     clear(): void {
+        this.assertNotNotifying("clear()");
         this.entries.clear();
         this.notify();
     }
