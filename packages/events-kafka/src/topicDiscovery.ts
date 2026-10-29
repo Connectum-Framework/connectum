@@ -15,7 +15,13 @@ import type { Consumer } from "kafkajs";
 /** What {@link startTopicDiscovery} needs from the subscription it watches. */
 export interface TopicDiscoveryOptions {
     /** Consumer of the subscription; it is stopped and run again when a new topic appears. */
-    readonly consumer: Consumer;
+    readonly consumer: Pick<Consumer, "stop" | "subscribe" | "run">;
+    /**
+     * Run a check after everything queued before it. A subscription whose consumer can be replaced
+     * (see topicRecovery) passes its queue here so a check never overlaps a replacement; by default
+     * checks run at once.
+     */
+    readonly serialize?: <T>(task: () => Promise<T>) => Promise<T>;
     /** The wildcard patterns of the subscription, as matchers over topic names. */
     readonly wildcards: readonly RegExp[];
     /** Topics the consumer is already subscribed to; grows as topics are discovered. */
@@ -37,7 +43,7 @@ export interface TopicDiscoveryOptions {
  *          already under way has finished, so the caller can disconnect the consumer safely.
  */
 export function startTopicDiscovery(options: TopicDiscoveryOptions): () => Promise<void> {
-    const { consumer, wildcards, known, runConfig, resumeTimers, interval, listTopics } = options;
+    const { consumer, wildcards, known, runConfig, resumeTimers, interval, listTopics, serialize = (task) => task() } = options;
 
     let stopped = false;
     let timer: NodeJS.Timeout | undefined;
@@ -88,7 +94,7 @@ export function startTopicDiscovery(options: TopicDiscoveryOptions): () => Promi
             return;
         }
         timer = setTimeout(() => {
-            current = check()
+            current = serialize(check)
                 .catch((err: unknown) => {
                     console.error("[KafkaAdapter] topic discovery failed; will retry:", err);
                 })
