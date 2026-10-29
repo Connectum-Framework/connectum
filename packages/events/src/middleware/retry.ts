@@ -8,6 +8,7 @@
  */
 
 import { NonRetryableError, RetryableError } from "../errors.ts";
+import { assertNumberOption, describeValue, MAX_TIMER_DELAY_MS } from "../optionValidation.ts";
 import type { EventContext, EventMiddleware, RetryOptions } from "../types.ts";
 
 const DEFAULT_MAX_RETRIES = 3;
@@ -31,11 +32,44 @@ function calculateDelay(options: Required<Pick<RetryOptions, "backoff" | "initia
         case "fixed":
             delay = options.initialDelay;
             break;
-        default:
-            delay = options.initialDelay;
     }
 
     return Math.min(delay, options.maxDelay);
+}
+
+const BACKOFF_STRATEGIES: readonly string[] = ["exponential", "linear", "fixed"];
+
+/**
+ * Refuse delay settings that would make the pause between attempts something other than the
+ * configured one: a non-finite or negative delay, a delay above the longest timer (replaced by 1 ms
+ * with a warning), a `multiplier` below 1, and a strategy name that is not one of the three
+ * (which used to behave as `fixed`).
+ */
+function assertRetryTiming(options: { readonly backoff: unknown; readonly initialDelay: unknown; readonly maxDelay: unknown; readonly multiplier: unknown }): void {
+    const owner = "retryMiddleware";
+    if (typeof options.backoff !== "string") {
+        throw new TypeError(`${owner}: backoff must be one of "exponential", "linear" or "fixed", got ${describeValue(options.backoff)}`);
+    }
+    if (!BACKOFF_STRATEGIES.includes(options.backoff)) {
+        throw new RangeError(`${owner}: backoff must be one of "exponential", "linear" or "fixed", got ${describeValue(options.backoff)}`);
+    }
+    assertNumberOption({
+        owner,
+        name: "initialDelay",
+        value: options.initialDelay,
+        min: 0,
+        max: MAX_TIMER_DELAY_MS,
+        allowed: `a finite number of milliseconds from 0 to ${MAX_TIMER_DELAY_MS}`,
+    });
+    assertNumberOption({
+        owner,
+        name: "maxDelay",
+        value: options.maxDelay,
+        min: 1,
+        max: MAX_TIMER_DELAY_MS,
+        allowed: `a finite number of milliseconds from 1 to ${MAX_TIMER_DELAY_MS}`,
+    });
+    assertNumberOption({ owner, name: "multiplier", value: options.multiplier, min: 1, max: Number.MAX_VALUE, allowed: "a finite number of at least 1" });
 }
 
 /**
@@ -122,10 +156,13 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
     const configuredMaxRetries: unknown = options?.maxRetries;
     const maxRetries = configuredMaxRetries === undefined ? DEFAULT_MAX_RETRIES : configuredMaxRetries;
     requireMaxRetries(maxRetries);
-    const backoff = options?.backoff ?? "exponential";
-    const initialDelay = options?.initialDelay ?? DEFAULT_INITIAL_DELAY;
-    const maxDelay = options?.maxDelay ?? DEFAULT_MAX_DELAY;
-    const multiplier = options?.multiplier ?? DEFAULT_MULTIPLIER;
+    // As for maxRetries, only an omitted value takes the default; an explicit null is refused.
+    const backoff: unknown = options?.backoff === undefined ? "exponential" : options.backoff;
+    const initialDelay: unknown = options?.initialDelay === undefined ? DEFAULT_INITIAL_DELAY : options.initialDelay;
+    const maxDelay: unknown = options?.maxDelay === undefined ? DEFAULT_MAX_DELAY : options.maxDelay;
+    const multiplier: unknown = options?.multiplier === undefined ? DEFAULT_MULTIPLIER : options.multiplier;
+    assertRetryTiming({ backoff, initialDelay, maxDelay, multiplier });
+    const timing = { backoff, initialDelay, maxDelay, multiplier } as Required<Pick<RetryOptions, "backoff" | "initialDelay" | "maxDelay" | "multiplier">>;
     const retryableErrors = options?.retryableErrors;
 
     return async (event, ctx, next) => {
@@ -170,7 +207,7 @@ export function retryMiddleware(options?: RetryOptions): EventMiddleware {
                 }
 
                 // Wait before retry with abort-aware sleep
-                const delay = calculateDelay({ backoff, initialDelay, maxDelay, multiplier }, attempt);
+                const delay = calculateDelay(timing, attempt);
                 if (!(await sleepUnlessAborted(delay, ctx.signal))) {
                     return endOnAbort(ctx);
                 }

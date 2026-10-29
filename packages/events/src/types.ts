@@ -308,13 +308,27 @@ export interface RetryOptions {
      * `retryMiddleware` throw when it is created.
      */
     maxRetries?: number;
-    /** Backoff strategy */
+    /**
+     * Backoff strategy (default: `"exponential"`). Any other name throws a `RangeError` from
+     * `retryMiddleware`, and a non-string a `TypeError`; an unknown name used to behave as `"fixed"`.
+     */
     backoff?: "exponential" | "linear" | "fixed";
-    /** Initial delay in ms (default: 1000) */
+    /**
+     * Initial delay in ms (default: 1000): a finite number from 0 to 2147483647 (the longest delay
+     * a timer keeps). `NaN`, a negative number, `Infinity`, a larger number or a non-number throws
+     * when the middleware is created.
+     */
     initialDelay?: number;
-    /** Maximum delay in ms (default: 30000) */
+    /**
+     * Maximum delay in ms (default: 30000): a finite number from 1 to 2147483647. Every pause is
+     * capped at it, so `0` or a negative value (which would remove the pause), `NaN`, `Infinity`
+     * and a non-number throw when the middleware is created.
+     */
     maxDelay?: number;
-    /** Multiplier for exponential backoff (default: 2) */
+    /**
+     * Multiplier for exponential backoff (default: 2): a finite number of at least 1. A smaller
+     * number (`0` included), `NaN`, `Infinity` and a non-number throw when the middleware is created.
+     */
     multiplier?: number;
     /** Filter: only retry for these error types */
     retryableErrors?: (error: unknown) => boolean;
