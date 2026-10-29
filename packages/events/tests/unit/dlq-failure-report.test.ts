@@ -147,6 +147,40 @@ describe("a failed DLQ publish", () => {
     });
 });
 
+describe("an async dlqMiddleware callback that rejects", () => {
+    it("does not become an unhandled rejection and does not change the nack", async () => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            const nacks: Array<boolean | undefined> = [];
+            const ctx = createEventContext({
+                raw: makeRawEvent(),
+                signal: AbortSignal.timeout(1000),
+                onAck: async () => undefined,
+                onNack: async (requeue) => {
+                    nacks.push(requeue);
+                },
+            });
+            const mw = dlqMiddleware({ topic: "report.dlq" }, { publish: () => Promise.reject(new Error("dlq down")) }, async () => {
+                throw new Error("notification failed");
+            });
+
+            await mw(makeRawEvent(), ctx, async () => {
+                throw new Error("poison");
+            });
+            await sleep(30);
+
+            assert.deepEqual(nacks, [false]);
+            assert.deepEqual(unhandled, []);
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+    });
+});
+
 describe("dlq.topic validation", () => {
     for (const [label, value, errorType] of [
         ["an empty string", "", RangeError],

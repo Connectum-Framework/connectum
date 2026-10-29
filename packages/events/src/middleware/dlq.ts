@@ -41,13 +41,17 @@ function defaultErrorSerializer(error: unknown): string {
  * If the publish to the DLQ fails, the original is nacked without requeue and the error is not
  * rethrown, so the event is no longer eligible for redelivery. `onPublishFailed` is the only
  * place that failure becomes visible; `createEventBus` forwards it to its `observer` as a
- * `dlq-failed` event. A throw from the callback is dropped, because reporting must not decide what
+ * `dlq-failed` event. A throw from the callback, or a rejection of the promise it returns, is dropped, because reporting must not decide what
  * happens to the event.
  *
  * @throws {TypeError} When `options.topic` is not a string.
  * @throws {RangeError} When `options.topic` is empty or blank.
  */
-export function dlqMiddleware(options: DlqOptions, adapter: Pick<EventAdapter, "publish">, onPublishFailed?: (failure: DlqPublishFailure) => void): EventMiddleware {
+export function dlqMiddleware(
+    options: DlqOptions,
+    adapter: Pick<EventAdapter, "publish">,
+    onPublishFailed?: (failure: DlqPublishFailure) => void | Promise<void>,
+): EventMiddleware {
     assertNonEmptyString({ owner: "dlqMiddleware", name: "topic", value: options.topic });
     const serializeError = options.errorSerializer ?? defaultErrorSerializer;
 
@@ -72,7 +76,11 @@ export function dlqMiddleware(options: DlqOptions, adapter: Pick<EventAdapter, "
                 await adapter.publish(options.topic, event.payload, { metadata });
             } catch (publishError) {
                 try {
-                    onPublishFailed?.({ topic: options.topic, eventType: event.eventType, eventId: event.eventId, error: publishError });
+                    // A promise the callback returns is observed too: its rejection must not become
+                    // an unhandled rejection that ends the process.
+                    void Promise.resolve(onPublishFailed?.({ topic: options.topic, eventType: event.eventType, eventId: event.eventId, error: publishError })).catch(
+                        () => undefined,
+                    );
                 } catch {
                     // dropped, see above
                 }
