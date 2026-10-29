@@ -798,6 +798,52 @@ describe("circuit breaker interceptor", () => {
             }
         });
 
+        it("should keep rejecting callers while a second probe runs after the first probe's call has ended", async () => {
+            const clock = manualClock();
+            try {
+                const downstream = controlledDownstream();
+                const handler = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 1000 })(downstream.next as any);
+                const req = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+
+                // A slow call starts while the circuit is closed; a second call fails and opens the circuit.
+                const slow = handler(req);
+                slow.catch(() => undefined);
+                const opening = handler(req);
+                downstream.fail(1);
+                await assert.rejects(opening);
+
+                // First probe starts and stays in flight.
+                clock.tick(1000);
+                const firstProbe = handler(req);
+                firstProbe.catch(() => undefined);
+                assert.strictEqual(downstream.next.mock.calls.length, 3);
+
+                // The slow call fails now: the policy opens the circuit again although the first probe still runs.
+                downstream.fail(0);
+                await assert.rejects(slow);
+
+                // A second probe starts after the new open period.
+                clock.tick(1000);
+                const secondProbe = handler(req);
+                secondProbe.catch(() => undefined);
+                assert.strictEqual(downstream.next.mock.calls.length, 4, "the second probe reached the handler");
+
+                // The first probe's call ends. It must not clear the mark of the second probe.
+                downstream.succeed(2);
+                await firstProbe;
+
+                const during = await peek(handler(req));
+                assert.strictEqual(during.status, "rejected", "a caller arriving while the second probe runs is rejected at once");
+                assertConnectError((during as { reason: unknown }).reason, Code.Unavailable, "Circuit breaker is open");
+                assert.strictEqual(downstream.next.mock.calls.length, 4);
+
+                downstream.succeed(3);
+                await secondProbe;
+            } finally {
+                clock.restore();
+            }
+        });
+
         it("should open the circuit again when the probe fails, rejecting callers that arrive afterwards", async () => {
             const { handler, req, downstream, clock } = await openAndWait({ halfOpenAfter: 1000 });
             try {

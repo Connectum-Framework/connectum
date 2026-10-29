@@ -147,7 +147,11 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
     // that arrives meanwhile wait for the probe's verdict and then run, so a slow
     // probe would hold them all and a healthy one would let them through together.
     // They are rejected at once instead: one probe decides, as documented.
-    let probing = false;
+    // Identified by a token of its own: a call that began while the circuit was still
+    // closed can fail during a probe and open the circuit again, so a second probe may
+    // start before the first probe's call has ended. The first one must not clear the
+    // mark of the second when it ends.
+    let currentProbe: object | undefined;
 
     return (next) => async (req) => {
         // Skip streaming calls
@@ -155,20 +159,19 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
             return await next(req);
         }
 
-        if (probing && breaker.state === CircuitState.HalfOpen) {
+        if (currentProbe !== undefined && breaker.state === CircuitState.HalfOpen) {
             throw openError();
         }
 
         // The call that starts its work while the policy is half-open is the probe.
         // Work starts synchronously inside execute(), so no other caller can slip in
         // between the policy's switch to half-open and this flag being set.
-        let isProbe = false;
+        const probe = {};
         try {
             // Execute with circuit breaker protection
             return await breaker.execute(() => {
                 if (breaker.state === CircuitState.HalfOpen) {
-                    isProbe = true;
-                    probing = true;
+                    currentProbe = probe;
                 }
                 return next(req);
             });
@@ -184,8 +187,8 @@ export function createCircuitBreakerInterceptor(options: CircuitBreakerOptions =
             // Cleared only after the policy has recorded the verdict, so a caller
             // arriving in between sees either a half-open policy with a probe in
             // flight or the already decided state, never a gap.
-            if (isProbe) {
-                probing = false;
+            if (currentProbe === probe) {
+                currentProbe = undefined;
             }
         }
     };
