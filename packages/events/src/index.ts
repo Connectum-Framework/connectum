@@ -29,7 +29,7 @@ export { NonRetryableError, RetryableError } from "./errors.ts";
 
 // Adapters
 export { MemoryAdapter } from "./MemoryAdapter.ts";
-export { dlqMiddleware } from "./middleware/dlq.ts";
+export { type DlqPublishFailure, dlqMiddleware } from "./middleware/dlq.ts";
 export { retryMiddleware } from "./middleware/retry.ts";
 // Middleware
 export { composeMiddleware } from "./middleware.ts";
