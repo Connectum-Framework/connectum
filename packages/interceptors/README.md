@@ -128,7 +128,7 @@ beyond the range in an int32, `NaN`). Keys of a map are held to the form the enc
 an integer key must be the canonical decimal form (no `01`, `+1`, `" 1"`, `1e3`, `0x10`, `""`, `-0`) inside the
 range of the key type, a bool key is `"true"` or `"false"`. A 64-bit integer value is a bigint or a safe
 integer inside its range, or a canonical decimal string. Bytes are a `Uint8Array` or an array of integers 0 to
-255 without holes (an `ArrayBuffer` or a `DataView` is refused). A string must be well formed (no lone surrogate).
+255 without holes (an `ArrayBuffer` or a `DataView` is refused). A string must be well formed (no lone surrogate), wherever it stands: field values, map keys and values, the keys and strings inside a `Struct`, `Value` and `ListValue`, an `Any` type URL, a `FieldMask` path. A `Struct` also refuses `NaN` and `Infinity`, which JSON cannot carry.
 The object of a oneof holds only `case` and `value`. An enum number that the enum does not name is accepted.
 The forms are those of protobuf-es: a wrapper (`StringValue`, `Int64Value`, ...) in a singular
 field outside a oneof is its bare value (`name: "cached"`, not `{ value: "cached" }`), and a

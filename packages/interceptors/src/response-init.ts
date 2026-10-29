@@ -153,6 +153,10 @@ function jsonObjectProblem(value: unknown, path: string): string | undefined {
         if (item === undefined) {
             continue;
         }
+        // A key with a lone surrogate is written as U+FFFD, so the response would hold another key.
+        if (!isWellFormed(key)) {
+            return `the key ${JSON.stringify(key)} of ${path} must be a well-formed string (it has a lone surrogate)`;
+        }
         const problem = jsonValueProblem(item, `${path}.${key}`);
         if (problem !== undefined) {
             return problem;
