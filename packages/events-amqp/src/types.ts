@@ -61,6 +61,9 @@ export interface AmqpAdapterOptions {
      *   what it excludes; use `"check"` or `"skip"` for such bindings, or
      *   declare them in the topology.
      *
+     * Any other value (a different casing, a typo) makes `AmqpAdapter()` throw
+     * a `TypeError` instead of failing at `connect()` with the broker's refusal.
+     *
      * @default "topic"
      */
     readonly exchangeType?: "topic" | "direct" | "fanout" | "headers";
@@ -883,7 +886,8 @@ export interface AmqpQueueOptions {
 export interface AmqpConsumerOptions {
     /**
      * Prefetch count (QoS) — how many unacknowledged messages
-     * a consumer can have at a time.
+     * a consumer can have at a time. An integer from 0 (no limit) to 65535;
+     * any other value makes `AmqpAdapter()` throw a `RangeError`.
      *
      * @default 10
      */

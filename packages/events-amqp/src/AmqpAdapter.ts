@@ -31,7 +31,7 @@ import type {
     AmqpSettlementAction,
 } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
-import { validateTopologyMode } from "./validateOptions.ts";
+import { validateAdapterOptions } from "./validateOptions.ts";
 
 /** Default exchange name when none is provided. */
 const DEFAULT_EXCHANGE = "connectum.events";
@@ -1363,6 +1363,12 @@ interface RecoveryCycle {
  *
  * @param options - AMQP adapter configuration
  * @returns EventAdapter instance
+ * @throws {TypeError} when an option has the wrong type or an unsupported value: `options` itself,
+ *   `exchangeType`, `topologyMode`, `recovery`, `publishRetry`, `consumerOptions`, `queueOptions`,
+ *   `serialization`, or `recovery.backoff` combined with a delay knob. The message names the option.
+ * @throws {RangeError} when a number is out of range: `consumerOptions.prefetch` (integer 0 to 65535),
+ *   `queueOptions.messageTtl` and `maxLength` (non-negative integers), `recovery.jitter` and
+ *   `publishRetry.jitter` (0 to 1).
  *
  * @example
  * ```typescript
@@ -1417,8 +1423,8 @@ interface RecoveryCycle {
  * ```
  */
 export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
+    validateAdapterOptions(options);
     rejectBackoffWithDelayKnobs(options.recovery);
-    validateTopologyMode(options.topologyMode);
     const exchange = options.exchange ?? DEFAULT_EXCHANGE;
     const exchangeType = options.exchangeType ?? DEFAULT_EXCHANGE_TYPE;
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
