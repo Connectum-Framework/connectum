@@ -72,7 +72,7 @@ from the request.
 | `ConnectError` | Unchanged: code, text, details, metadata |
 | `SanitizableError` | Its `clientMessage` and code (`Internal` when the code is not an integer from 1 to 16); `serverDetails` stay on the server |
 | `Error` or a thrown string | `Internal` with the text `internal error` |
-| An error with an integer `code` from 1 to 16 | That code with an empty text |
+| An error with an integer `code` from 1 to 16 | That code; the text is empty, except for `Internal` (13), which carries `internal error` |
 | An error with any other numeric `code` (`0`, `17`, `1.5`, `NaN`, an HTTP status, an errno) | `Internal` with the text `internal error` |
 
 The original failure stays on the server: as `cause` of the thrown `ConnectError`
