@@ -546,6 +546,12 @@ describe("TLSConfig", () => {
 			);
 		});
 
+		it("hands back the server failure unchanged when the cipher setting is what is wrong", () => {
+			const pair = writePair(testDir, "good");
+
+			assert.strictEqual(explainTLSFailure(pair, SERVER_FAILURE, { ciphers: "not-a-cipher" }), SERVER_FAILURE);
+		});
+
 		it("makes server.start() reject with the file and the option, and leaves no listener", async () => {
 			const { certPath } = writePair(testDir, "good");
 			const keyPath = resolve(testDir, "bad.key");

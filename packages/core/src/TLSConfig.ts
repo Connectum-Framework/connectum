@@ -143,6 +143,7 @@ export function readTLSCertificates(options: TLSOptions = {}): {
  * @internal
  */
 export function explainTLSFailure(options: TLSOptions, failure: unknown, secureOptions: { passphrase?: string | undefined; ciphers?: string | undefined } = {}): unknown {
+    const { passphrase, ciphers } = secureOptions;
     let files: TLSFiles;
     let certificates: { key: Buffer; cert: Buffer };
     try {
@@ -152,8 +153,17 @@ export function explainTLSFailure(options: TLSOptions, failure: unknown, secureO
         return failure;
     }
 
+    // A setting that is wrong on its own (an unknown cipher) is not the files' fault: the server's
+    // error already says so and is returned as it is.
+    if (ciphers !== undefined) {
+        try {
+            createSecureContext({ ciphers });
+        } catch {
+            return failure;
+        }
+    }
+
     const describe = (source: TLSFile, role: "key" | "certificate"): string => `TLS ${role} file "${source.file}" (from ${source.origin})`;
-    const { passphrase, ciphers } = secureOptions;
     const check = (description: string, material: { key?: Buffer; cert?: Buffer }): Error | undefined => {
         try {
             createSecureContext({ ...material, ...(passphrase === undefined ? {} : { passphrase }), ...(ciphers === undefined ? {} : { ciphers }) });
