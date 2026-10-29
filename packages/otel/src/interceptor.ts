@@ -121,8 +121,10 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
         // 5. Start timing
         const startTime = performance.now();
 
-        // 6. Estimate request size (only for unary calls)
-        const requestSize = !req.stream ? estimateMessageSize(req.message) : 0;
+        // 6. Estimate request size (only for unary calls, and only when something reads it:
+        // the size histogram or the message event). The size is the serialized length of
+        // the message under the method's input schema.
+        const requestSize = !req.stream && (!withoutMetrics || recordMessages) ? estimateMessageSize(req.message, req.method.input) : 0;
 
         // 7. Span name per OTel RPC convention: "package.ServiceName/MethodName"
         const spanName = `${req.service.typeName}/${req.method.name}`;
@@ -148,7 +150,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
             try {
                 const response = await next(req);
                 const duration = (performance.now() - startTime) / 1000;
-                const responseSize = !response.stream ? estimateMessageSize(response.message) : 0;
+                const responseSize = !response.stream ? estimateMessageSize(response.message, req.method.output) : 0;
                 recordMetrics(duration, responseSize, response.stream ? undefined : buildSuccessAttributes());
                 return response;
             } catch (error) {
@@ -196,7 +198,7 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                 // in-process transport, not of this interceptor.
                 const instrumentedReq = req.stream
                     ? Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
-                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages),
+                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, false, { schema: req.method.input }),
                       })
                     : req;
 
@@ -219,13 +221,16 @@ export function createOtelInterceptor(options: OtelInterceptorOptions = {}): Int
                     // context that carries this span keeps the span active for the handler
                     // and parents the spans it starts to this one.
                     const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: scopeAsyncIterable(wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true), spanContext),
+                        message: scopeAsyncIterable(
+                            wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "SENT", recordMessages, true, { schema: req.method.output }),
+                            spanContext,
+                        ),
                     });
                     recordMetrics(duration, 0);
                     return wrappedResponse;
                 }
 
-                const responseSize = estimateMessageSize(response.message);
+                const responseSize = withoutMetrics && !recordMessages ? 0 : estimateMessageSize(response.message, req.method.output);
 
                 if (recordMessages) {
                     span.addEvent("rpc.message", {

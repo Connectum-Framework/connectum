@@ -15,7 +15,9 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { ItemSchema } from "../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts";
 import {
 	ATTR_RPC_METHOD,
 	ATTR_RPC_SYSTEM_NAME,
@@ -35,6 +37,44 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("estimateMessageSize", () => {
+	// Oracle: the protobuf wire format. A message `{ value: "abc", sequence: 150 }` of
+	// streaming.v1.Item is field 1 (tag 0x0a, length 3, "abc") and field 2 (tag 0x10,
+	// varint 150 = 0x96 0x01): 2 + 3 + 1 + 2 = 8 bytes. The bytes are written out here,
+	// not produced by the library under test.
+	it("should measure a protobuf-es v2 message by the serialized length under its schema", () => {
+		const message = create(ItemSchema, { value: "abc", sequence: 150 });
+
+		assert.strictEqual(typeof (message as { toBinary?: unknown }).toBinary, "undefined", "a v2 message has no toBinary() method");
+		assert.strictEqual(estimateMessageSize(message, ItemSchema), 8);
+	});
+
+	it("should report 0 for an empty v2 message, whose serialized form has no bytes", () => {
+		assert.strictEqual(estimateMessageSize(create(ItemSchema), ItemSchema), 0);
+	});
+
+	it("should report 0 for a v2 message when its schema is not known", () => {
+		assert.strictEqual(estimateMessageSize(create(ItemSchema, { value: "abc" })), 0);
+	});
+
+	it("should not throw and report 0 for an object that is not a message of the schema", () => {
+		assert.strictEqual(estimateMessageSize({ total: 3 }, ItemSchema), 0);
+		assert.strictEqual(estimateMessageSize(42, ItemSchema), 0);
+	});
+
+	it("should fall back to the toBinary() method of a message that the schema cannot serialize", () => {
+		assert.strictEqual(estimateMessageSize({ toBinary: () => new Uint8Array(7) }, ItemSchema), 7);
+	});
+
+	it("should report 0 for a toBinary() method that throws", () => {
+		const message = {
+			toBinary: () => {
+				throw new Error("cannot serialize");
+			},
+		};
+
+		assert.strictEqual(estimateMessageSize(message), 0);
+	});
+
 	it("should return 0 for null", () => {
 		assert.strictEqual(estimateMessageSize(null), 0);
 	});

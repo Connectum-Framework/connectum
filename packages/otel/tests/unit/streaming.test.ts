@@ -5,7 +5,7 @@
  * - wrapAsyncIterable() from shared.ts -- core streaming wrapper
  * - Streaming request/response wrapping in server interceptor (createOtelInterceptor)
  * - Streaming request/response wrapping in client interceptor (createOtelClientInterceptor)
- * - estimateMessageSize() caching behavior (WeakMap)
+ * - estimateMessageSize() of a message object that is reused and changes
  */
 
 // Disable real exporters for tests (must be set before any OTel import)
@@ -458,26 +458,20 @@ describe("wrapAsyncIterable", () => {
 });
 
 // ---------------------------------------------------------------------------
-// estimateMessageSize() caching behavior
+// estimateMessageSize() of a message that changes
 // ---------------------------------------------------------------------------
 
-describe("estimateMessageSize caching", () => {
-	it("should return cached size for same message object (only calls toBinary once)", () => {
-		let callCount = 0;
-		const message = {
-			toBinary: () => {
-				callCount++;
-				return new Uint8Array(42);
-			},
-		};
+describe("estimateMessageSize of a reused message object", () => {
+	// A protobuf message is a mutable object and applications reuse one request object
+	// across calls. A size remembered per object would report the first call's size for
+	// every later call, so each estimate measures the message as it is now.
+	it("should measure a message again after it changed", () => {
+		let length = 10;
+		const message = { toBinary: () => new Uint8Array(length) };
 
-		const size1 = estimateMessageSize(message);
-		const size2 = estimateMessageSize(message);
-
-		assert.strictEqual(size1, 42);
-		assert.strictEqual(size2, 42);
-		// toBinary should be called only once due to WeakMap caching
-		assert.strictEqual(callCount, 1);
+		assert.strictEqual(estimateMessageSize(message), 10);
+		length = 25;
+		assert.strictEqual(estimateMessageSize(message), 25);
 	});
 
 	it("should call toBinary separately for different message objects", () => {

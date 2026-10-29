@@ -31,7 +31,7 @@ process.env.OTEL_LOGS_EXPORTER ??= "none";
 import assert from "node:assert";
 import { test } from "node:test";
 
-import { create } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createLocalTransport, createServer, defineService } from "@connectum/core";
@@ -755,4 +755,90 @@ test("contract: rpc.message events are not recorded unless recordMessages is set
         ["RECEIVED", "SENT"],
         "explicit recordMessages: true records one RECEIVED and one SENT event",
     );
+});
+
+// ---------------------------------------------------------------------------
+// Message sizes with real protobuf-es v2 messages
+// ---------------------------------------------------------------------------
+
+/** Sum and count of every point of one histogram, across attribute sets. */
+function histogramOf(metrics: NormalizedMetric[], name: string): { sum: number; count: number } {
+    let sum = 0;
+    let count = 0;
+    for (const point of metrics.find((m) => m.name === name)?.points ?? []) {
+        const value = point.value as { sum: number; count: number };
+        sum += value.sum;
+        count += value.count;
+    }
+    return { sum, count };
+}
+
+/** The `rpc.message` events of the span of one kind, as [type, id, size]. */
+function messageEvents(spans: NormalizedSpan[], kind: SpanKind): Array<[unknown, unknown, unknown]> {
+    const span = spans.find((s) => s.kind === kind);
+    assert.ok(span, `span of kind ${kind} missing`);
+    return span.events
+        .filter((e) => e.name === "rpc.message")
+        .map((e): [unknown, unknown, unknown] => [e.attributes["rpc.message.type"], e.attributes["rpc.message.id"], e.attributes["rpc.message.uncompressed_size"]])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || Number(a[1]) - Number(b[1]));
+}
+
+test("parity: size histograms and rpc.message sizes of a unary call are the serialized byte length on both transports", async () => {
+    // Oracle: the protobuf wire encoding computed by the library itself from the schema
+    // (toBinary), not by the package under test. protobuf-es v2 messages have no
+    // toBinary() method, so a size read from the message object is always 0.
+    const request = create(EchoRequestSchema, { message: "x".repeat(5000) });
+    const expectedRequestSize = toBinary(EchoRequestSchema, request).byteLength;
+    const expectedResponseSize = toBinary(EchoResponseSchema, create(EchoResponseSchema, { message: `echo:${request.message}`, timestamp: 0n })).byteLength;
+    assert.ok(expectedRequestSize > 5000 && expectedResponseSize > 5000, "the fixture messages are large");
+
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(request);
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.server.request.size"), { sum: expectedRequestSize, count: 1 }, `[${label}] rpc.server.request.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.server.response.size"), { sum: expectedResponseSize, count: 1 }, `[${label}] rpc.server.response.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.client.request.size"), { sum: expectedRequestSize, count: 1 }, `[${label}] rpc.client.request.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.client.response.size"), { sum: expectedResponseSize, count: 1 }, `[${label}] rpc.client.response.size`);
+        assert.deepStrictEqual(messageEvents(run.spans, SpanKind.SERVER), [["RECEIVED", 1, expectedRequestSize], ["SENT", 1, expectedResponseSize]], `[${label}] server rpc.message events`);
+        assert.deepStrictEqual(messageEvents(run.spans, SpanKind.CLIENT), [["RECEIVED", 1, expectedResponseSize], ["SENT", 1, expectedRequestSize]], `[${label}] client rpc.message events`);
+    }
+});
+
+test("parity: rpc.message events of a server-streaming call carry the serialized size of every message, the aggregate size histograms stay zero", async () => {
+    const request = create(ItemSchema, { value: "s", sequence: 3 });
+    const sizeOf = (i: number) => toBinary(ItemSchema, create(ItemSchema, { value: `s:${i}`, sequence: i })).byteLength;
+    const requestSize = toBinary(ItemSchema, request).byteLength;
+
+    const { http, local } = await runBothTransports({
+        services: [streamingRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            for await (const _ of createClient(StreamingService, fn).server(request)) {
+                // Drain the stream: the spans end with it.
+            }
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        assert.deepStrictEqual(
+            messageEvents(run.spans, SpanKind.SERVER),
+            [["RECEIVED", 1, requestSize], ["SENT", 1, sizeOf(0)], ["SENT", 2, sizeOf(1)], ["SENT", 3, sizeOf(2)]],
+            `[${label}] server rpc.message events`,
+        );
+        assert.deepStrictEqual(
+            messageEvents(run.spans, SpanKind.CLIENT),
+            [["RECEIVED", 1, sizeOf(0)], ["RECEIVED", 2, sizeOf(1)], ["RECEIVED", 3, sizeOf(2)], ["SENT", 1, requestSize]],
+            `[${label}] client rpc.message events`,
+        );
+        // The metrics guide: for streaming RPCs the aggregate size measurements are recorded as zero.
+        for (const name of ["rpc.server.request.size", "rpc.server.response.size", "rpc.client.request.size", "rpc.client.response.size"]) {
+            assert.strictEqual(histogramOf(run.metrics, name).sum, 0, `[${label}] ${name} is zero for a streaming call`);
+        }
+    }
 });

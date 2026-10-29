@@ -7,6 +7,8 @@
  * @module shared
  */
 
+import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
+import { toBinary } from "@bufbuild/protobuf";
 import { ConnectError } from "@connectrpc/connect";
 import type { Attributes, Context, Span } from "@opentelemetry/api";
 import { context, diag } from "@opentelemetry/api";
@@ -36,34 +38,49 @@ import type { OtelAttributeFilter, OtelFilter } from "./types.ts";
 const ERROR_TYPE_OTHER = "_OTHER";
 
 /**
- * WeakMap cache for message size estimation.
- * Avoids redundant toBinary() calls for the same message object.
- */
-const sizeCache = new WeakMap<object, number>();
-
-/**
  * Estimates the serialized size of a protobuf message in bytes.
  *
- * If the message exposes a `toBinary()` method (standard for protobuf-es messages),
- * returns the byte length of the serialized form. Otherwise returns 0.
- * Results are cached per message object using a WeakMap.
+ * With the message's `schema` (for a call, `method.input` or `method.output`), the size
+ * is the byte length of `toBinary(schema, message)` from `@bufbuild/protobuf`: a
+ * protobuf-es v2 message is a plain object and has no `toBinary()` method of its own.
+ * Without a schema, or when the message cannot be serialized with it, a message that
+ * exposes a `toBinary()` method (the protobuf-es v1 API) is measured with that method.
+ * Otherwise the result is 0, and so it is for a message that fails to serialize: the
+ * estimate must never fail the observed call.
+ * The size is not remembered per message object: a message is mutable and an application
+ * may reuse one object across calls, so every estimate measures the message as it is.
  *
  * @param message - The message to estimate size for
+ * @param schema - The descriptor of the message type, when known
  * @returns Size in bytes, or 0 if size cannot be determined
  */
-export function estimateMessageSize(message: unknown): number {
+export function estimateMessageSize(message: unknown, schema?: DescMessage): number {
     if (message === null || message === undefined) return 0;
     if (typeof message !== "object") return 0;
 
-    const cached = sizeCache.get(message as object);
-    if (cached !== undefined) return cached;
-
-    if ("toBinary" in message && typeof (message as { toBinary: unknown }).toBinary === "function") {
-        const size = (message as { toBinary(): Uint8Array }).toBinary().byteLength;
-        sizeCache.set(message as object, size);
-        return size;
+    let size: number | undefined;
+    if (schema !== undefined) {
+        try {
+            size = toBinary(schema, message as MessageShape<DescMessage>).byteLength;
+        } catch {
+            // Not a message of this schema (a plain object, a partially built message):
+            // fall back to the message's own method below.
+        }
     }
-    return 0;
+    if (size === undefined && "toBinary" in message && typeof (message as { toBinary: unknown }).toBinary === "function") {
+        try {
+            size = (message as { toBinary(): Uint8Array }).toBinary().byteLength;
+        } catch {
+            // A message that cannot be serialized has no size to report.
+        }
+    }
+    return size ?? 0;
+}
+
+/** Options of {@link wrapAsyncIterable} beyond the span and the direction. */
+export interface StreamOptions {
+    /** Descriptor of the stream's message type; event sizes are the serialized length under it. */
+    schema?: DescMessage;
 }
 
 /**
@@ -83,6 +100,7 @@ export function estimateMessageSize(message: unknown): number {
  * @param direction - 'SENT' for outgoing, 'RECEIVED' for incoming messages
  * @param recordMessages - Whether to record individual message events
  * @param endSpanOnComplete - Whether to end the span when the stream completes
+ * @param streamOptions - The message type of the stream and the end-of-stream hook
  * @returns A new AsyncGenerator that yields the same messages with span events
  */
 export async function* wrapAsyncIterable<T>(
@@ -91,7 +109,9 @@ export async function* wrapAsyncIterable<T>(
     direction: "SENT" | "RECEIVED",
     recordMessages: boolean,
     endSpanOnComplete = false,
+    streamOptions: StreamOptions = {},
 ): AsyncGenerator<T> {
+    const { schema } = streamOptions;
     let sequence = 1;
     // Whether the stream raised is tracked apart from the raised value: the value
     // may be falsy (`null`, `0`, `""`) and must still count as a failure.
@@ -103,7 +123,7 @@ export async function* wrapAsyncIterable<T>(
                 span.addEvent(RPC_MESSAGE_EVENT, {
                     [ATTR_RPC_MESSAGE_TYPE]: direction,
                     [ATTR_RPC_MESSAGE_ID]: sequence,
-                    [ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE]: estimateMessageSize(message),
+                    [ATTR_RPC_MESSAGE_UNCOMPRESSED_SIZE]: estimateMessageSize(message, schema),
                 });
             }
             sequence++;

@@ -106,8 +106,10 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
         // 4. Start timing
         const startTime = performance.now();
 
-        // 5. Estimate request size (only for unary calls)
-        const requestSize = !req.stream ? estimateMessageSize(req.message) : 0;
+        // 5. Estimate request size (only for unary calls, and only when something reads it:
+        // the size histogram or the message event). The size is the serialized length of
+        // the message under the method's input schema.
+        const requestSize = !req.stream && (!withoutMetrics || recordMessages) ? estimateMessageSize(req.message, req.method.input) : 0;
 
         // 6. Span name per OTel RPC convention: "package.ServiceName/MethodName"
         const spanName = `${req.service.typeName}/${req.method.name}`;
@@ -133,7 +135,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
             try {
                 const response = await next(req);
                 const duration = (performance.now() - startTime) / 1000;
-                const responseSize = !response.stream ? estimateMessageSize(response.message) : 0;
+                const responseSize = !response.stream ? estimateMessageSize(response.message, req.method.output) : 0;
                 recordMetrics(duration, responseSize, response.stream ? undefined : buildSuccessAttributes());
                 return response;
             } catch (error) {
@@ -165,7 +167,7 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                 // Wrap streaming request messages for instrumentation
                 const instrumentedReq = req.stream
                     ? Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
-                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "SENT", recordMessages),
+                          message: wrapAsyncIterable(req.message as AsyncIterable<unknown>, span, "SENT", recordMessages, false, { schema: req.method.input }),
                       })
                     : req;
 
@@ -184,13 +186,13 @@ export function createOtelClientInterceptor(options: OtelClientInterceptorOption
                 // Wrap streaming response messages for instrumentation
                 if (response.stream) {
                     const wrappedResponse = Object.assign(Object.create(Object.getPrototypeOf(response)), response, {
-                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, true),
+                        message: wrapAsyncIterable(response.message as AsyncIterable<unknown>, span, "RECEIVED", recordMessages, true, { schema: req.method.output }),
                     });
                     recordMetrics(duration, 0);
                     return wrappedResponse;
                 }
 
-                const responseSize = estimateMessageSize(response.message);
+                const responseSize = withoutMetrics && !recordMessages ? 0 : estimateMessageSize(response.message, req.method.output);
 
                 if (recordMessages) {
                     span.addEvent("rpc.message", {
