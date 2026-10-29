@@ -5,6 +5,7 @@
  * @module admission
  */
 
+import { constants as osConstants } from "node:os";
 import type { CreateServerOptions } from "./types.ts";
 
 /**
@@ -85,6 +86,52 @@ export function validateShutdownOptions(shutdown: CreateServerOptions["shutdown"
     }
     if (forceCloseOnTimeout !== undefined && typeof forceCloseOnTimeout !== "boolean") {
         throw new TypeError(`createServer: shutdown.forceCloseOnTimeout must be a boolean, got ${typeof forceCloseOnTimeout}`);
+    }
+}
+
+/** Signals the operating system does not let a process handle; `process.on` for them fails when the listener is installed. */
+const UNHANDLEABLE_SIGNALS: ReadonlySet<string> = new Set(["SIGKILL", "SIGSTOP"]);
+
+/**
+ * Reject `shutdown.signals` and `shutdown.autoShutdown` values that would
+ * leave no signal handler installed. Node ignores an unknown signal name in
+ * `process.on`, an empty list installs nothing and a string is walked
+ * character by character; in each case SIGTERM then ends the process through
+ * the default action, without running a single shutdown hook, and this shows
+ * only at deploy time. `autoShutdown` must be a real boolean so that a string
+ * such as `"false"` cannot enable the handlers.
+ *
+ * @throws TypeError if `autoShutdown` is not a boolean, or `signals` is not an array of strings
+ * @throws RangeError if `signals` is empty or names a signal the platform does not know or cannot handle
+ * @internal
+ */
+export function validateShutdownSignals(shutdown: CreateServerOptions["shutdown"]): void {
+    if (shutdown === undefined) {
+        return;
+    }
+    const { signals, autoShutdown } = shutdown;
+    if (autoShutdown !== undefined && typeof autoShutdown !== "boolean") {
+        throw new TypeError(`createServer: shutdown.autoShutdown must be a boolean, got ${typeof autoShutdown}`);
+    }
+    if (signals === undefined) {
+        return;
+    }
+    if (!Array.isArray(signals)) {
+        throw new TypeError(`createServer: shutdown.signals must be an array of signal names, got ${typeof signals}`);
+    }
+    if (signals.length === 0) {
+        throw new RangeError('createServer: shutdown.signals must not be empty; omit it to use the default ["SIGTERM", "SIGINT"]');
+    }
+    for (const signal of signals) {
+        if (typeof signal !== "string") {
+            throw new TypeError(`createServer: shutdown.signals must contain only signal names, got ${typeof signal}`);
+        }
+        if (!Object.hasOwn(osConstants.signals, signal)) {
+            throw new RangeError(`createServer: shutdown.signals contains unknown signal "${signal}"; known signals: ${Object.keys(osConstants.signals).join(", ")}`);
+        }
+        if (UNHANDLEABLE_SIGNALS.has(signal)) {
+            throw new RangeError(`createServer: shutdown.signals contains "${signal}", which a process cannot handle`);
+        }
     }
 }
 

@@ -227,3 +227,57 @@ describe("host", () => {
         }
     });
 });
+
+describe("shutdown.autoShutdown", () => {
+    for (const bad of ["yes", "false", 1, 0, null, {}]) {
+        it(`rejects ${JSON.stringify(bad)} with a TypeError naming the option`, () => {
+            assert.throws(serverWith({ autoShutdown: bad }), (err: unknown) => err instanceof TypeError && /shutdown\.autoShutdown/.test(err.message));
+        });
+    }
+
+    for (const good of [true, false, undefined]) {
+        it(`accepts ${String(good)}`, () => {
+            assert.doesNotThrow(serverWith({ autoShutdown: good }));
+        });
+    }
+});
+
+describe("shutdown.signals", () => {
+    for (const bad of ["SIGTERM", null, 15, {}]) {
+        it(`rejects the non-array ${JSON.stringify(bad)} with a TypeError naming the option`, () => {
+            assert.throws(serverWith({ autoShutdown: true, signals: bad }), (err: unknown) => err instanceof TypeError && /shutdown\.signals/.test(err.message));
+        });
+    }
+
+    it("rejects an empty list: it would install no handler and the default action would end the process", () => {
+        assert.throws(serverWith({ autoShutdown: true, signals: [] }), (err: unknown) => err instanceof RangeError && /shutdown\.signals/.test(err.message));
+    });
+
+    it("rejects an unknown signal name and names it", () => {
+        assert.throws(serverWith({ autoShutdown: true, signals: ["SIGTERM", "SIGFOO"] }), (err: unknown) => err instanceof RangeError && /shutdown\.signals/.test(err.message) && err.message.includes("SIGFOO"));
+    });
+
+    it("rejects a lowercase name: the signal table is case-sensitive", () => {
+        assert.throws(serverWith({ signals: ["sigterm"] }), (err: unknown) => err instanceof RangeError && err.message.includes("sigterm"));
+    });
+
+    for (const unhandleable of ["SIGKILL", "SIGSTOP"]) {
+        it(`rejects ${unhandleable}, which a process cannot handle`, () => {
+            assert.throws(serverWith({ autoShutdown: true, signals: [unhandleable] }), (err: unknown) => err instanceof RangeError && err.message.includes(unhandleable));
+        });
+    }
+
+    it("rejects a non-string element", () => {
+        assert.throws(serverWith({ signals: [15] }), (err: unknown) => err instanceof TypeError && /shutdown\.signals/.test(err.message));
+    });
+
+    it("is checked even when autoShutdown is off, so a typo does not wait for a later switch", () => {
+        assert.throws(serverWith({ autoShutdown: false, signals: ["SIGFOO"] }), RangeError);
+    });
+
+    for (const good of [["SIGTERM"], ["SIGTERM", "SIGINT"], ["SIGHUP", "SIGUSR2"], undefined]) {
+        it(`accepts ${JSON.stringify(good)}`, () => {
+            assert.doesNotThrow(serverWith({ autoShutdown: true, signals: good }));
+        });
+    }
+});

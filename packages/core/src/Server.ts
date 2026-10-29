@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { validateAdmissionOptions, validateListenOptions, validateShutdownOptions } from "./admission.ts";
+import { validateAdmissionOptions, validateListenOptions, validateShutdownOptions, validateShutdownSignals } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
@@ -83,6 +83,7 @@ class ServerImpl extends EventEmitter implements Server {
         super();
         validateAdmissionOptions(options);
         validateShutdownOptions(options.shutdown);
+        validateShutdownSignals(options.shutdown);
         validateListenOptions(options);
         this._options = options;
         this._routes = [...options.services];

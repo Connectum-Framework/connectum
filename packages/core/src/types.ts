@@ -245,13 +245,15 @@ export interface ShutdownOptions {
     timeout?: number;
 
     /**
-     * Signals to listen for graceful shutdown
+     * Signals to listen for graceful shutdown: a non-empty array of signal names the
+     * platform knows (`SIGKILL` and `SIGSTOP` cannot be handled). `createServer()`
+     * throws for anything else, also while `autoShutdown` is off.
      * @default ["SIGTERM", "SIGINT"]
      */
     signals?: NodeJS.Signals[];
 
     /**
-     * Enable automatic graceful shutdown on signals
+     * Enable automatic graceful shutdown on signals. Must be a boolean.
      * @default false
      */
     autoShutdown?: boolean;
