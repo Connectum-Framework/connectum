@@ -18,6 +18,7 @@
 import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import type { ContextValues, HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertCallTimeout } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
@@ -46,12 +47,22 @@ export interface CatalogDispatchHost {
  * Clamp the caller-supplied timeout against the remaining inbound deadline.
  * A caller may shorten the deadline but never extend it.
  *
+ * A deadline that has already passed cannot be handed on: a transport reads a
+ * non-positive timeout as "no deadline", so the nested call would run without
+ * the limit it inherits. It fails with `DeadlineExceeded` instead.
+ *
+ * @throws ConnectError with `Code.InvalidArgument` for an invalid caller timeout (see {@link assertCallTimeout})
+ * @throws ConnectError with `Code.DeadlineExceeded` when the inbound deadline has passed
  * @internal
  */
 export function clampTimeout(caller: number | undefined, remaining: number | undefined): number | undefined {
-    if (caller === undefined) return remaining;
-    if (remaining === undefined) return caller;
-    return Math.min(caller, remaining);
+    const requested = assertCallTimeout(caller);
+    if (remaining !== undefined && remaining <= 0) {
+        throw new ConnectError("ctx.call: the inbound deadline has already passed.", Code.DeadlineExceeded);
+    }
+    if (requested === undefined) return remaining;
+    if (remaining === undefined) return requested;
+    return Math.min(requested, remaining);
 }
 
 /**

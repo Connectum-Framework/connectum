@@ -37,6 +37,7 @@ import {
     remoteTransportCacheKey,
     resolveRemoteTransportOrThrow,
 } from "./catalogDispatcher.ts";
+import { assertCallTimeout } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle } from "./context.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
@@ -149,7 +150,7 @@ export function createCatalogClient(options: CreateCatalogClientOptions): Catalo
     function buildFrame(callOptions: CallOptions | undefined): CallFrame {
         return {
             signal: callOptions?.signal,
-            timeoutMs: callOptions?.timeoutMs,
+            timeoutMs: assertCallTimeout(callOptions?.timeoutMs),
             headers: callOptions?.headers,
             contextValues: undefined,
         };
