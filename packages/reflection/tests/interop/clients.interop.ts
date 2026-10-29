@@ -294,6 +294,34 @@ describe("reflection with external clients", () => {
                 assert.match(unknown?.errorResponse?.errorMessage ?? "", /no\.such\.Symbol/);
             });
 
+            it("repeats a long name in original_request but only a bounded prefix in error_message", async () => {
+                const name = "n".repeat(10_000);
+                const [response] = await exchange([{ fileByFilename: name }]);
+                assert.deepStrictEqual(response?.originalRequest, { fileByFilename: name }, "original_request carries the whole request");
+                assert.strictEqual(response?.errorResponse?.errorCode, 5);
+                assert.strictEqual(response?.errorResponse?.errorMessage, `file not found: "${"n".repeat(128)}…"`);
+            });
+
+            it("refuses a request larger than the service reads, with resource_exhausted", async () => {
+                const result = await runTool(
+                    "grpcurl",
+                    [
+                        "-plaintext",
+                        "-import-path",
+                        PROTO_DIR,
+                        "-proto",
+                        `grpc/reflection/${version}/reflection.proto`,
+                        "-d",
+                        "@",
+                        address,
+                        `grpc.reflection.${version}.ServerReflection/ServerReflectionInfo`,
+                    ],
+                    { stdin: JSON.stringify({ fileByFilename: "a".repeat(1024 * 1024) }) },
+                );
+                assert.notStrictEqual(result.code, 0, "the oversized request must fail");
+                assert.match(result.stderr, /Code: ResourceExhausted/);
+            });
+
             it("answers extension queries", async () => {
                 const [byNumber, nested, numbers, unknownType] = await exchange([
                     { fileContainingExtension: { containingType: "google.protobuf.MethodOptions", extensionNumber: 50001 } },

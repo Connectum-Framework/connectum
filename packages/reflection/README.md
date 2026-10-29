@@ -59,6 +59,13 @@ buf curl --protocol grpc --http2-prior-knowledge http://localhost:5000 --list-me
 - Enabling reflection exposes mounted service names and schemas to clients that
   can reach the server. Restrict network access where that information must
   remain private.
+- Each request message is read up to 64 KiB (65536 bytes); a larger one ends the
+  call with `resource_exhausted`. This limit is set on the reflection services
+  themselves, so it applies instead of the server-wide `readMaxBytes`, a
+  smaller one included.
+- An `error_response` repeats at most the first 128 characters of the requested
+  name, with `…` after a cut name. `original_request` always carries the whole
+  request, as the protocol requires.
 - `grpcurl` and `buf` are external tools; they are not installed by this package.
 
 ## Learn and reference

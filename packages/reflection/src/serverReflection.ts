@@ -34,6 +34,39 @@ function error(code: Code, message: string): ReflectionAnswer {
 }
 
 /**
+ * Largest request message the reflection services read, in bytes. A request
+ * carries a file name, a symbol or a type name; no schema has one anywhere
+ * near this long. Without a limit of its own a request would be read up to the
+ * server-wide `readMaxBytes`, which is about 4 GiB unless the application
+ * lowers it. Applies to each message of a stream.
+ */
+const MAX_REQUEST_BYTES = 64 * 1024;
+
+/**
+ * Longest part of a requested name that an error message repeats. The whole
+ * request is already echoed in `original_request`; repeating the name in the
+ * message as well would double the response for a name nobody can use.
+ */
+const MAX_ECHOED_NAME_LENGTH = 128;
+
+/**
+ * Cut a client-supplied name to {@link MAX_ECHOED_NAME_LENGTH} UTF-16 code
+ * units for use in a message, marking the cut with an ellipsis. A name that
+ * fits is returned unchanged. A cut never leaves half of a surrogate pair.
+ */
+function boundedName(name: string): string {
+    if (name.length <= MAX_ECHOED_NAME_LENGTH) {
+        return name;
+    }
+    let end = MAX_ECHOED_NAME_LENGTH;
+    const last = name.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) {
+        end -= 1;
+    }
+    return `${name.slice(0, end)}…`;
+}
+
+/**
  * Answer one reflection request.
  *
  * @param pool - Descriptors of the server
@@ -49,26 +82,26 @@ export function answerReflectionQuery(pool: DescriptorPool, query: ReflectionQue
         case "fileByFilename": {
             const file = pool.fileByName(query.value);
             return file === undefined
-                ? error(Code.NotFound, `file not found: "${query.value}"`)
+                ? error(Code.NotFound, `file not found: "${boundedName(query.value)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "fileContainingSymbol": {
             const file = pool.fileContainingSymbol(query.value);
             return file === undefined
-                ? error(Code.NotFound, `symbol not found: "${query.value}"`)
+                ? error(Code.NotFound, `symbol not found: "${boundedName(query.value)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "fileContainingExtension": {
             const { containingType, extensionNumber } = query.value;
             const file = pool.fileContainingExtension(containingType, extensionNumber);
             return file === undefined
-                ? error(Code.NotFound, `extension not found: number ${extensionNumber} of message type "${containingType}"`)
+                ? error(Code.NotFound, `extension not found: number ${extensionNumber} of message type "${boundedName(containingType)}"`)
                 : { case: "fileDescriptorResponse", value: { fileDescriptorProto: pool.withDependencies(file, sent) } };
         }
         case "allExtensionNumbersOfType": {
             const numbers = pool.extensionNumbersOf(query.value);
             return numbers === undefined
-                ? error(Code.NotFound, `message type not found: "${query.value}"`)
+                ? error(Code.NotFound, `message type not found: "${boundedName(query.value)}"`)
                 : { case: "allExtensionNumbersResponse", value: { baseTypeName: query.value, extensionNumber: numbers } };
         }
         case undefined:
@@ -83,31 +116,40 @@ export function answerReflectionQuery(pool: DescriptorPool, query: ReflectionQue
  * Register `grpc.reflection.v1.ServerReflection` and
  * `grpc.reflection.v1alpha.ServerReflection` on `router`, both answering from
  * `pool`. Each stream tracks the files it has already sent, so overlapping
- * requests on one stream do not resend shared imports.
+ * requests on one stream do not resend shared imports. Both read at most
+ * {@link MAX_REQUEST_BYTES} per request message.
  */
 export function registerServerReflection(router: ConnectRouter, pool: DescriptorPool): void {
-    router.service(V1ServerReflection, {
-        async *serverReflectionInfo(requests) {
-            const sent = new Set<string>();
-            for await (const request of requests) {
-                yield create(V1ResponseSchema, {
-                    validHost: request.host,
-                    originalRequest: request,
-                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                });
-            }
+    router.service(
+        V1ServerReflection,
+        {
+            async *serverReflectionInfo(requests) {
+                const sent = new Set<string>();
+                for await (const request of requests) {
+                    yield create(V1ResponseSchema, {
+                        validHost: request.host,
+                        originalRequest: request,
+                        messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                    });
+                }
+            },
         },
-    });
-    router.service(V1alphaServerReflection, {
-        async *serverReflectionInfo(requests) {
-            const sent = new Set<string>();
-            for await (const request of requests) {
-                yield create(V1alphaResponseSchema, {
-                    validHost: request.host,
-                    originalRequest: request,
-                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
-                });
-            }
+        { readMaxBytes: MAX_REQUEST_BYTES },
+    );
+    router.service(
+        V1alphaServerReflection,
+        {
+            async *serverReflectionInfo(requests) {
+                const sent = new Set<string>();
+                for await (const request of requests) {
+                    yield create(V1alphaResponseSchema, {
+                        validHost: request.host,
+                        originalRequest: request,
+                        messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                    });
+                }
+            },
         },
-    });
+        { readMaxBytes: MAX_REQUEST_BYTES },
+    );
 }
