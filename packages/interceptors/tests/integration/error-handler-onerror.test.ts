@@ -24,6 +24,7 @@ type OnError = NonNullable<NonNullable<Parameters<typeof createErrorHandlerInter
 /** What a handler throws for each scenario named in the request message. */
 const thrown: Record<string, () => unknown> = {
     connectError: () => new ConnectError("user 42 not found", Code.NotFound),
+    sanitizable: () => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { query: "SELECT 1" }, code: Code.Unavailable }),
 };
 
 function routes() {
@@ -88,6 +89,28 @@ describe("a failing onError callback as seen by the client", () => {
     });
 
     for (const transport of ["grpc", "connect", "grpcWeb", "local"]) {
+        it(`${transport}: an onError that throws leaves the handler's ConnectError untouched`, async () => {
+            onErrorImpl = () => {
+                throw new Error("metrics sink down");
+            };
+
+            const err = await failureOf(clients[transport]!, "connectError");
+
+            assert.strictEqual(err.code, Code.NotFound);
+            assert.strictEqual(err.rawMessage, "user 42 not found");
+        });
+
+        it(`${transport}: an onError that throws leaves a SanitizableError's client text and code untouched`, async () => {
+            onErrorImpl = () => {
+                throw new Error("metrics sink down");
+            };
+
+            const err = await failureOf(clients[transport]!, "sanitizable");
+
+            assert.strictEqual(err.code, Code.Unavailable);
+            assert.strictEqual(err.rawMessage, "safe text");
+        });
+
         it(`${transport}: an async onError that rejects leaves the error and the process untouched`, async () => {
             onErrorImpl = async () => {
                 throw new Error("async sink down");

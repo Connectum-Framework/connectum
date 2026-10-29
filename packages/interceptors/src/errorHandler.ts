@@ -60,9 +60,13 @@ function guardOnError(onError: OnErrorCallback): (info: Parameters<OnErrorCallba
         }
     };
     return (info) => {
-        const pending: unknown = onError(info);
-        if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
-            Promise.resolve(pending).then(undefined, report);
+        try {
+            const pending: unknown = onError(info);
+            if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
+                Promise.resolve(pending).then(undefined, report);
+            }
+        } catch (failure) {
+            report(failure);
         }
     };
 }
@@ -88,6 +92,11 @@ function guardOnError(onError: OnErrorCallback): (info: Parameters<OnErrorCallba
  * The original failure always stays on the server: as `cause` of the thrown ConnectError
  * (no transport serializes `cause`), in `onError` as `info.error` with its original text,
  * and in the console log.
+ *
+ * `onError` is a reporting hook and cannot change the outcome of a call: if it throws or
+ * returns a rejected promise, the client still receives the error described above and the
+ * process sees no unhandled rejection. The first failure of the callback is written once to
+ * `console.error`; later ones are dropped.
  *
  * Place this interceptor first to normalize rejections from downstream interceptors.
  * It does not wrap response-stream iteration after next(req) returns, or errors

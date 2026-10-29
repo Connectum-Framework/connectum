@@ -712,6 +712,66 @@ describe("errorHandler interceptor", () => {
             assert.fail("interceptor should have rejected");
         }
 
+        it("sends the handler's own ConnectError when onError throws synchronously", async () => {
+            const original = new ConnectError("user 42 not found", Code.NotFound, { "x-trace": "abc" });
+            let received: unknown;
+            const { consoleErrors } = await observe(async () => {
+                received = await failureWith(original, {
+                    onError: () => {
+                        throw new Error("metrics sink down");
+                    },
+                });
+            });
+
+            assert.strictEqual(received, original, "the callback's failure must not replace the handler's error");
+            assert.strictEqual(consoleErrors.length, 1, "the failure of the callback is reported once");
+        });
+
+        it("keeps the cause and the generic text of a plain Error when onError throws", async () => {
+            const original = new Error("db connect failed: password=hunter2");
+            const received = (await failureWith(original, {
+                onError: () => {
+                    throw new Error("metrics sink down");
+                },
+            })) as ConnectError;
+
+            assertConnectError(received, Code.Internal);
+            assert.strictEqual(received.rawMessage, "internal error", "the original text must still stay on the server");
+            assert.strictEqual(received.cause, original);
+        });
+
+        it("sends a SanitizableError's clientMessage and code when onError throws", async () => {
+            const received = (await failureWith(sanitizable(), {
+                onError: () => {
+                    throw new Error("metrics sink down");
+                },
+            })) as ConnectError;
+
+            assertConnectError(received, Code.Unavailable);
+            assert.strictEqual(received.rawMessage, "safe text");
+        });
+
+        it("keeps handing later errors to a callback that failed once", async () => {
+            let calls = 0;
+            const options: Options = {
+                onError: () => {
+                    calls++;
+                    throw new Error("metrics sink down");
+                },
+            };
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false, ...options });
+            await observe(async () => {
+                for (let call = 0; call < 3; call++) {
+                    const next = mock.fn(async () => {
+                        throw new Error("boom");
+                    });
+                    await assert.rejects(() => interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} })));
+                }
+            });
+
+            assert.strictEqual(calls, 3, "a failed report must not switch the callback off");
+        });
+
         it("does not leave an unhandled rejection when onError is async and rejects", async () => {
             const original = new ConnectError("user 42 not found", Code.NotFound);
             let received: unknown;

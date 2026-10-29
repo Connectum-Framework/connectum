@@ -79,6 +79,11 @@ The original failure stays on the server: as `cause` of the thrown `ConnectError
 text, and in the console log. The behavior is the same over gRPC, Connect and
 `server.localClient()`.
 
+`onError` is a reporting hook and cannot change the outcome of a call. If it throws, or
+an `async` one rejects, the client still receives the error from the table above and the
+process sees no unhandled rejection. The first failure of the callback is written once to
+`console.error`; later ones are dropped.
+
 To send the original text, set `exposeErrorMessages: true`: only for trusted
 internal callers or while debugging. It is a server-side option, independent of
 `NODE_ENV`:
