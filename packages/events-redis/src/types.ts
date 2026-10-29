@@ -43,8 +43,10 @@ export interface RedisBrokerOptions {
      * Maximum stream length (MAXLEN approximate for XADD).
      *
      * When set, older entries are trimmed on publish.
+     * Must be a positive safe integer: `0` would trim every entry on publish, so it is rejected.
      *
      * @default undefined (no limit)
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a positive safe integer.
      */
     readonly maxLen?: number;
 
@@ -53,15 +55,20 @@ export interface RedisBrokerOptions {
      *
      * How long the consumer blocks waiting for new messages
      * before retrying the loop.
+     * Must be a non-negative safe integer. `0` blocks without a deadline (Redis `BLOCK 0`), so the
+     * stale-entry reclaim pass only runs after a message arrives.
      *
      * @default 5000
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a non-negative safe integer.
      */
     readonly blockMs?: number;
 
     /**
      * Number of messages to read per XREADGROUP call.
+     * Must be a positive safe integer.
      *
      * @default 10
+     * @throws {RangeError} From `RedisAdapter()` when the value is not a positive safe integer.
      */
     readonly count?: number;
 }

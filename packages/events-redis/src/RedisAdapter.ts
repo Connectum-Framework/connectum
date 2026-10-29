@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { Redis } from "ioredis";
+import { validateBrokerOptions } from "./brokerOptions.ts";
 import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { RedisReplyMapping } from "./RedisProtocol.ts";
 import { normalizeXAutoClaimReply, normalizeXPendingReply, normalizeXReadGroupReply, RedisReplyShapeError, redisReplyContext, resolveRedisOptions } from "./RedisProtocol.ts";
@@ -81,6 +82,7 @@ function isNoGroup(err: unknown): boolean {
  * ```
  */
 export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
+    validateBrokerOptions(options.brokerOptions);
     const baseRedisOptions = resolveRedisOptions(options.redisOptions);
     const replyContext = redisReplyContext(baseRedisOptions);
     type RedisClient = Redis<RedisReplyMapping>;
