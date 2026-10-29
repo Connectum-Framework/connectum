@@ -37,7 +37,7 @@ import {
     remoteTransportCacheKey,
     resolveRemoteTransportOrThrow,
 } from "./catalogDispatcher.ts";
-import { assertCallTimeout } from "./catalogOptions.ts";
+import { assertCallTimeout, normalizeEndpoint } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, CatalogCall, CatalogStream, ClientStreamHandle } from "./context.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
@@ -133,7 +133,8 @@ export function createCatalogClient(options: CreateCatalogClientOptions): Catalo
     // per route (mirrors the RemoteResolver caching contract).
     const transportCache = new Map<string, Transport>();
 
-    function resolveTransport(typeName: string, endpoint: string | undefined, caller: string): Transport {
+    function resolveTransport(typeName: string, requestedEndpoint: string | undefined, caller: string): Transport {
+        const endpoint = normalizeEndpoint(requestedEndpoint);
         const key = remoteTransportCacheKey(typeName, endpoint);
         const cached = transportCache.get(key);
         if (cached !== undefined) return cached;

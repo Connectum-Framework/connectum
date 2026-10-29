@@ -15,7 +15,7 @@ import { validateAdmissionOptions, validateShutdownOptions } from "./admission.t
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
-import { assertEnabledServicesAreSupplied, assertResolvedTransport, validatePropagateHeaders } from "./catalogOptions.ts";
+import { assertEnabledServicesAreSupplied, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
@@ -415,9 +415,10 @@ class ServerImpl extends EventEmitter implements Server {
                     `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
             );
         }
-        const transport = this._resolveRemoteTransport(service.typeName, options?.endpoint);
+        const endpoint = normalizeEndpoint(options?.endpoint);
+        const transport = this._resolveRemoteTransport(service.typeName, endpoint);
         if (!transport) {
-            const at = options?.endpoint ? ` (endpoint "${options.endpoint}")` : "";
+            const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
             throw new ConnectError(`No route for service "${service.typeName}"${at}: the resolver returned null.`, Code.Unavailable);
         }
         return createClient(service, transport);

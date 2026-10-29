@@ -879,6 +879,7 @@ export interface ServerClientOptions {
      * Opaque endpoint hint forwarded to the configured `remoteResolver` when the
      * requested service is not mounted locally (polymorphic deployments — one
      * proto served at several endpoints). Ignored for locally-mounted services.
+     * An empty string counts as no endpoint.
      */
     endpoint?: string;
 }

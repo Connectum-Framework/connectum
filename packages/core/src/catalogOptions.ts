@@ -130,3 +130,15 @@ export function assertResolvedTransport(resolved: unknown, typeName: string): Tr
     }
     throw new InvalidResolverResultError(`The remoteResolver returned ${what} for "${typeName}". ${hint}`);
 }
+
+/**
+ * Treat an empty `endpoint` as an absent one. The transport cache already keys
+ * both the same way, so the resolver must be handed the same context for both:
+ * otherwise what it sees (and which transport every later call reuses) would
+ * depend on which call happened to come first.
+ *
+ * @internal
+ */
+export function normalizeEndpoint(endpoint: string | undefined): string | undefined {
+    return endpoint === "" ? undefined : endpoint;
+}

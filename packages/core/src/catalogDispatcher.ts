@@ -18,7 +18,7 @@
 import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import type { ContextValues, HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { assertCallTimeout, assertResolvedTransport, InvalidResolverResultError } from "./catalogOptions.ts";
+import { assertCallTimeout, assertResolvedTransport, InvalidResolverResultError, normalizeEndpoint } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
@@ -170,7 +170,8 @@ export function lookupCatalogMethod(catalog: ServiceCatalog | undefined, method:
  * Cache key of a resolved remote transport: one entry per `(typeName, endpoint)`
  * pair. NUL separates the parts because neither a proto type name nor a
  * sensible endpoint hint contains it. An absent endpoint and an empty one share
- * a key. The server and the standalone `CatalogClient` both key their caches
+ * a key, and callers pass both to the resolver as the same context (see
+ * {@link normalizeEndpoint}). The server and the standalone `CatalogClient` both key their caches
  * with it.
  *
  * @internal
@@ -499,7 +500,8 @@ export class CatalogDispatcher {
      *
      * @internal
      */
-    private _resolveTransport(typeName: string, endpoint: string | undefined): Transport {
+    private _resolveTransport(typeName: string, requestedEndpoint: string | undefined): Transport {
+        const endpoint = normalizeEndpoint(requestedEndpoint);
         if (this.host.isLocal(typeName)) {
             return this.host.getLocalTransport();
         }

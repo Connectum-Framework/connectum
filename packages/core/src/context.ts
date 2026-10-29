@@ -70,7 +70,9 @@ export type CallOptions = {
     /**
      * Opaque endpoint hint forwarded to the configured `remoteResolver` for
      * services reachable at several endpoints. Ignored for locally-mounted
-     * services.
+     * services. An empty string counts as no endpoint: the resolver receives
+     * the same context, and shares the same cached transport, as for a call
+     * without the option.
      */
     endpoint?: string;
 };
