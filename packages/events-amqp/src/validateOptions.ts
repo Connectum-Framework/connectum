@@ -41,6 +41,17 @@ export function validateTopologyMode(topologyMode: unknown): void {
 /** Exchange types the adapter's routing logic is written for. */
 const EXCHANGE_TYPES: readonly string[] = ["topic", "direct", "fanout", "headers"];
 
+/**
+ * `exchangeType` must be one of the four types the routing logic is written for.
+ * `undefined` keeps the default. Also used by the test double, so it rejects what
+ * the real adapter rejects.
+ */
+export function validateExchangeType(exchangeType: unknown): void {
+    if (exchangeType !== undefined && (typeof exchangeType !== "string" || !EXCHANGE_TYPES.includes(exchangeType))) {
+        throw new TypeError(`AmqpAdapter: exchangeType must be one of ${EXCHANGE_TYPES.map((type) => `"${type}"`).join(", ")}, got ${show(exchangeType)}`);
+    }
+}
+
 /** Largest value of the AMQP `prefetch-count` field (a 16-bit unsigned integer). */
 const MAX_PREFETCH = 65_535;
 
@@ -99,7 +110,12 @@ function optionalDelay(name: string, value: unknown): void {
     }
 }
 
-/** A jitter factor is a fraction of the delay, so it lies in `[0, 1]`; amqplib would clamp anything else without a word. */
+/**
+ * A jitter factor is a fraction of the delay, so a finite value lies in `[0, 1]`;
+ * amqplib would clamp anything else without a word. `NaN` and the infinities keep
+ * the fallback to the default that every delay knob has (`initialDelay`,
+ * `maxDelay` and `factor` accept them too), so they are not rejected.
+ */
 function optionalJitter(name: string, value: unknown): void {
     if (value === undefined) {
         return;
@@ -107,7 +123,7 @@ function optionalJitter(name: string, value: unknown): void {
     if (typeof value !== "number") {
         throw new TypeError(`AmqpAdapter: ${name} must be a number, got ${show(value)}`);
     }
-    if (!(value >= 0 && value <= 1)) {
+    if (Number.isFinite(value) && (value < 0 || value > 1)) {
         throw new RangeError(`AmqpAdapter: ${name} must be a number from 0 to 1, got ${show(value)}`);
     }
 }
@@ -133,9 +149,7 @@ export function validateAdapterOptions(options: unknown): void {
 
     const { exchangeType, recovery, publishRetry, consumerOptions, queueOptions, serialization } = options;
 
-    if (exchangeType !== undefined && (typeof exchangeType !== "string" || !EXCHANGE_TYPES.includes(exchangeType))) {
-        throw new TypeError(`AmqpAdapter: exchangeType must be one of ${EXCHANGE_TYPES.map((type) => `"${type}"`).join(", ")}, got ${show(exchangeType)}`);
-    }
+    validateExchangeType(exchangeType);
     validateTopologyMode(options.topologyMode);
 
     optionalJitter("recovery.jitter", requireBooleanOrObject("recovery", recovery)?.jitter);

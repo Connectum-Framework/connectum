@@ -131,6 +131,48 @@ describe("redeliveryDelay on a failed handler", () => {
     });
 });
 
+describe("redeliveryDelay and a subscription that is being stopped", () => {
+    it("releasing the held deliveries requeues them at once and leaves nothing registered", async () => {
+        const { channel, calls } = makeChannel();
+        const held = new Set<() => void>();
+        const startedAt = Date.now();
+        const done = handleDelivery({
+            channel,
+            message: makeMessage(),
+            queue: "q",
+            handler: failing,
+            decode: undefined,
+            lifecycle: undefined,
+            redeliveryDelay: 60_000,
+            heldDeliveries: held,
+        });
+        await sleep(30);
+        assert.equal(held.size, 1, "the delivery registers itself while it waits");
+        assert.equal(calls.length, 0);
+
+        for (const release of [...held]) {
+            release();
+        }
+        await done;
+
+        assert.ok(Date.now() - startedAt < 2_000, "releasing must not wait for the delay");
+        assert.deepEqual(
+            calls.map((c) => c.call),
+            ["nack-requeue"],
+            "a released delivery is requeued on the still-open channel",
+        );
+        assert.equal(held.size, 0);
+        assert.equal(channel.listenerCount("close"), 0);
+    });
+
+    it("a delivery that finished waiting by itself is no longer registered", async () => {
+        const { channel } = makeChannel();
+        const held = new Set<() => void>();
+        await handleDelivery({ channel, message: makeMessage(), queue: "q", handler: failing, decode: undefined, lifecycle: undefined, redeliveryDelay: 20, heldDeliveries: held });
+        assert.equal(held.size, 0);
+    });
+});
+
 describe("consumerOptions.redeliveryDelay validation", () => {
     const create = (redeliveryDelay: unknown): void => {
         AmqpAdapter({ url: "amqp://127.0.0.1:1", consumerOptions: { redeliveryDelay } } as unknown as AmqpAdapterOptions);

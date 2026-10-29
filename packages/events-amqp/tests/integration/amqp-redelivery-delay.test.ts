@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
+import { connect } from "amqplib";
 import { AmqpAdapter } from "../../src/AmqpAdapter.ts";
 
 const AMQP_URL = process.env.AMQP_TEST_URL;
@@ -54,6 +55,39 @@ describe("redelivery of a message whose handler keeps throwing", { skip: AMQP_UR
         assert.ok(count >= 3, `the message must still be redelivered, got ${count}`);
         assert.ok(count <= 8, `expected about one delivery per 300 ms, got ${count} in 1.5 s`);
         assert.deepEqual([...attempts].sort(), [1, 2], "first delivery is attempt 1, every redelivery attempt 2");
+    });
+
+    it("unsubscribe() alone returns a held message to the queue at once, while the connection stays open", { timeout: 20_000 }, async () => {
+        const exchange = `it.redelivery.${randomUUID().slice(0, 8)}`;
+        const adapter = AmqpAdapter({ url, exchange, recovery: { initialConnectMaxRetries: 0 }, consumerOptions: { redeliveryDelay: 60_000 } });
+        await adapter.connect();
+        const subscription = await adapter.subscribe(
+            ["d.x"],
+            async () => {
+                throw new Error("poison");
+            },
+            { group: "g" },
+        );
+        const connection = await connect(url);
+        try {
+            const channel = await connection.createChannel();
+            await adapter.publish("d.x", new TextEncoder().encode("poison"));
+            await sleep(300);
+            // Held: delivered once, not acknowledged, so it is not a ready message of the queue.
+            assert.equal((await channel.checkQueue(`${exchange}.g`)).messageCount, 0);
+
+            await subscription.unsubscribe();
+
+            let ready = 0;
+            for (let waited = 0; ready === 0 && waited < 5_000; waited += 100) {
+                await sleep(100);
+                ready = (await (await connection.createChannel()).checkQueue(`${exchange}.g`)).messageCount;
+            }
+            assert.equal(ready, 1, "the held message is requeued by unsubscribe(), not after the 60 s delay");
+        } finally {
+            await connection.close();
+            await adapter.disconnect();
+        }
     });
 
     it("shutting down during the wait does not wait for the delay", { timeout: 20_000 }, async () => {

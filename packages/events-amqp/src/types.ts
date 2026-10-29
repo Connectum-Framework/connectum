@@ -911,9 +911,10 @@ export interface AmqpConsumerOptions {
      * The held message occupies one `prefetch` slot for the whole delay, and
      * the delay applies to every handler failure of this adapter's
      * subscriptions, not only to a poison message. It does not apply to a
-     * message the handler already settled with `ack()` or `nack()`. When the
-     * channel closes during the wait (`unsubscribe()`, `disconnect()`, a lost
-     * connection) the wait ends and the broker returns the message itself.
+     * message the handler already settled with `ack()` or `nack()`.
+     * `unsubscribe()` ends the wait and requeues a held message at once. When the
+     * channel closes during the wait (`disconnect()`, a lost connection) the wait
+     * ends and the broker returns the message itself.
      * The attempt number stays 1 or 2: `redelivered` is a flag, not a counter,
      * so a delay does not replace `retry` and `dlq` middleware for a message
      * that can never succeed.

@@ -129,7 +129,14 @@ describe("jitter", () => {
         }
     });
 
-    for (const bad of [5, -0.1, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+    it("keeps the fallback to the default for NaN and the infinities, as the other delay knobs do", () => {
+        for (const jitter of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+            assert.doesNotThrow(() => nested("recovery", { jitter, initialDelay: Number.NaN }), String(jitter));
+            assert.doesNotThrow(() => nested("publishRetry", { jitter }), String(jitter));
+        }
+    });
+
+    for (const bad of [5, -0.1, 1.01, -2]) {
         it(`rejects ${bad} in recovery and in publishRetry with a RangeError`, () => {
             assertRejects(() => nested("recovery", { jitter: bad }), RangeError, "recovery.jitter");
             assertRejects(() => nested("publishRetry", { jitter: bad }), RangeError, "publishRetry.jitter");

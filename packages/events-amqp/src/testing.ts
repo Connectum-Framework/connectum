@@ -68,6 +68,7 @@ import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpTopologyError } from "./errors.ts";
 import type { AmqpConsumerLossCause, AmqpLifecycleCallbacks } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
+import { validateExchangeType, validateTopologyMode } from "./validateOptions.ts";
 
 /** Options for {@link FakeAmqpAdapter}. */
 export interface FakeAmqpAdapterOptions {
@@ -281,6 +282,10 @@ interface ParkedSubscribe {
  * ```
  */
 export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpAdapterInstance {
+    // The same checks as the real adapter: a test that passes `"CHECK"` or `"TOPIC"` here
+    // must not pass against the double and then throw in production.
+    validateExchangeType(options.exchangeType);
+    validateTopologyMode(options.topologyMode);
     const lifecycle = options.lifecycle;
     const exchangeType = options.exchangeType ?? "topic";
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;

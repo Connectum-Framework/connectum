@@ -395,8 +395,9 @@ export function normalizePublishTimeout(raw: unknown): number {
  *
  * A finite number becomes `max(0, floor(N))`; `Infinity` is kept (retry until
  * `disconnect()` aborts); `-Infinity` is a negative budget and gives 0; anything else
- * (`NaN`, a non-number, unset) is the default of 5. Exported (not via the
- * package barrel) for direct unit testing.
+ * (`NaN`, unset) is the default of 5. The adapter factory rejects a value that
+ * is not a number before it gets here. Exported (not via the package barrel)
+ * for direct unit testing.
  */
 export function normalizePublishRetryBudget(raw: unknown): number {
     if (raw === Number.POSITIVE_INFINITY) {
@@ -983,18 +984,26 @@ interface DeliveryChannel {
 
 /**
  * Wait `delayMs` before a failed delivery is requeued, or less when its channel
- * closes first: a closed channel returns the unacknowledged message to the queue
- * by itself, so a timer that outlived it would only delay shutdown.
+ * closes first (a closed channel returns the unacknowledged message to the queue
+ * by itself, so a timer that outlived it would only delay shutdown) or when the
+ * subscription is being stopped.
+ *
+ * While it waits, the delivery registers its release function in `held`;
+ * `unsubscribe()` calls them so the message goes back to the queue on the
+ * still-open channel at once, instead of staying unacknowledged for the rest of
+ * the delay with nobody left to consume it.
  */
-function pauseBeforeRequeue(channel: DeliveryChannel, delayMs: number): Promise<void> {
+function pauseBeforeRequeue(channel: DeliveryChannel, delayMs: number, held: Set<() => void> | undefined): Promise<void> {
     return new Promise((resolve) => {
         const finish = (): void => {
             clearTimeout(timer);
             channel.off?.("close", finish);
+            held?.delete(finish);
             resolve();
         };
         const timer = setTimeout(finish, delayMs);
         channel.once?.("close", finish);
+        held?.add(finish);
     });
 }
 
@@ -1056,8 +1065,10 @@ export function handleDelivery(params: {
     readonly lifecycle: AmqpLifecycleCallbacks | undefined;
     /** Milliseconds to hold a message the handler failed on before requeueing it; unset or 0 requeues at once. */
     readonly redeliveryDelay?: number | undefined;
+    /** Where a delivery that waits out `redeliveryDelay` registers the function that ends its wait early. */
+    readonly heldDeliveries?: Set<() => void> | undefined;
 }): Promise<void> {
-    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay } = params;
+    const { channel, message: msg, queue, handler, decode, lifecycle, redeliveryDelay, heldDeliveries } = params;
     const delivery = { queue, message: msg };
 
     // A second settlement of the same delivery tag makes the broker close the
@@ -1151,7 +1162,7 @@ export function handleDelivery(params: {
         // handler that keeps failing is not fed the same message as fast as the
         // broker can send it. The wait ends early when the channel closes.
         if (!settled && redeliveryDelay !== undefined && redeliveryDelay > 0) {
-            await pauseBeforeRequeue(channel, redeliveryDelay);
+            await pauseBeforeRequeue(channel, redeliveryDelay, heldDeliveries);
         }
         try {
             settleOnce("requeue", () => channel.nack(msg, false, true));
@@ -1174,6 +1185,8 @@ interface SubscriptionRecord extends RestorableSubscription {
      * makes the broker take the message back and deliver it again.
      */
     readonly inFlight: Set<Promise<void>>;
+    /** Release functions of the deliveries waiting out `redeliveryDelay`; `unsubscribe()` calls them. */
+    readonly heldDeliveries: Set<() => void>;
 }
 
 /** A timer handle the restorer can hold without keeping the process alive. */
@@ -2097,6 +2110,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         decode,
                         lifecycle,
                         redeliveryDelay: options.consumerOptions?.redeliveryDelay,
+                        heldDeliveries: record.heldDeliveries,
                     });
                     record.inFlight.add(delivery);
                     void delivery.then(() => record.inFlight.delete(delivery));
@@ -2903,6 +2917,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 queueName: "",
                 isAutoGroup: !subOptions?.group,
                 inFlight: new Set(),
+                heldDeliveries: new Set(),
                 active: true,
                 generation: 0,
                 restore: { attempt: 0, timer: null, stabilityTimer: null, pending: false },
@@ -2951,6 +2966,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                         // they would be delivered again after their handlers had finished. It is closed
                         // when the last of them has settled; the consumer is already cancelled, so no
                         // new delivery starts, and unsubscribe() itself does not wait for a slow handler.
+                        // A delivery that is only waiting out `redeliveryDelay` is not working: it is
+                        // requeued now, on this still-open channel, rather than after the delay.
+                        for (const release of [...record.heldDeliveries]) {
+                            release();
+                        }
                         const closeWhenIdle = async (): Promise<void> => {
                             await Promise.allSettled([...record.inFlight]);
                             await ch.close().catch(() => undefined);
