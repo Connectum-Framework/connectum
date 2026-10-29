@@ -298,6 +298,12 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
         if (exchangeType === "fanout" || exchangeType === "headers") {
             return true;
         }
+        // RabbitMQ reads the empty routing key as zero words on a topic exchange, so the
+        // single-word `*` and the one-or-more `>` (bound as `*.#`) do not match it; only
+        // a binding of exactly "" does. The shared matcher counts "" as one empty word.
+        if (exchangeType === "topic" && eventType === "") {
+            return patterns.includes("");
+        }
         return patterns.some((pattern) => matchPattern(pattern, eventType));
     }
 

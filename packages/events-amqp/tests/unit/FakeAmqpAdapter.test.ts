@@ -704,6 +704,21 @@ describe("FakeAmqpAdapter delivery follows the configured exchange type", () => 
         assert.deepEqual(await received("topic", ["user.>"], KEYS), ["user.created"]);
     });
 
+    it("topic: an empty event type reaches only a subscription to the empty key, as on RabbitMQ", async () => {
+        // RabbitMQ reads the empty routing key as zero words: a single-word `*` and the one-or-more `>`
+        // (bound as `*.#`) do not match it, while a binding of exactly "" does.
+        assert.deepEqual(await received("topic", ["*"], ["", "a"]), ["a"]);
+        assert.deepEqual(await received("topic", [">"], ["", "a"]), ["a"]);
+        assert.deepEqual(await received("topic", ["user.*"], [""]), []);
+        assert.deepEqual(await received("topic", [""], ["", "a"]), [""]);
+    });
+
+    it("fanout, headers and direct do not special-case an empty event type", async () => {
+        assert.deepEqual(await received("fanout", ["*"], [""]), [""]);
+        assert.deepEqual(await received("headers", [">"], [""]), [""]);
+        assert.deepEqual(await received("direct", [""], ["", "a"]), [""]);
+    });
+
     it("fanout still delivers once per distinct group and to every group-less subscription", async () => {
         const fake = FakeAmqpAdapter({ exchangeType: "fanout" });
         await fake.connect();
