@@ -18,7 +18,7 @@ describe("Reflection", () => {
 	// checks drive the registered handlers directly: what each handler lists
 	// after setup, never the shape of the registration object.
 	describe("what the registered handlers list", () => {
-		type Impl = { serverReflectionInfo(requests: AsyncIterable<unknown>): AsyncIterable<{ messageResponse: { case?: string; value?: any } }> };
+		type Impl = { serverReflectionInfo(requests: AsyncIterable<unknown>, context: { signal: AbortSignal }): AsyncIterable<{ messageResponse: { case?: string; value?: any } }> };
 
 		const SERVICES = ["grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"] as const;
 
@@ -46,7 +46,7 @@ describe("Reflection", () => {
 			async function* requests() {
 				yield request;
 			}
-			for await (const response of impl.serverReflectionInfo(requests())) {
+			for await (const response of impl.serverReflectionInfo(requests(), { signal: new AbortController().signal })) {
 				assert.strictEqual(response.messageResponse.case, "listServicesResponse");
 				return response.messageResponse.value.service.map((s: { name: string }) => s.name);
 			}

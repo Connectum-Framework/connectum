@@ -173,6 +173,20 @@ check("healthcheck.ServingStatus enum + manager singleton", () => {
     const m = hc.createHealthcheckManager();
     assert.ok(m);
 });
+check("healthcheck: the manager refuses a bad status and announces changes; Healthcheck() refuses a bad watchInterval", () => {
+    const m = hc.createHealthcheckManager();
+    let announced = 0;
+    m.subscribe(() => announced++);
+    m.set("db", hc.ServingStatus.SERVING);
+    assert.strictEqual(announced, 1);
+    assert.throws(() => m.set("db", "SERVING" as never), TypeError);
+    assert.throws(() => m.set("db", 99 as never), RangeError);
+    assert.strictEqual(m.getStatus("db")?.status, hc.ServingStatus.SERVING);
+    assert.strictEqual(announced, 1, "a refused call does not announce");
+    assert.throws(() => hc.Healthcheck({ watchInterval: 0 }), RangeError);
+    assert.throws(() => hc.createHttpHealthHandler(m, []), RangeError);
+    assert.strictEqual(hc.Healthcheck({ manager: m, watchInterval: 500 }).name, "healthcheck");
+});
 
 // ---------- @connectum/events: bus + pure helpers ----------
 const ev = await import("@connectum/events");
@@ -373,6 +387,109 @@ await checkAsync("core server.stop() force-closes a client that never closes (fo
     const closed = await closedByServer;
     client.destroy();
     assert.ok(closed, "the connection outlived the shutdown timeout despite forceCloseOnTimeout");
+});
+
+// ---------- @connectum/reflection: stream lifetime, own service, request bound ----------
+// Raw HTTP/2 against the packed artifacts: a hand-encoded ServerReflectionRequest
+// (field tag, varint length, bytes) in one gRPC frame, read back as text.
+
+const reflection = await import("@connectum/reflection");
+
+const REFLECTION_PATH = "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo";
+const LIST_SERVICES = 0x3a;
+const FILE_BY_FILENAME = 0x1a;
+const FILE_CONTAINING_SYMBOL = 0x22;
+
+function reflectionFrame(tag: number, text: string): Buffer {
+    const value = Buffer.from(text);
+    // Protobuf varint: seven bits per byte, low bits first, high bit set while more follow.
+    const length: number[] = [];
+    let remaining = value.length;
+    while (remaining > 127) {
+        length.push((remaining % 128) + 128);
+        remaining = Math.floor(remaining / 128);
+    }
+    length.push(remaining);
+    const message = Buffer.concat([Buffer.from([tag, ...length]), value]);
+    const header = Buffer.alloc(5);
+    header.writeUInt32BE(message.length, 1);
+    return Buffer.concat([header, message]);
+}
+
+/** One reflection call over HTTP/2: what the server sent back, and when the stream closed. */
+async function reflectionCall(port: number, frame: Buffer, options: { keepOpen: boolean }) {
+    const { connect } = await import("node:http2");
+    const session = connect(`http://127.0.0.1:${port}`);
+    session.on("error", () => {});
+    const request = session.request({ ":method": "POST", ":path": REFLECTION_PATH, "content-type": "application/grpc", te: "trailers" }, { endStream: false });
+    request.on("error", () => {});
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const closed = new Promise<void>((resolve) => request.once("close", () => resolve()));
+    request.write(frame);
+    if (!options.keepOpen) request.end();
+    return {
+        text: () => Buffer.concat(chunks).toString("latin1"),
+        received: () => Buffer.concat(chunks).length,
+        closed,
+        end() {
+            request.close();
+            session.destroy();
+        },
+    };
+}
+
+async function untilReceived(call: { received(): number }, ms: number): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (call.received() === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(call.received() > 0, "the server sent no answer");
+}
+
+await checkAsync("reflection: server.stop() ends a stream the client keeps open instead of waiting for the timeout", async () => {
+    const server = core.createServer({ services: [], port: 0, allowHTTP1: false, protocols: [reflection.Reflection()], shutdown: { timeout: 8000 } });
+    await server.start();
+    const call = await reflectionCall(server.address?.port ?? 0, reflectionFrame(LIST_SERVICES, ""), { keepOpen: true });
+    try {
+        await untilReceived(call, 3000);
+        const startedAt = Date.now();
+        await server.stop();
+        const elapsed = Date.now() - startedAt;
+        assert.ok(elapsed < 3000, `stop() took ${elapsed}ms with a reflection stream open; shutdown.timeout was 8000ms`);
+    } finally {
+        call.end();
+    }
+});
+
+await checkAsync("reflection: file_containing_symbol describes the reflection service itself", async () => {
+    const server = core.createServer({ services: [], port: 0, allowHTTP1: false, protocols: [reflection.Reflection()] });
+    await server.start();
+    const call = await reflectionCall(server.address?.port ?? 0, reflectionFrame(FILE_CONTAINING_SYMBOL, "grpc.reflection.v1.ServerReflection"), { keepOpen: false });
+    try {
+        await call.closed;
+        assert.ok(call.text().includes("grpc/reflection/v1/reflection.proto"), `unexpected answer: ${call.text().replace(/[^\x20-\x7e]+/g, " ")}`);
+        assert.ok(!call.text().includes("symbol not found"));
+    } finally {
+        call.end();
+        await server.stop();
+    }
+});
+
+await checkAsync("reflection: an unknown long name is echoed in part in error_message", async () => {
+    const server = core.createServer({ services: [], port: 0, allowHTTP1: false, protocols: [reflection.Reflection()] });
+    await server.start();
+    try {
+        const bounded = await reflectionCall(server.address?.port ?? 0, reflectionFrame(FILE_BY_FILENAME, "a".repeat(10_000)), { keepOpen: false });
+        await bounded.closed;
+        // original_request carries the 10000 characters once; error_message only a prefix.
+        const answer = bounded.text();
+        assert.ok(answer.includes(`file not found: "${"a".repeat(128)}…"`.replace("…", "â\u0080¦")), "error_message must repeat a 128-character prefix");
+        assert.ok(answer.length < 11_000, `the answer has ${answer.length} bytes: the name was repeated in full`);
+        bounded.end();
+    } finally {
+        await server.stop();
+    }
 });
 
 console.log(`\nLayer-2 smoke: pass=${pass} fail=${fails.length}`);
