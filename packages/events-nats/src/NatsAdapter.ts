@@ -615,7 +615,10 @@ async function consumeLoop(
         // A more specific pattern of this subscription delivers this message too: that delivery
         // runs the handler, this one is settled without it.
         if (owned.length > 1 && !runsHandler(owned, own, eventType, msg.seq)) {
-            msg.ack();
+            // After a loss the sequence may name another message of the stream created again: leave it alone.
+            if (!pattern.consumerLost()) {
+                msg.ack();
+            }
             continue;
         }
 
