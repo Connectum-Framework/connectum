@@ -19,6 +19,7 @@ import { test } from "node:test";
 import { Code, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
+import { DataPointType } from "@opentelemetry/sdk-metrics";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 
 /**
@@ -206,6 +207,12 @@ function withoutProtocolHeaders(map: Record<string, string> | undefined): Record
  * dropped on both sides first, because the two transports carry different ones
  * for identical behaviour. Every other entry is compared literally. A scenario
  * that needs to compare a protocol header passes its own `compare`.
+ *
+ * Metrics are compared by name, description, unit, type and attribute sets,
+ * and by value, with one exception: a histogram measured in a unit of time (a
+ * call duration) is reduced to its observation count, because the measured
+ * time differs from run to run. Sizes, counters and gauges are compared
+ * literally.
  */
 export function defaultCompare(http: ParityScenarioResult, local: ParityScenarioResult): void {
     assert.deepStrictEqual(local.response, http.response, "response payload mismatch between HTTP and local transports");
@@ -227,8 +234,34 @@ export function defaultCompare(http: ParityScenarioResult, local: ParityScenario
         assert.deepStrictEqual(maskSpanIds(local.spans), maskSpanIds(http.spans), "OTEL spans mismatch (after stripping connectum.transport)");
     }
     if (http.metrics || local.metrics) {
-        assert.deepStrictEqual(local.metrics, http.metrics, "OTEL metrics mismatch (after stripping transport label)");
+        assert.deepStrictEqual(maskMeasuredDurations(local.metrics), maskMeasuredDurations(http.metrics), "OTEL metrics mismatch (after stripping transport label)");
     }
+}
+
+/** Units that measure elapsed time (UCUM, as OpenTelemetry names them). */
+const TIME_UNITS: ReadonlySet<string> = new Set(["s", "ms", "us", "ns", "min", "h", "d"]);
+
+const HISTOGRAM_TYPES: ReadonlySet<string> = new Set([String(DataPointType.HISTOGRAM), String(DataPointType.EXPONENTIAL_HISTOGRAM)]);
+
+/**
+ * Replace the recorded value of every point of a time-measuring histogram with
+ * its observation count. The sum, minimum, maximum and buckets of a duration
+ * are the wall-clock time of that run and never agree between two runs; how
+ * many observations were made, and under which attributes, does.
+ */
+function maskMeasuredDurations(metrics: NormalizedMetric[] | undefined): NormalizedMetric[] | undefined {
+    return metrics?.map((metric) => {
+        if (!HISTOGRAM_TYPES.has(metric.type) || !TIME_UNITS.has(metric.unit)) {
+            return metric;
+        }
+        return {
+            ...metric,
+            points: metric.points.map((point) => ({
+                attributes: point.attributes,
+                value: { count: (point.value as { count?: unknown } | undefined)?.count },
+            })),
+        };
+    });
 }
 
 /**
