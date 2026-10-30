@@ -2451,6 +2451,9 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             connectAttempt = attemptToken;
             const abort = new AbortController();
             connectAbort = abort;
+            // The signal the sockets get: ours, and the application's own `socketOptions.signal` when it passed one.
+            const userSignal = options.socketOptions?.signal;
+            const socketSignal = userSignal instanceof AbortSignal ? AbortSignal.any([userSignal, abort.signal]) : abort.signal;
             const attemptGeneration = generation;
             const isCurrent = (): boolean => generation === attemptGeneration;
             const superseded = (): boolean => !isCurrent();
@@ -2486,7 +2489,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // in its handshake, so without the signal that socket stays open for as long as the peer
                 // keeps it. It is never aborted after connect() settled, so an established connection is
                 // still closed gracefully.
-                connectOptions.signal = abort.signal;
+                connectOptions.signal = socketSignal;
                 if (recoveryEnabled) {
                     // amqplib opt-in recovery: reconnect with backoff+jitter; our
                     // setup hook re-creates channels/topology/subscriptions.
@@ -2512,7 +2515,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     // The probe is a connection of its own that disconnect() knows nothing about: a socket that
                     // never completes the handshake, or a broker that stops answering the setup, would hold
                     // connect() forever. Everything below that waits on it ends when disconnect() aborts.
-                    const probeOptions: Record<string, unknown> = { ...buildConnectOptions(options.socketOptions, clientProperties), signal: abort.signal };
+                    const probeOptions: Record<string, unknown> = { ...buildConnectOptions(options.socketOptions, clientProperties), signal: socketSignal };
 
                     let probe: amqp.ChannelModel | null = null;
                     try {

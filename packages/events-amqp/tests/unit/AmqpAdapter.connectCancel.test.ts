@@ -100,7 +100,27 @@ describe("disconnect() during a connect() that waits for a socket that never ans
         });
     }
 
-    it("a connect() after the cancelled one starts a clean attempt", { timeout: 30_000 }, async () => {
+    it("an AbortSignal the application passes in socketOptions still ends the socket of recovery: false", { timeout: 30_000 }, async () => {
+        const hole = await startBlackhole();
+        const own = new AbortController();
+        const adapter = AmqpAdapter({ url: `amqp://guest:guest@127.0.0.1:${hole.port}`, exchange: "connect.cancel", recovery: false, socketOptions: { signal: own.signal } });
+        try {
+            const first = adapter.connect().then(
+                () => "resolved" as const,
+                (error: unknown) => error,
+            );
+            await waitUntil(() => hole.accepted() >= 1, "the adapter dialled the server");
+            own.abort();
+            await waitUntil(() => hole.open() === 0, "the application's signal destroyed the socket");
+            const outcome = await within(first, 5_000, "the pending connect()");
+            assert.ok(outcome instanceof Error, "the connect() rejects with the abort");
+        } finally {
+            await adapter.disconnect().catch(() => undefined);
+            await hole.close();
+        }
+    });
+
+    it("a connect() after the cancelled one starts a clean attempt",{ timeout: 30_000 }, async () => {
         const hole = await startBlackhole();
         const adapter = AmqpAdapter({ url: `amqp://guest:guest@127.0.0.1:${hole.port}`, exchange: "connect.cancel", lifecycle: { onLifecycle: () => undefined } });
         try {
