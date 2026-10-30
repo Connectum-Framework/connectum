@@ -142,6 +142,18 @@ describe("copyAuthContext", () => {
         assert.deepStrictEqual(seen, [["user"], ["user"]]);
     });
 
+    it("keeps the holes of a sparse array in claims", () => {
+        // biome-ignore lint/suspicious/noSparseArray: the hole is the case under test
+        const sparse = ["a", , "c"];
+        const copy = copyAuthContext({ ...verified(), claims: { list: sparse } });
+        const list = copy.claims.list as unknown[];
+
+        assert.strictEqual(list.length, 3);
+        assert.strictEqual(1 in list, false, "the hole stays a hole");
+        assert.strictEqual(list[0], "a");
+        assert.strictEqual(list[2], "c");
+    });
+
     it("omits expiresAt and name when the identity has none, and keeps extra keys", () => {
         const { expiresAt: _expiresAt, name: _name, ...rest } = verified();
         const copy = copyAuthContext({ ...rest, tenant: "acme" } as AuthContext);

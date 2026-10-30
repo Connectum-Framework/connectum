@@ -32,8 +32,12 @@ function deepCopy(value: unknown, copies: WeakMap<object, unknown>): unknown {
         copies.set(value, copy);
         // By index, not `for...of`: an array can carry its own `Symbol.iterator` that yields other
         // values than the items a check has read (a role `user` that iterates as `admin`).
+        // A hole stays a hole: only indices the array has are copied, the length is kept.
         const length = value.length;
-        for (let index = 0; index < length; index++) copy.push(deepCopy(value[index], copies));
+        copy.length = length;
+        for (let index = 0; index < length; index++) {
+            if (index in value) copy[index] = deepCopy(value[index], copies);
+        }
         return copy;
     }
 
