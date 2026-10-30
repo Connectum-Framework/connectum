@@ -56,7 +56,20 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   `circuitBreaker.halfOpenAfter`, `retry.initialDelay` and `retry.maxDelay` 0 to 2147483647 ms, all integers
   (`retry.maxRetries` is a finite number >= 0). A non-number throws `TypeError`, any other violation
   `RangeError`. `createDefaultInterceptors` accepts `true`, `false` or an options object per key (`fallback`:
-  `false` or an options object with a handler; `validation`: a boolean) and throws `TypeError` otherwise.
+  `false` or an options object with a handler; `validation`: a boolean) and throws `TypeError` otherwise;
+  a key it does not know (`timout`, `logger`) is refused with a `TypeError` that lists the known keys.
+- The other options are checked the same way: every factory refuses an options argument that is not an object
+  (`TypeError` naming the factory); `skipStreaming`, `skipHealthCheck`, `includeTransport`, `includeBodies`,
+  `skipGrpcServices`, `alwaysEmitImplicit` and `ignoreUnknownFields` must be booleans; `logger` and
+  `failurePredicate` must be functions; `level` must be `debug`, `info`, `warn` or `error`; `retryableCodes`
+  must be an array of Connect codes.
+- `createMethodFilterInterceptor` accepts only the keys `*`, `Service/*` and `Service/Method` (names non-empty,
+  without `*`, `/` or whitespace) and arrays of functions as values, and throws at creation otherwise. Names
+  are compared exactly, case included.
+- A bulkhead call that waits in the queue leaves it when its request signal aborts and never reaches the handler.
+  A circuit breaker in the half-open state lets one probe through and rejects every other call at once.
+- The logger's `skipHealthCheck` skips the `grpc.health` package (`grpc.health.v1.Health`), not every service
+  whose name contains that text.
 - Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 

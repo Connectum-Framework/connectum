@@ -256,6 +256,105 @@ transportParityTest("parity 3.3c: bulkhead interceptor rejects the call beyond c
     },
 });
 
+// bulkhead: a call that waits in the queue and is abandoned by its client leaves the queue and
+// never reaches the handler. Capacity 1, queue 1: A holds the slot, B queues and is cancelled,
+// C then arrives while A still runs. C must be queued (and run after A), not refused with
+// ResourceExhausted because the dead B still occupied the queue.
+interface Gate {
+    entered: Promise<void>;
+    markEntered: () => void;
+    release: () => void;
+    released: Promise<void>;
+}
+const gates = new Map<string, Gate>();
+function gateFor(key: string): Gate {
+    let gate = gates.get(key);
+    if (!gate) {
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        gate = { entered: entered.promise, markEntered: entered.resolve, release: released.resolve, released: released.promise };
+        gates.set(key, gate);
+    }
+    return gate;
+}
+const handlerStarts = new Map<TransportKind, string[]>();
+const interceptorEvents = new Map<string, PromiseWithResolvers<void>>();
+function eventFor(key: string): PromiseWithResolvers<void> {
+    let event = interceptorEvents.get(key);
+    if (!event) {
+        event = Promise.withResolvers<void>();
+        interceptorEvents.set(key, event);
+    }
+    return event;
+}
+/** Outside the bulkhead: reports when a call arrives at it and when the call has ended on the server side. */
+const observeCalls: Interceptor = (next) => async (req) => {
+    const [kind, name] = (req.message as unknown as { message: string }).message.split("|") as [string, string];
+    eventFor(`${kind}|${name}|arrived`).resolve();
+    try {
+        return await next(req);
+    } finally {
+        eventFor(`${kind}|${name}|ended`).resolve();
+    }
+};
+transportParityTest("parity 3.3c2: bulkhead drops a queued call its client abandoned and never runs its handler", {
+    services: [
+        behaviourRoutes(async (message) => {
+            const [kind, name] = message.split("|") as [TransportKind, string];
+            handlerStarts.set(kind, [...(handlerStarts.get(kind) ?? []), name]);
+            const gate = gateFor(`${kind}|${name}`);
+            gate.markEntered();
+            await gate.released;
+            return `done:${name}`;
+        }),
+    ],
+    interceptors: [observeCalls, createBulkheadInterceptor({ capacity: 1, queueSize: 1 })],
+    scenario: async ({ transport, transportKind: kind }) => {
+        const client = createClient(EchoService, transport);
+        try {
+            return await abandonedWaiter(client, kind);
+        } finally {
+            // A regression would leave the abandoned call's handler running; let it end so the server can stop.
+            for (const name of ["A", "B", "C"]) gateFor(`${kind}|${name}`).release();
+        }
+    },
+    compare: expectOnBoth({
+        a: { message: "done:A" },
+        b: { code: Code.Canceled },
+        c: { message: "done:C" },
+        // B never started; C started only after A had released the slot.
+        handlerStarts: ["A", "C"],
+    }),
+});
+async function abandonedWaiter(client: ReturnType<typeof createClient<typeof EchoService>>, kind: TransportKind): Promise<{ response: unknown }> {
+    const a = outcome(client, `${kind}|A`);
+    await gateFor(`${kind}|A`).entered;
+
+    const cancelB = new AbortController();
+    const b = client.echo(create(EchoRequestSchema, { message: `${kind}|B` }), { signal: cancelB.signal }).then(
+        () => ({ settled: "ok" }),
+        (err: unknown) => ({ code: ConnectError.from(err).code }),
+    );
+    await eventFor(`${kind}|B|arrived`).promise;
+    cancelB.abort();
+    const bResult = await b;
+    // The server has to see the abandoned call end before C arrives, or C could still meet the
+    // dead entry. With the fix this resolves at once; the bound only keeps a regression from hanging the run.
+    const giveUp = new Promise<void>((resolve) => AbortSignal.timeout(3000).addEventListener("abort", () => resolve(), { once: true }));
+    await Promise.race([eventFor(`${kind}|B|ended`).promise, giveUp]);
+
+    const c = outcome(client, `${kind}|C`);
+    await eventFor(`${kind}|C|arrived`).promise;
+    gateFor(`${kind}|A`).release();
+    const aResult = await a;
+    // C runs once A has released the slot. If it was refused instead, `c` is already settled.
+    const afterA = await Promise.race([c, gateFor(`${kind}|C`).entered.then(() => "entered" as const)]);
+    if (afterA === "entered") {
+        gateFor(`${kind}|C`).release();
+    }
+    return { response: { a: aResult, b: bResult, c: await c, handlerStarts: handlerStarts.get(kind) } };
+}
+
 // circuit breaker: after `threshold` consecutive infrastructure failures the circuit opens and
 // the next call is rejected with Unavailable without reaching the handler. The breaker keeps
 // its state for the life of the interceptor, so each run gets its own instance, picked by a
@@ -297,6 +396,76 @@ transportParityTest("parity 3.3d: circuit-breaker interceptor opens after thresh
         afterOpen: { code: Code.Unavailable },
         // Only the two failing calls reached the handler; the call after the circuit opened did not.
         handlerCalls: 2,
+    }),
+});
+
+// circuit breaker, half-open: once the open period has passed, exactly one call is the probe;
+// callers that arrive while it is still running are rejected at once with Unavailable instead of
+// waiting for it, and a successful probe closes the circuit. `halfOpenAfter: 0` makes the very next
+// call the probe, so the scenario needs no clock.
+function perRunProbeBreaker(): Interceptor {
+    const instances = new Map<string, Interceptor>();
+    return (next) => (req) => {
+        const run = req.header.get("x-run") ?? "";
+        let instance = instances.get(run);
+        if (!instance) {
+            instance = createCircuitBreakerInterceptor({ threshold: 1, halfOpenAfter: 0 });
+            instances.set(run, instance);
+        }
+        return instance(next)(req);
+    };
+}
+const probeHandlerCalls = new Map<string, string[]>();
+transportParityTest("parity 3.3d2: circuit-breaker half-open rejects callers that arrive during the probe at once", {
+    services: [
+        behaviourRoutes(async (message) => {
+            const [kind, name] = message.split("|") as [TransportKind, string];
+            probeHandlerCalls.set(kind, [...(probeHandlerCalls.get(kind) ?? []), name]);
+            if (name === "fail") throw new ConnectError("upstream broke", Code.Internal);
+            if (name === "probe") {
+                const gate = gateFor(`${kind}|probe`);
+                gate.markEntered();
+                await gate.released;
+            }
+            return `done:${name}`;
+        }),
+    ],
+    interceptors: [perRunProbeBreaker()],
+    scenario: async ({ transport, transportKind: kind }) => {
+        const client = createClient(EchoService, transport);
+        const headers = { "x-run": kind };
+        try {
+            const failed = await outcome(client, `${kind}|fail`, headers);
+            const probe = outcome(client, `${kind}|probe`, headers);
+            await gateFor(`${kind}|probe`).entered;
+
+            // A regression leaves these callers waiting for the probe, which only ends below: the bound keeps the run from hanging.
+            const giveUp = new Promise<string>((resolve) => AbortSignal.timeout(3000).addEventListener("abort", () => resolve("still waiting"), { once: true }));
+            const during = await Promise.all([1, 2].map((n) => Promise.race([outcome(client, `${kind}|during${n}`, headers), giveUp])));
+
+            gateFor(`${kind}|probe`).release();
+            const probeResult = await probe;
+            const after = await outcome(client, `${kind}|after`, headers);
+            return {
+                response: {
+                    failed,
+                    during: during.map((result) => (typeof result === "string" ? result : { code: (result as { code?: number }).code })),
+                    probe: probeResult,
+                    after,
+                    handlerCalls: probeHandlerCalls.get(kind),
+                },
+            };
+        } finally {
+            gateFor(`${kind}|probe`).release();
+        }
+    },
+    compare: expectOnBoth({
+        failed: { code: Code.Internal, text: "upstream broke" },
+        during: [{ code: Code.Unavailable }, { code: Code.Unavailable }],
+        probe: { message: "done:probe" },
+        after: { message: "done:after" },
+        // The two callers that arrived during the probe never reached the handler.
+        handlerCalls: ["fail", "probe", "after"],
     }),
 });
 

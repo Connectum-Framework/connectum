@@ -10,6 +10,7 @@ import type { DescMessage, JsonValue, Message } from "@bufbuild/protobuf";
 import { fromJson, isMessage, toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import type { SerializerOptions } from "./types.ts";
+import { requireBoolean, requireOptionsObject } from "./validate.ts";
 
 /**
  * Turn one response value into a message of the output type.
@@ -105,7 +106,13 @@ async function* toJsonStream<T>(schema: DescMessage, stream: AsyncIterable<T>, a
  * ```
  */
 export function createSerializerInterceptor(options: SerializerOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createSerializerInterceptor", value: options });
     const { skipGrpcServices = true, alwaysEmitImplicit = true, ignoreUnknownFields = true } = options;
+
+    // Validate options: a string such as "no" would be read as true.
+    requireBoolean({ caller: "createSerializerInterceptor", option: "skipGrpcServices", value: skipGrpcServices });
+    requireBoolean({ caller: "createSerializerInterceptor", option: "alwaysEmitImplicit", value: alwaysEmitImplicit });
+    requireBoolean({ caller: "createSerializerInterceptor", option: "ignoreUnknownFields", value: ignoreUnknownFields });
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         // Skip the grpc.* service namespace, independently of the wire protocol.

@@ -21,7 +21,7 @@ import { createSerializerInterceptor } from "./serializer.ts";
 import { createTimeoutInterceptor } from "./timeout.ts";
 import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, FallbackOptions, RetryOptions, SerializerOptions, TimeoutOptions } from "./types.ts";
 import type { DefaultOptionKind } from "./validate.ts";
-import { requireDefaultOption } from "./validate.ts";
+import { requireDefaultOption, requireKnownKeys, requireOptionsObject } from "./validate.ts";
 
 /**
  * Configuration options for the default interceptor chain.
@@ -37,7 +37,11 @@ import { requireDefaultOption } from "./validate.ts";
  *
  * Any other value for a key (`null`, a number, a string, an array, a function) is
  * refused with a `TypeError` naming the key: a value that is not understood must
- * not silently disable an interceptor. The numeric options inside an options
+ * not silently disable an interceptor. A key that is not listed here, such as the
+ * mistyped `timout`, is refused the same way, with the known keys in the message;
+ * the logger and the method filter are not part of this chain, so create them
+ * with their own factories. An argument that is not an object (`null`, for
+ * example) is refused too. The numeric options inside an options
  * object are validated by their factories; see each options type for its range.
  *
  * Only structural interceptors (errorHandler, validation) are enabled by
@@ -188,6 +192,10 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  * ```
  */
 export function createDefaultInterceptors(options: DefaultInterceptorOptions = {}): Interceptor[] {
+    requireOptionsObject({ caller: "createDefaultInterceptors", value: options });
+    // A key outside the list would otherwise be ignored: `{ timout: ... }` asks for a timeout and gets none.
+    requireKnownKeys({ caller: "createDefaultInterceptors", value: options, known: OPTION_KINDS.map(([option]) => option) });
+
     for (const [option, kind] of OPTION_KINDS) {
         requireDefaultOption({ option, value: options[option], kind });
     }

@@ -271,6 +271,75 @@ describe("createMethodFilterInterceptor", () => {
                 }),
             );
         });
+
+        // Each of these used to be accepted and then never match any call, so a guard
+        // registered under a mistyped key (an authorization or audit interceptor, for example)
+        // stayed silently inactive.
+        for (const key of ["/Unary", "acme.v1.Svc/", "*/*", "acme.v1.Svc/Un*", "*/Unary", "a/b/*", "acme.v1.Svc/Unary/extra", "acme.v1.Svc/*/", "acme.v1.Svc/Unary ", " acme.v1.Svc/Unary", "acme.v1. Svc/*", "acme.v1.Svc/Un ary", "*/", "/", "", " "]) {
+            it(`should throw at creation for the key ${JSON.stringify(key)}, which can never match a call`, () => {
+                assert.throws(
+                    () => createMethodFilterInterceptor({ [key]: [] }),
+                    (err: unknown) => err instanceof Error && err.message.startsWith(`Invalid method filter pattern: ${JSON.stringify(key)}.`) && err.message.includes('"*", "Service/*", or "Service/Method"'),
+                );
+            });
+        }
+
+        it("should accept package names with dots, digits and underscores in both forms", () => {
+            assert.doesNotThrow(() =>
+                createMethodFilterInterceptor({
+                    "acme.v1_beta2.Order_Service/*": [],
+                    "acme.v1_beta2.Order_Service/Get_Order2": [],
+                }),
+            );
+        });
+
+        it("should keep naming the empty service when only '/*' is given", () => {
+            assert.throws(() => createMethodFilterInterceptor({ "/*": [] }), /Service name before "\/\*" must not be empty/);
+        });
+
+
+        for (const [label, value, got] of [
+            ["a string", "not-an-array", '"not-an-array"'],
+            ["null", null, "null"],
+            ["undefined", undefined, "undefined"],
+            ["a single function", (next: unknown) => next, "a function"],
+            ["an object", {}, "an object"],
+        ] as const) {
+            it(`should throw a TypeError naming the key when its value is ${label} instead of an array`, () => {
+                assert.throws(
+                    () => createMethodFilterInterceptor({ "acme.v1.Svc/*": value } as never),
+                    (err: unknown) => err instanceof TypeError && err.message === `createMethodFilterInterceptor: the interceptors of "acme.v1.Svc/*" must be an array of functions, got ${got}`,
+                );
+            });
+        }
+
+        for (const [label, entry] of [
+            ["null", null],
+            ["undefined", undefined],
+            ["a string", "interceptor"],
+            ["an object", {}],
+        ] as const) {
+            it(`should throw a TypeError naming the key and position when an entry is ${label}, instead of skipping it`, () => {
+                assert.throws(
+                    () => createMethodFilterInterceptor({ "acme.v1.Svc/Unary": [(next: unknown) => next, entry] } as never),
+                    (err: unknown) => err instanceof TypeError && err.message.startsWith('createMethodFilterInterceptor: entry 1 of the interceptors of "acme.v1.Svc/Unary" must be a function, got '),
+                );
+            });
+        }
+
+        for (const [label, methods] of [
+            ["null", null],
+            ["undefined", undefined],
+            ["an array", []],
+            ["a string", "*"],
+        ] as const) {
+            it(`should throw a TypeError naming the factory when the map is ${label}`, () => {
+                assert.throws(
+                    () => createMethodFilterInterceptor(methods as never),
+                    (err: unknown) => err instanceof TypeError && err.message.startsWith("createMethodFilterInterceptor: methods must be an object, got "),
+                );
+            });
+        }
     });
 
     describe("interceptor chaining", () => {

@@ -165,6 +165,67 @@ describe('createDefaultInterceptors', () => {
         );
     });
 
+    // A mistyped key used to be ignored: the caller asked for a timeout and silently got none.
+    const knownKeys = 'errorHandler, timeout, bulkhead, circuitBreaker, retry, fallback, validation, serializer';
+    for (const [key, value] of [
+        ['timout', { duration: 10 }],
+        ['circuitbreaker', true],
+        ['retries', true],
+        ['logger', true],
+        ['methodFilter', {}],
+        ['Timeout', true],
+        ['timeout ', true],
+    ] as const) {
+        it(`should refuse the unknown key ${JSON.stringify(key)} with a TypeError that names it and lists the known keys`, () => {
+            assert.throws(
+                () => createDefaultInterceptors({ [key]: value } as never),
+                (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: unknown option ${JSON.stringify(key)}; the known options are ${knownKeys}`,
+            );
+        });
+    }
+
+    it('should refuse an unknown key even when its value is undefined, and name every unknown key', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: true, timout: undefined, retries: true } as never),
+            (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: unknown options "timout", "retries"; the known options are ${knownKeys}`,
+        );
+    });
+
+    it('should report an unknown key before it looks at the values of the known ones', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: null, timout: true } as never),
+            (err: unknown) => err instanceof TypeError && err.message.startsWith('createDefaultInterceptors: unknown option "timout"'),
+        );
+    });
+
+    for (const [label, value, got] of [
+        ['null', null, 'null'],
+        ['a string', 'timeout', '"timeout"'],
+        ['an array', [], 'an array'],
+        ['a number', 5, '5'],
+    ] as const) {
+        it(`should refuse ${label} as the options argument with a TypeError that names the factory`, () => {
+            assert.throws(
+                () => createDefaultInterceptors(value as never),
+                (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: options must be an object, got ${got}`,
+            );
+        });
+    }
+
+    it('should still accept every known key together', () => {
+        const interceptors = createDefaultInterceptors({
+            errorHandler: true,
+            timeout: true,
+            bulkhead: true,
+            circuitBreaker: true,
+            retry: true,
+            fallback: { handler: () => ({}) },
+            validation: true,
+            serializer: true,
+        });
+        assert.strictEqual(interceptors.length, 8);
+    });
+
     it('should surface a numeric range error from an options object', () => {
         assert.throws(
             () => createDefaultInterceptors({ timeout: { duration: 0.5 } }),

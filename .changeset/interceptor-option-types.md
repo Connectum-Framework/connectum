@@ -1,0 +1,5 @@
+---
+"@connectum/interceptors": minor
+---
+
+fix: the interceptor factories now check the options that are not numbers when they are called, and throw an error that names the factory and the option. Before, a wrong value was accepted and showed up later as an `Internal` error on the first failing call, a missing log line, a flag read as true because it was a non-empty string, or a raw `Cannot read properties of null`. Now refused: an options argument that is not an object (`createTimeoutInterceptor(null)` and the same for the bulkhead, circuit breaker, retry, logger, serializer and fallback factories); `skipStreaming`, `skipHealthCheck`, `includeTransport`, `includeBodies`, `skipGrpcServices`, `alwaysEmitImplicit` and `ignoreUnknownFields` that are not booleans (`TypeError`); a `logger` sink or `failurePredicate` that is not a function (`TypeError`); a `level` that is not `debug`, `info`, `warn` or `error` (`TypeError` for a non-string, `RangeError` for any other string); `retryableCodes` that is not an array of Connect codes (`TypeError`, or `RangeError` for a number that is not a code). Valid options behave as before.
