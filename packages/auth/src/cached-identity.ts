@@ -59,6 +59,17 @@ function deepCopy(value: unknown, copies: WeakMap<object, unknown>): unknown {
 }
 
 /**
+ * A copy of a `roles` or `scopes` list. The list was checked to be a dense array of strings read by
+ * index, so it is copied by index and nothing else: no `in` test (a proxy can answer it differently
+ * from `get`) and no iterator.
+ */
+function copyStringList(list: ReadonlyArray<string>): ReadonlyArray<string> {
+    const copy: string[] = [];
+    for (let index = 0; index < list.length; index++) copy.push(list[index] as string);
+    return copy;
+}
+
+/**
  * A copy of `context` in which plain objects, arrays and dates are copied; any other value inside
  * `claims` (a `Map`, a class instance) is shared with the original. Own enumerable keys beyond the declared
  * fields are kept. The declared fields are read explicitly, so a context whose `subject` or `type`
@@ -71,8 +82,8 @@ export function copyAuthContext(context: AuthContext): AuthContext {
         subject: context.subject,
         type: context.type,
         ...(context.name !== undefined ? { name: context.name } : {}),
-        roles: deepCopy(context.roles, copies) as ReadonlyArray<string>,
-        scopes: deepCopy(context.scopes, copies) as ReadonlyArray<string>,
+        roles: copyStringList(context.roles),
+        scopes: copyStringList(context.scopes),
         claims: deepCopy(context.claims, copies) as Readonly<Record<string, unknown>>,
         ...(context.expiresAt ? { expiresAt: new Date(context.expiresAt.getTime()) } : {}),
     };

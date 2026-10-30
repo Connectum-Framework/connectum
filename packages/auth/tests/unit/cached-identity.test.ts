@@ -142,6 +142,14 @@ describe("copyAuthContext", () => {
         assert.deepStrictEqual(seen, [["user"], ["user"]]);
     });
 
+    it("copies the items of roles and scopes that a proxy hides from the in operator", () => {
+        const hidden = (): string[] => new Proxy(["user", "admin"], { has: () => false });
+        const copy = copyAuthContext({ ...verified(), roles: hidden(), scopes: hidden() });
+
+        assert.deepStrictEqual(Array.from({ length: copy.roles.length }, (_, index) => copy.roles[index]), ["user", "admin"]);
+        assert.deepStrictEqual(Array.from({ length: copy.scopes.length }, (_, index) => copy.scopes[index]), ["user", "admin"]);
+    });
+
     it("keeps the holes of a sparse array in claims", () => {
         // biome-ignore lint/suspicious/noSparseArray: the hole is the case under test
         const sparse = ["a", , "c"];
