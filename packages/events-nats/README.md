@@ -36,6 +36,15 @@ stops redelivering them and emits a max-deliver advisory. Messages remain in the
 stream subject to its retention policy. Make handlers idempotent and complete
 side effects before acknowledging. See the [NATS adapter guide](https://connectum.dev/en/guide/events/adapters#nats-jetstream-adapter).
 
+`NatsAdapter()` checks its options when it is created and throws an error that names the
+option. Two `consumerOptions` are opt-in: `redeliveryDelay` holds a message that a handler
+failed on for the given milliseconds before the server delivers it again (without it the
+whole `maxDeliver` budget goes in milliseconds), and `prefetch` limits how many messages the
+server hands to one consumer ahead of its handler (the default buffer of 100 can redeliver
+the back of the buffer while a slow handler works through it). The adapter logs the delivery
+that uses up `maxDeliver`, and recreates the consumers of a subscription when the server
+loses them together with their stream.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/events-nats)
