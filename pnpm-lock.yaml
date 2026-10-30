@@ -40,7 +40,7 @@ catalogs:
       specifier: ^1.0.0-rc.117
       version: 1.0.0-rc.117
     '@opentelemetry/api':
-      specifier: ^1.9.0
+      specifier: '>=1.9.0 <1.10.0'
       version: 1.9.1
     '@opentelemetry/api-logs':
       specifier: ^0.219.0

@@ -83,11 +83,14 @@ describe("config: otlp exporter value and protocol", () => {
 			assert.strictEqual(settings.logs, "otlp/http");
 		});
 
-		it("rejects an unknown protocol instead of silently picking one", () => {
+		// The OpenTelemetry specification asks for a warning and for the setting to be ignored.
+		// Throwing here failed every instrumented RPC, because the provider is created inside
+		// the first call. The warning itself is checked in config-exporter-env.test.ts.
+		it("does not throw for an unknown protocol: it is ignored and protobuf over HTTP applies", () => {
 			process.env.OTEL_TRACES_EXPORTER = "otlp";
 			process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "carrier-pigeon";
 
-			assert.throws(() => getOTLPSettings(), /OTEL_EXPORTER_OTLP_PROTOCOL/);
+			assert.strictEqual(getOTLPSettings().traces, "otlp/http-protobuf");
 		});
 
 		it("keeps an explicit otlp/http, otlp/http-protobuf or otlp/grpc value regardless of the protocol variable", () => {

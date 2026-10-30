@@ -149,6 +149,12 @@ check("otel.initProvider + shutdownProvider are functions", () => {
     assert.strictEqual(typeof otel.initProvider, "function");
     assert.strictEqual(typeof otel.shutdownProvider, "function");
 });
+check("otel.initProvider rejects an unknown exporter name in settings", () => {
+    assert.throws(() => otel.initProvider({ settings: { traces: "bogus" as never } }), TypeError);
+});
+await checkAsync("otel.shutdownProvider rejects a timeout that is not a positive number", async () => {
+    await assert.rejects(otel.shutdownProvider({ timeout: 0 }), TypeError);
+});
 
 // ---------- @connectum/auth: pure header helpers + pattern ----------
 const auth = await import("@connectum/auth");
