@@ -12,7 +12,7 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
-import { copyAuthContext } from "./cached-identity.ts";
+import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
@@ -119,7 +119,7 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
             if (propagateHeaders) {
                 propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await runWithAuthContext(copyAuthContext(cached), () => next(req));
+            return await runWithAuthContext(copyOrRefuse(cached, "Authentication failed"), () => next(req));
         }
 
         // Verify credentials
@@ -148,7 +148,11 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
 
         // Cache a private copy: this request keeps the verifier's own object, later requests get
         // their own copies of the stored one, so no handler can change what another request sees.
-        cache?.set(credentials, copyAuthContext(authContext));
+        // The copy reads properties the shape check did not look at, so a failure here is an
+        // identity that cannot be used, not a server error; nothing is stored in that case.
+        if (cache) {
+            cache.set(credentials, copyOrRefuse(authContext, "Authentication failed"));
+        }
 
         // Run downstream with auth context in AsyncLocalStorage
         return await runWithAuthContext(authContext, () => next(req));

@@ -200,22 +200,21 @@ function jsonForHeader(value: unknown): string {
  *
  * Interceptors use this instead of {@link setAuthHeaders} so that an identity which cannot
  * be propagated ends the request with `Code.Unauthenticated` (and is never cached) instead
- * of surfacing as an internal error. Every other failure of {@link setAuthHeaders} is rethrown as is.
+ * of surfacing as an internal error. That covers every failure of {@link setAuthHeaders}, not only
+ * the ones it names: a claim that cannot be serialized (cyclic, `BigInt`, a throwing `toJSON` or
+ * getter, a proxy whose trap throws) fails the same way. The original error is the `cause`.
  *
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
  * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF, a scope with a space,
- *   or a value that does not fit its header
+ *   a value that does not fit its header, or a claim that cannot be serialized
  */
 export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
     try {
         setAuthHeaders(headers, context, propagatedClaims);
     } catch (err) {
-        if (err instanceof UnsafeHeaderValueError || err instanceof HeaderValueTooLargeError) {
-            throw new ConnectError("Authentication failed", Code.Unauthenticated, undefined, undefined, err);
-        }
-        throw err;
+        throw new ConnectError("Authentication failed", Code.Unauthenticated, undefined, undefined, err);
     }
 }
 

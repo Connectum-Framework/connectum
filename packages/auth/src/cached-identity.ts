@@ -14,6 +14,7 @@
  * @module cached-identity
  */
 
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { AuthContext } from "./types.ts";
 
 /**
@@ -71,4 +72,19 @@ export function copyAuthContext(context: AuthContext): AuthContext {
         claims: deepCopy(context.claims, copies) as Readonly<Record<string, unknown>>,
         ...(context.expiresAt ? { expiresAt: new Date(context.expiresAt.getTime()) } : {}),
     };
+}
+
+/**
+ * {@link copyAuthContext} behind the boundary of an authentication callback. The shape check does
+ * not read extra properties of the context or the keys inside `claims`, so a getter that throws
+ * or a proxy whose trap throws can fail only here; that is an identity which cannot be used, and
+ * the call ends with `Unauthenticated` and `message` (the original error is the `cause`), not with
+ * the raw error.
+ */
+export function copyOrRefuse(context: AuthContext, message: string): AuthContext {
+    try {
+        return copyAuthContext(context);
+    } catch (err) {
+        throw new ConnectError(message, Code.Unauthenticated, undefined, undefined, err);
+    }
 }

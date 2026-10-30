@@ -22,6 +22,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
+import { isAuthContext } from "./auth-context-check.ts";
 import { matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
@@ -112,7 +113,8 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             authContext = null;
         }
 
-        if (!authContext) {
+        // A custom trust source may return any truthy value; only an AuthContext is an identity.
+        if (!authContext || !isAuthContext(authContext)) {
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 

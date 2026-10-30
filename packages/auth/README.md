@@ -80,7 +80,9 @@ handler for the whole call, including after its first `await` or `yield`.
   `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
   field (`roles` and `scopes` must be arrays of at most 8192 strings, without
   holes) ends the call with `Unauthenticated`, with or without `propagateHeaders`,
-  and is never cached.
+  and is never cached. So does a result that passes that check but cannot be
+  copied for the cache or written into headers (a throwing getter, a proxy whose
+  trap throws, a cyclic or `BigInt` claim, a throwing `toJSON`).
 - The generic and session interceptors accept `propagatedClaims` to limit the
   claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
 - `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length

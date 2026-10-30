@@ -398,7 +398,8 @@ export interface GatewayAuthInterceptorOptions {
  * call composes with the existing `requires {roles,scopes}` authz model.
  *
  * @param req - The request (read-only access to headers).
- * @returns AuthContext for a trusted internal caller, or null to reject.
+ * @returns AuthContext for a trusted internal caller, or null to reject. A result that is not an
+ *   `AuthContext` (a truthy `true`, `{}`, a sparse `roles` list) is rejected like `null`.
  */
 export type InternalTrustSource = (req: { header: Headers }) => AuthContext | null | Promise<AuthContext | null>;
 
