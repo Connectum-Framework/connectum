@@ -18,9 +18,12 @@
 export class CatalogConfigError extends Error {
     override readonly name = "CatalogConfigError";
 
+    // No `Object.setPrototypeOf(this, CatalogConfigError.prototype)` here: the build
+    // targets ES2022+, where `extends Error` already yields the right prototype, and a
+    // class that names itself in its body makes the bundler give the class an inner
+    // underscore-prefixed name, which then becomes `constructor.name` in the published code.
+    // biome-ignore lint/complexity/noUselessConstructor: it keeps `message` required, which the inherited `Error` constructor does not.
     constructor(message: string) {
         super(message);
-        // Maintain a clean prototype chain across compiled targets.
-        Object.setPrototypeOf(this, CatalogConfigError.prototype);
     }
 }

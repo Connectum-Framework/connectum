@@ -127,6 +127,7 @@ const checks = [
     ["value-export completeness", ["node", "checks/completeness.mjs"]],
     ["runtime importability", ["node", "checks/runtime-import.mjs"]],
     ["one module instance per package", ["node", "checks/module-identity.mjs"]],
+    ["exported error class names", ["node", "checks/class-names.mjs"]],
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
     ["packed resilience cancellation", ["node", "--test", "checks/resilience-cancellation.mjs"]],
