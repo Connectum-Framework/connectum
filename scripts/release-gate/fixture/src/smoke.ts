@@ -284,6 +284,28 @@ check("testing.createMockContext returns a Context for a catalog", () => {
     assert.ok(ctx && typeof ctx === "object");
     assert.strictEqual(typeof ctx.call, "function");
 });
+check("testing fixtures refuse input they cannot honour, with the argument named", () => {
+    assert.throws(() => testing.createMockDescField("f", { type: "strng" as never }), /unknown scalar type "strng"/);
+    assert.throws(() => testing.createMockDescField("f", { fieldNumber: 19000 }), /field "f".*19000/);
+    assert.throws(() => testing.createMockNextSlow(-5), /delay/);
+    assert.strictEqual(testing.createMockDescField("f", { type: "int32" }).number, 1);
+});
+check("testing.createMockFn forwards this and records result and error", () => {
+    const owner = {
+        v: 7,
+        m: testing.createMockFn(function (this: { v: number }) {
+            return this.v;
+        }),
+    };
+    assert.strictEqual(owner.m(), 7);
+    assert.strictEqual(owner.m.mock.calls[0]?.result, 7);
+    const failing = testing.createMockFn(() => {
+        throw new Error("boom");
+    });
+    assert.throws(() => failing(), /boom/);
+    assert.strictEqual(failing.mock.callCount(), 1);
+    assert.match(String(failing.mock.calls[0]?.error), /boom/);
+});
 // Full catalog-call cardinality coverage: ctx.call (unary) + ctx.stream
 // (server/client/bidi) dispatched through createMockContext — the in-process
 // mock/local resolver path. Remote dispatch over a real gRPC transport
