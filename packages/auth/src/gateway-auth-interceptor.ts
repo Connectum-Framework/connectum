@@ -152,7 +152,7 @@ function parseRoles(raw: string): string[] {
  * Once the identity is read, the interceptor deletes every standard `x-auth-*` identity header
  * together with the mapped headers, the trust header and `stripHeaders` (also on `skipMethods`).
  * With `propagateHeaders` the verified identity is then written back, so an `x-auth-*` header seen
- * downstream always comes from the verified identity, never from the client.
+ * downstream comes from the verified identity, not from the client.
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor

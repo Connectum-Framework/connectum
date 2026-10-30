@@ -51,7 +51,8 @@ function deepCopy(value: unknown, copies: WeakMap<object, unknown>): unknown {
 }
 
 /**
- * A copy of `context` that shares no mutable state with it. Own enumerable keys beyond the declared
+ * A copy of `context` in which plain objects, arrays and dates are copied; any other value inside
+ * `claims` (a `Map`, a class instance) is shared with the original. Own enumerable keys beyond the declared
  * fields are kept. The declared fields are read explicitly, so a context whose `subject` or `type`
  * comes from a getter on a class prototype (which a spread would drop) is copied whole.
  */

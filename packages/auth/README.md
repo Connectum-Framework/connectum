@@ -95,22 +95,25 @@ handler for the whole call, including after its first `await` or `yield`.
   Roles and claims are written as JSON with `\uXXXX` escapes for characters above
   U+00FF and read back unchanged.
 - With the `cache` option of the generic and session interceptors, every request
-  gets its own copy of the cached identity (`roles`, `scopes` and `claims`
-  included), so a handler that changes its `AuthContext` does not change what a
-  later request with the same credential receives.
+  gets its own copy of the cached identity. `roles`, `scopes`, `expiresAt` and
+  nested plain objects, arrays and dates in `claims` are copied; other values in
+  `claims` (a `Map`, a class instance) are shared. A handler that changes its
+  copy does not change what a later request with the same credential receives.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
-  headers before setting verified auth
+  headers (the names in `AUTH_HEADERS`) before setting verified auth
   context. The gateway interceptor strips them too, after it has read its own
-  mapped input, so a client-supplied `x-auth-*` header never reaches the next
-  hop.
+  mapped input, so a client-supplied value of one of those headers is not
+  forwarded to the next hop.
 - With `propagateHeaders`, text above U+00FF in a subject, type, name, or scope
   (Cyrillic, CJK, emoji) is written as `utf-8''` plus percent-encoded UTF-8 and
   read back by the receiver (the writer sets `x-auth-encoding: percent-utf8`,
-  and readers decode only when it is present); ASCII and Latin-1 text is unchanged, except a text with a space or tab at either end, which is
-  encoded too because `Headers.set` would otherwise remove that whitespace. A subject over
-  512 characters, a type over 128, a name over 256, or roles, scopes, or claims
-  whose serialized value is over 8192 characters is rejected with
-  `Unauthenticated`, never cut or left out.
+  and readers decode only when it is present). ASCII and Latin-1 text is written
+  as is, with two exceptions that are encoded too: a text that starts with
+  `utf-8''` (readers decode that prefix when the marker is present), and a text
+  with a space or tab at either end (`Headers.set` would otherwise remove that
+  whitespace). A subject over 512 characters, a type over 128, a name over 256,
+  or roles, scopes, or claims whose serialized value is over 8192 characters is
+  rejected with `Unauthenticated` instead of being cut or left out.
 
 For gateway and service-to-service trust boundaries, see the
 [authentication guide](https://connectum.dev/en/guide/auth) and the

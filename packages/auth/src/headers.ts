@@ -14,7 +14,7 @@ import { AUTH_HEADERS } from "./types.ts";
 /** Maximum length for the value of the roles, scopes and claims headers (shared with client interceptors). */
 export const MAX_HEADER_BYTES = 8192;
 
-/** Longest `subject`, `type` and `name` that fit their headers; a longer value is refused, never cut. */
+/** Longest `subject`, `type` and `name` that fit their headers; a longer value is refused instead of cut. */
 export const MAX_SUBJECT_LENGTH = 512;
 /** Longest `type` that fits `x-auth-type`. */
 export const MAX_TYPE_LENGTH = 128;
@@ -99,7 +99,8 @@ export const HEADER_BREAKING_CHARS = /[\x00\r\n]/;
  * so ASCII and Latin-1 values are unchanged on the wire. Any other text is written as `utf-8''`
  * followed by its percent-encoded UTF-8 bytes. A text that itself starts with the prefix is
  * encoded too, so reading is unambiguous. A space or tab at an end is encoded because
- * `Headers.set` removes it from every value, which would turn ` alice` into `alice`.
+ * `Headers.set` removes it from every value, so a subject of U+0020 followed by `alice` would
+ * reach the next hop as `alice`.
  *
  * @throws {URIError} When the text holds a lone surrogate
  */
@@ -132,7 +133,7 @@ function unreadable(): ConnectError {
  * what a raw header cannot carry). With `strip` the other control characters (C0 except tab, and
  * DEL) are removed as the writer removes them from a subject, type or name, so a decoded text
  * ends up exactly as a raw one would; scopes are read as granted and pass `strip: false`. The
- * length is checked against `limit`; the value is refused, never cut.
+ * length is checked against `limit`; a longer value is refused instead of cut.
  */
 export function readHeaderText(raw: string, limit: number, decode: boolean, strip: boolean): string {
     let text: string;

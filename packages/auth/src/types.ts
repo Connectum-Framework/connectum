@@ -272,7 +272,7 @@ export interface JwtAuthInterceptorOptions {
      * `Unauthenticated` (and never cached) while this is on.
      * Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver.
      * An identity that does not fit its header (subject over 512 characters, type over 128, name over
-     * 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
+     * 256, serialized roles, scopes or claims over 8192) is rejected too, instead of being cut or left out.
      * @default false
      */
     propagateHeaders?: boolean | undefined;
