@@ -12,6 +12,21 @@ import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
 import { validateTestServerOptions } from "./validateTestServerOptions.ts";
 
+/** Loopback only: the server has no authentication and its client runs in the same process. */
+const DEFAULT_HOST = "127.0.0.1";
+
+/**
+ * The host a client uses to reach a server bound to `host`: the bound address
+ * itself, except that the wildcard addresses and the default loopback address
+ * are reached as `localhost`.
+ */
+function clientHost(host: string): string {
+    if (host === DEFAULT_HOST || host === "0.0.0.0" || host === "::") {
+        return "localhost";
+    }
+    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
 /**
  * Create and start a test server on a random (or specified) port.
  *
@@ -19,7 +34,9 @@ import { validateTestServerOptions } from "./validateTestServerOptions.ts";
  * ready for use with ConnectRPC clients. The caller is responsible
  * for calling {@link TestServer.close} when done.
  *
- * @param options - Server configuration (services, interceptors, protocols, port)
+ * The server listens on `127.0.0.1` unless `options.host` says otherwise.
+ *
+ * @param options - Server configuration (services, interceptors, protocols, port, host)
  * @returns Running test server with transport and cleanup function
  *
  * @example
@@ -32,10 +49,12 @@ import { validateTestServerOptions } from "./validateTestServerOptions.ts";
  */
 export async function createTestServer(options: CreateTestServerOptions): Promise<TestServer> {
     validateTestServerOptions(options);
+    const host = options.host ?? DEFAULT_HOST;
 
     const server = createServer({
         services: options.services,
         port: options.port ?? 0,
+        host,
         protocols: [...(options.protocols ?? [])],
         interceptors: [...(options.interceptors ?? [])],
         allowHTTP1: false,
@@ -55,7 +74,7 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
         throw err;
     }
 
-    const baseUrl = `http://localhost:${port}`;
+    const baseUrl = `http://${clientHost(host)}:${port}`;
 
     const transport = createGrpcTransport({
         baseUrl,

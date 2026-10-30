@@ -8,6 +8,7 @@
 
 import assert from "node:assert";
 import { connect } from "node:net";
+import { networkInterfaces } from "node:os";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
@@ -147,6 +148,114 @@ describe("createTestServer options", () => {
 		}
 	});
 
+});
+
+/** An address of this machine that is not loopback, or undefined when it has none (a sandbox without a network). */
+function externalAddress(): string | undefined {
+	return Object.values(networkInterfaces())
+		.flat()
+		.find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal)?.address;
+}
+
+/** Resolves true when a TCP connection to the address is accepted, false when it is refused. */
+function acceptsConnectionsAt(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = connect({ port, host });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
+
+// The server and its client live in one process, so the helper listens on loopback unless the
+// caller asks for another host: a test server has no authentication and must not be reachable
+// from the network for the duration of a test run.
+describe("createTestServer host", () => {
+	const external = externalAddress();
+
+	it("listens on loopback only by default", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes] });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), true, "loopback must accept connections");
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), false, `${external} must refuse connections`);
+			assert.strictEqual(await callEcho(server), "echo:ping", "the returned transport must still reach the server");
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("listens on the given host and points baseUrl at it", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes], host: external });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), true, `${external} must accept connections`);
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), false, "loopback must refuse: only the given host is bound");
+			assert.strictEqual(new URL(server.baseUrl).hostname, external);
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("listens on all interfaces when asked for 0.0.0.0", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes], host: "0.0.0.0" });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), true);
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), true);
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost", "a wildcard address is reached through localhost");
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("accepts the :: wildcard and reaches it through localhost", async (t) => {
+		const server = await createTestServer({ services: [echoRoutes], host: "::" }).catch((err: unknown) => {
+			if ((err as NodeJS.ErrnoException).code === "EAFNOSUPPORT" || (err as NodeJS.ErrnoException).code === "EADDRNOTAVAIL") {
+				return undefined;
+			}
+			throw err;
+		});
+		if (server === undefined) {
+			t.skip("this machine has no IPv6 support");
+			return;
+		}
+		try {
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	for (const [name, host] of [
+		["an empty string", ""],
+		["a number", 127],
+	] as const) {
+		it(`rejects ${name} as host, naming the option`, async () => {
+			await assert.rejects(
+				createTestServer({ services: [echoRoutes], host: host as never }),
+				(err: unknown) => err instanceof TypeError && /createTestServer: host must be a non-empty string/.test(err.message),
+			);
+		});
+	}
 });
 
 // A value that is not what the type says must fail up front, naming the option and the

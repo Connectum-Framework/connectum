@@ -53,4 +53,19 @@ export interface CreateTestServerOptions {
     protocols?: readonly ProtocolRegistration[];
     /** Port number. Default: `0` (random available port) */
     port?: number;
+    /**
+     * Address to listen on, a non-empty string. Default: `127.0.0.1`, so the
+     * server is reachable from this machine only: the server has no
+     * authentication, and the transport this helper returns runs in the same
+     * process. Pass `0.0.0.0` (or `::`) to listen on all interfaces, for a test
+     * that reaches the server from another container or host.
+     *
+     * `baseUrl` points at the address that was bound; a wildcard or the default
+     * loopback address is reached as `localhost`. An IPv6 literal other than the
+     * `::` wildcard (such as `::1`) is not usable on Node.js: the HTTP/2 client
+     * sends the authority without brackets and the server fails to parse it
+     * (observed on Node.js 26.12.1; Bun serves it). Use `127.0.0.1`, a host name
+     * or `::`.
+     */
+    host?: string;
 }

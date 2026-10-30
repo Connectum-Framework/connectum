@@ -30,7 +30,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * the call boundary of untyped code: `services` (each element a service
  * definition, as `defineService()` and `defineLazyService()` return it),
  * `interceptors` (functions) and `protocols` (objects with a `name` and a
- * `register` function). `port`, `host` and `shutdown` are checked by
+ * `register` function), and `host` (a non-empty string). `port` is checked by
  * `createServer()` itself.
  *
  * @throws TypeError naming the option, and the index of the offending element
@@ -40,7 +40,11 @@ export function validateTestServerOptions(options: unknown): asserts options is 
         throw new TypeError(`createTestServer: options must be an object like { services: [...] }, got ${describeValue(options)}.`);
     }
 
-    const { services, interceptors, protocols } = options;
+    const { services, interceptors, protocols, host } = options;
+
+    if (host !== undefined && (typeof host !== "string" || host === "")) {
+        throw new TypeError(`createTestServer: host must be a non-empty string such as "127.0.0.1" or "0.0.0.0", got ${host === "" ? "an empty string" : describeValue(host)}.`);
+    }
 
     if (!Array.isArray(services)) {
         throw new TypeError(`createTestServer: services must be an array of service definitions, got ${services === undefined ? "nothing" : describeValue(services)}.`);
