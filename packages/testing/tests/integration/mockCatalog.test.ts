@@ -381,6 +381,171 @@ describe("createMockContext", () => {
             assert.deepStrictEqual(received, ["s-0"]);
         });
 
+        // A bug in a test double (a typo that throws a TypeError) must be visible in the
+        // test output: the mock runs in the test process, so nothing is hidden from a client.
+        describe("an exception that is not a ConnectError", () => {
+            const typo = new TypeError("Cannot read properties of undefined (reading 'boom')");
+
+            function expectInternalWithCause(err: unknown, expected: unknown, message: string): true {
+                const connectErr = ConnectError.from(err);
+                assert.strictEqual(connectErr.code, Code.Internal);
+                assert.strictEqual(connectErr.rawMessage, message, "the author's message must be kept");
+                assert.strictEqual(connectErr.cause, expected, "the original error must be the cause");
+                assert.strictEqual(connectErr.metadata.get("x-connectum-mock-error-id"), null, "the bookkeeping entry must not reach the caller");
+                return true;
+            }
+
+            it("ctx.call rejects with Internal, the original message and the original error as cause", async () => {
+                const ctx = createMockContext({
+                    catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+                    mocks: [
+                        mockService(EchoService, {
+                            echo: () => {
+                                throw typo;
+                            },
+                        }),
+                    ],
+                });
+                await assert.rejects(ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "x" })), (err: unknown) => expectInternalWithCause(err, typo, typo.message));
+            });
+
+            it("an async mock that rejects is reported the same way", async () => {
+                const ctx = createMockContext({
+                    catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+                    mocks: [mockService(EchoService, { echo: async () => Promise.reject(typo) })],
+                });
+                await assert.rejects(ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "x" })), (err: unknown) => expectInternalWithCause(err, typo, typo.message));
+            });
+
+            it("a thrown value that is not an Error is reported by its text, with the value as cause", async () => {
+                const ctx = createMockContext({
+                    catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+                    mocks: [
+                        mockService(EchoService, {
+                            echo: () => {
+                                throw "plain string";
+                            },
+                        }),
+                    ],
+                });
+                await assert.rejects(ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "x" })), (err: unknown) => expectInternalWithCause(err, "plain string", "plain string"));
+            });
+
+            it("ctx.stream delivers the items before the failure, then rejects with the original error as cause", async () => {
+                const ctx = createMockContext({
+                    catalog: defineCatalog({ [StreamingService.typeName]: StreamingService }),
+                    mocks: [
+                        mockService(StreamingService, {
+                            async *server(req) {
+                                yield create(ItemSchema, { value: `${req.value}-0`, sequence: 0 });
+                                throw typo;
+                            },
+                        }),
+                    ],
+                });
+                const received: string[] = [];
+                await assert.rejects(
+                    (async () => {
+                        for await (const item of ctx.stream("streaming.v1.StreamingService/Server")(create(ItemSchema, { value: "s", sequence: 0 }))) {
+                            received.push(item.value);
+                        }
+                    })(),
+                    (err: unknown) => expectInternalWithCause(err, typo, typo.message),
+                );
+                assert.deepStrictEqual(received, ["s-0"]);
+            });
+
+            it("client-streaming and bidirectional mocks are reported the same way", async () => {
+                const transport = mockResolver([
+                    mockService(StreamingService, {
+                        client: async () => {
+                            throw typo;
+                        },
+                        async *bidi() {
+                            throw typo;
+                        },
+                    }),
+                ])({ typeName: StreamingService.typeName });
+                assert.ok(transport);
+                const client = createClient(StreamingService, transport);
+                async function* oneItem() {
+                    yield create(ItemSchema, { value: "a", sequence: 0 });
+                }
+
+                await assert.rejects(client.client(oneItem()), (err: unknown) => expectInternalWithCause(err, typo, typo.message));
+                await assert.rejects(
+                    (async () => {
+                        for await (const _item of client.bidi(oneItem())) {
+                            // the failure arrives before any item
+                        }
+                    })(),
+                    (err: unknown) => expectInternalWithCause(err, typo, typo.message),
+                );
+            });
+
+            it("each concurrent failure carries its own cause", async () => {
+                const transport = mockResolver([
+                    mockService(EchoService, {
+                        echo: async (req) => {
+                            await new Promise((resolve) => setTimeout(resolve, req.message === "slow" ? 20 : 0));
+                            throw new Error(`failed:${req.message}`);
+                        },
+                    }),
+                ])({ typeName: EchoService.typeName });
+                assert.ok(transport);
+                const client = createClient(EchoService, transport);
+
+                const [slow, fast] = await Promise.all(
+                    ["slow", "fast"].map((message) => client.echo(create(EchoRequestSchema, { message })).catch((err: unknown) => ConnectError.from(err))),
+                );
+
+                assert.strictEqual((slow as ConnectError).rawMessage, "failed:slow");
+                assert.strictEqual(((slow as ConnectError).cause as Error).message, "failed:slow");
+                assert.strictEqual((fast as ConnectError).rawMessage, "failed:fast");
+                assert.strictEqual(((fast as ConnectError).cause as Error).message, "failed:fast");
+            });
+
+            it("a ConnectError thrown by the mock is passed on unchanged, metadata included", async () => {
+                const transport = mockResolver([
+                    mockService(EchoService, {
+                        echo: () => {
+                            throw new ConnectError("no such record", Code.NotFound, { "x-tag": "user-42" });
+                        },
+                    }),
+                ])({ typeName: EchoService.typeName });
+                assert.ok(transport);
+
+                await assert.rejects(createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "x" })), (err: unknown) => {
+                    const connectErr = ConnectError.from(err);
+                    assert.strictEqual(connectErr.code, Code.NotFound);
+                    assert.strictEqual(connectErr.rawMessage, "no such record");
+                    assert.strictEqual(connectErr.metadata.get("x-tag"), "user-42");
+                    assert.strictEqual(connectErr.cause, undefined);
+                    return true;
+                });
+            });
+
+            it("a method the mock does not implement still answers Unimplemented", async () => {
+                const transport = mockResolver([mockService(EchoService, { echo: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }) })])({ typeName: EchoService.typeName });
+                assert.ok(transport);
+
+                await assert.rejects(createClient(EchoService, transport).secureEcho(create(EchoRequestSchema, { message: "x" })), (err: unknown) => ConnectError.from(err).code === Code.Unimplemented);
+            });
+
+            it("a mock keeps its own `this`", async () => {
+                const impl = {
+                    prefix: "kept:",
+                    echo(req: { message: string }) {
+                        return create(EchoResponseSchema, { message: `${this.prefix}${req.message}`, timestamp: 0n });
+                    },
+                };
+                const transport = mockResolver([mockService(EchoService, impl)])({ typeName: EchoService.typeName });
+                assert.ok(transport);
+
+                assert.strictEqual((await createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "x" }))).message, "kept:x");
+            });
+        });
+
         it("ctx.call rejects with Canceled when the call's signal is aborted before the mock answers", async () => {
             const ctx = createMockContext({
                 catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
