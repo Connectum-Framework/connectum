@@ -528,14 +528,70 @@ describe("createMockDescField", () => {
     assert.strictEqual((field as any).scalar, 9);
   });
 
-  // `type` is an arbitrary string; a name that is not a protobuf scalar falls back to the same STRING
-  // scalar as an omitted type, as the mapping function's own comment states.
-  it("a type name that is not a scalar falls back to string (9), like an omitted type", () => {
-    for (const type of ["unknown", "Int32", ""]) {
-      const field = createMockDescField("x", { type });
-
-      assert.strictEqual((field as any).scalar, 9, `type ${JSON.stringify(type)}`);
+  // A name that is not a protobuf scalar would otherwise turn into a string field and the test
+  // built on it would check the wrong data without any signal. The message names the field, the
+  // value and the accepted names. "message" and "enum" are field kinds, not scalar types;
+  // "toString" and "constructor" are inherited properties of a plain lookup table and must not pass.
+  it("a type name that is not a scalar throws and names the field, the value and the valid names", () => {
+    for (const type of ["unknown", "strng", "Int32", "", "message", "enum", "toString", "constructor", "__proto__"]) {
+      assert.throws(
+        () => createMockDescField("x", { type: type as never }),
+        (err: unknown) =>
+          err instanceof TypeError &&
+          err.message.includes('field "x"') &&
+          err.message.includes(JSON.stringify(type)) &&
+          SCALAR_FIELD_TYPES.every(([name]) => err.message.includes(name)),
+        `type ${JSON.stringify(type)}`,
+      );
     }
+  });
+
+  it("a type that is not a string throws instead of becoming a string field", () => {
+    for (const type of [null, 5, {}]) {
+      assert.throws(() => createMockDescField("x", { type: type as never }), TypeError, `type ${String(type)}`);
+    }
+  });
+
+  it("an omitted or undefined type is a string field", () => {
+    assert.strictEqual((createMockDescField("x", {}) as any).scalar, 9);
+    assert.strictEqual((createMockDescField("x", { type: undefined as never }) as any).scalar, 9);
+  });
+
+  it("createMockDescMessage rejects an unknown field type and names the message and the field", () => {
+    assert.throws(
+      () => createMockDescMessage("acme.v1.Bad", { fields: [{ name: "id", type: "int32" }, { name: "email", type: "strng" as never }] }),
+      (err: unknown) => err instanceof TypeError && err.message.includes("acme.v1.Bad") && err.message.includes('field "email"') && err.message.includes('"strng"'),
+    );
+  });
+
+  // protobuf allows 1..536870911 and reserves 19000..19999 for the implementation; protoc rejects
+  // every other number, so a fixture carrying one describes a message that cannot exist.
+  it("a field number outside the protobuf range throws and names the field and the number", () => {
+    for (const fieldNumber of [0, -3, 19000, 19500, 19999, MAX_FIELD_NUMBER + 1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => createMockDescField("x", { fieldNumber }),
+        (err: unknown) => err instanceof RangeError && err.message.includes('field "x"') && err.message.includes(String(fieldNumber)),
+        `fieldNumber ${fieldNumber}`,
+      );
+      assert.throws(
+        () => createMockDescMessage("acme.v1.Bad", { fields: [{ name: "a", fieldNumber }] }),
+        (err: unknown) => err instanceof RangeError && err.message.includes("acme.v1.Bad") && err.message.includes('field "a"'),
+        `message fieldNumber ${fieldNumber}`,
+      );
+    }
+  });
+
+  it("the boundaries of the allowed ranges are accepted", () => {
+    for (const fieldNumber of [1, 18999, 20000, MAX_FIELD_NUMBER]) {
+      assert.strictEqual(createMockDescField("x", { fieldNumber }).number, fieldNumber);
+    }
+  });
+
+  it("an automatically continued number that lands in the reserved range throws", () => {
+    assert.throws(
+      () => createMockDescMessage("acme.v1.Edge", { fields: [{ name: "a", fieldNumber: 18999 }, { name: "b" }] }),
+      (err: unknown) => err instanceof RangeError && err.message.includes('field "b"') && err.message.includes("19000"),
+    );
   });
 
   it("custom type maps correctly: bool -> 8", () => {
@@ -663,6 +719,20 @@ describe("createMockDescMethod", () => {
       assert.strictEqual(method.localName, realMethod("ToString").localName);
     },
   );
+
+  it("a method kind that is not one of the four throws and names the value and the valid kinds", () => {
+    for (const kind of ["bogus", "Unary", "", "streaming", null, 1]) {
+      assert.throws(
+        () => createMockDescMethod("Ping", { kind: kind as never }),
+        (err: unknown) =>
+          err instanceof TypeError &&
+          err.message.includes('"Ping"') &&
+          err.message.includes(JSON.stringify(kind)) &&
+          ["unary", "server_streaming", "client_streaming", "bidi_streaming"].every((valid) => err.message.includes(valid)),
+        `kind ${JSON.stringify(kind)}`,
+      );
+    }
+  });
 
   it("default methodKind is unary", () => {
     const method = createMockDescMethod("Ping");
