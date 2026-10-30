@@ -11,6 +11,7 @@
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { safeObjectProperty } from "@bufbuild/protobuf/reflect";
 import type { FakeMethodOptions, FakeServiceOptions } from "./types.ts";
+import { assertMethodKind } from "./validate.ts";
 
 /**
  * Create a fake {@link DescService} descriptor for testing.
@@ -59,6 +60,10 @@ export function createFakeService(options?: FakeServiceOptions): DescService {
  * @param name - The RPC method name (PascalCase, e.g. `"GetUser"`).
  * @param options - Optional configuration for method kind and registration.
  * @returns A fake `DescMethod` suitable for unit/integration tests.
+ * @throws TypeError when `options.methodKind` is not `unary`, `server_streaming`,
+ *   `client_streaming` or `bidi_streaming`.
+ * @throws Error when `options.register` is `true` and the service already has a method
+ *   with this name (or the same `localName`); the service is left unchanged.
  *
  * @example
  * ```ts
@@ -71,12 +76,24 @@ export function createFakeService(options?: FakeServiceOptions): DescService {
  * ```
  */
 export function createFakeMethod(service: DescService, name: string, options?: FakeMethodOptions): DescMethod {
+    const methodKind = options?.methodKind === undefined ? "unary" : options.methodKind;
+    assertMethodKind(methodKind, `createFakeMethod: method "${name}"`);
+    const localName = safeObjectProperty(name.charAt(0).toLowerCase() + name.slice(1));
+
+    // The second registration would add a second entry to `methods` while the lookup keeps
+    // only the later one, so the service would disagree with itself. Checked before anything is built.
+    if (options?.register && (Object.hasOwn(service.method, localName) || service.methods.some((registered) => registered.name === name))) {
+        throw new Error(
+            `createFakeMethod: cannot register method "${name}": service "${service.typeName}" already has a method with localName "${localName}"; a method name can be registered once`,
+        );
+    }
+
     const method = {
         kind: "rpc",
         name,
-        localName: safeObjectProperty(name.charAt(0).toLowerCase() + name.slice(1)),
+        localName,
         parent: service,
-        methodKind: options?.methodKind ?? "unary",
+        methodKind,
         deprecated: false,
         proto: { options: undefined },
     } as unknown as DescMethod;

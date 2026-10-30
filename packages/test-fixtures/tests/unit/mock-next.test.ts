@@ -70,6 +70,60 @@ describe("createMockNext", () => {
     assert.strictEqual(supplied.id, 7, "editing a response must not change the supplied message");
   });
 
+  // Editing a nested object of one response must not leak into the next one or into the supplied
+  // message: a copy one level deep shares everything below the top level.
+  it("every call gets its own copy at every depth", async () => {
+    const supplied = { nested: { a: 1, list: [{ b: 2 }] }, when: new Date(0), tags: new Set(["x"]), bytes: new Uint8Array([1, 2]) };
+    const next = createMockNext({ message: supplied });
+
+    const first = (await next({})).message as typeof supplied;
+    first.nested.a = 99;
+    first.nested.list[0]!.b = 99;
+    first.tags.add("y");
+    first.bytes[0] = 99;
+    first.when.setTime(5);
+    const second = (await next({})).message as typeof supplied;
+
+    assert.deepStrictEqual(second, { nested: { a: 1, list: [{ b: 2 }] }, when: new Date(0), tags: new Set(["x"]), bytes: new Uint8Array([1, 2]) });
+    assert.strictEqual(supplied.nested.a, 1, "the supplied message stays untouched");
+    assert.notStrictEqual(second.nested, supplied.nested);
+  });
+
+  // A class instance (a protobuf-es message class, a value object) must come back with its
+  // prototype: a structural copy that drops it would change what a valid message looks like.
+  it("a class instance keeps its prototype and methods in the copy", async () => {
+    class Money {
+      amount: { units: number };
+      constructor(amount: { units: number }) {
+        this.amount = amount;
+      }
+      describe() {
+        return `units=${this.amount.units}`;
+      }
+    }
+    const supplied = new Money({ units: 3 });
+    const next = createMockNext({ message: supplied });
+
+    const copy = (await next({})).message as Money;
+
+    assert.ok(copy instanceof Money);
+    assert.strictEqual(copy.describe(), "units=3");
+    assert.notStrictEqual(copy.amount, supplied.amount);
+  });
+
+  it("a message with a cycle and a shared reference is copied without looping", async () => {
+    const shared = { n: 1 };
+    const supplied: Record<string, unknown> = { a: shared, b: shared };
+    supplied.self = supplied;
+    const next = createMockNext({ message: supplied });
+
+    const copy = (await next({})).message as typeof supplied;
+
+    assert.strictEqual(copy.self, copy);
+    assert.strictEqual(copy.a, copy.b);
+    assert.notStrictEqual(copy.a, shared);
+  });
+
   it("stream flag follows the real response: unary by default, a stream when requested", async () => {
     assert.strictEqual(unary.res.stream, false, "reference: a unary response is not a stream");
     assert.strictEqual(serverStreaming.res.stream, true, "reference: a server-streaming response is a stream");
@@ -176,6 +230,33 @@ describe("createMockNextSlow", () => {
 
     assert.strictEqual(early, "still pending");
     assert.deepStrictEqual(await pending, { message: { result: "success" }, stream: false });
+  });
+
+  // setTimeout turns a negative, NaN or too large delay into 1 ms, so the "slow" handler would
+  // answer at once while the test believes it is slow. Creation fails and names the argument.
+  it("a delay that cannot be honoured throws at creation and names the argument", () => {
+    for (const delay of [-5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 2 ** 31, "10", undefined, null]) {
+      assert.throws(
+        () => createMockNextSlow(delay as never),
+        (err: unknown) => (err instanceof RangeError || err instanceof TypeError) && err.message.includes("delay"),
+        `delay ${String(delay)}`,
+      );
+    }
+  });
+
+  it("zero and the largest delay setTimeout accepts are allowed", () => {
+    assert.doesNotThrow(() => createMockNextSlow(0));
+    assert.doesNotThrow(() => createMockNextSlow(2 ** 31 - 1));
+  });
+
+  it("every call gets its own copy at every depth", async () => {
+    const supplied = { nested: { a: 1 } };
+    const next = createMockNextSlow(1, { message: supplied });
+
+    ((await next({})).message as typeof supplied).nested.a = 99;
+
+    assert.strictEqual(((await next({})).message as typeof supplied).nested.a, 1);
+    assert.strictEqual(supplied.nested.a, 1);
   });
 
   it("takes at least delay ms", async () => {
