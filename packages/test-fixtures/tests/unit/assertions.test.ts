@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { runInNewContext } from "node:vm";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError } from "../../src/assertions.ts";
 
@@ -181,6 +182,28 @@ describe("assertConnectError", () => {
                 );
             }
         });
+    });
+
+    // A pattern that is neither a string nor a RegExp used to skip the message check, so the
+    // assertion passed whatever the message said.
+    it("a messagePattern of another kind throws a TypeError instead of passing unchecked", () => {
+        const error = new ConnectError("boom", Code.Internal);
+
+        for (const pattern of [5, {}, null, ["boom"], true]) {
+            assert.throws(
+                () => assertConnectError(error, Code.Internal, pattern as never),
+                (err: unknown) => err instanceof TypeError && err.message.includes("messagePattern"),
+                String(pattern),
+            );
+        }
+    });
+
+    it("a RegExp from another realm is matched", () => {
+        const foreign = runInNewContext("/boom/");
+        assert.ok(!(foreign instanceof RegExp), "reference: the pattern is not an instance of this realm's RegExp");
+
+        assertConnectError(new ConnectError("boom", Code.Internal), Code.Internal, foreign);
+        assert.throws(() => assertConnectError(new ConnectError("calm", Code.Internal), Code.Internal, foreign), assert.AssertionError);
     });
 
     it("narrows type after assertion — error.code is accessible without cast", () => {

@@ -10,7 +10,7 @@
 
 import { Buffer } from "node:buffer";
 import { setTimeout } from "node:timers/promises";
-import { type Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { createMockFn } from "./mock-compat.ts";
 import type { MockNextOptions } from "./types.ts";
 import { assertTimerDelay } from "./validate.ts";
@@ -19,15 +19,17 @@ import { assertTimerDelay } from "./validate.ts";
  * Copy a response message at every depth, so that editing one response reaches neither
  * the next response nor the message the test supplied.
  *
- * Plain objects, class instances (the prototype is kept), arrays, `Map`, `Set`, `Date`,
- * `RegExp`, `Buffer` and typed arrays are copied; shared references and cycles are
- * preserved. Functions and objects with internal state that cannot be copied (promises,
- * `WeakMap`, `WeakSet`, `WeakRef`) are kept as they are. Own properties are copied;
- * `#private` fields of a class instance are not.
+ * Plain objects (the shape of every protobuf-es message), arrays, `Map`, `Set`, `Date`,
+ * `RegExp`, `Buffer`, typed arrays and `ArrayBuffer` are copied; shared references and
+ * cycles are preserved. Any other object nested in the message (a `Headers`, a `URL`, a
+ * class instance, a promise) is kept by reference, because it may hold internal state a
+ * copy cannot reproduce, and so is a function. A message that is itself such an object is
+ * copied into a plain object of its own enumerable properties, as the earlier shallow
+ * copy did.
  *
  * @internal
  */
-function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map()): unknown {
+function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), top = true): unknown {
     if (typeof value !== "object" || value === null) {
         return value;
     }
@@ -35,26 +37,31 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map()): u
     if (known !== undefined) {
         return known;
     }
-    if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet || value instanceof WeakRef) {
-        return value;
-    }
     if (Buffer.isBuffer(value)) {
-        return Buffer.from(value);
+        const copy = Buffer.from(value);
+        seen.set(value, copy);
+        return copy;
     }
     if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-        return structuredClone(value);
+        const copy = structuredClone(value);
+        seen.set(value, copy);
+        return copy;
     }
     if (value instanceof Date) {
-        return new Date(value.getTime());
+        const copy = new Date(value.getTime());
+        seen.set(value, copy);
+        return copy;
     }
     if (value instanceof RegExp) {
-        return new RegExp(value.source, value.flags);
+        const copy = new RegExp(value.source, value.flags);
+        seen.set(value, copy);
+        return copy;
     }
     if (value instanceof Map) {
         const copy = new Map();
         seen.set(value, copy);
         for (const [key, entry] of value) {
-            copy.set(cloneMessage(key, seen), cloneMessage(entry, seen));
+            copy.set(cloneMessage(key, seen, false), cloneMessage(entry, seen, false));
         }
         return copy;
     }
@@ -62,19 +69,33 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map()): u
         const copy = new Set();
         seen.set(value, copy);
         for (const entry of value) {
-            copy.add(cloneMessage(entry, seen));
+            copy.add(cloneMessage(entry, seen, false));
         }
         return copy;
     }
-    const copy: object = Array.isArray(value) ? new Array(value.length) : Object.create(Object.getPrototypeOf(value));
+    const prototype = Object.getPrototypeOf(value);
+    const isArray = Array.isArray(value);
+    const isPlain = prototype === Object.prototype || prototype === null;
+    if (!isArray && !isPlain) {
+        if (!top) {
+            return value;
+        }
+        const copy: Record<string, unknown> = {};
+        seen.set(value, copy);
+        for (const key of Object.keys(value)) {
+            copy[key] = cloneMessage((value as Record<string, unknown>)[key], seen, false);
+        }
+        return copy;
+    }
+    const copy: object = isArray ? new Array(value.length) : Object.create(prototype);
     seen.set(value, copy);
     for (const key of Reflect.ownKeys(value)) {
         const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (descriptor === undefined || (Array.isArray(value) && key === "length")) {
+        if (descriptor === undefined || (isArray && key === "length")) {
             continue;
         }
         if ("value" in descriptor) {
-            descriptor.value = cloneMessage(descriptor.value, seen);
+            descriptor.value = cloneMessage(descriptor.value, seen, false);
             // A frozen supplied message still yields responses a test can edit, as the shallow copy did.
             descriptor.writable = true;
             descriptor.configurable = true;
@@ -126,6 +147,7 @@ export function createMockNext(options?: MockNextOptions): any {
  * @param code    - The gRPC status code for the error.
  * @param message - Human-readable error message. Defaults to `"Mock error"`.
  * @returns A spy-enabled async function that throws on every call.
+ * @throws TypeError when `code` is not a `Code` of `@connectrpc/connect` (an integer from 1 to 16).
  *
  * @example
  * ```ts
@@ -141,6 +163,13 @@ export function createMockNext(options?: MockNextOptions): any {
  */
 // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC next() signature varies by context
 export function createMockNextError(code: Code, message?: string): any {
+    // `new ConnectError(message, undefined)` quietly becomes Unknown and an arbitrary number
+    // is kept as a code no client can name, so the test would assert on the wrong failure.
+    if (typeof code !== "number" || !Number.isInteger(code) || Code[code] === undefined) {
+        throw new TypeError(
+            `createMockNextError: code must be a Code from @connectrpc/connect (1 to 16), got ${typeof code === "number" ? code : (JSON.stringify(code) ?? String(code))}`,
+        );
+    }
     return createMockFn(async (_req: unknown) => {
         throw new ConnectError(message ?? "Mock error", code);
     });

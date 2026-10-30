@@ -89,26 +89,64 @@ describe("createMockNext", () => {
     assert.notStrictEqual(second.nested, supplied.nested);
   });
 
-  // A class instance (a protobuf-es message class, a value object) must come back with its
-  // prototype: a structural copy that drops it would change what a valid message looks like.
-  it("a class instance keeps its prototype and methods in the copy", async () => {
+  // An object nested in the message that is not a plain object may keep state a copy cannot
+  // reproduce (Headers, URL, a class with #private fields). It was handed out as it was before
+  // the copy went deeper, and must keep working.
+  it("a nested Headers, URL or class with private fields keeps working", async () => {
+    class Counter {
+      #count = 41;
+      next() {
+        return ++this.#count;
+      }
+    }
+    const headers = new Headers({ a: "1" });
+    const url = new URL("https://example.com/x");
+    const counter = new Counter();
+    const next = createMockNext({ message: { headers, url, counter } });
+
+    const message = (await next({})).message as { headers: Headers; url: URL; counter: Counter };
+
+    assert.strictEqual(message.headers.get("a"), "1");
+    assert.strictEqual(message.url.href, "https://example.com/x");
+    assert.strictEqual(message.counter.next(), 42);
+  });
+
+  // A message that is itself a class instance was copied into a plain object of its own
+  // enumerable properties; it still is, and every call gets a separate object.
+  it("a message that is a class instance becomes a plain copy of its own properties", async () => {
     class Money {
       amount: { units: number };
       constructor(amount: { units: number }) {
         this.amount = amount;
       }
-      describe() {
-        return `units=${this.amount.units}`;
-      }
     }
     const supplied = new Money({ units: 3 });
     const next = createMockNext({ message: supplied });
 
-    const copy = (await next({})).message as Money;
+    const first = (await next({})).message as Money;
+    const second = (await next({})).message as Money;
 
-    assert.ok(copy instanceof Money);
-    assert.strictEqual(copy.describe(), "units=3");
-    assert.notStrictEqual(copy.amount, supplied.amount);
+    assert.deepStrictEqual({ ...first }, { amount: { units: 3 } });
+    assert.notStrictEqual(first, second);
+    assert.notStrictEqual(first.amount, supplied.amount);
+    first.amount.units = 9;
+    assert.strictEqual(second.amount.units, 3);
+  });
+
+  // One Uint8Array used as a field and as a Map key is one object in the supplied message;
+  // the copy has to keep it one object, or the lookup by that key stops working.
+  it("a byte array that appears twice in the message stays one object in the copy", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const shared = Buffer.from("k");
+    const supplied = { key: bytes, values: new Map([[bytes, "ok"]]), buffer: shared, again: shared, date: new Date(0) };
+    const next = createMockNext({ message: supplied });
+
+    const copy = (await next({})).message as typeof supplied;
+
+    assert.strictEqual(copy.values.get(copy.key), "ok");
+    assert.notStrictEqual(copy.key, bytes);
+    assert.strictEqual(copy.buffer, copy.again);
+    assert.notStrictEqual(copy.buffer, shared);
   });
 
   it("a message with a cycle and a shared reference is copied without looping", async () => {
@@ -152,6 +190,18 @@ describe("createMockNext", () => {
 });
 
 describe("createMockNextError", () => {
+  // `new ConnectError(message, undefined)` quietly becomes Unknown and 999 is a code nobody can
+  // name; a test built on either asserts on the wrong failure.
+  it("a code that is not a Code throws and names the value", () => {
+    for (const code of [undefined, null, 0, 17, 999, -1, 2.5, Number.NaN, "NotFound"]) {
+      assert.throws(
+        () => createMockNextError(code as never, "x"),
+        (err: unknown) => err instanceof TypeError && err.message.includes("code") && err.message.includes(typeof code === "number" ? String(code) : (JSON.stringify(code) ?? String(code))),
+        `code ${String(code)}`,
+      );
+    }
+  });
+
   for (const code of ALL_CODES) {
     it(`rejects with a ConnectError that carries the code: ${Code[code]}`, async () => {
       const next = createMockNextError(code, "boom");
