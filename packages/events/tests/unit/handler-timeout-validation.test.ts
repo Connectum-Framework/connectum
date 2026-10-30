@@ -83,6 +83,8 @@ describe("handlerTimeout validation", () => {
         await bus.publish(EventOptionsSchema, create(EventOptionsSchema, {}));
         await bus.stop();
 
-        assert.ok(abortedAfterMs !== undefined && abortedAfterMs >= 30, `the signal fired after ${abortedAfterMs} ms, not at once`);
+        // The timer starts before the handler does, so the handler sees less than the full 40 ms on a
+        // loaded machine (29 ms was observed on Bun). The point is that the signal does not fire at once.
+        assert.ok(abortedAfterMs !== undefined && abortedAfterMs >= 15, `the signal fired after ${abortedAfterMs} ms, not at once`);
     });
 });
