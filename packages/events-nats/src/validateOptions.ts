@@ -92,6 +92,23 @@ function optionalMilliseconds(name: string, value: unknown, range: { readonly mi
     }
 }
 
+/** Largest 32-bit signed integer: the bound for counts the client or a timer takes as an `int`. */
+const MAX_INT32 = 2_147_483_647;
+
+/** An optional integer within `[min, max]`; a non-number is a `TypeError`, a number outside the range (or a fraction) a `RangeError`. */
+function optionalInteger(name: string, value: unknown, range: { readonly min: number; readonly max: number }): void {
+    if (value === undefined) {
+        return;
+    }
+    const message = `NatsAdapter: ${name} must be an integer from ${range.min} to ${range.max}, got ${show(value)}`;
+    if (typeof value !== "number") {
+        throw new TypeError(message);
+    }
+    if (!Number.isInteger(value) || value < range.min || value > range.max) {
+        throw new RangeError(message);
+    }
+}
+
 /**
  * Reject options that cannot work, at construction. Values that passed before keep their meaning.
  *
@@ -120,6 +137,8 @@ export function validateAdapterOptions(options: unknown): void {
         max: MAX_ACK_WAIT_MS,
         allowed: `a finite number of milliseconds greater than 0 and at most ${MAX_ACK_WAIT_MS}`,
     });
+
+    optionalInteger("consumerOptions.prefetch", consumer.prefetch, { min: 1, max: MAX_INT32 });
 
     if (maxDeliver !== undefined) {
         const message = `NatsAdapter: consumerOptions.maxDeliver must be -1 (unlimited) or a positive integer, got ${show(maxDeliver)}`;

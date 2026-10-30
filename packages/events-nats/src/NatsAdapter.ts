@@ -242,6 +242,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const deliverPolicy = toDeliverPolicy(options.consumerOptions?.deliverPolicy);
 
+            const prefetch = options.consumerOptions?.prefetch;
+
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
@@ -273,7 +275,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
                 for (const own of owned) {
                     const consumer = await js.consumers.get(streamName, consumerName(group, own.pattern));
-                    const messages = await consumer.consume();
+                    // Without `prefetch` the client's own buffer size (100 messages) applies.
+                    const messages = await consumer.consume(prefetch === undefined ? undefined : { max_messages: prefetch });
                     messageIterators.push(messages);
 
                     // Start the consumption loop in the background.

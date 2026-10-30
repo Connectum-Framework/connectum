@@ -85,6 +85,23 @@ export interface NatsConsumerOptions {
      * @default 5
      */
     readonly maxDeliver?: number;
+
+    /**
+     * How many messages the server may hand to one consumer ahead of its handler (the size of the
+     * client's pull buffer).
+     *
+     * The server starts the `ackWait` timer of a message when it delivers the message to the client's
+     * buffer, not when the handler starts, and the handler of a consumer runs one message at a time.
+     * With the client's default buffer of 100, a message at the back of a full buffer is redelivered
+     * when `handler time x position` outgrows `ackWait`: with the default `ackWait` of 30 s that
+     * starts at about 0.3 s per message, and a single consumer then receives duplicates. A smaller
+     * buffer keeps the wait in the buffer short, and the client asks the server for messages more
+     * often; `1` keeps at most one message ahead of the handler.
+     *
+     * An integer from 1 to 2147483647. Unset keeps the client's own default (100), so existing
+     * deployments are unchanged.
+     */
+    readonly prefetch?: number;
 }
 
 /**
