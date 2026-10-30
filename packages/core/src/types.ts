@@ -21,7 +21,22 @@ import type { ServiceCatalog } from "./serviceCatalog.ts";
 /** Incoming request — HTTP/1.1 or HTTP/2 */
 export type NodeRequest = IncomingMessage | Http2ServerRequest;
 
-/** Server response — HTTP/1.1 or HTTP/2 */
+/**
+ * Server response — HTTP/1.1 or HTTP/2.
+ *
+ * Only the members both classes declare identically can be called on the union:
+ * `statusCode`, `setHeader()` and `end()`. `writeHead()` and `write()` are declared with
+ * incompatible overload sets on `ServerResponse` and `Http2ServerResponse`, so
+ * `res.writeHead(200, headers)` and `res.write(chunk)` do not compile (TS2349). Set the
+ * status and headers first, then end the response with the whole body:
+ *
+ * @example
+ * ```ts
+ * res.statusCode = 200;
+ * res.setHeader("content-type", "application/json");
+ * res.end(JSON.stringify({ status: "ok" }));
+ * ```
+ */
 export type NodeResponse = ServerResponse | Http2ServerResponse;
 
 /** Underlying transport server — HTTP/1.1, HTTP/2 plaintext, or HTTP/2 TLS */
