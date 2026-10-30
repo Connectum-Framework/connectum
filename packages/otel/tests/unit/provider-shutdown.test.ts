@@ -254,7 +254,8 @@ describe("shutdownProvider", () => {
 			await assert.doesNotReject(patient.promise);
 		});
 
-		for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "5000"]) {
+		// A timer longer than 2147483647 ms fires after 1 ms, which would turn a long wait into an immediate TimeoutError.
+		for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648, "5000"]) {
 			it(`rejects with TypeError for timeout ${String(bad)} and does not stop the provider`, async () => {
 				recordSpan();
 

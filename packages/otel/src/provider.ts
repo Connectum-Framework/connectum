@@ -75,7 +75,7 @@ export interface ShutdownProviderOptions {
      * The OpenTelemetry API global registrations (tracer provider, context manager,
      * propagator, meter and logger provider) are released only when that stop ends, so a
      * provider created before then does not obtain them.
-     * Must be a positive finite number. Without it the call waits as long as the
+     * Must be above 0 and at most 2147483647 (the longest delay a Node.js timer keeps). Without it the call waits as long as the
      * exporters need.
      */
     timeout?: number;
@@ -534,6 +534,8 @@ class OtelProviderImpl implements OtelProvider {
 
 let provider: OtelProvider | undefined;
 
+const MAX_TIMER_DELAY = 2_147_483_647;
+
 // Stops that have not settled yet. The provider reference is cleared when a stop
 // starts, so without this a second call would see nothing to stop and return before
 // the first call's flush had finished.
@@ -616,12 +618,13 @@ export function getProvider(): OtelProvider {
  * @throws The failure of the one signal that could not stop, or an
  * `AggregateError` carrying the failures when several could not
  * @throws An error named `TimeoutError` when `options.timeout` passed first
- * @throws TypeError when `options.timeout` is not a positive finite number
+ * @throws TypeError when `options.timeout` is not a number above 0 and at most 2147483647
  */
 export async function shutdownProvider(options?: ShutdownProviderOptions): Promise<void> {
     const timeout = options?.timeout;
-    if (timeout !== undefined && !(typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0)) {
-        throw new TypeError(`shutdownProvider: timeout must be a positive finite number of milliseconds, got ${String(timeout)}.`);
+    // 2147483647 ms is the longest delay a Node.js timer keeps; a larger one fires after 1 ms.
+    if (timeout !== undefined && !(typeof timeout === "number" && timeout > 0 && timeout <= MAX_TIMER_DELAY)) {
+        throw new TypeError(`shutdownProvider: timeout must be a number of milliseconds above 0 and at most ${MAX_TIMER_DELAY}, got ${String(timeout)}.`);
     }
     if (provider !== undefined) {
         const current = provider;
