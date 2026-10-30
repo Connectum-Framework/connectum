@@ -123,8 +123,11 @@ describe("parseOtelResourceAttributesEnv", () => {
 
 		describe("a value that cannot be decoded", () => {
 			let warnings: Array<Error & { code?: string }> = [];
+			// The test runner may emit warnings of its own; only this package's are of interest.
 			const onWarning = (warning: Error & { code?: string }) => {
-				warnings.push(warning);
+				if (warning.code === "CONNECTUM_OTEL_INVALID_ENV") {
+					warnings.push(warning);
+				}
 			};
 			beforeEach(() => {
 				warnings = [];
