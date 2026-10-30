@@ -5,9 +5,9 @@
 // isolated and asserts real semantics where known. Signatures are not checked
 // here (this file runs type-stripped): usage.ts and usage-typecheck.mjs do that.
 import assert from "node:assert";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
@@ -598,6 +598,32 @@ await checkAsync("reflection: an unknown long name is echoed in part in error_me
         bounded.end();
     } finally {
         await server.stop();
+    }
+});
+
+// ---------- @connectum/cli and @connectum/protoc-gen-catalog: input checks ----------
+// Input the packed tools used to accept silently and now refuse; none of it needs a network or a broker.
+await checkAsync("cli: generate service refuses a directory that is not a project and writes nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-generate-service-"));
+    try {
+        const { executeGenerateService } = await import("@connectum/cli/commands/generate-service");
+        await assert.rejects(() => executeGenerateService({ name: "foo", cwd: dir }), /no package\.json/);
+        assert.deepStrictEqual(readdirSync(dir), []);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+await checkAsync("cli: proto sync refuses an empty --from before it connects", async () => {
+    const { executeProtoSync } = await import("@connectum/cli/commands/proto-sync");
+    await assert.rejects(() => executeProtoSync({ from: "", out: "unused", dryRun: true }), /--from must not be empty/);
+});
+
+await checkAsync("protoc-gen-catalog: a target other than ts, or none, is refused", async () => {
+    const { protocGenCatalog } = await import("@connectum/protoc-gen-catalog");
+    const { CodeGeneratorRequestSchema } = await import("@bufbuild/protobuf/wkt");
+    for (const parameter of ["target=js", "target=dts", ""]) {
+        assert.throws(() => protocGenCatalog.run(create(CodeGeneratorRequestSchema, { parameter })), /TypeScript only/, `parameter ${JSON.stringify(parameter)}`);
     }
 });
 
