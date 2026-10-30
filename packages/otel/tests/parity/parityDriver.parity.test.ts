@@ -16,9 +16,11 @@ process.env.OTEL_METRICS_EXPORTER = "none";
 process.env.OTEL_LOGS_EXPORTER = "none";
 
 import assert from "node:assert";
+import { test } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
-import { defineService } from "@connectum/core";
+import { createLocalTransport, createServer, defineService } from "@connectum/core";
+import { InMemorySpanCollector } from "@connectum/testing";
 import { defaultCompare, type ParityScenarioContext, type ParityScenarioResult, transportParityTest } from "@connectum/testing/parity";
 import { context, metrics as metricsApi, propagation, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -95,3 +97,32 @@ for (const label of ["first", "second", "third"]) {
         },
     });
 }
+
+// The reason every scenario above starts with `shutdownProvider()`: `@connectum/otel`
+// keeps the tracer it created for the provider that was registered when it first
+// recorded something. A later scenario that registers its own collector without
+// shutting the provider down records nothing, and a parity comparison of two empty
+// results passes. This pins the behaviour the testing guide and the collector
+// documentation describe; if it stops being true they must change with it.
+test("otel parity driver: a scenario that does not call shutdownProvider() first records nothing after an earlier one", async () => {
+    const recordOnce = async (shutdownFirst: boolean): Promise<number> => {
+        const collector = new InMemorySpanCollector();
+        try {
+            if (shutdownFirst) await shutdownProvider();
+            trace.disable();
+            trace.setGlobalTracerProvider(collector.provider);
+            const server = createServer({ services, interceptors: [createOtelInterceptor()], port: 0 });
+            await createClient(EchoService, createLocalTransport(server)).echo(create(EchoRequestSchema, { message: "x" }));
+            return collector.flush().length;
+        } finally {
+            trace.disable();
+            await collector.dispose();
+        }
+    };
+
+    await shutdownProvider();
+    assert.strictEqual(await recordOnce(false), 1, "the first scenario records its server span");
+    assert.strictEqual(await recordOnce(false), 0, "the next scenario records nothing: the provider still holds the tracer of the first");
+    assert.strictEqual(await recordOnce(true), 1, "shutdownProvider() first makes the scenario record again");
+    await shutdownProvider();
+});

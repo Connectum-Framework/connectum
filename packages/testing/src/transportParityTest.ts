@@ -39,9 +39,15 @@ export interface ParityScenarioContext {
     server: Server;
     /** Base URL for the HTTP server, only defined when `transportKind === "http"`. */
     baseUrl: string | undefined;
-    /** Fresh span collector for this run (no cross-contamination between runs). */
+    /**
+     * Fresh span collector for this run (no cross-contamination between runs).
+     * It receives spans only after the scenario registers `spans.provider` with
+     * OpenTelemetry; see {@link InMemorySpanCollector} for the steps that
+     * `@connectum/otel` interceptors need (`shutdownProvider()` first, exporters
+     * set to `none`).
+     */
     spans: InMemorySpanCollector;
-    /** Fresh metric collector for this run. */
+    /** Fresh metric collector for this run; the same registration requirements apply. */
     metrics: InMemoryMetricCollector;
 }
 
@@ -70,9 +76,14 @@ export interface ParityScenarioResult {
         /** `ConnectError.metadata` as the client sees it; protocol entries may stay in. */
         metadata?: Record<string, string>;
     };
-    /** Spans observed during the scenario (already normalized — pass `await ctx.spans.flush()`). */
+    /**
+     * Spans observed during the scenario (already normalized — pass `ctx.spans.flush()`).
+     * Two empty lists compare as equal: a scenario that registered its collector
+     * wrongly records nothing on both legs and still passes, so a scenario should
+     * assert that the telemetry it compares is not empty.
+     */
     spans?: NormalizedSpan[];
-    /** Metrics observed during the scenario. */
+    /** Metrics observed during the scenario; the same caveat about empty lists applies. */
     metrics?: NormalizedMetric[];
 }
 

@@ -145,6 +145,29 @@ function spanSortKey(s: NormalizedSpan): string {
  * `trace.setGlobalTracerProvider()` from `@opentelemetry/api`, and when done
  * call `trace.disable()` (which removes the global registration) before
  * {@link InMemorySpanCollector.dispose}.
+ *
+ * To collect the spans of `@connectum/otel` interceptors, two more steps are
+ * needed, and without them a scenario records nothing and still passes a
+ * parity comparison of two empty results:
+ *
+ * - Run with `OTEL_TRACES_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`.
+ *   With the default exporters `@connectum/otel` records into providers of
+ *   its own, never into the global one.
+ * - Call `shutdownProvider()` from `@connectum/otel` before registering the
+ *   collector, at the start of every scenario. `@connectum/otel` keeps the
+ *   tracer it created for the provider registered when it first recorded
+ *   something; only the shutdown drops it, so a later scenario's collector
+ *   would stay empty.
+ *
+ * @example
+ * ```typescript
+ * await shutdownProvider();
+ * trace.disable();
+ * trace.setGlobalTracerProvider(ctx.spans.provider);
+ * // ...call the service...
+ * const spans = ctx.spans.flush();
+ * trace.disable();
+ * ```
  */
 export class InMemorySpanCollector {
     public readonly exporter: InMemorySpanExporter;
@@ -189,6 +212,14 @@ export class InMemorySpanCollector {
  * In-memory metric collector. Owns its own `MeterProvider` and periodic
  * reader. `flush()` performs a forced collect+export cycle synchronously
  * (via `forceFlush`) and returns the normalized data.
+ *
+ * Register `collector.provider` with `metrics.setGlobalMeterProvider()` and
+ * call `metrics.disable()` when done, exactly as for
+ * {@link InMemorySpanCollector}. The same two requirements apply to collecting
+ * the metrics of `@connectum/otel` interceptors: run with
+ * `OTEL_METRICS_EXPORTER=none`, and call `shutdownProvider()` from
+ * `@connectum/otel` at the start of every scenario, otherwise the scenario
+ * records nothing.
  */
 export class InMemoryMetricCollector {
     public readonly exporter: InMemoryMetricExporter;
