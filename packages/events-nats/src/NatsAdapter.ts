@@ -16,6 +16,8 @@ import type { ConsumerMessages, JetStreamClient, JetStreamManager, JsMsg } from 
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
+import type { ConsumerToRestore, RestoredConsumer } from "./consumerRecovery.ts";
+import { recoverConsumer, restoreLostConsumer } from "./consumerRecovery.ts";
 import { ensureConsumer } from "./consumerSetup.ts";
 import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { OwnedPattern } from "./patternOwner.ts";
@@ -28,6 +30,18 @@ const DEFAULT_STREAM = "events";
 
 /** Default ack wait in nanoseconds (30 seconds). */
 const DEFAULT_ACK_WAIT_NS = 30_000_000_000;
+
+/** Wait `ms`, or until `signal` aborts; an abort ends the wait quietly. */
+async function pause(ms: number, signal: AbortSignal): Promise<void> {
+    try {
+        await sleep(ms, undefined, { signal });
+    } catch {
+        // aborted: the caller checks the signal
+    }
+}
+
+/** Pause before reading a recreated consumer is tried again after it failed. */
+const REATTACH_RETRY_DELAY_MS = 1_000;
 
 /** Default maximum delivery attempts. */
 const DEFAULT_MAX_DELIVER = 5;
@@ -259,6 +273,100 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             const unique = [...new Set(patterns)].sort(comparePatterns);
             const owned: OwnedPattern[] = [];
 
+            // The consumer watches of the subscription: aborted first when the subscription ends, and awaited
+            // before the auto-generated durables are deleted so that none is created again behind the delete.
+            const watching = new AbortController();
+            const watchers: Promise<void>[] = [];
+            const manager = jsm;
+            const client = js;
+            const connection = nc;
+
+            /** The stream (by its creation time) that each pattern's start bound belongs to; unset for the stream the subscription started on. */
+            const boundStream: (string | undefined)[] = [];
+
+            /**
+             * Record the start bound of a consumer that exists again. A message matched by several patterns is
+             * told apart by the start sequences of their consumers, and a consumer is only known to start where
+             * the bound says: deferring a message to a consumer that starts later would lose it. After the stream
+             * was created again, the bounds of the other patterns are of the old stream, and their consumers are
+             * not recreated yet (or were created by another replica, starting anywhere), so they are set to "delivers
+             * nothing known": until a pattern's own consumer is back, a delivery of another pattern runs the
+             * handler itself, which can run it twice for an event and never zero times.
+             */
+            const adoptRestored = (index: number, pattern: string, restored: RestoredConsumer): void => {
+                if (restored.streamReplaced) {
+                    for (const [other, entry] of owned.entries()) {
+                        if (other !== index && boundStream[other] !== restored.streamCreatedAt) {
+                            owned[other] = ownedPattern(entry.pattern, Number.POSITIVE_INFINITY);
+                        }
+                    }
+                }
+                boundStream[index] = restored.streamCreatedAt;
+                owned[index] = ownedPattern(pattern, restored.startSeq);
+            };
+
+            /**
+             * Read one pattern's consumer: a message stream, the loop that runs the handler, and a watch that
+             * brings the consumer back when the server loses it (the stream deleted and created again). After
+             * the consumer is back the message stream is replaced: the client's own recovery waits for missed
+             * heartbeats, tens of seconds, and delivers nothing meanwhile.
+             */
+            const startConsuming = async (slot: { readonly index: number; readonly pattern: string }): Promise<void> => {
+                const { index, pattern } = slot;
+                const durable = consumerName(group, pattern);
+                const consumer = await client.consumers.get(streamName, durable);
+                const info = await consumer.info(true);
+                // The limit the server enforces, which for a consumer that already existed may differ from the requested one.
+                const deliveryLimit = info.config.max_deliver ?? -1;
+                // Without `prefetch` the client's own buffer size (100 messages) applies.
+                const messages = await consumer.consume(prefetch === undefined ? undefined : { max_messages: prefetch });
+                if (watching.signal.aborted) {
+                    // The subscription ended while this consumer was being attached: nobody will close it later.
+                    await discardUnread(messages);
+                    return;
+                }
+                messageIterators[index] = messages;
+
+                // Start the consumption loop in the background.
+                // The loop exits when messages.close() is called.
+                consumeLoop(messages, handler, { index, owned }, streamName, { durable, streamName, redeliveryDelay, deliveryLimit }).catch((err) => {
+                    console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
+                });
+
+                const toRestore: ConsumerToRestore = {
+                    jsm: manager,
+                    streamName,
+                    config: { ...info.config, durable_name: durable },
+                    createdAt: info.created,
+                    isConnectionClosed: () => connection === null || connection.isClosed(),
+                };
+                watchers.push(
+                    restoreLostConsumer(toRestore, messages, watching.signal)
+                        .then(async (first) => {
+                            let restored = first;
+                            if (restored === undefined) {
+                                return;
+                            }
+                            await closeMessages(messages);
+                            while (restored !== undefined && !watching.signal.aborted) {
+                                adoptRestored(index, pattern, restored);
+                                try {
+                                    await startConsuming(slot);
+                                    return;
+                                } catch (err: unknown) {
+                                    console.error(`[EventBus/NATS] Could not read the recreated consumer for pattern "${pattern}", trying again:`, err);
+                                    await pause(REATTACH_RETRY_DELAY_MS, watching.signal);
+                                    // The stream may have been deleted again meanwhile: make sure the consumer exists before reading it.
+                                    restored = await recoverConsumer(toRestore, watching.signal);
+                                }
+                            }
+                        })
+                        .catch((err) => {
+                            console.error(`[EventBus/NATS] Could not restore the consumer for pattern "${pattern}":`, err);
+                        }),
+                );
+            };
+
             try {
                 for (const pattern of unique) {
                     const durableName = consumerName(group, pattern);
@@ -275,27 +383,17 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     owned.push(ownedPattern(pattern, startSeq));
                 }
 
-                for (const own of owned) {
-                    const durable = consumerName(group, own.pattern);
-                    const consumer = await js.consumers.get(streamName, durable);
-                    // The limit the server enforces, which for a consumer that already existed may differ from the requested one.
-                    const deliveryLimit = (await consumer.info(true)).config.max_deliver ?? -1;
-                    // Without `prefetch` the client's own buffer size (100 messages) applies.
-                    const messages = await consumer.consume(prefetch === undefined ? undefined : { max_messages: prefetch });
-                    messageIterators.push(messages);
-
-                    // Start the consumption loop in the background.
-                    // The loop exits when messages.close() is called.
-                    consumeLoop(messages, handler, own, owned, streamName, { durable, streamName, redeliveryDelay, deliveryLimit }).catch((err) => {
-                        console.error(`[EventBus/NATS] Consume loop error for pattern "${own.pattern}":`, err);
-                    });
+                for (const [index, own] of [...owned].entries()) {
+                    await startConsuming({ index, pattern: own.pattern });
                 }
             } catch (error) {
+                watching.abort();
                 // Partial rollback: close all previously created message iterators
                 // to avoid leaked subscriptions when a later pattern fails.
                 // Each close may wait up to CLOSE_CONFIRMATION_TIMEOUT_MS for an unresponsive server,
                 // so the iterators close together: the rollback waits once, not once per pattern.
                 await Promise.allSettled(messageIterators.map((iter) => closeMessages(iter)));
+                await Promise.allSettled(watchers);
                 // The durables of an auto-generated group belong to this call alone and are removed.
                 // Those of a named group are shared with every replica of the group, and this call
                 // cannot tell the ones it created from the ones another replica created at the same
@@ -313,10 +411,12 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const subscription: EventSubscription = {
                 async unsubscribe(): Promise<void> {
+                    watching.abort();
                     // Closed together: each close may wait for the server's confirmation, and a
                     // subscription of several patterns must not wait once per pattern.
                     await Promise.all(messageIterators.map((iter) => closeMessages(iter)));
                     messageIterators.length = 0;
+                    await Promise.allSettled(watchers);
 
                     // Delete auto-generated durable consumers to prevent broker-side leak.
                     if (isAutoGroup && jsm) {
@@ -416,6 +516,23 @@ function closeMessages(messages: ConsumerMessages): Promise<void> {
 /** The close in progress of each message stream, shared by every caller of {@link closeMessages}. */
 const closing = new WeakMap<ConsumerMessages, Promise<void>>();
 
+/**
+ * Close a message stream that no loop reads, handing back whatever it delivers meanwhile.
+ *
+ * `ConsumerMessages.close()` completes only when the stream is read to its end (measured against the
+ * installed client: on a stream nobody reads it never settles), so closing an unread stream needs a reader.
+ * A message that arrives in the meantime is given back at once, for the next consumer of the group.
+ */
+export async function discardUnread(messages: ConsumerMessages): Promise<void> {
+    const reader = (async () => {
+        for await (const msg of messages) {
+            msg.nak();
+        }
+    })();
+    await closeMessages(messages);
+    await reader;
+}
+
 /** What the consume loop needs to know to give a message back to its consumer. */
 interface Redelivery {
     /** The durable consumer and its stream, for the report. */
@@ -462,18 +579,21 @@ function returnForRedelivery(msg: JsMsg, topic: string, redelivery: Redelivery, 
 async function consumeLoop(
     messages: ConsumerMessages,
     handler: RawEventHandler,
-    own: OwnedPattern,
-    owned: readonly OwnedPattern[],
+    pattern: { readonly index: number; readonly owned: readonly OwnedPattern[] },
     streamName: string,
     redelivery: Redelivery,
 ): Promise<void> {
     // The stream subject prefix to strip from delivered subjects.
     // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
     const subjectPrefix = `${streamName}.`;
+    const { owned } = pattern;
 
     for await (const msg of messages) {
         // Strip the stream prefix so eventType matches what was originally published.
         const eventType = msg.subject.startsWith(subjectPrefix) ? msg.subject.slice(subjectPrefix.length) : msg.subject;
+
+        // The pattern's entry is replaced when its consumer is created again, so it is read for every message.
+        const own = owned[pattern.index] as OwnedPattern;
 
         // A more specific pattern of this subscription delivers this message too: that delivery
         // runs the handler, this one is settled without it.
