@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { writeProjectManifest } from "../helpers/projectManifest.ts";
 
 const cliBinary = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 /** Gitignored scratch area of the repository, so no test writes outside it. */
@@ -105,6 +106,7 @@ describe("generate service process: refused names", () => {
 
     it("refuses a name whose proto belongs to another service and keeps the project as it was", async () => {
         const cwd = project();
+        writeProjectManifest(cwd);
         const first = await runCli(["generate", "service", "ab"], cwd);
         assert.equal(first.code, 0, first.output);
 
@@ -114,5 +116,81 @@ describe("generate service process: refused names", () => {
         assert.ok(second.code !== null && second.code !== 0, `expected a non-zero exit code, got ${second.code}\n${second.output}`);
         assert.ok(second.output.includes("proto/ab/v1/ab.proto") && second.output.includes("ABService"), second.output);
         assert.equal(existsSync(join(cwd, "src/services/aBService.ts")), false);
+    });
+});
+
+describe("generate service process: the project", () => {
+    let root: string;
+    let counter = 0;
+
+    before(() => {
+        mkdirSync(scratchRoot, { recursive: true });
+        root = mkdtempSync(join(scratchRoot, "generate-service-project-"));
+    });
+
+    after(() => {
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function directory(): string {
+        counter += 1;
+        const cwd = join(root, `run-${counter}`);
+        mkdirSync(cwd, { recursive: true });
+        return cwd;
+    }
+
+    /** Expects the run to end with one `Error:` line, a non-zero exit and no stack trace. */
+    function assertRefusedAsOneLine(run: CliRun, message: RegExp): void {
+        assert.equal(run.killed, false, run.output);
+        assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}\n${run.output}`);
+        assert.match(run.output, new RegExp(`^Error: ${message.source}`, "m"), run.output);
+        assert.ok(!/\n\s+at /.test(run.output), `a stack trace must not be printed:\n${run.output}`);
+    }
+
+    // The command used to write a proto and a module into any directory, an empty one included.
+    it("refuses a directory with no package.json and writes nothing", async () => {
+        const cwd = directory();
+        const run = await runCli(["generate", "service", "foo"], cwd);
+
+        assertRefusedAsOneLine(run, /connectum generate service: no package\.json in/);
+        assert.deepEqual(readdirSync(cwd), []);
+    });
+
+    // Without @connectum/events the event handler module fails tsc with TS2307 and TS7006.
+    it("refuses --with-events in a project without @connectum/events, naming it, and writes nothing", async () => {
+        const cwd = directory();
+        writeProjectManifest(cwd, { "@connectum/core": "^1.3.0" });
+        const run = await runCli(["generate", "service", "inv", "--with-events"], cwd);
+
+        assertRefusedAsOneLine(run, /connectum generate service: --with-events needs @connectum\/events/);
+        assert.deepEqual(readdirSync(cwd), ["package.json"]);
+    });
+
+    it("generates the event handler in a project that has @connectum/events", async () => {
+        const cwd = directory();
+        writeProjectManifest(cwd);
+        const run = await runCli(["generate", "service", "inv", "--with-events"], cwd);
+
+        assert.equal(run.code, 0, run.output);
+        assert.ok(existsSync(join(cwd, "src/services/invService.ts")));
+        assert.ok(existsSync(join(cwd, "proto/connectum/events/v1/options.proto")));
+    });
+});
+
+describe("generate service process: unknown flags", () => {
+    // A mistyped `--with-events` used to be dropped: the service came out without its event handler.
+    it("refuses a flag it does not define, naming it, and writes nothing", async () => {
+        mkdirSync(scratchRoot, { recursive: true });
+        const cwd = mkdtempSync(join(scratchRoot, "generate-service-flag-"));
+        try {
+            const run = await runCli(["generate", "service", "billing", "--with-event"], cwd);
+
+            assert.equal(run.killed, false, run.output);
+            assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}\n${run.output}`);
+            assert.match(run.output, /^Error: connectum generate service: unknown option --with-event\. Valid options: .*--with-events/m, run.output);
+            assert.deepEqual(readdirSync(cwd), []);
+        } finally {
+            rmSync(cwd, { recursive: true, force: true });
+        }
     });
 });

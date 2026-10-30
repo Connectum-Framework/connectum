@@ -16,8 +16,10 @@ import { executeGenerateService, generateServiceCommand } from "../../src/comman
 import { executeInit } from "../../src/commands/init.ts";
 import type { CloneFn } from "../../src/scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF } from "../../src/scaffold/fetchBase.ts";
+import { CliError } from "../../src/utils/cliError.ts";
 import { cloneOf, cloneStub } from "../helpers/baseFixture.ts";
 import { protoRpcMethods as rpcMethods } from "../helpers/generatedCode.ts";
+import { writeProjectManifest } from "../helpers/projectManifest.ts";
 
 describe("executeInit pipeline (injected clone, no network)", () => {
     let workdir: string;
@@ -111,6 +113,24 @@ describe("executeInit pipeline (injected clone, no network)", () => {
         assert.deepEqual(readdirSync(workdir), []);
     });
 
+    // Bun runs TypeScript itself, so --node-exec has nothing to select there. Accepting it would
+    // scaffold a project that ignores the flag without a word, as if `tsx` had been honoured.
+    it("refuses --node-exec together with --runtime bun, naming both flags, before writing anything", async () => {
+        await assert.rejects(
+            () => executeInit({ name: "x", runtime: "bun", nodeExec: "tsx", clone: cloneStub }),
+            (err: Error) => err.message.includes("--node-exec tsx") && err.message.includes("--runtime bun") && /Node\.js runtime/.test(err.message),
+        );
+        await assert.rejects(() => executeInit({ name: "x", runtime: "bun", nodeExec: "raw", clone: cloneStub }), /--node-exec raw/);
+        assert.deepEqual(readdirSync(workdir), []);
+    });
+
+    it("still accepts --node-exec with the node runtime and a bun project without it", async () => {
+        await executeInit({ name: "viatsx", runtime: "node", nodeExec: "tsx", clone: cloneStub });
+        await executeInit({ name: "viabun", runtime: "bun", clone: cloneStub });
+        assert.match(readFileSync(join(workdir, "viatsx/package.json"), "utf8"), /"tsx"/);
+        assert.match(readFileSync(join(workdir, "viabun/package.json"), "utf8"), /bun src\/index\.ts/);
+    });
+
     it("fails clearly when the target path exists as a file (not a raw ENOTDIR)", async () => {
         writeFileSync(join(workdir, "afile"), "x");
         await assert.rejects(() => executeInit({ name: "afile", clone: cloneStub }), /is not a directory/);
@@ -157,6 +177,7 @@ describe("executeGenerateService", () => {
 
     beforeEach(() => {
         dir = mkdtempSync(join(tmpdir(), "connectum-gensvc-"));
+        writeProjectManifest(dir);
     });
     afterEach(() => {
         rmSync(dir, { recursive: true, force: true });
@@ -228,7 +249,91 @@ describe("executeGenerateService", () => {
 
     it("requires a service name and writes nothing without one", async () => {
         await assert.rejects(() => executeGenerateService({ name: "  ", cwd: dir }), /service name is required/);
-        assert.deepEqual(readdirSync(dir), []);
+        assert.deepEqual(readdirSync(dir), ["package.json"]);
+    });
+
+    // The generated module imports @connectum/core, and the proto belongs next to the project's buf
+    // config: in a directory that is not a project the files are dead weight that fails to compile.
+    describe("the project it writes into", () => {
+        it("refuses a directory without package.json, naming the directory, and writes nothing", async () => {
+            rmSync(join(dir, "package.json"));
+
+            await assert.rejects(
+                () => executeGenerateService({ name: "foo", cwd: dir }),
+                (err: unknown) => err instanceof CliError && err.message.includes(`no package.json in "${dir}"`) && err.message.includes("connectum init"),
+            );
+            assert.deepEqual(readdirSync(dir), []);
+        });
+
+        it("refuses a package.json that is not valid JSON, naming the file, and writes nothing", async () => {
+            writeFileSync(join(dir, "package.json"), "{ not json");
+
+            await assert.rejects(
+                () => executeGenerateService({ name: "foo", cwd: dir }),
+                (err: unknown) => err instanceof CliError && err.message.includes(join(dir, "package.json")) && /not valid JSON/.test(err.message),
+            );
+            assert.deepEqual(readdirSync(dir), ["package.json"]);
+        });
+
+        it("says that package.json cannot be read, rather than that it is missing, when it is a directory", async () => {
+            rmSync(join(dir, "package.json"));
+            mkdirSync(join(dir, "package.json"));
+
+            await assert.rejects(
+                () => executeGenerateService({ name: "foo", cwd: dir }),
+                (err: unknown) => err instanceof CliError && err.message.includes(`cannot read ${join(dir, "package.json")}`) && !err.message.includes("no package.json"),
+            );
+            assert.deepEqual(readdirSync(dir), ["package.json"]);
+        });
+
+        it("refuses a package.json that is not an object", async () => {
+            writeFileSync(join(dir, "package.json"), "[]");
+
+            await assert.rejects(() => executeGenerateService({ name: "foo", cwd: dir }), /does not hold a JSON object/);
+            assert.deepEqual(readdirSync(dir), ["package.json"]);
+        });
+
+        it("refuses --with-events when @connectum/events is not a dependency, naming it and the fix, and writes nothing", async () => {
+            writeProjectManifest(dir, { "@connectum/core": "^1.3.0" });
+
+            await assert.rejects(
+                () => executeGenerateService({ name: "inv", withEvents: true, cwd: dir }),
+                (err: unknown) =>
+                    err instanceof CliError &&
+                    err.message.includes("--with-events needs @connectum/events") &&
+                    err.message.includes("connectum init --events") &&
+                    err.message.includes("Nothing was written"),
+            );
+            assert.deepEqual(readdirSync(dir), ["package.json"]);
+        });
+
+        it("accepts --with-events when @connectum/events is in devDependencies, peerDependencies or optionalDependencies", async () => {
+            for (const section of ["devDependencies", "peerDependencies", "optionalDependencies"]) {
+                const sectionDir = mkdtempSync(join(tmpdir(), "connectum-gensvc-section-"));
+                try {
+                    writeFileSync(join(sectionDir, "package.json"), JSON.stringify({ name: "demo", dependencies: { "@connectum/core": "^1.3.0" }, [section]: { "@connectum/events": "^1.3.0" } }));
+                    await executeGenerateService({ name: "inv", withEvents: true, cwd: sectionDir });
+                    assert.equal(existsSync(join(sectionDir, "src/services/invService.ts")), true, section);
+                } finally {
+                    rmSync(sectionDir, { recursive: true, force: true });
+                }
+            }
+        });
+
+        it("does not ask for @connectum/events without --with-events", async () => {
+            writeProjectManifest(dir, { "@connectum/core": "^1.3.0" });
+
+            await executeGenerateService({ name: "inv", cwd: dir });
+
+            assert.equal(existsSync(join(dir, "src/services/invService.ts")), true);
+        });
+
+        it("checks the project even with --force", async () => {
+            rmSync(join(dir, "package.json"));
+
+            await assert.rejects(() => executeGenerateService({ name: "foo", force: true, cwd: dir }), /no package\.json/);
+            assert.deepEqual(readdirSync(dir), []);
+        });
     });
 });
 
@@ -238,6 +343,7 @@ describe("executeGenerateService: registration hint and existing files", () => {
 
     beforeEach(() => {
         dir = mkdtempSync(join(tmpdir(), "connectum-gensvc-hint-"));
+        writeProjectManifest(dir);
         printed = [];
         mock.method(console, "log", (...args: unknown[]) => {
             printed.push(args.join(" "));
@@ -335,6 +441,7 @@ describe("the commands as the CLI runs them, in a scratch directory inside the r
         mkdirSync(scratchRoot, { recursive: true });
         workdir = mkdtempSync(join(scratchRoot, "commands-"));
         mkdirSync(join(workdir, "project"));
+        writeProjectManifest(join(workdir, "project"));
         mkdirSync(join(workdir, "tmp"));
         cwd = process.cwd();
         process.chdir(join(workdir, "project"));

@@ -25,5 +25,6 @@ export type {
     MockDescMethodOptions,
     MockNextOptions,
     MockRequestOptions,
+    MockScalarType,
     MockStreamOptions,
 } from "./types.ts";

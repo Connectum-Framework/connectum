@@ -26,6 +26,7 @@ import {
     // biome-ignore lint/suspicious/noDeprecatedImports: v1alpha is deprecated upstream but is the only reflection version older servers implement, so it is the fallback on purpose.
     ServerReflection as V1alphaServerReflection,
 } from "#gen/grpc/reflection/v1alpha/reflection_pb.js";
+import { CliError } from "./cliError.ts";
 import { reflectionErrorCode } from "./reflectionErrorCode.ts";
 
 /**
@@ -154,8 +155,9 @@ async function connect(transport: Transport, timeoutMs: number): Promise<{ ask: 
             if (v1alphaError instanceof ConnectError && v1alphaError.code === Code.DeadlineExceeded) {
                 throw v1alphaError;
             }
-            throw new Error(
+            throw new CliError(
                 `Both reflection v1 and v1alpha failed. v1 error: ${v1Error.message}, v1alpha error: ${v1alphaError instanceof Error ? v1alphaError.message : String(v1alphaError)}`,
+                { cause: v1alphaError },
             );
         }
     }
@@ -221,8 +223,8 @@ async function buildFileRegistry(ask: Ask, services: string[]): Promise<FileRegi
 }
 
 /** Message for a request that ran into its time limit, naming the server and the limit. */
-function timeoutError(url: string, timeoutMs: number, cause: ConnectError): Error {
-    return new Error(
+function timeoutError(url: string, timeoutMs: number, cause: ConnectError): CliError {
+    return new CliError(
         `Reflection request to ${url} timed out after ${timeoutMs} ms (${cause.rawMessage}). Check that the address is a gRPC server with reflection, or raise --timeout.`,
         { cause },
     );
@@ -243,7 +245,7 @@ async function loadRegistry(url: string, options: ReflectionOptions): Promise<{ 
         const registry = await buildFileRegistry(ask, services);
         const unresolved = services.filter((service) => registry.getService(service) === undefined);
         if (unresolved.length > 0) {
-            throw new Error(
+            throw new CliError(
                 `${url} lists ${services.length} service(s) but reflection returned no descriptor for ${unresolved.length} of them: ${unresolved.join(", ")}. Nothing was generated.`,
             );
         }

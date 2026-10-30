@@ -18,6 +18,7 @@ export type {
     MockDescMethodOptions,
     MockNextOptions,
     MockRequestOptions,
+    MockScalarType,
     MockStreamOptions,
 } from "@connectum/test-fixtures/types";
 

@@ -13,11 +13,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCommand } from "citty";
+import { CliError, runReported } from "../utils/cliError.ts";
+import { assertKnownFlags } from "../utils/flags.ts";
 import { DEFAULT_REFLECTION_TIMEOUT_MS, fetchFileDescriptorSetBinary, fetchReflectionData, isValidReflectionTimeout, MAX_REFLECTION_TIMEOUT_MS } from "../utils/reflection.ts";
+import { describeReflectionFailure } from "../utils/reflectionFailure.ts";
 
 /**
  * Options for the proto sync pipeline.
@@ -50,19 +53,32 @@ const FOREIGN_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*):\/\//i;
  * naming the wrong host. Every other address is a bare `host:port` and gets `http://` in
  * front of it, whatever letters its host name starts with (`httpbin.local:5000` included).
  *
+ * The result must parse as a URL; an empty address and one that does not (`local host:5000`) are
+ * refused here, naming the value, instead of surfacing as `Invalid URL` from deep inside the client.
+ *
  * @param from - Raw `--from` value
  * @returns URL for the reflection client
- * @throws Error naming the scheme and the accepted forms when the address carries a non-HTTP scheme
+ * @throws CliError naming the scheme and the accepted forms when the address carries a non-HTTP
+ *   scheme, and naming the value when the address is empty or not a URL
  */
 export function normalizeServerUrl(from: string): string {
+    if (from.trim() === "") {
+        throw new CliError("--from must not be empty. Use host:port, http://... or https://...");
+    }
+    let url: string;
     if (HTTP_URL_PATTERN.test(from)) {
-        return from;
+        url = from;
+    } else {
+        const foreign = FOREIGN_SCHEME_PATTERN.exec(from);
+        if (foreign !== null) {
+            throw new CliError(`--from scheme "${foreign[1]}" is not supported. Use host:port, http://... or https://...; got "${from}".`);
+        }
+        url = `http://${from}`;
     }
-    const foreign = FOREIGN_SCHEME_PATTERN.exec(from);
-    if (foreign !== null) {
-        throw new Error(`--from scheme "${foreign[1]}" is not supported. Use host:port, http://... or https://...; got "${from}".`);
+    if (!URL.canParse(url)) {
+        throw new CliError(`--from "${from}" is not a valid server address. Use host:port, http://... or https://...`);
     }
-    return `http://${from}`;
+    return url;
 }
 
 /**
@@ -78,7 +94,7 @@ export async function executeProtoSync(options: ProtoSyncOptions): Promise<void>
     const { from, out, template, dryRun } = options;
     const timeoutMs = options.timeoutMs ?? DEFAULT_REFLECTION_TIMEOUT_MS;
     if (!isValidReflectionTimeout(timeoutMs)) {
-        throw new Error(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got ${timeoutMs}.`);
+        throw new CliError(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got ${timeoutMs}.`);
     }
 
     // Resolved before the dry-run/full-sync split, so a refused address produces no output,
@@ -99,7 +115,9 @@ export async function executeProtoSync(options: ProtoSyncOptions): Promise<void>
 async function executeDryRun(url: string, out: string, timeoutMs: number): Promise<void> {
     console.log(`Connecting to ${url}...`);
 
-    const result = await fetchReflectionData(url, { timeoutMs });
+    const result = await fetchReflectionData(url, { timeoutMs }).catch((error: unknown) => {
+        throw describeReflectionFailure(url, error);
+    });
 
     console.log(`Connected to ${url}`);
     console.log("");
@@ -116,14 +134,52 @@ async function executeDryRun(url: string, out: string, timeoutMs: number): Promi
     console.log(`Would generate to: ${out}`);
 }
 
+/** Whether `path` names an existing regular file (a directory or a missing path is not one). */
+function isExistingFile(path: string): boolean {
+    try {
+        return statSync(path).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Words a failed `buf generate`. buf prints its own diagnostic straight to the terminal, so a
+ * non-zero exit needs only to be named; a missing binary has printed nothing and needs a sentence.
+ * Anything else (no process could be started for another reason) is returned unchanged.
+ */
+function describeBufFailure(error: unknown): unknown {
+    const { code, status, signal } = error as { code?: unknown; status?: unknown; signal?: unknown };
+    if (code === "ENOENT") {
+        return new CliError("buf was not found on the PATH. `proto sync` runs `buf generate` to produce the types; install buf (https://buf.build/docs/installation).", {
+            cause: error,
+        });
+    }
+    if (typeof status === "number") {
+        return new CliError(`buf generate failed with exit code ${status}; see its output above.`, { cause: error });
+    }
+    if (typeof signal === "string") {
+        return new CliError(`buf generate was terminated by ${signal}.`, { cause: error });
+    }
+    return error;
+}
+
 /**
  * Full sync: fetch descriptors, write .binpb, run buf generate.
  */
 async function executeFullSync(url: string, out: string, timeoutMs: number, template?: string): Promise<void> {
+    // Checked before connecting: a typo in the path would otherwise be found only after the
+    // descriptors were fetched, as the opaque failure of `buf generate`.
+    if (template && !isExistingFile(template)) {
+        throw new CliError(`--template "${template}" is not an existing file.`);
+    }
+
     console.log(`Connecting to ${url}...`);
 
     // Step 1: Fetch FileDescriptorSet as binary
-    const binpb = await fetchFileDescriptorSetBinary(url, { timeoutMs });
+    const binpb = await fetchFileDescriptorSetBinary(url, { timeoutMs }).catch((error: unknown) => {
+        throw describeReflectionFailure(url, error);
+    });
     console.log(`Fetched ${binpb.byteLength} bytes of descriptors`);
 
     // Step 2: Write to temporary file
@@ -142,7 +198,11 @@ async function executeFullSync(url: string, out: string, timeoutMs: number, temp
         }
 
         console.log(`Running: buf ${args.join(" ")}`);
-        execFileSync("buf", args, { stdio: "inherit" });
+        try {
+            execFileSync("buf", args, { stdio: "inherit" });
+        } catch (error) {
+            throw describeBufFailure(error);
+        }
 
         console.log(`Proto types synced to ${out}`);
     } finally {
@@ -160,10 +220,37 @@ export function parseTimeoutOption(raw: string | undefined): number | undefined 
         return undefined;
     }
     if (!/^[1-9]\d*$/.test(raw)) {
-        throw new Error(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got "${raw}".`);
+        throw new CliError(`--timeout must be a positive integer number of milliseconds (at most ${MAX_REFLECTION_TIMEOUT_MS}), got "${raw}".`);
     }
     return Number(raw);
 }
+
+/** Flags of `connectum proto sync`; also the list unknown flags are checked against. */
+const protoSyncArgs = {
+    from: {
+        type: "string",
+        description: "Server address (e.g., localhost:5000 or http://localhost:5000)",
+        required: true,
+    },
+    out: {
+        type: "string",
+        description: "Output directory for generated types",
+        required: true,
+    },
+    template: {
+        type: "string",
+        description: "Path to custom buf.gen.yaml template",
+    },
+    timeout: {
+        type: "string",
+        description: `Time limit of each reflection request in milliseconds (positive integer; default: ${DEFAULT_REFLECTION_TIMEOUT_MS})`,
+    },
+    "dry-run": {
+        type: "boolean",
+        description: "Show what would be synced without generating code",
+        default: false,
+    },
+} as const;
 
 /**
  * citty command definition for `connectum proto sync`.
@@ -173,38 +260,17 @@ export const protoSyncCommand = defineCommand({
         name: "sync",
         description: "Sync proto types from a running Connectum server via gRPC Reflection",
     },
-    args: {
-        from: {
-            type: "string",
-            description: "Server address (e.g., localhost:5000 or http://localhost:5000)",
-            required: true,
-        },
-        out: {
-            type: "string",
-            description: "Output directory for generated types",
-            required: true,
-        },
-        template: {
-            type: "string",
-            description: "Path to custom buf.gen.yaml template",
-        },
-        timeout: {
-            type: "string",
-            description: `Time limit of each reflection request in milliseconds (positive integer; default: ${DEFAULT_REFLECTION_TIMEOUT_MS})`,
-        },
-        "dry-run": {
-            type: "boolean",
-            description: "Show what would be synced without generating code",
-            default: false,
-        },
-    },
-    async run({ args }) {
-        await executeProtoSync({
-            from: args.from,
-            out: args.out,
-            template: args.template,
-            dryRun: args["dry-run"],
-            timeoutMs: parseTimeoutOption(args.timeout),
+    args: protoSyncArgs,
+    async run({ args, rawArgs }) {
+        await runReported(async () => {
+            assertKnownFlags("connectum proto sync", args, rawArgs, protoSyncArgs);
+            await executeProtoSync({
+                from: args.from,
+                out: args.out,
+                template: args.template,
+                dryRun: args["dry-run"],
+                timeoutMs: parseTimeoutOption(args.timeout),
+            });
         });
     },
 });

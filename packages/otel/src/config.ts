@@ -110,18 +110,15 @@ function enumFromEnv<T extends string>(name: string, allowed: readonly T[]): T |
 
 /**
  * Resolves one signal's exporter. A variable that is unset, empty or not
- * recognised yields the default, `console`. The standard bare `otlp` value
- * defers to the protocol variables (per-signal first, then the general one);
- * with none usable the OpenTelemetry default, `http/protobuf`, applies.
- * `otlp/http` (JSON), `otlp/http-protobuf` and `otlp/grpc` are explicit and
- * ignore the protocol variables.
+ * recognised yields the OpenTelemetry default, `otlp`, exactly as if `otlp` had
+ * been written. The standard bare `otlp` value defers to the protocol variables
+ * (per-signal first, then the general one); with none usable the OpenTelemetry
+ * default, `http/protobuf`, applies. `otlp/http` (JSON), `otlp/http-protobuf` and
+ * `otlp/grpc` are explicit and ignore the protocol variables.
  */
 function resolveExporter(signal: OTLPSignal): ExporterType {
     const exporter = enumFromEnv(`OTEL_${signal}_EXPORTER`, EXPORTER_VALUES);
-    if (exporter === undefined) {
-        return ExporterType.CONSOLE;
-    }
-    if (exporter !== "otlp") {
+    if (exporter !== undefined && exporter !== "otlp") {
         return exporter;
     }
     const protocol = enumFromEnv(`OTEL_EXPORTER_OTLP_${signal}_PROTOCOL`, PROTOCOL_VALUES) ?? enumFromEnv("OTEL_EXPORTER_OTLP_PROTOCOL", PROTOCOL_VALUES);
@@ -143,11 +140,13 @@ function resolveExporter(signal: OTLPSignal): ExporterType {
  *   OTLP/gRPC, `http/protobuf` protobuf-encoded OTLP/HTTP, `http/json` JSON-encoded
  *   OTLP/HTTP; unset means `http/protobuf`
  *
- * An exporter variable that is unset, empty or not recognised yields `console`. This
- * differs from the OpenTelemetry specification, which names `otlp` as the default; the
- * package keeps `console` so that a service without any `OTEL_*` variable behaves as it
- * always did. Values are matched case-insensitively. A value that is not recognised
- * (a comma-separated list included) is ignored with a process warning (code
+ * An exporter variable that is unset, empty or not recognised yields the OpenTelemetry
+ * default, `otlp`, which resolves through the protocol variables like the explicit value:
+ * OTLP/HTTP with a protobuf body unless a protocol variable says otherwise, sent to
+ * `http://localhost:4318` unless an endpoint variable says otherwise. Set the variable to
+ * `console` to print telemetry to standard output, or to `none` to disable the signal.
+ * Values are matched case-insensitively. A value that is not recognised (a
+ * comma-separated list included) is ignored with a process warning (code
  * `CONNECTUM_OTEL_INVALID_ENV`); this function never throws for the environment.
  *
  * @returns OTLP settings object

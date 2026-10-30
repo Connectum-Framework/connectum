@@ -72,7 +72,7 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 			it(`${variable} set to an empty string is the same as unset: the documented default, no warning`, async () => {
 				process.env[variable] = "";
 
-				assert.strictEqual(getOTLPSettings()[key], "console");
+				assert.strictEqual(getOTLPSettings()[key], "otlp/http-protobuf");
 				assert.deepStrictEqual(await warningsAbout(variable), []);
 			});
 
@@ -88,7 +88,7 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 					process.env[variable] = unknown;
 
 					assert.doesNotThrow(() => getOTLPSettings());
-					assert.strictEqual(getOTLPSettings()[key], "console");
+					assert.strictEqual(getOTLPSettings()[key], "otlp/http-protobuf");
 
 					const about = await warningsAbout(variable);
 					// getOTLPSettings() ran twice above, one warning each.
@@ -104,18 +104,38 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 			process.env.OTEL_METRICS_EXPORTER = "none";
 			process.env.OTEL_LOGS_EXPORTER = "OTLP/HTTP";
 
-			assert.deepStrictEqual(getOTLPSettings(), { traces: "console", metrics: "none", logs: "otlp/http" });
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/http-protobuf", metrics: "none", logs: "otlp/http" });
 			assert.strictEqual((await warningsAbout("OTEL_TRACES_EXPORTER")).length, 1);
 			assert.deepStrictEqual(await warningsAbout("OTEL_METRICS_EXPORTER"), []);
 		});
 	});
 
 	describe("the default exporter", () => {
-		// The OpenTelemetry specification names `otlp` as the default; Connectum keeps
-		// `console` so that a service without any OTEL_* variable behaves as it did before.
-		// The value is reported explicitly rather than as `undefined` typed as an exporter.
-		it("is `console` for every signal when no exporter variable is set", () => {
-			assert.deepStrictEqual(getOTLPSettings(), { traces: "console", metrics: "console", logs: "console" });
+		// The OpenTelemetry specification names `otlp` as the default exporter, with
+		// `http/protobuf` as the default protocol. An unset variable must resolve exactly
+		// as the explicit `otlp` value does, protocol variables included.
+		it("is OTLP/HTTP protobuf for every signal when no exporter variable is set", () => {
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/http-protobuf", metrics: "otlp/http-protobuf", logs: "otlp/http-protobuf" });
+		});
+
+		it("follows the general protocol variable, as the explicit `otlp` value does", () => {
+			process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "grpc";
+
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/grpc", metrics: "otlp/grpc", logs: "otlp/grpc" });
+		});
+
+		it("follows the per-signal protocol variable over the general one", () => {
+			process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "grpc";
+			process.env.OTEL_EXPORTER_OTLP_LOGS_PROTOCOL = "http/json";
+
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "otlp/grpc", metrics: "otlp/grpc", logs: "otlp/http" });
+		});
+
+		it("leaves `console` and `none` working when set explicitly", () => {
+			process.env.OTEL_TRACES_EXPORTER = "console";
+			process.env.OTEL_METRICS_EXPORTER = "none";
+
+			assert.deepStrictEqual(getOTLPSettings(), { traces: "console", metrics: "none", logs: "otlp/http-protobuf" });
 		});
 	});
 
