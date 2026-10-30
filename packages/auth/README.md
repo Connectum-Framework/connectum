@@ -78,7 +78,8 @@ handler for the whole call, including after its first `await` or `yield`.
   is set.
 - `verifyCredentials` and `mapSession` must return a complete `AuthContext`;
   `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
-  field ends the call with `Unauthenticated`, with or without `propagateHeaders`,
+  field (`roles` and `scopes` must be arrays of at most 8192 strings, without
+  holes) ends the call with `Unauthenticated`, with or without `propagateHeaders`,
   and is never cached.
 - The generic and session interceptors accept `propagatedClaims` to limit the
   claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
