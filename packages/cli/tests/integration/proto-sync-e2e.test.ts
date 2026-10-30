@@ -374,7 +374,7 @@ describe("proto sync as a process, with real buf", () => {
             const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "template.yaml"], { cwd, tmpdir: tmp, path: withoutBuf });
 
             assertOneLine(run, /buf was not found on the PATH/);
-            assert.ok(run.output.includes("https://buf.build/docs/installation"), run.output);
+            assert.match(run.output, /^.*\bhttps:\/\/buf\.build\/docs\/installation\b.*$/m, run.output);
             assert.equal(existsSync(out), false);
         });
 

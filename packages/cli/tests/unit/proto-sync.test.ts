@@ -610,7 +610,7 @@ describe("proto-sync unit tests", () => {
 				(err: unknown) => {
 					assert.ok(err instanceof CliError);
 					assert.match(err.message, /^buf was not found on the PATH\./);
-					assert.ok(err.message.includes("https://buf.build/docs/installation"), err.message);
+					assert.match(err.message, /^.*\bhttps:\/\/buf\.build\/docs\/installation\b.*$/m, err.message);
 					assert.strictEqual(err.cause, spawnError);
 					return true;
 				},
