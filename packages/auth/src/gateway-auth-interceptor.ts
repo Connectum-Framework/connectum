@@ -87,7 +87,7 @@ const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HE
  * the gateway and is taken as it is.
  */
 function readIdentityText(headerName: string, raw: string, decode: boolean): string {
-    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode) : raw;
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode, false) : raw;
 }
 
 function digest(text: string): Buffer {

@@ -120,16 +120,25 @@ function unreadable(): ConnectError {
 }
 
 /**
- * Decode `raw` (only when `decode` is true, i.e. the sender declared the encoding) and check the length
- * against `limit`; refuse (not cut) when either fails.
+ * Read one identity text from a header value.
+ *
+ * `raw` is decoded only when `decode` is true (the sender declared the encoding). The result is
+ * held to the rules the writer enforces, whichever way it was obtained: text with NUL, CR or LF is
+ * refused (a writer never emits it, and a percent-encoded `%00`, `%0D` or `%0A` must not smuggle
+ * what a raw header cannot carry). With `strip` the other control characters (C0 except tab, and
+ * DEL) are removed as the writer removes them from a subject, type or name, so a decoded text
+ * ends up exactly as a raw one would; scopes are read as granted and pass `strip: false`. The
+ * length is checked against `limit`; the value is refused, never cut.
  */
-export function readHeaderText(raw: string, limit: number, decode: boolean): string {
+export function readHeaderText(raw: string, limit: number, decode: boolean, strip: boolean): string {
     let text: string;
     try {
         text = decode ? decodeHeaderText(raw) : raw;
     } catch {
         throw unreadable();
     }
+    if (HEADER_BREAKING_CHARS.test(text)) throw unreadable();
+    if (strip) text = sanitizeHeaderValue(text, Number.POSITIVE_INFINITY);
     if (text.length > limit) throw unreadable();
     return text;
 }
@@ -276,7 +285,8 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
  * service or gateway. Returns undefined if required headers are missing.
  *
  * Nothing is cut or ignored: a header that cannot be read back without loss (a value longer than
- * its limit, a malformed `utf-8''` text) is refused.
+ * its limit, a malformed `utf-8''` text, a decoded text with NUL, CR or LF) is refused. Other C0 controls and
+ * DEL are removed from the subject, type and name, raw or decoded, as the writer removes them.
  *
  * WARNING: Only use this in trusted environments (behind mTLS, mesh, etc.).
  * For gateway requests, use createGatewayAuthInterceptor() with a verified trust header.
@@ -302,9 +312,9 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
     }
 
     const decode = declaresTextEncoding(headers);
-    const subject = readHeaderText(sanitizeHeaderValue(subjectHeader, Number.POSITIVE_INFINITY), MAX_SUBJECT_LENGTH, decode);
+    const subject = readHeaderText(subjectHeader, MAX_SUBJECT_LENGTH, decode, true);
     const typeHeader = headers.get(AUTH_HEADERS.TYPE);
-    const type = typeHeader ? readHeaderText(sanitizeHeaderValue(typeHeader, Number.POSITIVE_INFINITY), MAX_TYPE_LENGTH, decode) : "unknown";
+    const type = typeHeader ? readHeaderText(typeHeader, MAX_TYPE_LENGTH, decode, true) : "unknown";
     const rolesRaw = headers.get(AUTH_HEADERS.ROLES);
     const scopesRaw = headers.get(AUTH_HEADERS.SCOPES);
     const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
@@ -328,11 +338,11 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
         scopes = scopesRaw
             .split(" ")
             .filter(Boolean)
-            .map((scope) => readHeaderText(scope, MAX_HEADER_BYTES, decode));
+            .map((scope) => readHeaderText(scope, MAX_HEADER_BYTES, decode, false));
     }
 
     const nameRaw = headers.get(AUTH_HEADERS.NAME);
-    const name = nameRaw ? readHeaderText(sanitizeHeaderValue(nameRaw, Number.POSITIVE_INFINITY), MAX_NAME_LENGTH, decode) : undefined;
+    const name = nameRaw ? readHeaderText(nameRaw, MAX_NAME_LENGTH, decode, true) : undefined;
 
     let claims: Record<string, unknown> = {};
     if (claimsRaw) {
