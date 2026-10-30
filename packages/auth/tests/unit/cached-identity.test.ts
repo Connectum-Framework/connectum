@@ -8,7 +8,10 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { createMockRequest } from "@connectum/testing";
+import { createAuthInterceptor } from "../../src/auth-interceptor.ts";
 import { copyAuthContext } from "../../src/cached-identity.ts";
+import { getAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
 
 function verified(): AuthContext {
@@ -61,6 +64,54 @@ describe("copyAuthContext", () => {
         assert.notStrictEqual(copy.claims.stamp, cyclic.stamp);
         assert.strictEqual((copy.claims.stamp as Date).getTime(), 5);
         assert.strictEqual(copy.claims.marker, marker);
+    });
+
+    it("copies a context whose fields are getters on a class prototype", () => {
+        class Session {
+            get subject() {
+                return "alice";
+            }
+            get type() {
+                return "session";
+            }
+            get name() {
+                return "Alice";
+            }
+            roles = ["user"];
+            scopes = ["read"];
+            claims = { tenant: "acme" };
+        }
+        const copy = copyAuthContext(new Session());
+
+        assert.strictEqual(copy.subject, "alice");
+        assert.strictEqual(copy.type, "session");
+        assert.strictEqual(copy.name, "Alice");
+        assert.deepStrictEqual(copy.roles, ["user"]);
+    });
+
+    it("serves two consecutive requests with such a context through the cache, with headers propagated", async () => {
+        class Session {
+            get subject() {
+                return "alice";
+            }
+            get type() {
+                return "session";
+            }
+            roles = ["user"];
+            scopes = ["read"];
+            claims = {};
+        }
+        const seen: Array<string | undefined> = [];
+        const interceptor = createAuthInterceptor({ verifyCredentials: async () => new Session(), cache: { ttl: 60_000 }, propagateHeaders: true });
+        for (let i = 0; i < 2; i++) {
+            const req = createMockRequest({ service: "t.v1.S", method: "M", headers: new Headers({ authorization: "Bearer t" }) });
+            await interceptor((async () => {
+                seen.push(getAuthContext()?.subject);
+                return { message: {} };
+            }) as never)(req);
+            assert.strictEqual(req.header.get("x-auth-subject"), "alice");
+        }
+        assert.deepStrictEqual(seen, ["alice", "alice"]);
     });
 
     it("omits expiresAt and name when the identity has none, and keeps extra keys", () => {

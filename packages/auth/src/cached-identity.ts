@@ -50,11 +50,18 @@ function deepCopy(value: unknown, copies: WeakMap<object, unknown>): unknown {
     return copy;
 }
 
-/** A copy of `context` that shares no mutable state with it. Keys beyond the declared fields are kept. */
+/**
+ * A copy of `context` that shares no mutable state with it. Own enumerable keys beyond the declared
+ * fields are kept. The declared fields are read explicitly, so a context whose `subject` or `type`
+ * comes from a getter on a class prototype (which a spread would drop) is copied whole.
+ */
 export function copyAuthContext(context: AuthContext): AuthContext {
     const copies = new WeakMap<object, unknown>();
     return {
         ...context,
+        subject: context.subject,
+        type: context.type,
+        ...(context.name !== undefined ? { name: context.name } : {}),
         roles: deepCopy(context.roles, copies) as ReadonlyArray<string>,
         scopes: deepCopy(context.scopes, copies) as ReadonlyArray<string>,
         claims: deepCopy(context.claims, copies) as Readonly<Record<string, unknown>>,
