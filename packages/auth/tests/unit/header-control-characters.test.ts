@@ -64,13 +64,14 @@ function rawHeaders(field: Field, text: string): Headers {
     return headers;
 }
 
-async function viaGateway(field: Field, text: string): Promise<AuthContext | undefined> {
+/** Runs the gateway reader of the standard names on the field; `form` picks the percent-encoded or the raw wire form. */
+async function viaGateway(field: Field, text: string, form: "decoded" | "raw" = "decoded"): Promise<AuthContext | undefined> {
     const interceptor = createGatewayAuthInterceptor({
         headerMapping: { subject: "x-auth-subject", name: "x-auth-name", type: "x-auth-type", scopes: "x-auth-scopes" },
         trustSource: { header: "x-gateway-secret", expectedValues: ["s"] },
     });
     const req = createMockRequest({ service: "t.v1.S", method: "M" });
-    for (const [name, value] of encodedHeaders(field, text)) req.header.set(name, value);
+    for (const [name, value] of form === "decoded" ? encodedHeaders(field, text) : rawHeaders(field, text)) req.header.set(name, value);
     req.header.set("x-gateway-secret", "s");
     let seen: AuthContext | undefined;
     await interceptor((async () => {
@@ -131,6 +132,11 @@ describe("other C0 controls and DEL", () => {
                 assert.strictEqual(readBack(rawHeaders(field, `a${char}b`), field), "ab");
                 assert.strictEqual(readBack(encodedHeaders(field, `a${char}b`), field), "ab");
             });
+
+            it(`${code} in ${field}: the gateway reader of the standard names removes it too, raw and decoded`, async () => {
+                assert.strictEqual(gatewayField(await viaGateway(field, `a${char}b`, "decoded"), field), "ab");
+                assert.strictEqual(gatewayField(await viaGateway(field, `a${char}b`, "raw"), field), "ab");
+            });
         }
 
         it(`${code} in a scope: written and read as granted, raw and decoded`, () => {
@@ -138,6 +144,11 @@ describe("other C0 controls and DEL", () => {
             setAuthHeaders(headers, contextWith("scope", `a${char}b`));
             assert.strictEqual(readBack(headers, "scope"), `a${char}b`);
             assert.strictEqual(readBack(encodedHeaders("scope", `a${char}b`), "scope"), `a${char}b`);
+        });
+
+        it(`${code} in a scope: the gateway reader gives it as granted, raw and decoded`, async () => {
+            assert.strictEqual(gatewayField(await viaGateway("scope", `a${char}b`, "decoded"), "scope"), `a${char}b`);
+            assert.strictEqual(gatewayField(await viaGateway("scope", `a${char}b`, "raw"), "scope"), `a${char}b`);
         });
     }
 });

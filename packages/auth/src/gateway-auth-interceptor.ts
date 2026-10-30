@@ -83,11 +83,12 @@ const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HE
  * Read a text value of the identity from the header the mapping names. The standard `x-auth-*`
  * names carry text written by another Connectum service, which writes characters above U+00FF as
  * `utf-8''` plus percent-encoded UTF-8 and declares it in `x-auth-encoding`, so those values are decoded
- * when it is present. A custom header comes from
- * the gateway and is taken as it is.
+ * when it is present. A text read from a standard name is held to the rules of the writer: NUL, CR and
+ * LF are refused, and `strip` removes the other C0 controls and DEL (subject, type, name; a scope is read
+ * as granted). A custom header comes from the gateway and is taken as it is.
  */
-function readIdentityText(headerName: string, raw: string, decode: boolean): string {
-    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode, false) : raw;
+function readIdentityText(headerName: string, raw: string, decode: boolean, strip: boolean): string {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode, strip) : raw;
 }
 
 function digest(text: string): Buffer {
@@ -246,16 +247,16 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
 
         // Extract subject (required)
         const subjectRaw = req.header.get(headerMapping.subject);
-        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode) : subjectRaw;
+        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
         // Extract optional fields
         const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
-        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode) : undefined;
+        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode, true) : undefined;
         const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
-        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode) : defaultType;
+        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true) : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];
@@ -274,7 +275,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
                 scopes = scopesRaw
                     .split(" ")
                     .filter(Boolean)
-                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode));
+                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode, false));
             }
         }
 
