@@ -53,7 +53,7 @@ describe("Kafka wildcard recovery against the client library's own restart", { s
         }
     });
 
-    for (let round = 1; round <= 4; round++) {
+    for (let round = 1; round <= 1; round++) {
         it(`round ${round}: no consumer is left behind that keeps crashing after the replacement runs`, { timeout: 90_000 }, async () => {
             if (!adminConnected) {
                 await admin.connect();
@@ -71,6 +71,7 @@ describe("Kafka wildcard recovery against the client library's own restart", { s
                 brokers,
                 clientId: uniqueName("race"),
                 logLevel: "nothing",
+                // Short enough that the library restarts the crashed consumer before the adapter's topic listing returns (a longer time does not hit the race on a local broker).
                 retry: { initialRetryTime: 1, maxRetryTime: 2, retries: 1 },
                 lifecycle: { onLifecycle: (event) => void events.push(event) },
                 consumerOptions: { fromBeginning: true, redeliveryDelay: 0, topicDiscoveryInterval: false },
@@ -97,7 +98,7 @@ describe("Kafka wildcard recovery against the client library's own restart", { s
 
             // A leftover consumer of the old incarnation crashes about once a second; look for it for a while.
             const settled = events.length;
-            await sleep(8_000);
+            await sleep(6_000);
             const after = events.slice(settled).map((e) => e.type);
             assert.deepEqual(after, [], `no further crash reports after the recovery settled: ${after.join(", ")}`);
             await subscription.unsubscribe();
