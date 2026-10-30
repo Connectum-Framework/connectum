@@ -95,15 +95,17 @@ export const HEADER_BREAKING_CHARS = /[\x00\r\n]/;
 
 /**
  * Write a text into a header value without loss. A text of characters up to U+00FF that does
- * not start with the encoded-text prefix is written as is, so ASCII and Latin-1 values are
- * unchanged on the wire. Any other text is written as `utf-8''` followed by its percent-encoded
- * UTF-8 bytes; a text that itself starts with the prefix is encoded too, so reading is unambiguous.
+ * not start with the encoded-text prefix and has no space or tab at either end is written as is,
+ * so ASCII and Latin-1 values are unchanged on the wire. Any other text is written as `utf-8''`
+ * followed by its percent-encoded UTF-8 bytes. A text that itself starts with the prefix is
+ * encoded too, so reading is unambiguous. A space or tab at an end is encoded because
+ * `Headers.set` removes it from every value, which would turn ` alice` into `alice`.
  *
  * @throws {URIError} When the text holds a lone surrogate
  */
 export function encodeHeaderText(text: string): string {
     // Every UTF-16 unit above U+00FF, surrogates included, is outside a header byte string.
-    if (!/[Ā-￿]/.test(text) && !text.startsWith(ENCODED_TEXT_PREFIX)) return text;
+    if (!/[Ā-￿]/.test(text) && !text.startsWith(ENCODED_TEXT_PREFIX) && !/^[ \t]|[ \t]$/.test(text)) return text;
     return ENCODED_TEXT_PREFIX + encodeURIComponent(text);
 }
 
