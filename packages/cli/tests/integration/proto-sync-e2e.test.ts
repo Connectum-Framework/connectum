@@ -308,6 +308,22 @@ describe("proto sync as a process, with real buf", () => {
             });
         }
 
+        // The documented spelling is `localhost:<port>`, which Node resolves to both ::1 and 127.0.0.1 and
+        // reports as one AggregateError of refused connections: a different cause chain from a bare IPv4 address.
+        it("names the address and ECONNREFUSED for `localhost` too, where Node reports several refused addresses", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", `localhost:${closedPort}`, "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withBuf });
+
+            assertOneLine(run, new RegExp(`Cannot connect to http://localhost:${closedPort}: ECONNREFUSED`));
+        });
+
+        it("names the HTTP/1.1-only server reached as `localhost` as well", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", `localhost:${http1Port}`, "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assertOneLine(run, new RegExp(`HTTP/2 protocol error talking to http://localhost:${http1Port}`));
+        });
+
         // createServer() without `allowHTTP1: false` is an HTTP/1.1-only server on plain TCP, and the
         // command speaks HTTP/2 to it: Node reports `ERR_HTTP2_ERROR`, Connect `[internal] Protocol error`.
         it("says that the server did not speak HTTP/2 and what to change when it serves HTTP/1.1 only", async () => {
