@@ -22,6 +22,7 @@ import { ensureConsumer } from "./consumerSetup.ts";
 import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { OwnedPattern } from "./patternOwner.ts";
 import { comparePatterns, ownedPattern, runsHandler } from "./patternOwner.ts";
+import { explainTimeout, showServers, showTopic, showTopics } from "./timeouts.ts";
 import type { NatsAdapterOptions } from "./types.ts";
 import { MS_TO_NS, validateAdapterOptions } from "./validateOptions.ts";
 
@@ -130,11 +131,17 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             // only when the user has not explicitly set connectionOptions.name.
             const name = options.connectionOptions?.name ?? context?.serviceName;
 
-            const connection = await connect({
-                ...options.connectionOptions,
-                servers,
-                ...(name !== undefined && { name }),
-            });
+            let connection: NatsConnection;
+            try {
+                connection = await connect({
+                    ...options.connectionOptions,
+                    servers,
+                    ...(name !== undefined && { name }),
+                });
+            } catch (err) {
+                explainTimeout(err, `connect to ${showServers(servers)} did not complete in time`);
+                throw err;
+            }
 
             try {
                 const jetStream = jetstream(connection);
@@ -164,6 +171,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 jsm = manager;
                 closing = false;
             } catch (err) {
+                explainTimeout(err, `preparing stream "${streamName}" on ${showServers(servers)} did not complete in time`);
                 await connection.close().catch(() => undefined);
                 throw err;
             }
@@ -234,7 +242,12 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 }
             }
 
-            await js.publish(subject, payload, { headers });
+            try {
+                await js.publish(subject, payload, { headers });
+            } catch (err) {
+                explainTimeout(err, `publish to topic ${showTopic(eventType)} on stream "${streamName}" was not acknowledged in time`);
+                throw err;
+            }
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
@@ -406,6 +419,7 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     }
                 }
                 messageIterators.length = 0;
+                explainTimeout(error, `subscribe to topics ${showTopics(patterns)} on stream "${streamName}" did not complete in time`);
                 throw error;
             }
 
