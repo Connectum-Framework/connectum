@@ -19,8 +19,9 @@ import { assertTimerDelay } from "./validate.ts";
  * Copy a response message at every depth, so that editing one response reaches neither
  * the next response nor the message the test supplied.
  *
- * Plain objects (the shape of every protobuf-es message), arrays, `Map`, `Set`, `Date`,
- * `RegExp`, `Buffer`, typed arrays and `ArrayBuffer` are copied; shared references and
+ * Plain objects, protobuf-es messages (recognised by their `$typeName`; the prototype that
+ * proto2 and editions messages carry is kept), arrays, `Map`, `Set`, `Date`, `RegExp`
+ * (with its `lastIndex`), `Buffer`, typed arrays and `ArrayBuffer` are copied; shared references and
  * cycles are preserved. Any other object nested in the message (a `Headers`, a `URL`, a
  * class instance, a promise) is kept by reference, because it may hold internal state a
  * copy cannot reproduce, and so is a function. A message that is itself such an object is
@@ -69,6 +70,7 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), to
     }
     if (value instanceof RegExp) {
         const copy = new RegExp(value.source, value.flags);
+        copy.lastIndex = value.lastIndex;
         seen.set(value, copy);
         return copy;
     }
@@ -90,7 +92,9 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), to
     }
     const prototype = Object.getPrototypeOf(value);
     const isArray = Array.isArray(value);
-    const isPlain = prototype === Object.prototype || prototype === null;
+    // A protobuf-es message is a plain object, except that a proto2 or editions message with
+    // explicit presence is made with `Object.create(prototype)`; its `$typeName` identifies it.
+    const isPlain = prototype === Object.prototype || prototype === null || typeof (value as { $typeName?: unknown }).$typeName === "string";
     if (!isArray && !isPlain) {
         if (!top) {
             return value;

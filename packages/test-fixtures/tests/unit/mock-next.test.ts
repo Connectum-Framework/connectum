@@ -1,6 +1,8 @@
 import assert from "node:assert";
 import { before, describe, it } from "node:test";
 import { setTimeout } from "node:timers/promises";
+import { create } from "@bufbuild/protobuf";
+import { DescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createClient, createRouterTransport } from "@connectrpc/connect";
 import { createMockNext, createMockNextError, createMockNextSlow } from "../../src/mock-next.ts";
 import { type ObservedCall, observeRealCalls, realService } from "./support/real-protobuf.ts";
@@ -199,6 +201,35 @@ describe("createMockNext", () => {
     assert.strictEqual(supplied.computed.n, 1);
     assert.strictEqual(writes, 0);
     assert.deepStrictEqual(Object.keys(copy), ["computed", "readonly", "sink"]);
+  });
+
+  // A proto2 message with explicit field presence is made with Object.create(prototype), so it is
+  // not a plain object; it is a message all the same and must be isolated like any other.
+  it("a nested proto2 message with a prototype is copied, with its prototype", async () => {
+    const nested = create(DescriptorProtoSchema, { name: "a" });
+    assert.notStrictEqual(Object.getPrototypeOf(nested), Object.prototype, "reference: a proto2 message has a prototype of its own");
+    const next = createMockNext({ message: { nested } });
+
+    const first = (await next({})).message as { nested: typeof nested };
+    first.nested.name = "changed";
+    const second = (await next({})).message as { nested: typeof nested };
+
+    assert.strictEqual(second.nested.name, "a");
+    assert.strictEqual(nested.name, "a");
+    assert.strictEqual(Object.getPrototypeOf(second.nested), Object.getPrototypeOf(nested));
+    assert.strictEqual(second.nested.$typeName, "google.protobuf.DescriptorProto");
+  });
+
+  it("a RegExp keeps its lastIndex in the copy", async () => {
+    const sticky = /x/y;
+    sticky.lastIndex = 1;
+    const next = createMockNext({ message: { sticky } });
+
+    const copy = (await next({})).message as { sticky: RegExp };
+
+    assert.strictEqual(copy.sticky.lastIndex, 1);
+    assert.ok(copy.sticky.test("ax"));
+    assert.strictEqual(sticky.lastIndex, 1, "the supplied RegExp is not advanced");
   });
 
   it("a message with a cycle and a shared reference is copied without looping", async () => {
