@@ -31,6 +31,9 @@ const DEFAULT_ACK_WAIT_NS = 30_000_000_000;
 /** Default maximum delivery attempts. */
 const DEFAULT_MAX_DELIVER = 5;
 
+/** The header that carries the event id the adapter generated; a caller cannot set it through metadata. */
+const EVENT_ID_HEADER = "x-event-id";
+
 /** Milliseconds-to-nanoseconds multiplier. */
 const MS_TO_NS = 1_000_000;
 
@@ -204,13 +207,14 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             // Always generate a fresh event-id — never accept from user metadata.
             const eventId = randomUUID();
             const headers = createNatsHeaders();
-            headers.append("x-event-id", eventId);
+            headers.append(EVENT_ID_HEADER, eventId);
 
-            // Merge user metadata into headers (skip internal x-* headers).
+            // Merge user metadata into headers. Only the event id is the adapter's own: every other key,
+            // including `x-*` ones and empty values, reaches the handler as it was given, as on the other adapters.
             const metadata = publishOptions?.metadata;
             if (metadata) {
                 for (const [key, value] of Object.entries(metadata)) {
-                    if (!key.startsWith("x-")) {
+                    if (key !== EVENT_ID_HEADER) {
                         headers.append(key, String(value));
                     }
                 }
@@ -344,7 +348,7 @@ function parseHeaders(hdrs: { keys(): Iterable<string>; get(key: string): string
     }
     for (const key of hdrs.keys()) {
         const value = hdrs.get(key);
-        if (value !== undefined && value !== "") {
+        if (value !== undefined) {
             map.set(key, value);
         }
     }
@@ -427,16 +431,16 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
             continue;
         }
 
-        const eventId = msg.headers?.get("x-event-id") ?? randomUUID();
+        const eventId = msg.headers?.get(EVENT_ID_HEADER) ?? randomUUID();
 
         // Convert nanoseconds to milliseconds safely (bigint or number).
         const tsNanos = msg.info.timestampNanos;
         const tsMs = typeof tsNanos === "bigint" ? Number(tsNanos / BigInt(MS_TO_NS)) : Math.trunc(tsNanos / MS_TO_NS);
         const publishedAt = Number.isFinite(tsMs) ? new Date(tsMs) : new Date();
 
-        // Build metadata map, stripping internal x-* headers.
+        // The event id is its own field, not metadata.
         const metadata = parseHeaders(msg.headers);
-        metadata.delete("x-event-id");
+        metadata.delete(EVENT_ID_HEADER);
 
         const event: RawEvent = {
             eventId,
