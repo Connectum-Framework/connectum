@@ -255,6 +255,14 @@ describe("createClientGatewayInterceptor", () => {
         assert.strictEqual((await headersFor("order-service")).get("x-auth-encoding"), null);
     });
 
+    it("keeps a marker already on the request when it writes an ASCII subject", async () => {
+        const req = createMockRequest({ service: "t.v1.S", method: "M" });
+        setAuthHeaders(req.header, { ...base, subject: "x", scopes: ["чтение"] });
+        await createClientGatewayInterceptor({ secret: "s", subject: "order-service" })((async () => ({ message: {} })) as never)(req);
+        assert.strictEqual(req.header.get("x-auth-encoding"), "percent-utf8");
+        assert.deepStrictEqual(parseAuthHeaders(req.header)?.scopes, ["чтение"]);
+    });
+
     it("refuses a subject over 512 characters and roles over 8192 instead of cutting them", async () => {
         for (const attempt of [() => headersFor("s".repeat(513)), () => headersFor("svc", ["r".repeat(8189)])]) {
             await assert.rejects(attempt, (err: unknown) => {

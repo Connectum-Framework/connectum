@@ -70,9 +70,8 @@ export function createClientGatewayInterceptor(options: ClientGatewayInterceptor
         req.header.set(GATEWAY_SECRET_HEADER, secret);
         const subjectValue = encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH));
         req.header.set(AUTH_HEADERS.SUBJECT, subjectValue);
-        if (subjectValue === sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)) {
-            req.header.delete(AUTH_HEADERS.ENCODING);
-        } else {
+        // An existing marker stays: other x-auth-* texts already on the request may be encoded.
+        if (subjectValue !== sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)) {
             req.header.set(AUTH_HEADERS.ENCODING, TEXT_ENCODING_MARKER);
         }
         if (rolesValue !== undefined) {
