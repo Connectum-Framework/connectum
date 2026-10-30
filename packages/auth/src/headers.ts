@@ -66,13 +66,14 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 export class UnsafeHeaderValueError extends TypeError {
     readonly field: "subject" | "type" | "name" | "roles" | "scopes";
 
-    constructor(field: UnsafeHeaderValueError["field"], notAList = false) {
+    constructor(field: UnsafeHeaderValueError["field"], reason: "text" | "list" | "empty" = "text") {
         const spaceRule = field === "scopes" ? ", and a scope may not be empty or contain a space" : "";
-        super(
-            notAList
-                ? `AuthContext.${field} must be an array of at most ${MAX_LIST_ITEMS} strings without holes, when auth headers are propagated`
-                : `AuthContext.${field} must not contain NUL, CR or LF characters or a lone surrogate${spaceRule}, when auth headers are propagated`,
-        );
+        const messages = {
+            text: `AuthContext.${field} must not contain NUL, CR or LF characters or a lone surrogate${spaceRule}, when auth headers are propagated`,
+            list: `AuthContext.${field} must be an array of at most ${MAX_LIST_ITEMS} strings without holes, when auth headers are propagated`,
+            empty: `AuthContext.${field} must not be empty, when auth headers are propagated (the reader would not read it back)`,
+        };
+        super(messages[reason]);
         this.name = "UnsafeHeaderValueError";
         this.field = field;
     }
@@ -243,8 +244,12 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
     // Lists first: the checks below walk them, and `some`, `map` and `join` skip holes, which would
     // write a changed list instead of refusing it.
-    if (!isStringList(context.roles)) throw new UnsafeHeaderValueError("roles", true);
-    if (!isStringList(context.scopes)) throw new UnsafeHeaderValueError("scopes", true);
+    if (!isStringList(context.roles)) throw new UnsafeHeaderValueError("roles", "list");
+    if (!isStringList(context.scopes)) throw new UnsafeHeaderValueError("scopes", "list");
+    // An empty subject or type is written as an empty header, which the reader treats as absent
+    // (no identity at all, or the type "unknown"), so it would not read back as written.
+    if (context.subject === "") throw new UnsafeHeaderValueError("subject", "empty");
+    if (context.type === "") throw new UnsafeHeaderValueError("type", "empty");
     const unsafeField = findUnsafeField(context);
     if (unsafeField) {
         throw new UnsafeHeaderValueError(unsafeField);

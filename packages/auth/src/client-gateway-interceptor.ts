@@ -10,6 +10,7 @@
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { encodeHeaderText, MAX_HEADER_BYTES, MAX_SUBJECT_LENGTH, sanitizeHeaderValue, TEXT_ENCODING_MARKER } from "./headers.ts";
+import { assertHeaderValue, assertIdentityText, assertRolesList } from "./option-checks.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -52,6 +53,14 @@ const GATEWAY_SECRET_HEADER = "x-gateway-secret";
  */
 export function createClientGatewayInterceptor(options: ClientGatewayInterceptorOptions): Interceptor {
     const { secret, subject, roles } = options;
+
+    // Checked once, here: a bad secret or subject would otherwise fail every call (or be altered on
+    // the wire: Headers.set removes a space or tab at either end of the secret, which would then
+    // never match). The size of the subject and of the roles is still checked per call, because the
+    // roles array can be changed after this point.
+    assertHeaderValue("createClientGatewayInterceptor secret", secret);
+    assertIdentityText("createClientGatewayInterceptor subject", subject, Number.POSITIVE_INFINITY);
+    if (roles !== undefined) assertRolesList("createClientGatewayInterceptor roles", roles);
 
     return (next) => async (req) => {
         // Check everything before the first header is set. A subject or roles list that does not fit

@@ -75,7 +75,9 @@ handler for the whole call, including after its first `await` or `yield`.
 - `createGatewayAuthInterceptor` trusts a shared secret in `trustSource`. A CIDR
   block in `expectedValues` is matched against a header the caller chooses, so
   creating the interceptor with one throws unless `allowCallerControlledCidr: true`
-  is set.
+  is set. Creating it also throws, naming the option, for a header name that is
+  not a valid HTTP header name and, with `propagateHeaders` on, for a
+  `defaultType` that is empty, over 128 characters or holds a lone surrogate.
 - `verifyCredentials` and `mapSession` must return a complete `AuthContext`;
   `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
   field (`roles` and `scopes` must be arrays of at most 8192 strings, without

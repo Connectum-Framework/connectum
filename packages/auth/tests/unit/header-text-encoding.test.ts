@@ -266,12 +266,18 @@ describe("createClientGatewayInterceptor", () => {
     });
 
     it("refuses a subject over 512 characters and roles over 8192 instead of cutting them", async () => {
-        for (const attempt of [() => headersFor("s".repeat(513)), () => headersFor("svc", ["r".repeat(8189)])]) {
-            await assert.rejects(attempt, (err: unknown) => {
+        // The subject is refused per call; roles that cannot fit are refused when the interceptor is created.
+        await assert.rejects(
+            () => headersFor("s".repeat(513)),
+            (err: unknown) => {
                 assertConnectError(err, Code.InvalidArgument);
                 return true;
-            });
-        }
+            },
+        );
+        await assert.rejects(
+            () => headersFor("svc", ["r".repeat(8189)]),
+            (err: unknown) => err instanceof RangeError && /roles/.test(err.message),
+        );
         assert.strictEqual((await headersFor("s".repeat(512))).get("x-auth-subject")?.length, 512);
         assert.strictEqual((await headersFor("svc", ["r".repeat(8188)])).get("x-auth-roles")?.length, 8192);
     });

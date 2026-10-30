@@ -24,6 +24,7 @@ import {
     readHeaderText,
 } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertHeaderName, assertIdentityText } from "./option-checks.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -177,8 +178,10 @@ function parseRoles(raw: string): string[] {
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
  * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
- *   contains `"*"`, `defaultType` contains NUL, CR or LF, or `trustSource.expectedValues` contains a CIDR block
+ *   contains `"*"`, `defaultType` contains NUL, CR or LF (with `propagateHeaders`: or is empty, longer than 128
+ *   characters or holds a lone surrogate), or `trustSource.expectedValues` contains a CIDR block
  *   while `trustSource.allowCallerControlledCidr` is not `true`
+ * @throws {TypeError} When a header name in `headerMapping`, `trustSource.header` or `stripHeaders` is not a valid HTTP header name
  *
  * @example Kong/Envoy gateway with shared secret
  * ```typescript
@@ -222,6 +225,21 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
     if (HEADER_BREAKING_CHARS.test(defaultType)) {
         throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters");
     }
+    // With propagation the type is written into x-auth-type for every request that falls back to
+    // it, so a value the writer would refuse (empty, over the header limit, a lone surrogate) is
+    // refused here instead of failing each request. Without propagation it is only the context's
+    // type and any text is kept as before.
+    if (propagateHeaders) {
+        assertIdentityText("Gateway auth defaultType", defaultType, MAX_TYPE_LENGTH);
+    }
+    // Header names are used on every request: an invalid one fails inside Headers as an internal error.
+    assertHeaderName("Gateway auth headerMapping.subject", headerMapping.subject);
+    for (const field of ["name", "roles", "scopes", "type", "claims"] as const) {
+        const mapped = headerMapping[field];
+        if (mapped) assertHeaderName(`Gateway auth headerMapping.${field}`, mapped);
+    }
+    assertHeaderName("Gateway auth trustSource.header", trustSource.header);
+    for (const header of stripHeaders) assertHeaderName("Gateway auth stripHeaders entry", header);
 
     // Pre-compute headers to strip (prevents downstream spoofing on all routes).
     // The standard identity headers are always included, whatever the mapping says: with

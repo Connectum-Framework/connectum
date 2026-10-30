@@ -379,7 +379,9 @@ export interface GatewayAuthInterceptorOptions {
     readonly propagateHeaders?: boolean | undefined;
     /**
      * Credential type used when the gateway sends no type header.
-     * A value containing NUL, CR or LF throws when the interceptor is created.
+     * A value containing NUL, CR or LF throws when the interceptor is created. With `propagateHeaders`
+     * on, an empty value, a value longer than 128 characters and a value with a lone surrogate throw
+     * too, because the value is written into `x-auth-type`; with it off they are accepted.
      * @default "gateway"
      */
     readonly defaultType?: string | undefined;
@@ -631,11 +633,21 @@ export interface ClientBearerInterceptorOptions {
  * @see {@link createClientGatewayInterceptor}
  */
 export interface ClientGatewayInterceptorOptions {
-    /** Shared secret for gateway trust verification */
+    /**
+     * Shared secret for gateway trust verification. Creating the interceptor throws if it is empty,
+     * contains NUL, CR, LF or a character above U+00FF, or starts or ends with a space or tab (the
+     * platform removes that whitespace from a header value, so the secret would never match).
+     */
     readonly secret: string;
-    /** Authenticated subject identifier (e.g., service name) */
+    /**
+     * Authenticated subject identifier (e.g., service name). Creating the interceptor throws if it
+     * is empty or contains NUL, CR, LF or a lone surrogate; a subject over 512 characters is refused per call.
+     */
     readonly subject: string;
-    /** Optional roles to propagate (JSON-encoded in header) */
+    /**
+     * Optional roles to propagate (JSON-encoded in header). Creating the interceptor throws if this
+     * is not an array of at most 8192 strings without holes whose JSON form fits the roles header.
+     */
     readonly roles?: string[] | undefined;
 }
 
