@@ -14,7 +14,9 @@ import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { buildServiceFiles, packageName, pascalCase, registrationMessage, serviceModulePath } from "../scaffold/generateService.ts";
 import { serviceNameProblems } from "../scaffold/serviceName.ts";
+import { runReported } from "../utils/cliError.ts";
 import { emitFiles } from "../utils/emit.ts";
+import { assertKnownFlags } from "../utils/flags.ts";
 
 /**
  * Options for the `generate service` pipeline.
@@ -101,6 +103,25 @@ export async function executeGenerateService(options: GenerateServiceOptions): P
     console.log(registrationMessage(name, withEvents));
 }
 
+/** Flags and the positional name of `connectum generate service`; also the list unknown flags are checked against. */
+const generateServiceArgs = {
+    name: {
+        type: "positional",
+        description: "Service name",
+        required: true,
+    },
+    "with-events": {
+        type: "boolean",
+        description: "Also scaffold an event-handler service",
+        default: false,
+    },
+    force: {
+        type: "boolean",
+        description: "Overwrite existing files",
+        default: false,
+    },
+} as const;
+
 /**
  * citty command definition for `connectum generate service`.
  */
@@ -109,28 +130,15 @@ export const generateServiceCommand = defineCommand({
         name: "service",
         description: "Scaffold a service with empty rpc/event handlers",
     },
-    args: {
-        name: {
-            type: "positional",
-            description: "Service name",
-            required: true,
-        },
-        "with-events": {
-            type: "boolean",
-            description: "Also scaffold an event-handler service",
-            default: false,
-        },
-        force: {
-            type: "boolean",
-            description: "Overwrite existing files",
-            default: false,
-        },
-    },
-    async run({ args }) {
-        await executeGenerateService({
-            name: args.name,
-            withEvents: args["with-events"],
-            force: args.force,
+    args: generateServiceArgs,
+    async run({ args, rawArgs }) {
+        await runReported(async () => {
+            assertKnownFlags("connectum generate service", args, rawArgs, generateServiceArgs);
+            await executeGenerateService({
+                name: args.name,
+                withEvents: args["with-events"],
+                force: args.force,
+            });
         });
     },
 });

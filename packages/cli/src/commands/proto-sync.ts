@@ -17,6 +17,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCommand } from "citty";
+import { runReported } from "../utils/cliError.ts";
+import { assertKnownFlags } from "../utils/flags.ts";
 import { DEFAULT_REFLECTION_TIMEOUT_MS, fetchFileDescriptorSetBinary, fetchReflectionData, isValidReflectionTimeout, MAX_REFLECTION_TIMEOUT_MS } from "../utils/reflection.ts";
 
 /**
@@ -165,6 +167,33 @@ export function parseTimeoutOption(raw: string | undefined): number | undefined 
     return Number(raw);
 }
 
+/** Flags of `connectum proto sync`; also the list unknown flags are checked against. */
+const protoSyncArgs = {
+    from: {
+        type: "string",
+        description: "Server address (e.g., localhost:5000 or http://localhost:5000)",
+        required: true,
+    },
+    out: {
+        type: "string",
+        description: "Output directory for generated types",
+        required: true,
+    },
+    template: {
+        type: "string",
+        description: "Path to custom buf.gen.yaml template",
+    },
+    timeout: {
+        type: "string",
+        description: `Time limit of each reflection request in milliseconds (positive integer; default: ${DEFAULT_REFLECTION_TIMEOUT_MS})`,
+    },
+    "dry-run": {
+        type: "boolean",
+        description: "Show what would be synced without generating code",
+        default: false,
+    },
+} as const;
+
 /**
  * citty command definition for `connectum proto sync`.
  */
@@ -173,38 +202,17 @@ export const protoSyncCommand = defineCommand({
         name: "sync",
         description: "Sync proto types from a running Connectum server via gRPC Reflection",
     },
-    args: {
-        from: {
-            type: "string",
-            description: "Server address (e.g., localhost:5000 or http://localhost:5000)",
-            required: true,
-        },
-        out: {
-            type: "string",
-            description: "Output directory for generated types",
-            required: true,
-        },
-        template: {
-            type: "string",
-            description: "Path to custom buf.gen.yaml template",
-        },
-        timeout: {
-            type: "string",
-            description: `Time limit of each reflection request in milliseconds (positive integer; default: ${DEFAULT_REFLECTION_TIMEOUT_MS})`,
-        },
-        "dry-run": {
-            type: "boolean",
-            description: "Show what would be synced without generating code",
-            default: false,
-        },
-    },
-    async run({ args }) {
-        await executeProtoSync({
-            from: args.from,
-            out: args.out,
-            template: args.template,
-            dryRun: args["dry-run"],
-            timeoutMs: parseTimeoutOption(args.timeout),
+    args: protoSyncArgs,
+    async run({ args, rawArgs }) {
+        await runReported(async () => {
+            assertKnownFlags("connectum proto sync", args, rawArgs, protoSyncArgs);
+            await executeProtoSync({
+                from: args.from,
+                out: args.out,
+                template: args.template,
+                dryRun: args["dry-run"],
+                timeoutMs: parseTimeoutOption(args.timeout),
+            });
         });
     },
 });

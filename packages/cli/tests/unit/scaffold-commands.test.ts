@@ -111,6 +111,24 @@ describe("executeInit pipeline (injected clone, no network)", () => {
         assert.deepEqual(readdirSync(workdir), []);
     });
 
+    // Bun runs TypeScript itself, so --node-exec has nothing to select there. Accepting it would
+    // scaffold a project that ignores the flag without a word, as if `tsx` had been honoured.
+    it("refuses --node-exec together with --runtime bun, naming both flags, before writing anything", async () => {
+        await assert.rejects(
+            () => executeInit({ name: "x", runtime: "bun", nodeExec: "tsx", clone: cloneStub }),
+            (err: Error) => err.message.includes("--node-exec tsx") && err.message.includes("--runtime bun") && /Node\.js runtime/.test(err.message),
+        );
+        await assert.rejects(() => executeInit({ name: "x", runtime: "bun", nodeExec: "raw", clone: cloneStub }), /--node-exec raw/);
+        assert.deepEqual(readdirSync(workdir), []);
+    });
+
+    it("still accepts --node-exec with the node runtime and a bun project without it", async () => {
+        await executeInit({ name: "viatsx", runtime: "node", nodeExec: "tsx", clone: cloneStub });
+        await executeInit({ name: "viabun", runtime: "bun", clone: cloneStub });
+        assert.match(readFileSync(join(workdir, "viatsx/package.json"), "utf8"), /"tsx"/);
+        assert.match(readFileSync(join(workdir, "viabun/package.json"), "utf8"), /bun src\/index\.ts/);
+    });
+
     it("fails clearly when the target path exists as a file (not a raw ENOTDIR)", async () => {
         writeFileSync(join(workdir, "afile"), "x");
         await assert.rejects(() => executeInit({ name: "afile", clone: cloneStub }), /is not a directory/);

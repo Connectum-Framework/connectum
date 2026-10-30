@@ -116,3 +116,21 @@ describe("generate service process: refused names", () => {
         assert.equal(existsSync(join(cwd, "src/services/aBService.ts")), false);
     });
 });
+
+describe("generate service process: unknown flags", () => {
+    // A mistyped `--with-events` used to be dropped: the service came out without its event handler.
+    it("refuses a flag it does not define, naming it, and writes nothing", async () => {
+        mkdirSync(scratchRoot, { recursive: true });
+        const cwd = mkdtempSync(join(scratchRoot, "generate-service-flag-"));
+        try {
+            const run = await runCli(["generate", "service", "billing", "--with-event"], cwd);
+
+            assert.equal(run.killed, false, run.output);
+            assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}\n${run.output}`);
+            assert.match(run.output, /^Error: connectum generate service: unknown option --with-event\. Valid options: .*--with-events/m, run.output);
+            assert.deepEqual(readdirSync(cwd), []);
+        } finally {
+            rmSync(cwd, { recursive: true, force: true });
+        }
+    });
+});
