@@ -133,7 +133,8 @@ function unreadable(): ConnectError {
  * what a raw header cannot carry). With `strip` the other control characters (C0 except tab, and
  * DEL) are removed as the writer removes them from a subject, type or name, so a decoded text
  * ends up exactly as a raw one would; scopes are read as granted and pass `strip: false`. The
- * length is checked against `limit`; a longer value is refused instead of cut.
+ * length of the decoded text is checked against `limit` before the cleaning; a longer value is
+ * refused instead of cut or accepted shortened.
  */
 export function readHeaderText(raw: string, limit: number, decode: boolean, strip: boolean): string {
     let text: string;
@@ -143,9 +144,11 @@ export function readHeaderText(raw: string, limit: number, decode: boolean, stri
         throw unreadable();
     }
     if (HEADER_BREAKING_CHARS.test(text)) throw unreadable();
-    if (strip) text = sanitizeHeaderValue(text, Number.POSITIVE_INFINITY);
+    // The limit is checked on the text as it arrives, before the cleaning: a value one character
+    // over the limit whose extra character is a control would otherwise shrink to the limit and be
+    // accepted shortened. The writer applies its limit to the original text in the same order.
     if (text.length > limit) throw unreadable();
-    return text;
+    return strip ? sanitizeHeaderValue(text, Number.POSITIVE_INFINITY) : text;
 }
 
 /**
