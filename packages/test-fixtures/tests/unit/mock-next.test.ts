@@ -116,8 +116,10 @@ describe("createMockNext", () => {
   // A message that is itself a class instance was copied into a plain object of its own
   // enumerable properties; it still is, and every call gets a separate object.
   it("a message that is a class instance becomes a plain copy of its own properties", async () => {
+    const tag = Symbol("tag");
     class Money {
       amount: { units: number };
+      [tag] = "t";
       constructor(amount: { units: number }) {
         this.amount = amount;
       }
@@ -128,7 +130,8 @@ describe("createMockNext", () => {
     const first = (await next({})).message as Money;
     const second = (await next({})).message as Money;
 
-    assert.deepStrictEqual({ ...first }, { amount: { units: 3 } });
+    assert.deepStrictEqual({ ...first }, { amount: { units: 3 }, [tag]: "t" });
+    assert.strictEqual(Object.getPrototypeOf(first), Object.prototype);
     assert.notStrictEqual(first, second);
     assert.notStrictEqual(first.amount, supplied.amount);
     first.amount.units = 9;

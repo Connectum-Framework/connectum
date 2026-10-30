@@ -95,18 +95,12 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), to
     // A protobuf-es message is a plain object, except that a proto2 or editions message with
     // explicit presence is made with `Object.create(prototype)`; its `$typeName` identifies it.
     const isPlain = prototype === Object.prototype || prototype === null || typeof (value as { $typeName?: unknown }).$typeName === "string";
-    if (!isArray && !isPlain) {
-        if (!top) {
-            return value;
-        }
-        const copy: Record<string, unknown> = {};
-        seen.set(value, copy);
-        for (const key of Object.keys(value)) {
-            copy[key] = cloneMessage((value as Record<string, unknown>)[key], seen, false);
-        }
-        return copy;
+    if (!isArray && !isPlain && !top) {
+        return value;
     }
-    const copy: object = isArray ? new Array(value.length) : Object.create(prototype);
+    // A message that is itself a class instance becomes a plain object of its own enumerable
+    // properties (string and symbol keys), as the shallow copy did.
+    const copy: object = isArray ? new Array(value.length) : Object.create(isPlain ? prototype : Object.prototype);
     seen.set(value, copy);
     for (const key of Reflect.ownKeys(value)) {
         // Own enumerable properties only, read through the property (a getter is called and
