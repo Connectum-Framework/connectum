@@ -144,9 +144,10 @@ describe("createThrottledDiagLogger", () => {
 		const { target, calls } = recordingTarget();
 		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
 
-		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback A broke"));
-		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback B broke"));
-		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback A broke"));
+		// One failure site raising errors in turn, as an exporter does: the stack of equal errors is equal.
+		for (const text of ["callback A broke", "callback B broke", "callback A broke"]) {
+			logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error(text));
+		}
 
 		assert.strictEqual(calls.length, 2);
 	});
@@ -155,9 +156,20 @@ describe("createThrottledDiagLogger", () => {
 		const { target, calls } = recordingTarget();
 		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
 
-		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ECONNREFUSED") }));
-		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ETIMEDOUT") }));
-		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ECONNREFUSED") }));
+		for (const code of ["ECONNREFUSED", "ETIMEDOUT", "ECONNREFUSED"]) {
+			logger.error("callback failed", new Error("fetch failed", { cause: new Error(code) }));
+		}
+
+		assert.strictEqual(calls.length, 2);
+	});
+
+	it("tells aggregate errors with the same message apart by their members", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+
+		for (const code of ["ECONNREFUSED", "ETIMEDOUT", "ECONNREFUSED"]) {
+			logger.error("callback failed", new AggregateError([new Error(code)], "all promises were rejected"));
+		}
 
 		assert.strictEqual(calls.length, 2);
 	});

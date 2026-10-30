@@ -30,34 +30,16 @@ interface Seen {
  * different failures under one message (a metrics collection error is always the same sentence,
  * the cause is an argument), so the message alone would hide a second, unrelated failure.
  */
-function describeError(error: Error): string {
-    let text = `${error.name}: ${error.message}`;
-    // `Error("fetch failed", { cause })` names the failure in the cause; follow it a few levels.
-    let cause: unknown = error.cause;
-    for (let depth = 0; depth < 5 && cause !== undefined; depth++) {
-        if (cause instanceof Error) {
-            text += ` <- ${cause.name}: ${cause.message}`;
-            cause = cause.cause;
-        } else {
-            text += ` <- ${inspect(cause, { depth: 0 })}`;
-            cause = undefined;
-        }
-    }
-    return text;
-}
-
 function identityOf(message: string, args: readonly unknown[]): string {
     const parts = args.map((arg) => {
-        if (arg instanceof Error) {
-            return describeError(arg);
-        }
         if (typeof arg === "string") {
             return arg;
         }
         try {
-            // Not String(): every plain object would read "[object Object]" and two different ones
-            // (the instruments of two failed batch callbacks) would count as one error.
-            // Depth 3 reaches the name of an instrument in an array of instruments
+            // util.inspect, not String(): every plain object would read "[object Object]" and two
+            // different ones (the instruments of two failed batch callbacks) would count as one
+            // error. For an Error it also covers the stack, the `cause` chain and the `errors` of an
+            // AggregateError. Depth 3 reaches the name of an instrument in an array of instruments
             // (array, instrument, descriptor, name).
             return inspect(arg, { depth: 3, breakLength: Number.POSITIVE_INFINITY, maxArrayLength: 20, maxStringLength: 200 });
         } catch {
