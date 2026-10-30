@@ -56,6 +56,21 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 }
 ```
 
+## Default exporter
+
+With no `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER`
+set, each signal is sent over OTLP/HTTP with a protobuf body to
+`http://localhost:4318`, as the OpenTelemetry specification requires. Nothing is
+printed. Set the variable to `console` to print a signal to standard output, or
+to `none` to switch it off. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at your
+collector.
+
+If nothing listens at the endpoint, calls are not affected and the exporter
+reports each distinct failure on standard error at most once a minute.
+`shutdownProvider()` then rejects once the exporters give up (measured: about
+8 seconds with the default settings; pass `{ timeout }` to bound it). Registered
+with `server.onShutdown()`, the rejection does not end the process.
+
 ## Limitations
 
 - Set `recordMessages: true` to add per-message events to streaming spans; the

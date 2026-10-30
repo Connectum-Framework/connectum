@@ -30,6 +30,10 @@ import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@op
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import type { CollectorOptions, OTLPSettings } from "./config.ts";
 import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getGrpcExporterOptions, getHttpExporterOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+import { createThrottledDiagLogger } from "./diagThrottle.ts";
+
+/** How long an identical diagnostics error is held back after it was printed. */
+const DIAG_REPEAT_WINDOW_MS = 60_000;
 
 /** OpenTelemetry semconv key for the service instance id. */
 const ATTR_SERVICE_INSTANCE_ID = "service.instance.id";
@@ -298,8 +302,9 @@ class OtelProviderImpl implements OtelProvider {
     private readonly resource: Resource;
 
     constructor(options?: ProviderOptions) {
-        // Set diagnostic logger to ERROR level
-        diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+        // Diagnostics at ERROR level. Export failures arrive here, and with a collector that is
+        // down they would otherwise repeat for every span batch, log record and metric interval.
+        diag.setLogger(createThrottledDiagLogger({ target: new DiagConsoleLogger(), windowMs: DIAG_REPEAT_WINDOW_MS }), DiagLogLevel.ERROR);
 
         // Load configuration from environment, apply overrides
         const envSettings = getOTLPSettings();

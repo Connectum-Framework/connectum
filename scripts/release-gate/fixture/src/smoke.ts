@@ -142,6 +142,35 @@ check("interceptors.createDefaultInterceptors bare = [errorHandler, validation] 
 
 // ---------- @connectum/otel: provider getters ----------
 const otel = await import("@connectum/otel");
+check("otel.getOTLPSettings defaults every signal to OTLP/HTTP protobuf and honours console and none", () => {
+    const names = [
+        "OTEL_TRACES_EXPORTER",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_LOGS_EXPORTER",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+    ];
+    const saved = names.map((name) => [name, process.env[name]] as const);
+    try {
+        for (const name of names) delete process.env[name];
+        assert.deepStrictEqual(otel.getOTLPSettings(), { traces: "otlp/http-protobuf", metrics: "otlp/http-protobuf", logs: "otlp/http-protobuf" });
+        process.env.OTEL_TRACES_EXPORTER = "console";
+        process.env.OTEL_METRICS_EXPORTER = "none";
+        assert.deepStrictEqual(otel.getOTLPSettings(), { traces: "console", metrics: "none", logs: "otlp/http-protobuf" });
+    } finally {
+        for (const [name, value] of saved) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+    }
+});
+// The checks below create a real provider. Without these variables it would export to localhost:4318,
+// so whether the smoke passes would depend on a collector being there.
+process.env.OTEL_TRACES_EXPORTER = "none";
+process.env.OTEL_METRICS_EXPORTER = "none";
+process.env.OTEL_LOGS_EXPORTER = "none";
 check("otel.getTracer/getMeter/getLogger return objects pre-init (no-op safe)", () => {
     assert.ok(otel.getTracer());
     assert.ok(otel.getMeter());
