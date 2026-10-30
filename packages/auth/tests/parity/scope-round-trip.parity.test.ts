@@ -21,6 +21,7 @@ import { createJwtAuthInterceptor, getAuthContext, parseAuthHeaders } from "../.
 import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/index.ts";
 import { AuthzService, EchoRequestSchema, EchoResponseSchema } from "../fixtures/authz/pb/authz/v1/authz_pb.ts";
 
+/** Service whose handler reports the scopes granted here and the ones the next hop would read from the headers. */
 function routes() {
     return defineService(AuthzService, {
         secureEcho: (_req, ctx) =>
@@ -33,6 +34,7 @@ function routes() {
     });
 }
 
+/** Server chain: error handler, then the JWT interceptor reading scopes from an array claim. */
 function chain(propagateHeaders: boolean) {
     return [
         createErrorHandlerInterceptor({ logErrors: false }),
@@ -41,6 +43,7 @@ function chain(propagateHeaders: boolean) {
     ];
 }
 
+/** One SecureEcho call with a token whose `perms` claim is `perms`, reported as a response or a rejection. */
 async function call(transport: Parameters<typeof createClient>[1], perms: string[]): Promise<ParityScenarioResult> {
     try {
         const token = await createTestJwt({ sub: "alice", perms });

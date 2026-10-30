@@ -20,6 +20,7 @@ import { createAuthInterceptor, createSessionAuthInterceptor, getAuthContext } f
 import { createMockAuthContext } from "../../src/testing/index.ts";
 import { AuthzService, EchoRequestSchema, EchoResponseSchema } from "../fixtures/authz/pb/authz/v1/authz_pb.ts";
 
+/** Service whose handler reports the subject it sees, so a call that wrongly gets through is visible. */
 function routes() {
     return defineService(AuthzService, {
         secureEcho: () => create(EchoResponseSchema, { message: "reached", subject: getAuthContext()?.subject ?? "" }),
@@ -27,6 +28,7 @@ function routes() {
     });
 }
 
+/** What a client sees of a rejection: code, text, details and metadata. */
 function describeRejection(err: unknown): NonNullable<ParityScenarioResult["error"]> {
     if (!(err instanceof ConnectError)) {
         return { code: "non-connect", message: String(err) };
@@ -34,6 +36,7 @@ function describeRejection(err: unknown): NonNullable<ParityScenarioResult["erro
     return { code: err.code, message: err.rawMessage, details: [], metadata: {} };
 }
 
+/** One SecureEcho call with a Bearer token, reported as a response or a described rejection. */
 async function call(transport: Parameters<typeof createClient>[1]): Promise<ParityScenarioResult> {
     try {
         const res = await createClient(AuthzService, transport).secureEcho(create(EchoRequestSchema, { message: "x" }), {
@@ -45,6 +48,7 @@ async function call(transport: Parameters<typeof createClient>[1]): Promise<Pari
     }
 }
 
+/** Oracle: both transports reject with Unauthenticated and `message`, and the two results are equal. */
 function expectUnauthenticated(message: string) {
     return (http: ParityScenarioResult, local: ParityScenarioResult): void => {
         for (const [name, result] of [["HTTP", http], ["local", local]] as const) {

@@ -69,6 +69,7 @@ async function twoCalls(transport: Parameters<typeof createClient>[1], verificat
     return { response: { first, second, verifications: verifications.get(token) } };
 }
 
+/** Oracle: the verifier ran once, the mutating call worked on its own copy, the later call saw the original. */
 function expectUntouched(http: ParityScenarioResult, local: ParityScenarioResult): void {
     const untouched = { subject: "alice", roles: ["user"], scopes: ["read"], claims: { tenant: "acme", nested: { flags: ["a"] } } };
     for (const [name, result] of [["HTTP", http], ["local", local]] as const) {

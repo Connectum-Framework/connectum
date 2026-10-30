@@ -14,6 +14,7 @@ import { copyAuthContext } from "../../src/cached-identity.ts";
 import { getAuthContext } from "../../src/context.ts";
 import type { AuthContext } from "../../src/types.ts";
 
+/** A fresh identity as a verifier returns it, with nested claims and an expiry. */
 function verified(): AuthContext {
     return { subject: "alice", name: "Alice", roles: ["user"], scopes: ["read"], claims: { tenant: "acme", nested: { flags: ["a"] } }, type: "jwt", expiresAt: new Date(2_000_000_000_000) };
 }
@@ -54,6 +55,7 @@ describe("copyAuthContext", () => {
     });
 
     it("copes with a cyclic claim, copies a Date and shares a class instance", () => {
+        /** A claim value that is neither a plain object nor an array, so it must be shared, not copied. */
         class Marker {}
         const marker = new Marker();
         const cyclic: Record<string, unknown> = { stamp: new Date(5), marker };
@@ -67,6 +69,7 @@ describe("copyAuthContext", () => {
     });
 
     it("copies a context whose fields are getters on a class prototype", () => {
+        /** An identity whose required fields live on the prototype, where an object spread does not see them. */
         class Session {
             get subject() {
                 return "alice";
@@ -90,6 +93,7 @@ describe("copyAuthContext", () => {
     });
 
     it("serves two consecutive requests with such a context through the cache, with headers propagated", async () => {
+        /** An identity whose subject and type are prototype getters, returned fresh by every verification. */
         class Session {
             get subject() {
                 return "alice";

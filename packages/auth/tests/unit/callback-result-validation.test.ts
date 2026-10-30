@@ -40,6 +40,7 @@ const NOT_IDENTITIES: Array<[string, unknown]> = [
     ["an expiresAt that is not a Date", { ...GOOD, expiresAt: "2099-01-01" }],
 ];
 
+/** Request headers with a Bearer credential, so the interceptor reaches the verifier callback. */
 function headers(): Headers {
     return new Headers({ authorization: "Bearer any-token" });
 }

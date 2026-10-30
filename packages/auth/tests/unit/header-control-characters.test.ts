@@ -28,6 +28,7 @@ const base = { roles: [], scopes: [], claims: {}, type: "jwt" } as const;
 type Field = "subject" | "name" | "type" | "scope";
 const FIELDS: Field[] = ["subject", "name", "type", "scope"];
 
+/** An identity that holds `text` in the given field and plain values everywhere else. */
 function contextWith(field: Field, text: string): AuthContext {
     return {
         ...base,
@@ -38,6 +39,7 @@ function contextWith(field: Field, text: string): AuthContext {
     };
 }
 
+/** The value of the given field as `parseAuthHeaders` reads it (for a scope, the second one). */
 function readBack(headers: Headers, field: Field): string | undefined {
     const parsed = parseAuthHeaders(headers);
     if (field === "scope") return parsed?.scopes[1];
@@ -45,6 +47,7 @@ function readBack(headers: Headers, field: Field): string | undefined {
 }
 
 /** Headers as a foreign writer would send them: the given text in one field, percent-encoded with the marker. */
+/** Headers as a writer that encodes would send them: the text percent-encoded with the marker. */
 function encodedHeaders(field: Field, text: string): Headers {
     const headers = new Headers({ "x-auth-subject": "s", "x-auth-encoding": MARKER });
     const wire = `utf-8''${encodeURIComponent(text)}`;
@@ -55,6 +58,7 @@ function encodedHeaders(field: Field, text: string): Headers {
     return headers;
 }
 
+/** Headers as a sender without the encoding would send them: the text as is in the given field. */
 function rawHeaders(field: Field, text: string): Headers {
     const headers = new Headers({ "x-auth-subject": "s" });
     if (field === "subject") headers.set("x-auth-subject", text);
@@ -81,6 +85,7 @@ async function viaGateway(field: Field, text: string, form: "decoded" | "raw" = 
     return seen;
 }
 
+/** The value of the given field in an identity built by the gateway reader (for a scope, the second one). */
 function gatewayField(ctx: AuthContext | undefined, field: Field): string | undefined {
     if (field === "scope") return ctx?.scopes[1];
     return ctx?.[field];

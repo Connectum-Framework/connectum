@@ -15,6 +15,7 @@ import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor
 
 const base = { headerMapping: { subject: "x-user" } };
 
+/** Gateway interceptor for the given trust list; the opt-in is passed only when given. */
 function create(expectedValues: string[], allowCallerControlledCidr?: boolean) {
     return createGatewayAuthInterceptor({
         ...base,

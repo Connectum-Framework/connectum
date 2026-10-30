@@ -47,6 +47,7 @@ function reportingRoutes() {
     });
 }
 
+/** Response that lists the identity headers present on the request the handler received. */
 function reply(headers: Headers) {
     const seen: Record<string, string> = {};
     for (const name of IDENTITY_HEADER_NAMES) {
@@ -56,6 +57,7 @@ function reply(headers: Headers) {
     return create(EchoResponseSchema, { message: JSON.stringify(seen), subject: getAuthContext()?.subject ?? "" });
 }
 
+/** Server chain of the edge: error handler, then the gateway interceptor reading `x-user-*`. */
 function edgeChain(propagateHeaders: boolean) {
     return [
         createErrorHandlerInterceptor({ logErrors: false }),
@@ -68,6 +70,7 @@ function edgeChain(propagateHeaders: boolean) {
     ];
 }
 
+/** Headers of a legitimate edge request for the user `erin`, plus whatever the attack adds. */
 function parityHeaders(extra: Record<string, string>): Record<string, string> {
     return { "x-edge-secret": EDGE_SECRET, "x-user-id": "erin", ...extra };
 }

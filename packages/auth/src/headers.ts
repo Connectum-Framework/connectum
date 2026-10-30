@@ -16,7 +16,9 @@ export const MAX_HEADER_BYTES = 8192;
 
 /** Longest `subject`, `type` and `name` that fit their headers; a longer value is refused, never cut. */
 export const MAX_SUBJECT_LENGTH = 512;
+/** Longest `type` that fits `x-auth-type`. */
 export const MAX_TYPE_LENGTH = 128;
+/** Longest `name` that fits `x-auth-name`. */
 export const MAX_NAME_LENGTH = 256;
 
 /**
@@ -237,6 +239,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     // Build every value first so that a refusal leaves the headers untouched. The encoding marker is
     // set when at least one text was encoded: only then does a reader treat `utf-8''` as a prefix.
     let encodedAny = false;
+    /** Encode one text for its header and remember that the encoding marker is needed. */
     const encode = (field: UnsafeHeaderValueError["field"], text: string): string => {
         const encoded = encodeField(field, text);
         if (encoded !== text) encodedAny = true;

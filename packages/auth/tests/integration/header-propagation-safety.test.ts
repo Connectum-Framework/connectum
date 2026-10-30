@@ -42,6 +42,7 @@ const UNSAFE: Array<[string, Partial<AuthContext>]> = [
     ["claims over 8192 characters", { claims: { blob: "x".repeat(9000) } }],
 ];
 
+/** Request headers carrying `token` as a Bearer credential. */
 function headersWith(token: string): Headers {
     return new Headers({ authorization: `Bearer ${token}` });
 }
@@ -226,7 +227,8 @@ describe("header propagation safety", () => {
             return { interceptor, counter };
         }
 
-        async function echo(client: ReturnType<typeof clientFor>, token: string) {
+        /** One unary Echo call that presents `token` as a Bearer credential. */
+async function echo(client: ReturnType<typeof clientFor>, token: string) {
             return await client.echo({ value: "ping", sequence: 7 }, { headers: { authorization: `Bearer ${token}` } });
         }
 

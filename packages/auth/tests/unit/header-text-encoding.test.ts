@@ -137,6 +137,7 @@ describe("setAuthHeaders / parseAuthHeaders with text above U+00FF", () => {
 });
 
 describe("gateway interceptor reading x-auth-* text", () => {
+    /** Gateway interceptor with the given header mapping and a shared-secret trust header. */
     function chain(mapping: { subject: string; name: string; scopes: string }) {
         return createGatewayAuthInterceptor({
             headerMapping: mapping,
@@ -239,6 +240,7 @@ describe("gateway interceptor reading x-auth-* text", () => {
 });
 
 describe("createClientGatewayInterceptor", () => {
+    /** Headers the client gateway interceptor puts on an outgoing request for `subject` and `roles`. */
     async function headersFor(subject: string, roles?: string[]): Promise<Headers> {
         const req = createMockRequest({ service: "t.v1.S", method: "M" });
         await createClientGatewayInterceptor({ secret: "s", subject, ...(roles ? { roles } : {}) })((async () => ({ message: {} })) as never)(req);

@@ -77,6 +77,7 @@ function matchesIp(address: string, pattern: string): boolean {
     return Math.floor(peer / blockSize) === Math.floor(network / blockSize);
 }
 
+/** Lower-case names of the standard `x-auth-*` headers, the only ones whose texts a reader decodes. */
 const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HEADERS));
 
 /**
@@ -91,6 +92,7 @@ function readIdentityText(headerName: string, raw: string, decode: boolean, stri
     return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode, strip) : raw;
 }
 
+/** SHA-256 of `text`; both sides of a secret comparison become 32 bytes whatever their length. */
 function digest(text: string): Buffer {
     // utf16le keeps every code unit distinct; utf8 would map any lone surrogate to U+FFFD and make unequal texts equal.
     return createHash("sha256").update(text, "utf16le").digest();
@@ -219,6 +221,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         ...stripHeaders,
     ];
 
+    /** Delete the headers the gateway contributes, so none of them can be forwarded or forged downstream. */
     function stripGatewayHeaders(headers: Headers): void {
         for (const header of headersToStrip) {
             if (header) headers.delete(header);

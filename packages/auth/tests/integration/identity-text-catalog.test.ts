@@ -36,6 +36,7 @@ const registry = createFileRegistry(
     }),
 );
 
+/** The descriptor, or a thrown error naming what is missing from the runtime registry. */
 function mustGet<T>(value: T | undefined, what: string): T {
     if (value === undefined) throw new Error(`missing descriptor ${what}`);
     return value;
@@ -46,6 +47,7 @@ const Target: DescService = mustGet(registry.getService("authtest.v1.Target"), "
 const Edge: DescService = mustGet(registry.getService("authtest.v1.Edge"), "Edge");
 const catalog = defineCatalog({ [Target.typeName]: Target, [Edge.typeName]: Edge });
 
+/** Outgoing interceptor of edge A: adds the shared secret service B trusts. */
 const addInternalSecret: Interceptor = (next) => async (req) => {
     req.header.set("x-gateway-secret", "internal-secret");
     return await next(req);
@@ -108,6 +110,7 @@ after(async () => {
     await serviceB.stop();
 });
 
+/** Calls edge A with a signed token carrying the given claims and returns the identity service B saw. */
 async function seenAtB(claims: Record<string, unknown>): Promise<{ subject: string; roles: string[]; scopes: string[]; name?: string; claims: Record<string, unknown> }> {
     const token = await createTestJwt({ sub: "alice", ...claims });
     const res = await edgeClient.run(create(Msg, { value: "x" }), { headers: { authorization: `Bearer ${token}` } });

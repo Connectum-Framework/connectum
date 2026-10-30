@@ -13,6 +13,7 @@ import { describe, it, mock } from "node:test";
 import { createMockRequest } from "@connectum/testing";
 import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 
+/** Whether a request whose trust header is `headerValue` is let through by a gateway trusting `expectedValues`. */
 async function admits(expectedValues: string[], headerValue: string): Promise<boolean> {
     const interceptor = createGatewayAuthInterceptor({
         headerMapping: { subject: "x-user-id" },

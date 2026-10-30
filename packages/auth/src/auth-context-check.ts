@@ -11,6 +11,7 @@
 
 import type { AuthContext } from "./types.ts";
 
+/** An array whose every item is a string (the shape of `roles` and `scopes`). */
 function isStringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((item) => typeof item === "string");
 }

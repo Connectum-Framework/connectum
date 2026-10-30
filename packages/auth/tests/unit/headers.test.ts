@@ -158,12 +158,14 @@ describe("headers", () => {
             { filler: "x", label: "ASCII" },
             { filler: "é", label: "multi-byte" },
         ]) {
+            /** A claims JSON of exactly `length` characters. */
             const claimsOfLength = (length: number): string => {
                 // {"d":"<filler*n>"} adds 8 characters around the filler
                 const json = JSON.stringify({ d: filler.repeat(length - 8) });
                 assert.strictEqual(json.length, length);
                 return json;
             };
+            /** A roles JSON of exactly `length` characters. */
             const rolesOfLength = (length: number): string => {
                 // ["<filler*n>"] adds 4 characters around the filler
                 const json = JSON.stringify([filler.repeat(length - 4)]);
@@ -291,6 +293,7 @@ describe("headers", () => {
             { field: "type", header: "x-auth-type", limit: 128 },
             { field: "name", header: "x-auth-name", limit: 256 },
         ] as const;
+        /** A text of `length` characters whose letters cycle, so a cut from the wrong end gives a different string. */
         const textOfLength = (length: number): string => Array.from({ length }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
 
         for (const { field, header, limit } of fields) {
