@@ -243,7 +243,11 @@ export function getHttpExporterOptions(collector: CollectorOptions, signal: OTLP
     if (base !== undefined) {
         warnInvalidEnv(`OTEL_EXPORTER_OTLP_ENDPOINT="${base}" is not an http: or https: URL and cannot be used by the OTLP/HTTP exporter; the exporter default applies.`);
     }
-    return signalUsable ? options : { ...options, url: `${DEFAULT_HTTP_ORIGIN}/${HTTP_SIGNAL_PATH[signal]}` };
+    // Nothing usable is configured. When a variable is nevertheless set, the exporter would read
+    // it again from the environment (and fail on the first export), so the default is passed
+    // explicitly.
+    const brokenVariableSet = !signalUsable || nonEmptyEnv("OTEL_EXPORTER_OTLP_ENDPOINT") !== undefined;
+    return brokenVariableSet ? { ...options, url: `${DEFAULT_HTTP_ORIGIN}/${HTTP_SIGNAL_PATH[signal]}` } : options;
 }
 
 /**
@@ -262,9 +266,15 @@ export function getGrpcExporterOptions(collector: CollectorOptions, signal: OTLP
     }
     const signalVariable = `OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`;
     const signalEndpoint = nonEmptyEnv(signalVariable);
-    if (signalEndpoint !== undefined && !isUsableEndpoint(signalEndpoint, "grpc")) {
+    const signalUsable = signalEndpoint === undefined || isUsableEndpoint(signalEndpoint, "grpc");
+    if (!signalUsable) {
         warnInvalidEnv(`${signalVariable}="${signalEndpoint}" is not a URL; the variable is ignored and the exporter default applies.`);
-        return { ...options, url: DEFAULT_GRPC_URL };
+    }
+    // getCollectorOptions() has already reported and dropped an unusable base endpoint, but the
+    // exporter would read the variable again from the environment and throw, so a usable signal
+    // endpoint or the default is passed explicitly.
+    if (!signalUsable || nonEmptyEnv("OTEL_EXPORTER_OTLP_ENDPOINT") !== undefined) {
+        return { ...options, url: signalUsable && signalEndpoint !== undefined ? signalEndpoint : DEFAULT_GRPC_URL };
     }
     return options;
 }

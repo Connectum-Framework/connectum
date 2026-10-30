@@ -27,6 +27,7 @@ const ENV_KEYS = [
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_PROTOCOL",
 	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_TIMEOUT",
 ] as const;
 
 const message = { toBinary: () => new Uint8Array(1) };
@@ -170,6 +171,22 @@ describe("an invalid exporter, protocol or endpoint variable", () => {
 		}
 		assert.strictEqual((await warningsAbout("OTEL_EXPORTER_OTLP_ENDPOINT")).length, 1);
 	});
+
+	for (const exporter of ["otlp/http", "otlp/http-protobuf", "otlp/grpc"]) {
+		for (const endpoint of ["not a url", "localhost:4318"]) {
+			if (exporter === "otlp/grpc" && endpoint === "localhost:4318") continue; // a valid gRPC endpoint
+			it(`${exporter} with OTEL_EXPORTER_OTLP_ENDPOINT=${JSON.stringify(endpoint)} still creates the provider (the exporter does not read the variable again)`, async () => {
+				process.env.OTEL_TRACES_EXPORTER = exporter;
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT = endpoint;
+				// The spans go to the exporter default, where nothing listens; keep the final flush short.
+				process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "200";
+
+				for (let call = 0; call < 2; call++) {
+					await assert.doesNotReject(rpc(), `call ${call}`);
+				}
+			});
+		}
+	}
 
 	it("an unusable per-signal endpoint is not read again by the exporter: the base endpoint receives the spans", async () => {
 		collector = await startCollector();

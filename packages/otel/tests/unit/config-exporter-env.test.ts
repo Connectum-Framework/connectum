@@ -168,7 +168,9 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 
 			const options = getHttpExporterOptions(getCollectorOptions(), "TRACES");
 
-			assert.strictEqual(options.url, undefined, "the exporter default applies instead of a URL its transport cannot use");
+			// Left out, the exporter would read the broken variable from the environment itself and fail on
+			// the first export with `Protocol "localhost:" not supported`, so the default is passed explicitly.
+			assert.strictEqual(options.url, "http://localhost:4318/v1/traces");
 			const about = await warningsAbout("OTEL_EXPORTER_OTLP_ENDPOINT");
 			assert.ok(about.length >= 1);
 			assert.strictEqual(about[0]?.code, "CONNECTUM_OTEL_INVALID_ENV");
@@ -190,7 +192,7 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 			it(`an endpoint with the ${scheme}: scheme is not usable over HTTP`, () => {
 				process.env.OTEL_EXPORTER_OTLP_ENDPOINT = `${scheme}://collector:4318`;
 
-				assert.strictEqual(getHttpExporterOptions(getCollectorOptions(), "METRICS").url, undefined);
+				assert.strictEqual(getHttpExporterOptions(getCollectorOptions(), "METRICS").url, "http://localhost:4318/v1/metrics");
 			});
 		}
 
@@ -242,6 +244,15 @@ describe("config: invalid exporter, protocol and endpoint variables", () => {
 			process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = "http://tempo:4317";
 
 			assert.strictEqual(getGrpcExporterOptions(getCollectorOptions(), "TRACES").url, "http://collector:4317");
+		});
+
+		// The exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself when no url is passed and throws for text
+		// that is not a URL, which would fail the call that creates the provider.
+		it("an endpoint that is not a URL is replaced by the explicit exporter default, not read again by the exporter", async () => {
+			process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "not a url";
+
+			assert.strictEqual(getGrpcExporterOptions(getCollectorOptions(), "METRICS").url, "http://localhost:4317");
+			assert.ok((await warningsAbout("OTEL_EXPORTER_OTLP_ENDPOINT")).length >= 1);
 		});
 
 		it("an unusable per-signal endpoint is replaced by the explicit exporter default", async () => {

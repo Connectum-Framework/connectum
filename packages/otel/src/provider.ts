@@ -72,6 +72,9 @@ export interface ShutdownProviderOptions {
      * hold. When it passes, the call rejects with an error named `TimeoutError`. The
      * provider is released either way, and the exporters keep trying in the background
      * until their own timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`, 10 seconds by default) ends.
+     * The OpenTelemetry API global registrations (tracer provider, context manager,
+     * propagator, meter and logger provider) are released only when that stop ends, so a
+     * provider created before then does not obtain them.
      * Must be a positive finite number. Without it the call waits as long as the
      * exporters need.
      */
@@ -631,7 +634,15 @@ export async function shutdownProvider(options?: ShutdownProviderOptions): Promi
     if (stopping.size === 0) {
         return;
     }
-    const settled = Promise.all(stopping).then(() => undefined);
+    // Every stop is awaited before the first failure is rethrown: a hook that exits the process must
+    // not run while a later stop is still flushing.
+    const settled = Promise.allSettled([...stopping]).then((outcomes) => {
+        for (const outcome of outcomes) {
+            if (outcome.status === "rejected") {
+                throw outcome.reason;
+            }
+        }
+    });
     await (timeout === undefined ? settled : withDeadline(settled, timeout));
 }
 

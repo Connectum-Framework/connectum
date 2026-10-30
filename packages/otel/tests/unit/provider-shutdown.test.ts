@@ -169,6 +169,36 @@ describe("shutdownProvider", () => {
 			assert.strictEqual(hasProvider(), false);
 		});
 
+		it("waits for every stop in flight before it rejects, even when an earlier one failed first", async () => {
+			// First provider: a collector that never answers and a short export timeout, so its stop fails.
+			const silent = await startHoldingCollector();
+			try {
+				process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "400";
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT = silent.origin;
+				recordSpan();
+				const first = track(shutdownProvider());
+				first.promise.catch(() => {});
+				await silent.arrived;
+
+				// Second provider, created while the first stop is running: a long export timeout and a
+				// collector that holds the export until the test releases it.
+				process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "30000";
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT = collector?.origin;
+				recordSpan();
+				const second = track(shutdownProvider());
+				await collector?.arrived;
+
+				await assert.rejects(first.promise);
+				await turn();
+				assert.strictEqual(second.settled, false, "the first stop failed, but the second call must wait for its own flush too");
+
+				collector?.release();
+				await assert.rejects(second.promise, "and then report the failure of the first stop");
+			} finally {
+				await silent.close();
+			}
+		});
+
 		it("lets a new provider be created while the old one is still being stopped", async () => {
 			recordSpan();
 			const stopping = shutdownProvider();
