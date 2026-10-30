@@ -412,6 +412,38 @@ for (const image of IMAGES) {
             });
         }
 
+        // The first `connected` callback calls disconnect() while connect() has not returned yet: the connection is already
+        // handed over, so it is closed gracefully and its socket must not be destroyed under that close.
+        for (const mode of [
+            { label: "recovery: false", extra: { recovery: false as const } },
+            { label: "recovery", extra: {} },
+        ]) {
+            it(`disconnect() from the first connected callback returns (${mode.label})`, async () => {
+                const holder: { adapter?: ReturnType<typeof AmqpAdapter>; done?: Promise<void> | undefined } = {};
+                const adapter = AmqpAdapter({
+                    url,
+                    exchange: "hardening.connected-disconnect",
+                    ...mode.extra,
+                    lifecycle: {
+                        onLifecycle: (event: AmqpLifecycleEvent) => {
+                            if (event.type === "connected" && holder.done === undefined) {
+                                holder.done = holder.adapter?.disconnect();
+                            }
+                        },
+                    },
+                });
+                holder.adapter = adapter;
+                try {
+                    await adapter.connect({ serviceName: `hardening-connected-${Math.random().toString(36).slice(2, 8)}` });
+                    assert.ok(holder.done !== undefined, "the connected callback ran");
+                    const outcome = await Promise.race([holder.done.then(() => "disconnected"), sleep(8_000).then(() => "disconnect() still pending")]);
+                    assert.equal(outcome, "disconnected");
+                } finally {
+                    await adapter.disconnect().catch(() => undefined);
+                }
+            });
+        }
+
         it("a second connect() while the first is still running is refused and opens no second connection", async () => {
             const name = `hardening-concurrent-${Math.random().toString(36).slice(2, 8)}`;
             const adapter = AmqpAdapter({ url, exchange: "hardening.concurrent", recovery: false });

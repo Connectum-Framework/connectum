@@ -2618,6 +2618,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     // attached after the first success it missed the initial
                     // `connect` event: either way it is delivered here, once.
                     cycle.initialWindow = false;
+                    // From here disconnect() closes the connection gracefully; destroying its socket would leave that waiting.
+                    // This must precede the `connected` callbacks, which may call disconnect().
+                    if (connectAbort === abort) {
+                        connectAbort = null;
+                    }
                     connection = wrapper as unknown as amqp.ChannelModel;
                     if (!cycle.connectedDelivered) {
                         deliverCycleConnected(cycle);
@@ -2687,6 +2692,10 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     // connection was not published to `connection` yet.
                     if (superseded()) {
                         throw new AmqpConnectionError("Adapter closed while connect() was in progress");
+                    }
+                    // From here disconnect() closes the connection gracefully; destroying its socket would leave that waiting.
+                    if (connectAbort === abort) {
+                        connectAbort = null;
                     }
                     connection = conn;
                     dispatchLifecycle(lifecycle, { type: "connected", reconnected: false });
