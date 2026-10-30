@@ -118,6 +118,30 @@ describe("copyAuthContext", () => {
         assert.deepStrictEqual(seen, ["alice", "alice"]);
     });
 
+    it("copies an array by its items, not by a custom iterator it carries", async () => {
+        const make = (): string[] => {
+            const list = ["user"];
+            Object.defineProperty(list, Symbol.iterator, { value: () => ["admin"][Symbol.iterator]() });
+            return list;
+        };
+        const copy = copyAuthContext({ ...verified(), roles: make(), scopes: make(), claims: { groups: make() } });
+
+        assert.deepStrictEqual([...Array.prototype.values.call(copy.roles)], ["user"]);
+        assert.deepStrictEqual(Array.from({ length: copy.scopes.length }, (_, index) => copy.scopes[index]), ["user"]);
+        assert.deepStrictEqual(Array.from({ length: (copy.claims.groups as string[]).length }, (_, index) => (copy.claims.groups as string[])[index]), ["user"]);
+        assert.strictEqual(copy.roles.includes("admin"), false);
+
+        const seen: string[][] = [];
+        const interceptor = createAuthInterceptor({ verifyCredentials: async () => ({ ...verified(), roles: make() }), cache: { ttl: 60_000 } });
+        for (let i = 0; i < 2; i++) {
+            await interceptor((async () => {
+                seen.push([...(getAuthContext()?.roles ?? [])].length ? Array.from({ length: getAuthContext()?.roles.length ?? 0 }, (_, index) => getAuthContext()?.roles[index] ?? "") : []);
+                return { message: {} };
+            }) as never)(createMockRequest({ service: "t.v1.S", method: "M", headers: new Headers({ authorization: "Bearer t" }) }));
+        }
+        assert.deepStrictEqual(seen, [["user"], ["user"]]);
+    });
+
     it("omits expiresAt and name when the identity has none, and keeps extra keys", () => {
         const { expiresAt: _expiresAt, name: _name, ...rest } = verified();
         const copy = copyAuthContext({ ...rest, tenant: "acme" } as AuthContext);
