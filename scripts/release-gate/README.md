@@ -31,25 +31,30 @@ the behavioral smoke and a single-copy check:
    value (`===`) from each. A multi-entry build without `splitting` copies shared
    modules into every subpath, so singletons (the OpenTelemetry provider), classes
    and module state would exist once per subpath.
-6. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
+6. **exported error class names** ([`checks/class-names.mjs`](./fixture/checks/class-names.mjs)) —
+   every error class a package exports keeps its public name in the packed build:
+   `Class.name` equals the name it is exported under, and an instance reports the same
+   `constructor.name`, with neither `stack` nor `util.inspect` output starting with an
+   underscore-prefixed name (the inner name a bundler gives a class that refers to itself).
+7. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
    no prefix-only builtin (`node:test`/`sqlite`/`sea`) ships with its `node:` prefix stripped.
-7. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
+8. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
    a cast-free fixture ([`src/usage.ts`](./fixture/src/usage.ts)) compiles documented
    signatures against the packed `.d.ts`, catching signature regressions.
-8. **packed resilience cancellation** ([`checks/resilience-cancellation.mjs`](./fixture/checks/resilience-cancellation.mjs)) — verifies own deadline propagation,
+9. **packed resilience cancellation** ([`checks/resilience-cancellation.mjs`](./fixture/checks/resilience-cancellation.mjs)) — verifies own deadline propagation,
    structured caller errors, interruptible retry backoff, waiting for active work
    and independent mock request signals through installed main/subpath exports.
-9. **generated EventBus type-check** ([`checks/generated-eventbus.mjs`](./fixture/checks/generated-eventbus.mjs)) —
+10. **generated EventBus type-check** ([`checks/generated-eventbus.mjs`](./fixture/checks/generated-eventbus.mjs)) —
    runs the packed CLI (`connectum init --events <adapter>`) for the NATS, Kafka, Redis and AMQP
    adapter packages, generates the protos with the consumer's `buf`, and `tsc --noEmit`s each
    generated project against the packed packages. This is the only check that compiles the
    generated `<name>EventBus.ts` and event-handler service; it needs network access, because the
    CLI downloads its base project from a pinned `examples` tag.
-10. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
+11. **behavioral smoke** ([`fixture/src/smoke.ts`](./fixture/src/smoke.ts)) — calls
    public functions not covered by the example e2e (catalog key-validation,
    resolvers, `defaultFailurePredicate` classification, opt-in interceptors, otel
    getters, auth helpers, healthcheck, events helpers, testing mocks, real `ctx.call`).
-11. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
+12. **single copy of protobuf / Connect** (`scripts/lib/runtime-participants.mjs`) — the
    fixture pins `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node`
    inside the framework's peer ranges, and the consumer has no workspace override, so
    every runtime participant must resolve one copy of each. In `pack` mode each installed
