@@ -225,6 +225,7 @@ export class InMemoryMetricCollector {
     public readonly exporter: InMemoryMetricExporter;
     public readonly provider: MeterProvider;
     public readonly reader: PeriodicExportingMetricReader;
+    private disposed = false;
 
     constructor() {
         // DELTA: each export carries only what was recorded since the previous
@@ -239,9 +240,23 @@ export class InMemoryMetricCollector {
         this.provider = new MeterProvider({ readers: [this.reader] });
     }
 
+    /**
+     * Force a collect+export cycle and return what was recorded since the
+     * previous `flush()` (or since the collector was created or `reset()`),
+     * normalized. The exporter's buffer is emptied by the read, so a flush with
+     * nothing recorded in between returns `[]` and a lookup by name after a
+     * later flush sees the current value, never an earlier export of the same
+     * metric.
+     *
+     * @throws Error when called after {@link InMemoryMetricCollector.dispose}
+     */
     async flush(): Promise<NormalizedMetric[]> {
+        if (this.disposed) {
+            throw new Error("InMemoryMetricCollector: flush() called after dispose()");
+        }
         await this.reader.forceFlush();
         const resourceMetrics = this.exporter.getMetrics();
+        this.exporter.reset();
         const out: NormalizedMetric[] = [];
         for (const rm of resourceMetrics) {
             for (const sm of rm.scopeMetrics) {
@@ -256,11 +271,17 @@ export class InMemoryMetricCollector {
         return out;
     }
 
+    /** Forget what was exported and not yet returned by `flush()`. */
     reset(): void {
         this.exporter.reset();
     }
 
+    /** Shut the provider down. Calling it again is a no-op. */
     async dispose(): Promise<void> {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
         await this.provider.shutdown();
     }
 }
