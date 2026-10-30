@@ -6,10 +6,12 @@
 // here (this file runs type-stripped): usage.ts and usage-typecheck.mjs do that.
 import assert from "node:assert";
 import { readdirSync, readFileSync } from "node:fs";
+import { connect } from "node:net";
+import { networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
@@ -342,6 +344,85 @@ check("testing.mockResolver + mockService are callable", () => {
 check("testing.assertConnectError validates a ConnectError", () => {
     const fn = testing.assertConnectError as (e: unknown, code?: unknown) => void;
     fn(new ConnectError("x", Code.NotFound), Code.NotFound);
+});
+check("testing.createMockContext describes the method named by `method`", () => {
+    const ctx = testing.createMockContext({
+        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+        mocks: [],
+        method: "greeter.v1.GreeterService/SayHelloStream",
+    });
+    assert.strictEqual(ctx.service.typeName, "greeter.v1.GreeterService");
+    assert.strictEqual(ctx.method.name, "SayHelloStream");
+    assert.throws(
+        () => testing.createMockContext({ catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }), mocks: [], method: "greeter.v1.GreeterService/Nope" }),
+        (e: unknown) => e instanceof TypeError && /options\.method/.test(e.message),
+    );
+});
+await checkAsync("testing.mockService — an exception in the implementation keeps its message and cause", async () => {
+    const typo = new TypeError("typo in the mock");
+    const ctx = testing.createMockContext({
+        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+        mocks: [
+            testing.mockService(GreeterService, {
+                sayHello: () => {
+                    throw typo;
+                },
+            }),
+        ],
+    });
+    await assert.rejects(ctx.call("greeter.v1.GreeterService/SayHello", create(HelloRequestSchema, { name: "x" })), (e: unknown) => {
+        const err = ConnectError.from(e);
+        return err.code === Code.Internal && err.rawMessage === "typo in the mock" && err.cause === typo;
+    });
+});
+await checkAsync("testing.InMemoryMetricCollector.flush() reports only what was recorded since the previous flush", async () => {
+    const collector = new testing.InMemoryMetricCollector();
+    const hits = collector.provider.getMeter("smoke").createCounter("hits");
+    hits.add(1);
+    assert.deepStrictEqual(
+        (await collector.flush()).map((m) => m.points.map((p) => p.value)),
+        [[1]],
+    );
+    hits.add(5);
+    assert.deepStrictEqual(
+        (await collector.flush()).map((m) => m.points.map((p) => p.value)),
+        [[5]],
+    );
+    await collector.dispose();
+    await assert.rejects(collector.flush(), /after dispose/);
+});
+await checkAsync("testing.createTestServer — loopback by default, wrong service rejected by option name, shutdown timeout bounds close()", async () => {
+    const routes = core.defineService(GreeterService, {
+        sayHello: (req: { name: string }) => create(HelloReplySchema, { message: `hi ${req.name}` }),
+    });
+    await assert.rejects(testing.createTestServer({ services: ["nope"] } as never), (e: unknown) => e instanceof TypeError && /services\[0\]/.test(e.message));
+    const server = await testing.createTestServer({ services: [routes], shutdown: { timeout: 500 } });
+    try {
+        const reply = await createClient(GreeterService, server.transport).sayHello(create(HelloRequestSchema, { name: "x" }));
+        assert.strictEqual(reply.message, "hi x");
+        assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+        const external = Object.values(networkInterfaces())
+            .flat()
+            .find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal)?.address;
+        if (external !== undefined) {
+            const reach = (host: string) =>
+                new Promise<boolean>((resolveReach) => {
+                    const socket = connect({ port: server.port, host });
+                    socket.once("connect", () => {
+                        socket.destroy();
+                        resolveReach(true);
+                    });
+                    socket.once("error", () => {
+                        socket.destroy();
+                        resolveReach(false);
+                    });
+                });
+            assert.strictEqual(await reach("127.0.0.1"), true);
+            assert.strictEqual(await reach(external), false, `${external} must refuse connections`);
+        }
+    } finally {
+        await server.close();
+    }
 });
 
 // ---------- @connectum/core: shutdown ----------
