@@ -2715,6 +2715,7 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             generation += 1;
             liveModel = null;
             // Ends a connect() that waits on a socket it cannot cancel otherwise (see connectAbort).
+            const connectWasPending = connectAbort !== null;
             connectAbort?.abort();
             connectAbort = null;
 
@@ -2749,7 +2750,11 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
             subscriptionRecords.length = 0;
 
             if (publishChannel) {
-                await publishChannel.close().catch(() => undefined);
+                // A channel the pending connect() created sits on a connection whose socket was just destroyed:
+                // closing it gracefully waits for a broker reply that cannot come, so it is only dropped.
+                if (!connectWasPending) {
+                    await publishChannel.close().catch(() => undefined);
+                }
                 publishChannel = null;
             }
 

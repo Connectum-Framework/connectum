@@ -69,7 +69,7 @@ interface GatedProxy {
  * finishes after a newer connect() took over" a fixed order of events instead
  * of a timing race.
  */
-async function startGatedProxy(target: { host: string; port: number }): Promise<GatedProxy> {
+async function startGatedProxy(target: { host: string; port: number }, holdOn: { readonly classId: number; readonly methodId: number } = { classId: AMQP_CHANNEL_CLASS, methodId: AMQP_CHANNEL_OPEN_METHOD }): Promise<GatedProxy> {
     let held = false;
     let released = false;
     let resolveSetupStarted: () => void = () => undefined;
@@ -106,7 +106,7 @@ async function startGatedProxy(target: { host: string; port: number }): Promise<
                     return;
                 }
                 const isMethod = clientBytes[0] === AMQP_METHOD_FRAME && size >= 4;
-                if (isMethod && clientBytes.readUInt16BE(7) === AMQP_CHANNEL_CLASS && clientBytes.readUInt16BE(9) === AMQP_CHANNEL_OPEN_METHOD && !released) {
+                if (isMethod && clientBytes.readUInt16BE(7) === holdOn.classId && clientBytes.readUInt16BE(9) === holdOn.methodId && !released) {
                     held = true;
                     resolveSetupStarted();
                 }
@@ -375,6 +375,38 @@ for (const image of IMAGES) {
                     await adapter.publish("hardening.late-setup.evt", new Uint8Array([1]));
                 } finally {
                     await adapter.disconnect();
+                    await proxy.close();
+                }
+            });
+        }
+
+        // The setup has created its publish channel and waits for the first declaration: disconnect() meets a channel
+        // that exists on a connection whose socket it has to destroy, and closing that channel gracefully would wait
+        // for a broker reply that never comes.
+        for (const mode of [
+            { label: "recovery: false", extra: { recovery: false as const } },
+            { label: "recovery", extra: {} },
+            { label: "recovery with lifecycle (startup probe)", extra: { lifecycle: { onLifecycle: () => undefined } } },
+        ]) {
+            it(`disconnect() returns while the setup of a pending connect() waits for the broker after its publish channel exists (${mode.label})`, async () => {
+                const name = `hardening-stalled-declare-${Math.random().toString(36).slice(2, 8)}`;
+                const EXCHANGE_CLASS = 40;
+                const EXCHANGE_DECLARE_METHOD = 10;
+                const proxy = await startGatedProxy({ host: container.getHost(), port: container.getMappedPort(5672) }, { classId: EXCHANGE_CLASS, methodId: EXCHANGE_DECLARE_METHOD });
+                const adapter = AmqpAdapter({ url: `amqp://guest:guest@127.0.0.1:${proxy.port}`, exchange: "hardening.stalled-declare", ...mode.extra });
+                try {
+                    const first = adapter.connect({ serviceName: name }).then(
+                        () => "resolved",
+                        (err: unknown) => describeError(err),
+                    );
+                    await proxy.setupStarted;
+                    const closed = await Promise.race([adapter.disconnect().then(() => "disconnected"), sleep(8_000).then(() => "disconnect() still pending")]);
+                    assert.equal(closed, "disconnected");
+                    const outcome = await Promise.race([first, sleep(8_000).then(() => "connect() still pending")]);
+                    assert.match(outcome, /AmqpConnectionError: Adapter closed/);
+                } finally {
+                    proxy.release();
+                    await adapter.disconnect().catch(() => undefined);
                     await proxy.close();
                 }
             });
