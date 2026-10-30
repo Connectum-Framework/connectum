@@ -240,6 +240,94 @@ describe("createMockContext", () => {
         });
     });
 
+    // A handler under test reads `ctx.service`, `ctx.method` and `ctx.url`; they must name
+    // the method it implements, and the abort signal must be the test's own.
+    describe("the method and the abort signal the handler under test sees", () => {
+        const catalog = defineCatalog({ [StreamingService.typeName]: StreamingService, [EchoService.typeName]: EchoService });
+        const mocks = [mockService(EchoService, {})];
+
+        it("shows the method named by `method`, in a catalog whose first service is another one", () => {
+            const ctx = createMockContext({ catalog, mocks, method: "echo.v1.EchoService/SecureEcho" });
+            assert.strictEqual(ctx.service.typeName, "echo.v1.EchoService");
+            assert.strictEqual(ctx.method.name, "SecureEcho");
+            assert.strictEqual(String(ctx.url), "https://mock/echo.v1.EchoService/SecureEcho");
+        });
+
+        it("accepts every method of the catalog", () => {
+            for (const service of Object.values(catalog)) {
+                for (const method of service.methods) {
+                    const ctx = createMockContext({ catalog, mocks, method: `${service.typeName}/${method.name}` });
+                    assert.deepStrictEqual([ctx.service.typeName, ctx.method.name], [service.typeName, method.name]);
+                }
+            }
+        });
+
+        it("without `method` shows the first method of the first service, as before", () => {
+            const ctx = createMockContext({ catalog, mocks });
+            assert.strictEqual(ctx.service.typeName, StreamingService.typeName);
+            assert.strictEqual(ctx.method.name, StreamingService.methods[0]?.name);
+        });
+
+        for (const [name, method, expected] of [
+            ["a value that is not a string", 42, /options\.method must be a string/],
+            ["an empty string", "", /options\.method must have the form/],
+            ["a value without a method part", "echo.v1.EchoService", /options\.method must have the form/],
+            ["a value with an empty method part", "echo.v1.EchoService/", /options\.method must have the form/],
+            ["a service that is not in the catalog", "nobody.v1.Nobody/Call", /service "nobody\.v1\.Nobody" is not in the catalog/],
+            ["a method the service does not have", "echo.v1.EchoService/Nope", /method "Nope" is not a method of "echo\.v1\.EchoService"/],
+        ] as const) {
+            it(`rejects ${name}, naming the option`, () => {
+                assert.throws(
+                    () => createMockContext({ catalog, mocks, method: method as string }),
+                    (err: unknown) => err instanceof TypeError && expected.test(err.message),
+                );
+            });
+        }
+
+        it("hands the handler the caller's abort signal", () => {
+            const controller = new AbortController();
+            const ctx = createMockContext({ catalog, mocks, signal: controller.signal });
+            assert.strictEqual(ctx.signal.aborted, false);
+            controller.abort();
+            assert.strictEqual(ctx.signal.aborted, true, "aborting the caller's controller must abort ctx.signal");
+        });
+
+        it("cascades the caller's abort into the outgoing call of the handler", async () => {
+            const controller = new AbortController();
+            const ctx = createMockContext({
+                catalog: defineCatalog({ [EchoService.typeName]: EchoService }),
+                mocks: [
+                    mockService(EchoService, {
+                        echo: (_req, mockCtx) =>
+                            new Promise((_resolve, reject) => {
+                                mockCtx.signal.addEventListener("abort", () => reject(mockCtx.signal.reason), { once: true });
+                            }),
+                    }),
+                ],
+                signal: controller.signal,
+            });
+            const pending = ctx.call("echo.v1.EchoService/Echo", create(EchoRequestSchema, { message: "x" }));
+            controller.abort();
+            await assert.rejects(pending, (err: unknown) => ConnectError.from(err).code === Code.Canceled);
+        });
+
+        it("starts aborted when the caller's signal already is", () => {
+            const ctx = createMockContext({ catalog, mocks, signal: AbortSignal.abort() });
+            assert.strictEqual(ctx.signal.aborted, true);
+        });
+
+        it("leaves ctx.signal alive when no signal is given", () => {
+            assert.strictEqual(createMockContext({ catalog, mocks }).signal.aborted, false);
+        });
+
+        it("rejects a signal that is not an AbortSignal, naming the option", () => {
+            assert.throws(
+                () => createMockContext({ catalog, mocks, signal: {} as AbortSignal }),
+                (err: unknown) => err instanceof TypeError && /options\.signal must be an AbortSignal/.test(err.message),
+            );
+        });
+    });
+
     describe("an unusable catalog is rejected up front", () => {
         it("throws for a catalog with no service", () => {
             assert.throws(() => createMockContext({ catalog: defineCatalog({}), mocks: [] }), (err: unknown) => err instanceof Error && /at least one service/.test(err.message));
