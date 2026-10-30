@@ -2,7 +2,7 @@
  * Default interceptor chain factory
  *
  * Creates the interceptor chain in a fixed order:
- * errorHandler → timeout → bulkhead → circuitBreaker → retry → fallback → validation → serializer.
+ * errorHandler → timeout → bulkhead → circuitBreaker → retry → validation → fallback → serializer.
  * Only errorHandler and validation are enabled by default; resilience
  * interceptors (timeout, bulkhead, circuitBreaker, retry) are opt-in —
  * no hidden behavioral logic.
@@ -21,7 +21,7 @@ import { createSerializerInterceptor } from "./serializer.ts";
 import { createTimeoutInterceptor } from "./timeout.ts";
 import type { BulkheadOptions, CircuitBreakerOptions, ErrorHandlerOptions, FallbackOptions, RetryOptions, SerializerOptions, TimeoutOptions } from "./types.ts";
 import type { DefaultOptionKind } from "./validate.ts";
-import { requireDefaultOption } from "./validate.ts";
+import { requireDefaultOption, requireKnownKeys, requireOptionsObject } from "./validate.ts";
 
 /**
  * Configuration options for the default interceptor chain.
@@ -37,7 +37,11 @@ import { requireDefaultOption } from "./validate.ts";
  *
  * Any other value for a key (`null`, a number, a string, an array, a function) is
  * refused with a `TypeError` naming the key: a value that is not understood must
- * not silently disable an interceptor. The numeric options inside an options
+ * not silently disable an interceptor. A key that is not listed here, such as the
+ * mistyped `timout`, is refused the same way, with the known keys in the message;
+ * the logger and the method filter are not part of this chain, so create them
+ * with their own factories. An argument that is not an object (`null`, for
+ * example) is refused too. The numeric options inside an options
  * object are validated by their factories; see each options type for its range.
  *
  * Only structural interceptors (errorHandler, validation) are enabled by
@@ -150,8 +154,9 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  * 4. **circuitBreaker** - Prevent cascading failures (OPT-IN; wraps retry — an
  *    ultimate failure counts once, regardless of the number of retry attempts)
  * 5. **retry** - Retry transient failures with exponential backoff (OPT-IN)
- * 6. **fallback** - Graceful degradation (OPT-IN, requires handler)
- * 7. **validation** - @connectrpc/validate (enabled by default)
+ * 6. **validation** - @connectrpc/validate (enabled by default; outside the fallback, so a
+ *    rejected request is never answered by the fallback value)
+ * 7. **fallback** - Graceful degradation (OPT-IN, requires handler)
  * 8. **serializer** - JSON serialization (innermost, OPT-IN)
  *
  * Resilience interceptors (2-5) are opt-in by design: the recommended path
@@ -178,7 +183,8 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  *
  * // Enable fallback with handler
  * const withFallback = createDefaultInterceptors({
- *   fallback: { handler: () => ({ data: [] }) },
+ *   // A plain object with the fields of the method's response message, or a message made with create(ResponseSchema, ...)
+ *   fallback: { handler: () => ({ items: [] }) },
  * });
  *
  * // No interceptors: omit `interceptors` option in createServer()
@@ -186,6 +192,10 @@ function optionsOf<T extends object>(value: boolean | T | undefined): T | undefi
  * ```
  */
 export function createDefaultInterceptors(options: DefaultInterceptorOptions = {}): Interceptor[] {
+    requireOptionsObject({ caller: "createDefaultInterceptors", value: options });
+    // A key outside the list would otherwise be ignored: `{ timout: ... }` asks for a timeout and gets none.
+    requireKnownKeys({ caller: "createDefaultInterceptors", value: options, known: OPTION_KINDS.map(([option]) => option) });
+
     for (const [option, kind] of OPTION_KINDS) {
         requireDefaultOption({ option, value: options[option], kind });
     }
@@ -217,14 +227,17 @@ export function createDefaultInterceptors(options: DefaultInterceptorOptions = {
         interceptors.push(createRetryInterceptor(optionsOf(options.retry) ?? {}));
     }
 
-    // 6. Fallback (opt-in, disabled by default — requires handler)
-    if (options.fallback !== undefined && options.fallback !== false) {
-        interceptors.push(createFallbackInterceptor(options.fallback));
-    }
-
-    // 7. Validation (@connectrpc/validate)
+    // 6. Validation (@connectrpc/validate). It stands outside the fallback: a request that
+    // breaks a rule is a client error, and the fallback value is for failed dependencies,
+    // timeouts and bugs. Were validation inside the fallback, the rejection would be
+    // replaced by the fallback value and reach the caller as a successful response.
     if (options.validation !== false) {
         interceptors.push(createValidateInterceptor());
+    }
+
+    // 7. Fallback (opt-in, disabled by default — requires handler)
+    if (options.fallback !== undefined && options.fallback !== false) {
+        interceptors.push(createFallbackInterceptor(options.fallback));
     }
 
     // 8. Serializer (opt-in, disabled by default)

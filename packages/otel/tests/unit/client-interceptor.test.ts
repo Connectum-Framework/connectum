@@ -343,6 +343,23 @@ describe("createOtelClientInterceptor", () => {
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 		});
 
+		// Oracle: the OpenTelemetry Connect RPC conventions, client span: all status codes
+		// except OK SHOULD be considered errors, so every failure marks a client span ERROR
+		// (only a server limits that to unknown, deadline_exceeded, unimplemented, internal,
+		// unavailable and data_loss). The numbers are the Connect protocol's error codes.
+		for (let code = 1; code <= 16; code++) {
+			it(`should mark the client span ERROR for Connect code ${code}`, async () => {
+				const next: any = async (_req: unknown) => { throw new ConnectError("failed", code); };
+				const handler = createOtelClientInterceptor(clientOptions())(next);
+
+				const observed = await observe(async () => {
+					await assert.rejects(() => handler(greeterRequest()));
+				});
+
+				assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.ERROR);
+			});
+		}
+
 		// The Connect spelling of code 1 has one L (as the Connect protocol, Connect-ES and
 		// otelconnect-go write it); the gRPC spelling with two Ls is never produced.
 		it("should report a canceled call as CANCELED with one L and an ERROR span status", async () => {

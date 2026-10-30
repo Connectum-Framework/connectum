@@ -16,6 +16,7 @@ import { EventRouterImpl } from "./EventRouter.ts";
 import { dlqMiddleware } from "./middleware/dlq.ts";
 import { retryMiddleware } from "./middleware/retry.ts";
 import { composeMiddleware } from "./middleware.ts";
+import { assertNumberOption, MAX_TIMER_DELAY_MS } from "./optionValidation.ts";
 import { resolveTopicName } from "./topic.ts";
 import type { EventBus, EventBusObserverEvent, EventBusOptions, EventContext, EventMiddleware, EventSubscription, PublishOptions, RawEvent } from "./types.ts";
 import { matchPattern } from "./wildcard.ts";
@@ -70,7 +71,18 @@ export function deriveServiceName(serviceNames: readonly string[]): string | und
  */
 export function createEventBus(options: EventBusOptions): EventBus & EventBusLike {
     const { adapter, routes = [], group, middleware: mwConfig } = options;
-    const handlerTimeout = options.handlerTimeout ?? 30_000;
+    const handlerTimeout = options.handlerTimeout === undefined ? 30_000 : options.handlerTimeout;
+    // Evaluated by `AbortSignal.timeout()` on every delivery, so a value it refuses would fail each
+    // delivery before the handler runs, and 0 would abort every signal at once.
+    assertNumberOption({
+        owner: "createEventBus",
+        name: "handlerTimeout",
+        value: handlerTimeout,
+        min: 1,
+        max: 2 ** 32 - 1,
+        integer: true,
+        allowed: "an integer number of milliseconds from 1 to 4294967295",
+    });
     const strictTopics = options.strictTopics ?? false;
     const subscriptions: EventSubscription[] = [];
     let started = false;
@@ -78,7 +90,18 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     let stopping = false;
     let startPromise: Promise<void> | null = null;
     let stopPromise: Promise<void> | null = null;
-    const drainTimeout = options.drainTimeout ?? 30_000;
+    const drainTimeout = options.drainTimeout === undefined ? 30_000 : options.drainTimeout;
+    // The drain loop waits on timers of this length: NaN or a negative value would abort running
+    // handlers as soon as stop() is called, and a delay above the longest timer (Infinity included)
+    // is replaced by 1 ms, so the loop would poll every millisecond. 0 is valid: abort at once.
+    assertNumberOption({
+        owner: "createEventBus",
+        name: "drainTimeout",
+        value: drainTimeout,
+        min: 0,
+        max: MAX_TIMER_DELAY_MS,
+        allowed: `a finite number of milliseconds from 0 to ${MAX_TIMER_DELAY_MS}`,
+    });
     const drainAbortGrace = options.drainAbortGrace;
     if (drainAbortGrace !== undefined && !(Number.isFinite(drainAbortGrace) && drainAbortGrace >= 0)) {
         throw new RangeError(`createEventBus: drainAbortGrace must be a finite, non-negative number of milliseconds, got ${String(drainAbortGrace)}`);
@@ -169,16 +192,20 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     if (mwConfig?.dlq) {
         const dlqTopic = mwConfig.dlq.topic;
         middlewares.push(
-            dlqMiddleware(mwConfig.dlq, {
-                publish: (topic, payload, publishOptions) => {
-                    const republish = adapter.publish(topic, payload, publishOptions);
-                    if (stopping) {
-                        notify({ type: "dlq-republish", topic: dlqTopic });
-                        trackRelay(republish);
-                    }
-                    return republish;
+            dlqMiddleware(
+                mwConfig.dlq,
+                {
+                    publish: (topic, payload, publishOptions) => {
+                        const republish = adapter.publish(topic, payload, publishOptions);
+                        if (stopping) {
+                            notify({ type: "dlq-republish", topic: dlqTopic });
+                            trackRelay(republish);
+                        }
+                        return republish;
+                    },
                 },
-            }),
+                (failure) => notify({ type: "dlq-failed", ...failure }),
+            ),
         );
     }
 
@@ -376,7 +403,10 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
                     removeAbortListener = undefined;
                     await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
                     subscriptions.length = 0;
-                    await adapter.disconnect();
+                    // The caller needs the error that made start() fail. A disconnect that fails
+                    // while rolling back is secondary and must not replace it, as the failed
+                    // unsubscribes above do not.
+                    await adapter.disconnect().catch(() => undefined);
                     throw error;
                 } finally {
                     starting = false;

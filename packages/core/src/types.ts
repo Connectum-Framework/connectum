@@ -151,6 +151,8 @@ export interface ProtocolRegistration {
  * Supply both explicit key and certificate paths or use a directory pair.
  * A single explicit path is a configuration error: it is rejected before any
  * file is read instead of being replaced by the directory files.
+ * A file that cannot be read or parsed fails startup with an error that names the
+ * file and the setting its path came from.
  */
 export interface TLSOptions {
     /**
@@ -245,13 +247,15 @@ export interface ShutdownOptions {
     timeout?: number;
 
     /**
-     * Signals to listen for graceful shutdown
+     * Signals to listen for graceful shutdown: a non-empty array of signal names the
+     * platform knows (`SIGKILL` and `SIGSTOP` cannot be handled). `createServer()`
+     * throws for anything else, also while `autoShutdown` is off.
      * @default ["SIGTERM", "SIGINT"]
      */
     signals?: NodeJS.Signals[];
 
     /**
-     * Enable automatic graceful shutdown on signals
+     * Enable automatic graceful shutdown on signals. Must be a boolean.
      * @default false
      */
     autoShutdown?: boolean;
@@ -287,13 +291,15 @@ export interface CreateServerOptions {
     services: readonly ServiceDefinition[];
 
     /**
-     * Server port
+     * Server port: an integer from 0 to 65535 (`0` lets the system pick a free port).
+     * `createServer()` throws for any other value, a numeric string included.
      * @default 5000
      */
     port?: number;
 
     /**
-     * Server host to bind
+     * Server host to bind: a non-empty string. `createServer()` throws for an empty
+     * or non-string value instead of binding every interface.
      * @default "0.0.0.0"
      */
     host?: string;
@@ -528,6 +534,10 @@ export interface CreateServerOptions {
      * (typically the generated `serviceCatalog`). Drives startup validation and
      * remote routing. Optional — a process that hosts everything locally and
      * makes no cross-service calls needs no catalog.
+     *
+     * A hand-built map is checked like {@link defineCatalog} output:
+     * `createServer()` throws `CatalogConfigError` when a key differs from its
+     * descriptor's `typeName`.
      */
     catalog?: ServiceCatalog;
 
@@ -538,6 +548,12 @@ export interface CreateServerOptions {
      * provided service locally, whether the property is omitted or set to
      * `undefined`, so `enabledServicesFromEnv(process.env.X)` can be passed as is.
      * An empty list mounts none of them.
+     *
+     * Every entry must be the `typeName` of a service in `services` (or added
+     * with `addService()`), with or without a `catalog`; with a catalog it must
+     * also be a catalog key. `start()` rejects with `CatalogConfigError` naming
+     * the unknown entries, so a misspelled name cannot leave a running server
+     * with nothing mounted.
      */
     enabledServices?: readonly string[] | undefined;
 
@@ -579,6 +595,13 @@ export interface CreateServerOptions {
      *
      * Use {@link defaultPropagateHeaders} (W3C trace-context headers) as a base
      * and add your own, e.g. `[...defaultPropagateHeaders, "x-tenant-id"]`.
+     *
+     * Every entry must be a valid HTTP header name: a non-empty token such as
+     * `"x-request-id"`, not a pseudo-header like `":authority"`. `createServer()`
+     * throws a `TypeError` naming `propagateHeaders` and the entry otherwise.
+     *
+     * The list is copied when the server is created: changing the array you
+     * passed afterwards does not change what is forwarded.
      */
     propagateHeaders?: readonly string[];
 }
@@ -813,11 +836,16 @@ export interface Server extends EventEmitter {
 
     /**
      * Synchronous registry lookup: returns whether the given proto service
-     * descriptor is served locally by this `Server`. Triggers route
-     * materialization on first call.
+     * descriptor is served locally by this `Server`.
      *
-     * Source of truth is the same `ConnectRouter.service(desc, impl)` chain
-     * used to build the HTTP handler — no separate registration step.
+     * A service the application defines (`services`, `addService()`, filtered
+     * by `enabledServices`) is answered from its definition without building
+     * routes: no lazy factory runs and `addService()`, `addInterceptor()` and
+     * `addProtocol()` stay available. A descriptor only a protocol could
+     * provide (when protocols are registered) is answered from the built
+     * routes, which this call then builds and freezes the configuration.
+     * The answer is the same either way: routes are the same
+     * `ConnectRouter.service(desc, impl)` chain used to build the HTTP handler.
      *
      * @example
      * ```typescript
@@ -866,6 +894,7 @@ export interface ServerClientOptions {
      * Opaque endpoint hint forwarded to the configured `remoteResolver` when the
      * requested service is not mounted locally (polymorphic deployments — one
      * proto served at several endpoints). Ignored for locally-mounted services.
+     * An empty string counts as no endpoint.
      */
     endpoint?: string;
 }

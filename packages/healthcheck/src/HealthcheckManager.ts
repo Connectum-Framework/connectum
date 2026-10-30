@@ -8,6 +8,7 @@
  */
 
 import { type ServiceStatus, ServingStatus } from "./types.ts";
+import { assertName, assertServingStatus } from "./validation.ts";
 
 /**
  * Registry entry kind.
@@ -45,7 +46,8 @@ interface HealthEntry {
  * check in `register`/`set`/`unregister` and `initialize` covers it
  * defensively. The dot syntax is reserved for service typeNames.
  */
-function assertValidComponentName(component: string): void {
+function assertValidComponentName(component: string, where: string): void {
+    assertName(component, "component", where);
     if (component === "") {
         throw new Error("Component name must not be empty");
     }
@@ -80,24 +82,121 @@ export class HealthcheckManager {
     private entries: Map<string, HealthEntry> = new Map();
 
     /**
+     * Wrapped so the same function subscribed twice is two subscriptions that
+     * unsubscribe independently.
+     */
+    private subscribers: Set<{ listener: () => void }> = new Set();
+
+    /** True while listeners are being called; see {@link assertNotNotifying}. */
+    private notifying = false;
+
+    /**
+     * Refuse a registry change made from inside a listener.
+     *
+     * Listeners read the state when they are called. A listener that changed
+     * the registry again would let the listeners after it see only the final
+     * state, and a watcher would lose the first transition. Refusing the nested
+     * change keeps every listener's view in step with the mutation that
+     * notified it.
+     */
+    private assertNotNotifying(method: string): void {
+        if (this.notifying) {
+            throw new Error(
+                `HealthcheckManager.${method}: the registry cannot be changed from inside a subscribe() listener; schedule the change instead (for example with queueMicrotask)`,
+            );
+        }
+    }
+
+    /**
+     * Be told about every change of the registry.
+     *
+     * The listener runs synchronously, after the new state is in place, once
+     * per `update`, `register` (of a new name), `set`, `unregister` (of a
+     * registered name), `initialize` and `clear`. It receives no payload:
+     * read the state you care about with `getStatus()` or `getAllStatuses()`.
+     * A mutation that is refused (invalid status, unknown service) does not
+     * notify. `Health.Watch` is built on this, which is why a status that
+     * changes and changes back between two polls still reaches watchers.
+     *
+     * A listener that throws does not stop the others: every listener runs,
+     * then the first error is rethrown to the caller of the mutation. The
+     * mutation itself is not undone.
+     *
+     * A listener must not change the registry: `update`, `register`, `set`,
+     * `unregister`, `initialize` and `clear` called from inside a listener
+     * throw. Each listener sees the state of the mutation that notified it,
+     * and a nested change would hide that transition from the listeners after
+     * it. Defer the change (for example with `queueMicrotask`) instead.
+     *
+     * @param listener - Function called after each change
+     * @returns Function that removes the listener; calling it again does nothing
+     * @throws {TypeError} when `listener` is not a function
+     */
+    subscribe(listener: () => void): () => void {
+        if (typeof listener !== "function") {
+            throw new TypeError(`HealthcheckManager.subscribe(): listener must be a function, got ${typeof listener}`);
+        }
+        const subscription = { listener };
+        this.subscribers.add(subscription);
+        return () => {
+            this.subscribers.delete(subscription);
+        };
+    }
+
+    /**
+     * Call every current subscriber. A subscriber removed by an earlier one
+     * during this call is skipped; one added during it waits for the next
+     * change.
+     */
+    private notify(): void {
+        let failure: { error: unknown } | undefined;
+        this.notifying = true;
+        try {
+            for (const subscription of [...this.subscribers]) {
+                if (!this.subscribers.has(subscription)) {
+                    continue;
+                }
+                try {
+                    subscription.listener();
+                } catch (error) {
+                    failure ??= { error };
+                }
+            }
+        } finally {
+            this.notifying = false;
+        }
+        if (failure !== undefined) {
+            throw failure.error;
+        }
+    }
+
+    /**
      * Update service health status
      *
      * When called without a service name, updates ALL registered entries
      * (services and components alike).
      * When called with an unknown service name, throws an error.
      *
-     * @param status - New serving status
+     * @param status - New serving status: one of the four `ServingStatus` values
      * @param service - Service name (if not provided, updates all entries)
+     * @throws {TypeError} if `status` is not a number, or `service` is given and is not a string
+     * @throws {RangeError} if `status` is a number other than 0, 1, 2 or 3
      * @throws Error if service name is provided but not registered
      */
     update(status: ServingStatus, service?: string): void {
+        this.assertNotNotifying("update()");
+        assertServingStatus(status, "HealthcheckManager.update()");
+
         // No service specified: update ALL registered entries
         if (service === undefined) {
             for (const [key, entry] of this.entries) {
                 this.entries.set(key, { status, kind: entry.kind });
             }
+            this.notify();
             return;
         }
+
+        assertName(service, "service", "HealthcheckManager.update()");
 
         // Specific service: validate it exists
         const existing = this.entries.get(service);
@@ -106,6 +205,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(service, { status, kind: existing.kind });
+        this.notify();
     }
 
     /**
@@ -117,11 +217,15 @@ export class HealthcheckManager {
      * its status. Component names must be non-empty and dot-free.
      *
      * @param component - Component name (e.g. "process", "amqp")
-     * @param initialStatus - Initial status (default UNKNOWN)
-     * @throws Error on invalid name or when the name belongs to an RPC service
+     * @param initialStatus - Initial status (default UNKNOWN when omitted)
+     * @throws {TypeError} when `component` is not a string, or `initialStatus` is given and is not a number
+     * @throws {RangeError} when `initialStatus` is a number other than 0, 1, 2 or 3
+     * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     register(component: string, initialStatus: ServingStatus = ServingStatus.UNKNOWN): void {
-        assertValidComponentName(component);
+        this.assertNotNotifying("register()");
+        assertValidComponentName(component, "HealthcheckManager.register()");
+        assertServingStatus(initialStatus, "HealthcheckManager.register()");
 
         const existing = this.entries.get(component);
         if (existing !== undefined) {
@@ -133,6 +237,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(component, { status: initialStatus, kind: EntryKind.COMPONENT });
+        this.notify();
     }
 
     /**
@@ -143,11 +248,15 @@ export class HealthcheckManager {
      * dot-free.
      *
      * @param component - Component name
-     * @param status - New serving status
-     * @throws Error on invalid name or when the name belongs to an RPC service
+     * @param status - New serving status: one of the four `ServingStatus` values
+     * @throws {TypeError} when `component` is not a string or `status` is not a number
+     * @throws {RangeError} when `status` is a number other than 0, 1, 2 or 3
+     * @throws Error on an empty or dotted name, or when the name belongs to an RPC service
      */
     set(component: string, status: ServingStatus): void {
-        assertValidComponentName(component);
+        this.assertNotNotifying("set()");
+        assertValidComponentName(component, "HealthcheckManager.set()");
+        assertServingStatus(status, "HealthcheckManager.set()");
 
         const existing = this.entries.get(component);
         if (existing !== undefined && existing.kind === EntryKind.SERVICE) {
@@ -155,6 +264,7 @@ export class HealthcheckManager {
         }
 
         this.entries.set(component, { status, kind: EntryKind.COMPONENT });
+        this.notify();
     }
 
     /**
@@ -164,6 +274,7 @@ export class HealthcheckManager {
      * @throws Error when the name belongs to an RPC service
      */
     unregister(component: string): void {
+        this.assertNotNotifying("unregister()");
         const existing = this.entries.get(component);
         if (existing === undefined) {
             return;
@@ -172,6 +283,7 @@ export class HealthcheckManager {
             throw new Error(`Name '${component}' is a registered RPC service, not a component`);
         }
         this.entries.delete(component);
+        this.notify();
     }
 
     /**
@@ -227,6 +339,7 @@ export class HealthcheckManager {
      * @param serviceNames - Array of RPC service typeNames to track
      */
     initialize(serviceNames: string[]): void {
+        this.assertNotNotifying("initialize()");
         const incoming = new Set(serviceNames);
 
         // Remove stale services (never components): a service absent from the
@@ -246,13 +359,16 @@ export class HealthcheckManager {
             // name: unreachable in practice (typeNames are dotted, component
             // names are dot-free) — left untouched rather than failing start.
         }
+        this.notify();
     }
 
     /**
      * Clear all services and components
      */
     clear(): void {
+        this.assertNotNotifying("clear()");
         this.entries.clear();
+        this.notify();
     }
 }
 

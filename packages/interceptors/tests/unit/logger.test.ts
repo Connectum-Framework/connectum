@@ -138,10 +138,11 @@ describe('logger interceptor', () => {
         assert.strictEqual(loggerFn.mock.calls.length, 3);
     });
 
-    // skipHealthCheck is on by default, and the match is "the service type name contains
-    // grpc.health" (as documented), not an exact name.
-    it('should skip health check services by default, wherever grpc.health appears in the name', async () => {
-        for (const service of ['grpc.health.v1.Health', 'acme.grpc.health.v1.Probe']) {
+    // skipHealthCheck is on by default, and the match is on whole package segments:
+    // `grpc.health` anywhere in the type name counts when it is a segment sequence of its own,
+    // not an exact name.
+    it('should skip health check services by default, wherever the grpc.health package segments appear in the name', async () => {
+        for (const service of ['grpc.health.v1.Health', 'acme.grpc.health.v1.Probe', 'grpc.health']) {
             const loggerFn = mock.fn();
             const next = mock.fn(async () => ({ stream: false, message: {}, method: { output: {} } }));
 
@@ -151,6 +152,20 @@ describe('logger interceptor', () => {
             assert.strictEqual(next.mock.calls.length, 1, service);
         }
     });
+
+    // The text `grpc.health` inside a longer package or service name is not the health package:
+    // the call must be logged, or the service's whole traffic disappears from the log.
+    for (const service of ['acme.grpc.healthcare.v1.Svc', 'grpc.healthcare.v1.Svc', 'acme.mygrpc.health.v1.Svc', 'acme.grpc.health_check.v1.Svc', 'grpc.healthy.v1.Svc']) {
+        it(`should log ${service}, whose name only contains the text grpc.health`, async () => {
+            const loggerFn = mock.fn();
+            const next = mock.fn(async () => ({ stream: false, message: {}, method: { output: {} } }));
+
+            await createLoggerInterceptor({ logger: loggerFn })(next as any)(createMockRequest({ service, method: 'Check' }));
+
+            assert.strictEqual(loggerFn.mock.calls.length, 3, 'request, response and completion lines');
+            assert.strictEqual(next.mock.calls.length, 1);
+        });
+    }
 
     // Without a custom logger each line goes to console[level], debug by default.
     for (const [label, options, method] of [

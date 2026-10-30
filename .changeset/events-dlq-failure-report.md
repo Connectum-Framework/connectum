@@ -1,0 +1,5 @@
+---
+"@connectum/events": minor
+---
+
+fix: a failed publish to the dead-letter topic is now reported, and an unusable `dlq.topic` is refused. When the DLQ middleware could not publish a failed event it nacked the original without requeue and dropped the event with no log and no signal. The bus `observer` now receives `{ type: "dlq-failed", topic, eventType, eventId, error }` (the third argument of `dlqMiddleware` is the same callback for manual composition); the nack without requeue is unchanged. `createEventBus` and `dlqMiddleware` now throw a `TypeError` (not a string) or a `RangeError` (empty or blank) naming `topic` when `dlq.topic` is unusable, instead of accepting `dlq: {}` or `topic: ""` and losing every failed event. **Behaviour change:** a configuration with a missing or empty `dlq.topic` used to start and now throws at creation; a valid topic is unaffected. Shipped as minor because of the new observer event type: code that switches over `EventBusObserverEvent` exhaustively needs a `dlq-failed` branch.

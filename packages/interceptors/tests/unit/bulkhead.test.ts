@@ -411,4 +411,180 @@ describe("bulkhead interceptor", () => {
             assert.strictEqual((rejected[0]!.reason as ConnectError).rawMessage, "Bulkhead capacity exceeded (capacity: 1, queueSize: 0)");
         });
     });
+
+    describe("calls abandoned by their client", () => {
+        /** Let every continuation that is already scheduled run, without waiting on a clock. */
+        const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+        type Peek = { status: "pending" } | { status: "fulfilled"; value: any } | { status: "rejected"; reason: unknown };
+
+        /** Where a call stands once everything scheduled has run: a call that never settles reads as pending instead of hanging the test. */
+        async function peek(call: Promise<unknown>): Promise<Peek> {
+            return await Promise.race([
+                call.then(
+                    (value): Peek => ({ status: "fulfilled", value }),
+                    (reason): Peek => ({ status: "rejected", reason }),
+                ),
+                flush().then((): Peek => ({ status: "pending" })),
+            ]);
+        }
+
+        /** A downstream that records which calls started and holds each one until it is released by name. */
+        function gatedDownstream() {
+            const started: string[] = [];
+            const gates = new Map<string, PromiseWithResolvers<void>>();
+            const next = async (req: { message: { text: string } }) => {
+                const name = req.message.text;
+                started.push(name);
+                const gate = Promise.withResolvers<void>();
+                gates.set(name, gate);
+                await gate.promise;
+                return { message: { result: name } };
+            };
+            return { next, started, release: (name: string) => gates.get(name)?.resolve() };
+        }
+
+        function request(text: string, signal: AbortSignal = new AbortController().signal) {
+            return { ...createMockRequest({ service: "test.Service", method: "Method", message: { text } }), signal };
+        }
+
+        it("should free the queue place of a cancelled waiter so the next caller is queued instead of refused", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 1 })(downstream.next as any);
+
+            const a = guarded(request("A"));
+            await flush();
+            const cancelB = new AbortController();
+            const b = guarded(request("B", cancelB.signal));
+            await flush();
+
+            cancelB.abort();
+            const bState = await peek(b);
+            assert.strictEqual(bState.status, "rejected", "the cancelled waiter must fail at once, not wait for the slot");
+            assertConnectError((bState as { reason: unknown }).reason, Code.Canceled);
+
+            // The only queue place is free again, so C waits instead of being refused with ResourceExhausted.
+            const c = guarded(request("C"));
+            assert.strictEqual((await peek(c)).status, "pending", "C is queued, not refused");
+            assert.deepStrictEqual(downstream.started, ["A"]);
+
+            downstream.release("A");
+            await a;
+            await flush();
+            downstream.release("C");
+            assert.deepStrictEqual((await c).message, { result: "C" });
+            assert.deepStrictEqual(downstream.started, ["A", "C"], "the handler never ran for the cancelled call");
+        });
+
+        it("should keep the caller's ConnectError as the reason of a cancelled waiter", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 1 })(downstream.next as any);
+            const a = guarded(request("A"));
+            await flush();
+            const cancelB = new AbortController();
+            const reason = new ConnectError("client went away", Code.DeadlineExceeded);
+            const b = guarded(request("B", cancelB.signal));
+            await flush();
+
+            cancelB.abort(reason);
+
+            const bState = await peek(b);
+            assert.strictEqual(bState.status, "rejected");
+            assert.strictEqual((bState as { reason: unknown }).reason, reason);
+            downstream.release("A");
+            await a;
+        });
+
+        it("should map a cancelled waiter's non-Connect reason to Canceled", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 1 })(downstream.next as any);
+            const a = guarded(request("A"));
+            await flush();
+            const cancelB = new AbortController();
+            const b = guarded(request("B", cancelB.signal));
+            await flush();
+
+            cancelB.abort(new Error("socket closed"));
+
+            const bState = await peek(b);
+            assert.strictEqual(bState.status, "rejected");
+            assertConnectError((bState as { reason: unknown }).reason, Code.Canceled);
+            downstream.release("A");
+            await a;
+        });
+
+        it("should refuse a call whose signal is already aborted without taking a slot or a queue place", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 0 })(downstream.next as any);
+            const gone = new AbortController();
+            gone.abort();
+
+            const goneState = await peek(guarded(request("gone", gone.signal)));
+            assert.strictEqual(goneState.status, "rejected");
+            assertConnectError((goneState as { reason: unknown }).reason, Code.Canceled);
+            assert.deepStrictEqual(downstream.started, []);
+
+            // The only slot is still free: the next live call is admitted, not refused.
+            const live = guarded(request("live"));
+            await flush();
+            assert.deepStrictEqual(downstream.started, ["live"]);
+            downstream.release("live");
+            await live;
+        });
+
+        it("should hand the freed slot to the next live waiter when the head waiter is cancelled", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 2 })(downstream.next as any);
+            const a = guarded(request("A"));
+            await flush();
+            const cancelB = new AbortController();
+            const b = guarded(request("B", cancelB.signal));
+            b.catch(() => undefined);
+            const c = guarded(request("C"));
+            await flush();
+
+            cancelB.abort();
+            downstream.release("A");
+            await a;
+            await flush();
+
+            assert.deepStrictEqual(downstream.started, ["A", "C"]);
+            assert.strictEqual((await peek(b)).status, "rejected");
+            downstream.release("C");
+            assert.deepStrictEqual((await c).message, { result: "C" });
+        });
+
+        it("should not start a waiter that was aborted after the slot had been handed to it", async () => {
+            const downstream = gatedDownstream();
+            const guarded = createBulkheadInterceptor({ capacity: 1, queueSize: 1 })(downstream.next as any);
+            // A signal whose abort event has not been dispatched yet: `aborted` is already true, but the
+            // waiter's listener has not run. This is the window between a handover and the waiter resuming.
+            const flipped = {
+                aborted: false,
+                reason: undefined as unknown,
+                addEventListener() {},
+                removeEventListener() {},
+            };
+            const a = guarded(request("A"));
+            await flush();
+            const b = guarded(request("B", flipped as unknown as AbortSignal));
+            await flush();
+
+            flipped.aborted = true;
+            downstream.release("A");
+            await a;
+
+            const bState = await peek(b);
+            assert.strictEqual(bState.status, "rejected");
+            assertConnectError((bState as { reason: unknown }).reason, Code.Canceled);
+            assert.deepStrictEqual(downstream.started, ["A"], "the aborted waiter never reached the handler");
+
+            // Its slot was given back: a new call is admitted at once.
+            const d = guarded(request("D"));
+            await flush();
+            assert.deepStrictEqual(downstream.started, ["A", "D"]);
+            downstream.release("D");
+            await d;
+        });
+    });
 });
