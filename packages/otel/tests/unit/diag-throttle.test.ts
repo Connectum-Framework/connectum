@@ -173,6 +173,17 @@ describe("createThrottledDiagLogger", () => {
 		assert.strictEqual(calls.length, 2);
 	});
 
+	it("reaches the name of an instrument nested in an array of instruments", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+		const instrument = (name: string) => ({ _descriptor: { name, unit: "" }, _meter: {} });
+
+		logger.error("batch callback registration failed", [instrument("orders_total")]);
+		logger.error("batch callback registration failed", [instrument("payments_total")]);
+
+		assert.strictEqual(calls.length, 2);
+	});
+
 	it("reports an argument whose toString() throws instead of failing", () => {
 		const { target, calls } = recordingTarget();
 		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });

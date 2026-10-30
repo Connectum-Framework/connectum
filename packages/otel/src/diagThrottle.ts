@@ -57,7 +57,9 @@ function identityOf(message: string, args: readonly unknown[]): string {
         try {
             // Not String(): every plain object would read "[object Object]" and two different ones
             // (the instruments of two failed batch callbacks) would count as one error.
-            return inspect(arg, { depth: 1, breakLength: Number.POSITIVE_INFINITY });
+            // Depth 3 reaches the name of an instrument in an array of instruments
+            // (array, instrument, descriptor, name).
+            return inspect(arg, { depth: 3, breakLength: Number.POSITIVE_INFINITY, maxArrayLength: 20, maxStringLength: 200 });
         } catch {
             // An argument that cannot be inspected still must not fail the report.
             return "[unprintable]";
