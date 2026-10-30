@@ -140,6 +140,9 @@ export function validateAdapterOptions(options: unknown): void {
 
     optionalInteger("consumerOptions.prefetch", consumer.prefetch, { min: 1, max: MAX_INT32 });
 
+    // Whole milliseconds: the delay is sent to the server as nanoseconds, in a field that takes an integer.
+    optionalInteger("consumerOptions.redeliveryDelay", consumer.redeliveryDelay, { min: 0, max: MAX_INT32 });
+
     if (maxDeliver !== undefined) {
         const message = `NatsAdapter: consumerOptions.maxDeliver must be -1 (unlimited) or a positive integer, got ${show(maxDeliver)}`;
         if (typeof maxDeliver !== "number") {

@@ -93,8 +93,9 @@ export interface NatsConsumerOptions {
      * The server starts the `ackWait` timer of a message when it delivers the message to the client's
      * buffer, not when the handler starts, and the handler of a consumer runs one message at a time.
      * With the client's default buffer of 100, a message at the back of a full buffer is redelivered
-     * when `handler time x position` outgrows `ackWait`: with the default `ackWait` of 30 s that
-     * starts at about 0.3 s per message, and a single consumer then receives duplicates. A smaller
+     * when the handling time of the messages in front of it outgrows `ackWait`, and a single
+     * consumer then receives duplicates (`ackWait` of 30 s divided by 100 is 300 ms of handling per
+     * message, as arithmetic and not as a measurement). A smaller
      * buffer keeps the wait in the buffer short, and the client asks the server for messages more
      * often; `1` keeps at most one message ahead of the handler.
      *
@@ -102,6 +103,26 @@ export interface NatsConsumerOptions {
      * deployments are unchanged.
      */
     readonly prefetch?: number;
+
+    /**
+     * Pause in milliseconds between a handler failure and the redelivery of the message. Opt-in:
+     * unset or `0` gives the message back at once, so a handler that always throws receives it again
+     * within milliseconds and the whole `maxDeliver` budget is gone before a transient failure
+     * (a database that restarts, a dependency that is briefly down) can recover.
+     *
+     * The pause is held by the server (`nak` with a delay), so it does not occupy a `prefetch` slot
+     * or block the handler, and it applies to every handler failure of this adapter's
+     * subscriptions, not only to a poison message. It does not apply to an explicit `nack()` of the
+     * handler, and `unsubscribe()` or `disconnect()` cannot shorten a pause already granted: the
+     * message reaches the next consumer of the group after it. The server keeps counting each
+     * delivery against `maxDeliver`, so a delay does not replace the `retry` and `dlq` middleware for
+     * a message that can never succeed.
+     *
+     * An integer number of milliseconds from `0` to `2147483647`; anything else makes `NatsAdapter()` throw.
+     *
+     * @default 0
+     */
+    readonly redeliveryDelay?: number;
 }
 
 /**

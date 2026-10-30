@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
-import type { ConsumerMessages, JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
+import type { ConsumerMessages, JetStreamClient, JetStreamManager, JsMsg } from "@nats-io/jetstream";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { connect, headers as createNatsHeaders } from "@nats-io/transport-node";
@@ -244,6 +244,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
             const prefetch = options.consumerOptions?.prefetch;
 
+            const redeliveryDelay = options.consumerOptions?.redeliveryDelay ?? 0;
+
             /** Tracked ConsumerMessages iterators for cleanup. */
             const messageIterators: ConsumerMessages[] = [];
 
@@ -274,14 +276,17 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                 }
 
                 for (const own of owned) {
-                    const consumer = await js.consumers.get(streamName, consumerName(group, own.pattern));
+                    const durable = consumerName(group, own.pattern);
+                    const consumer = await js.consumers.get(streamName, durable);
+                    // The limit the server enforces, which for a consumer that already existed may differ from the requested one.
+                    const deliveryLimit = (await consumer.info(true)).config.max_deliver ?? -1;
                     // Without `prefetch` the client's own buffer size (100 messages) applies.
                     const messages = await consumer.consume(prefetch === undefined ? undefined : { max_messages: prefetch });
                     messageIterators.push(messages);
 
                     // Start the consumption loop in the background.
                     // The loop exits when messages.close() is called.
-                    consumeLoop(messages, handler, own, owned, streamName).catch((err) => {
+                    consumeLoop(messages, handler, own, owned, streamName, { durable, streamName, redeliveryDelay, deliveryLimit }).catch((err) => {
                         console.error(`[EventBus/NATS] Consume loop error for pattern "${own.pattern}":`, err);
                     });
                 }
@@ -411,6 +416,41 @@ function closeMessages(messages: ConsumerMessages): Promise<void> {
 /** The close in progress of each message stream, shared by every caller of {@link closeMessages}. */
 const closing = new WeakMap<ConsumerMessages, Promise<void>>();
 
+/** What the consume loop needs to know to give a message back to its consumer. */
+interface Redelivery {
+    /** The durable consumer and its stream, for the report. */
+    readonly durable: string;
+    readonly streamName: string;
+    /** Pause in milliseconds before a handler failure is redelivered; `0` redelivers at once. */
+    readonly redeliveryDelay: number;
+    /** The consumer's `max_deliver` as the server holds it; `-1` is unlimited. */
+    readonly deliveryLimit: number;
+}
+
+/**
+ * Give a message back with `nak`, after `delayMs` when it is positive, and say so when this delivery
+ * was the last one the consumer allows.
+ *
+ * The server stops redelivering at `max_deliver` and leaves the message in the stream, with nothing
+ * logged on this side: without a delay the whole budget goes in milliseconds, and a poison message is
+ * then simply stuck. The delivery counter is the server's own, so the report is exact for the
+ * consumer that made the delivery.
+ */
+function returnForRedelivery(msg: JsMsg, topic: string, redelivery: Redelivery, delayMs: number): void {
+    const { durable, streamName, deliveryLimit } = redelivery;
+    if (deliveryLimit > 0 && msg.info.deliveryCount >= deliveryLimit) {
+        console.error(
+            `[EventBus/NATS] Message ${msg.seq} of topic "${topic}" was given back on delivery ${msg.info.deliveryCount}, which is the consumer's maxDeliver (${deliveryLimit}): ` +
+                `consumer "${durable}" of stream "${streamName}" will not redeliver it again and it stays in the stream until retention removes it.`,
+        );
+    }
+    if (delayMs > 0) {
+        msg.nak(delayMs);
+    } else {
+        msg.nak();
+    }
+}
+
 /**
  * Async consume loop that processes JetStream messages and
  * dispatches them through the provided handler.
@@ -419,7 +459,14 @@ const closing = new WeakMap<ConsumerMessages, Promise<void>>();
  * The EventBus layer handles auto-ack fallback if the handler
  * does not explicitly call ack() or nack().
  */
-async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler, own: OwnedPattern, owned: readonly OwnedPattern[], streamName: string): Promise<void> {
+async function consumeLoop(
+    messages: ConsumerMessages,
+    handler: RawEventHandler,
+    own: OwnedPattern,
+    owned: readonly OwnedPattern[],
+    streamName: string,
+    redelivery: Redelivery,
+): Promise<void> {
     // The stream subject prefix to strip from delivered subjects.
     // publish() sends to `${streamName}.${eventType}`, so we strip `${streamName}.` to recover the original eventType.
     const subjectPrefix = `${streamName}.`;
@@ -455,22 +502,30 @@ async function consumeLoop(messages: ConsumerMessages, handler: RawEventHandler,
             metadata,
         };
 
+        // The first acknowledgement is final: the client ignores any later one, so a handler that settled the delivery
+        // and then threw has nothing left to give back, and must not be reported as having used up its budget.
+        let settled = false;
         const ack = async (): Promise<void> => {
+            settled = true;
             msg.ack();
         };
         const nack = async (requeue?: boolean): Promise<void> => {
+            settled = true;
             if (requeue === false) {
                 msg.term();
             } else {
-                msg.nak();
+                // An explicit nack(true) is the handler's own decision and is not delayed.
+                returnForRedelivery(msg, eventType, redelivery, 0);
             }
         };
 
         try {
             await handler(event, ack, nack);
         } catch {
-            // Handler error — nack for redelivery, continue loop
-            msg.nak();
+            // Handler error — give an unsettled message back for redelivery, after the configured pause, and continue the loop.
+            if (!settled) {
+                returnForRedelivery(msg, eventType, redelivery, redelivery.redeliveryDelay);
+            }
         }
     }
 }
