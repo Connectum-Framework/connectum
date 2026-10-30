@@ -337,7 +337,7 @@ export function transformBase(files: ReadonlyMap<string, string>, config: Scaffo
 
     // auth module: JWT + proto-authz interceptor builder (buf.yaml adds the 2nd module).
     if (config.modules.auth) {
-        out.set("src/auth.ts", generateAuthFile());
+        out.set("src/auth.ts", generateAuthFile(config.modules));
         // proto-authz is deny-by-default, so the sample rpc must be annotated public or
         // the scaffolded project rejects its own sample call.
         const greeterProto = out.get(GREETER_PROTO_PATH);
