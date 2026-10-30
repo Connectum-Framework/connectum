@@ -59,6 +59,11 @@ export const AUTH_HEADERS = {
     NAME: "x-auth-name",
     /** Credential type (jwt, api-key, mtls, etc.) */
     TYPE: "x-auth-type",
+    /**
+     * Set to `percent-utf8` when the sender encoded a text (subject, name, type or scope) as
+     * `utf-8''` plus percent-encoded UTF-8. Readers decode `utf-8''` texts only when it is present.
+     */
+    ENCODING: "x-auth-encoding",
 } as const;
 
 /**
@@ -347,7 +352,7 @@ export interface GatewayAuthInterceptorOptions {
         readonly header: string;
         /**
          * Accepted values for the trust header: shared secrets compared exactly, and, only with
-         * {@link allowCallerControlledCidr}, IPv4 CIDR blocks such as `10.0.0.0/8`.
+         * `allowCallerControlledCidr`, IPv4 CIDR blocks such as `10.0.0.0/8`.
          */
         readonly expectedValues: string[];
         /**

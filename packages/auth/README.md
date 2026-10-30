@@ -105,7 +105,8 @@ handler for the whole call, including after its first `await` or `yield`.
   hop.
 - With `propagateHeaders`, text above U+00FF in a subject, type, name, or scope
   (Cyrillic, CJK, emoji) is written as `utf-8''` plus percent-encoded UTF-8 and
-  read back by the receiver; ASCII and Latin-1 text is unchanged. A subject over
+  read back by the receiver (the writer sets `x-auth-encoding: percent-utf8`,
+  and readers decode only when it is present); ASCII and Latin-1 text is unchanged. A subject over
   512 characters, a type over 128, a name over 256, or roles, scopes, or claims
   whose serialized value is over 8192 characters is rejected with
   `Unauthenticated`, never cut or left out.

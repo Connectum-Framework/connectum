@@ -13,7 +13,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { HEADER_BREAKING_CHARS, MAX_HEADER_BYTES, propagateAuthHeaders, readHeaderText } from "./headers.ts";
+import { declaresTextEncoding, HEADER_BREAKING_CHARS, MAX_HEADER_BYTES, propagateAuthHeaders, readHeaderText } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
@@ -82,11 +82,12 @@ const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HE
 /**
  * Read a text value of the identity from the header the mapping names. The standard `x-auth-*`
  * names carry text written by another Connectum service, which writes characters above U+00FF as
- * `utf-8''` plus percent-encoded UTF-8, so those values are decoded. A custom header comes from
+ * `utf-8''` plus percent-encoded UTF-8 and declares it in `x-auth-encoding`, so those values are decoded
+ * when it is present. A custom header comes from
  * the gateway and is taken as it is.
  */
-function readIdentityText(headerName: string, raw: string): string {
-    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY) : raw;
+function readIdentityText(headerName: string, raw: string, decode: boolean): string {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode) : raw;
 }
 
 function digest(text: string): Buffer {
@@ -239,18 +240,22 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
             throw new ConnectError("Untrusted request source", Code.Unauthenticated);
         }
 
+        // The standard x-auth-* texts are decoded only when the sender declared the encoding;
+        // otherwise a literal `utf-8''admin` subject from an older service stays that literal text.
+        const decode = declaresTextEncoding(req.header);
+
         // Extract subject (required)
         const subjectRaw = req.header.get(headerMapping.subject);
-        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw) : subjectRaw;
+        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
         // Extract optional fields
         const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
-        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw) : undefined;
+        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode) : undefined;
         const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
-        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw) : defaultType;
+        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode) : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];
@@ -269,7 +274,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
                 scopes = scopesRaw
                     .split(" ")
                     .filter(Boolean)
-                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope));
+                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode));
             }
         }
 

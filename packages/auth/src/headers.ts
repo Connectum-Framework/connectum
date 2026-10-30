@@ -27,6 +27,18 @@ export const MAX_NAME_LENGTH = 256;
 const ENCODED_TEXT_PREFIX = "utf-8''";
 
 /**
+ * Value of the `x-auth-encoding` header that a writer sets when it encoded at least one text. A reader
+ * decodes `utf-8''` texts only when the header is present, so a service that never sends the marker
+ * (an older version, another gateway) keeps its literal `utf-8''admin` as the literal text it is.
+ */
+export const TEXT_ENCODING_MARKER = "percent-utf8";
+
+/** Whether the sender declared that it encodes texts above U+00FF (see {@link TEXT_ENCODING_MARKER}). */
+export function declaresTextEncoding(headers: Headers): boolean {
+    return headers.get(AUTH_HEADERS.ENCODING) === TEXT_ENCODING_MARKER;
+}
+
+/**
  * Sanitize a header value by removing control characters and enforcing length limits.
  *
  * Tab, LF and CR are kept by this function itself; on the write path
@@ -107,11 +119,14 @@ function unreadable(): ConnectError {
     return new ConnectError("Authentication failed", Code.Unauthenticated);
 }
 
-/** Decode `raw` and check the decoded length against `limit`; refuse (not cut) when either fails. */
-export function readHeaderText(raw: string, limit: number): string {
+/**
+ * Decode `raw` (only when `decode` is true, i.e. the sender declared the encoding) and check the length
+ * against `limit`; refuse (not cut) when either fails.
+ */
+export function readHeaderText(raw: string, limit: number, decode: boolean): string {
     let text: string;
     try {
-        text = decodeHeaderText(raw);
+        text = decode ? decodeHeaderText(raw) : raw;
     } catch {
         throw unreadable();
     }
@@ -196,9 +211,9 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {TypeError} {@link UnsafeHeaderValueError} When `subject`, `type`, `name` or a scope contains NUL, CR or LF or a lone surrogate,
+ * @throws {TypeError} (`UnsafeHeaderValueError`) When `subject`, `type`, `name` or a scope contains NUL, CR or LF or a lone surrogate,
  *   or a scope contains a space; the message names the field and no header has been set
- * @throws {RangeError} {@link HeaderValueTooLargeError} When `subject` is longer than 512 characters, `type` than 128, `name` than 256,
+ * @throws {RangeError} (`HeaderValueTooLargeError`) When `subject` is longer than 512 characters, `type` than 128, `name` than 256,
  *   or the serialized roles, scopes or claims than 8192; no header has been set
  */
 export function setAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
@@ -210,14 +225,21 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     if (context.type.length > MAX_TYPE_LENGTH) throw new HeaderValueTooLargeError("type", MAX_TYPE_LENGTH);
     if (context.name && context.name.length > MAX_NAME_LENGTH) throw new HeaderValueTooLargeError("name", MAX_NAME_LENGTH);
 
-    // Build every value first so that a refusal leaves the headers untouched.
+    // Build every value first so that a refusal leaves the headers untouched. The encoding marker is
+    // set when at least one text was encoded: only then does a reader treat `utf-8''` as a prefix.
+    let encodedAny = false;
+    const encode = (field: UnsafeHeaderValueError["field"], text: string): string => {
+        const encoded = encodeField(field, text);
+        if (encoded !== text) encodedAny = true;
+        return encoded;
+    };
     const toSet: Array<[string, string]> = [
-        [AUTH_HEADERS.SUBJECT, encodeField("subject", sanitizeHeaderValue(context.subject, MAX_SUBJECT_LENGTH))],
-        [AUTH_HEADERS.TYPE, encodeField("type", sanitizeHeaderValue(context.type, MAX_TYPE_LENGTH))],
+        [AUTH_HEADERS.SUBJECT, encode("subject", sanitizeHeaderValue(context.subject, MAX_SUBJECT_LENGTH))],
+        [AUTH_HEADERS.TYPE, encode("type", sanitizeHeaderValue(context.type, MAX_TYPE_LENGTH))],
     ];
 
     if (context.name) {
-        toSet.push([AUTH_HEADERS.NAME, encodeField("name", sanitizeHeaderValue(context.name, MAX_NAME_LENGTH))]);
+        toSet.push([AUTH_HEADERS.NAME, encode("name", sanitizeHeaderValue(context.name, MAX_NAME_LENGTH))]);
     }
 
     if (context.roles.length > 0) {
@@ -227,7 +249,7 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     }
 
     if (context.scopes.length > 0) {
-        const scopesValue = context.scopes.map((scope) => encodeField("scopes", scope)).join(" ");
+        const scopesValue = context.scopes.map((scope) => encode("scopes", scope)).join(" ");
         if (scopesValue.length > MAX_HEADER_BYTES) throw new HeaderValueTooLargeError("scopes", MAX_HEADER_BYTES);
         toSet.push([AUTH_HEADERS.SCOPES, scopesValue]);
     }
@@ -241,6 +263,8 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
             toSet.push([AUTH_HEADERS.CLAIMS, claimsValue]);
         }
     }
+
+    if (encodedAny) toSet.push([AUTH_HEADERS.ENCODING, TEXT_ENCODING_MARKER]);
 
     for (const [name, value] of toSet) headers.set(name, value);
 }
@@ -277,9 +301,10 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
         return undefined;
     }
 
-    const subject = readHeaderText(sanitizeHeaderValue(subjectHeader, Number.POSITIVE_INFINITY), MAX_SUBJECT_LENGTH);
+    const decode = declaresTextEncoding(headers);
+    const subject = readHeaderText(sanitizeHeaderValue(subjectHeader, Number.POSITIVE_INFINITY), MAX_SUBJECT_LENGTH, decode);
     const typeHeader = headers.get(AUTH_HEADERS.TYPE);
-    const type = typeHeader ? readHeaderText(sanitizeHeaderValue(typeHeader, Number.POSITIVE_INFINITY), MAX_TYPE_LENGTH) : "unknown";
+    const type = typeHeader ? readHeaderText(sanitizeHeaderValue(typeHeader, Number.POSITIVE_INFINITY), MAX_TYPE_LENGTH, decode) : "unknown";
     const rolesRaw = headers.get(AUTH_HEADERS.ROLES);
     const scopesRaw = headers.get(AUTH_HEADERS.SCOPES);
     const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
@@ -303,11 +328,11 @@ export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
         scopes = scopesRaw
             .split(" ")
             .filter(Boolean)
-            .map((scope) => readHeaderText(scope, MAX_HEADER_BYTES));
+            .map((scope) => readHeaderText(scope, MAX_HEADER_BYTES, decode));
     }
 
     const nameRaw = headers.get(AUTH_HEADERS.NAME);
-    const name = nameRaw ? readHeaderText(sanitizeHeaderValue(nameRaw, Number.POSITIVE_INFINITY), MAX_NAME_LENGTH) : undefined;
+    const name = nameRaw ? readHeaderText(sanitizeHeaderValue(nameRaw, Number.POSITIVE_INFINITY), MAX_NAME_LENGTH, decode) : undefined;
 
     let claims: Record<string, unknown> = {};
     if (claimsRaw) {

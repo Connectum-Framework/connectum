@@ -9,7 +9,7 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { encodeHeaderText, MAX_HEADER_BYTES, MAX_SUBJECT_LENGTH, sanitizeHeaderValue } from "./headers.ts";
+import { encodeHeaderText, MAX_HEADER_BYTES, MAX_SUBJECT_LENGTH, sanitizeHeaderValue, TEXT_ENCODING_MARKER } from "./headers.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -68,7 +68,13 @@ export function createClientGatewayInterceptor(options: ClientGatewayInterceptor
         }
 
         req.header.set(GATEWAY_SECRET_HEADER, secret);
-        req.header.set(AUTH_HEADERS.SUBJECT, encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)));
+        const subjectValue = encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH));
+        req.header.set(AUTH_HEADERS.SUBJECT, subjectValue);
+        if (subjectValue === sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)) {
+            req.header.delete(AUTH_HEADERS.ENCODING);
+        } else {
+            req.header.set(AUTH_HEADERS.ENCODING, TEXT_ENCODING_MARKER);
+        }
         if (rolesValue !== undefined) {
             req.header.set(AUTH_HEADERS.ROLES, rolesValue);
         }

@@ -91,8 +91,33 @@ describe("setAuthHeaders / parseAuthHeaders with text above U+00FF", () => {
         });
     });
 
+    // A service that never sends the marker (an older version, another gateway) may send a subject
+    // that literally starts with the prefix; reading it as encoded text would turn it into another identity.
+    it("reads a literal utf-8'' subject as is when the sender did not declare the encoding", () => {
+        const headers = new Headers({ "x-auth-subject": "utf-8''admin", "x-auth-name": "utf-8''%D0%98", "x-auth-scopes": "utf-8''read" });
+        const parsed = parseAuthHeaders(headers);
+        assert.strictEqual(parsed?.subject, "utf-8''admin");
+        assert.strictEqual(parsed?.name, "utf-8''%D0%98");
+        assert.deepStrictEqual(parsed?.scopes, ["utf-8''read"]);
+    });
+
+    it("sets the encoding marker only when it encoded something", () => {
+        const plain = new Headers();
+        setAuthHeaders(plain, { ...base, subject: "alice", name: "Zoë" });
+        assert.strictEqual(plain.get("x-auth-encoding"), null);
+
+        const encoded = new Headers();
+        setAuthHeaders(encoded, { ...base, subject: "Иван" });
+        assert.strictEqual(encoded.get("x-auth-encoding"), "percent-utf8");
+
+        const prefixed = new Headers();
+        setAuthHeaders(prefixed, { ...base, subject: "utf-8''admin" });
+        assert.strictEqual(prefixed.get("x-auth-encoding"), "percent-utf8");
+        assert.strictEqual(parseAuthHeaders(prefixed)?.subject, "utf-8''admin");
+    });
+
     it("refuses a malformed encoded subject on read", () => {
-        const headers = new Headers({ "x-auth-subject": "utf-8''%E0%A4%A" });
+        const headers = new Headers({ "x-auth-subject": "utf-8''%E0%A4%A", "x-auth-encoding": "percent-utf8" });
         assert.throws(
             () => parseAuthHeaders(headers),
             (err: unknown) => {
@@ -179,10 +204,26 @@ describe("gateway interceptor reading x-auth-* text", () => {
         }
     });
 
+    it("keeps a literal utf-8'' subject from a sender that did not declare the encoding", async () => {
+        let seen: AuthContext | undefined;
+        const interceptor = chain({ subject: "x-auth-subject", name: "x-auth-name", scopes: "x-auth-scopes" });
+        const req = createMockRequest({ service: "t.v1.S", method: "M" });
+        req.header.set("x-gateway-secret", "s");
+        req.header.set("x-auth-subject", "utf-8''admin");
+
+        await interceptor((async () => {
+            seen = getAuthContext();
+            return { message: {} };
+        }) as never)(req);
+
+        assert.strictEqual(seen?.subject, "utf-8''admin");
+    });
+
     it("refuses a malformed encoded subject", async () => {
         const interceptor = chain({ subject: "x-auth-subject", name: "x-auth-name", scopes: "x-auth-scopes" });
         const req = createMockRequest({ service: "t.v1.S", method: "M" });
         req.header.set("x-gateway-secret", "s");
+        req.header.set("x-auth-encoding", "percent-utf8");
         req.header.set("x-auth-subject", "utf-8''%E0%A4%A");
         const next = mock.fn(async () => ({ message: {} }));
 
@@ -207,6 +248,11 @@ describe("createClientGatewayInterceptor", () => {
     it("writes a non-Latin subject encoded and an ASCII subject unchanged", async () => {
         assert.strictEqual((await headersFor("сервис")).get("x-auth-subject"), encodeHeaderText("сервис"));
         assert.strictEqual((await headersFor("order-service")).get("x-auth-subject"), "order-service");
+    });
+
+    it("declares the encoding only when it encoded the subject", async () => {
+        assert.strictEqual((await headersFor("сервис")).get("x-auth-encoding"), "percent-utf8");
+        assert.strictEqual((await headersFor("order-service")).get("x-auth-encoding"), null);
     });
 
     it("refuses a subject over 512 characters and roles over 8192 instead of cutting them", async () => {
