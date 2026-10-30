@@ -124,4 +124,43 @@ describe("createThrottledDiagLogger", () => {
 
 		assert.strictEqual(calls.length, 1_001);
 	});
+
+	it("makes room for a new message when every tracked one is still inside its window", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+
+		for (let i = 0; i < 500; i++) {
+			logger.error(`failure ${i}`);
+		}
+		// The oldest entries were evicted to stay bounded, so the first message prints again; the newest is still held back.
+		logger.error("failure 0");
+		logger.error("failure 499");
+
+		assert.strictEqual(calls.length, 501);
+		assert.strictEqual(calls[500]?.args[0], "failure 0");
+	});
+
+	it("treats the same message with a different cause as a different error", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+
+		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback A broke"));
+		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback B broke"));
+		logger.error("PeriodicExportingMetricReader: metrics collection errors", new Error("callback A broke"));
+
+		assert.strictEqual(calls.length, 2);
+	});
+
+	it("reports an argument whose toString() throws instead of failing", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+		const hostile = {
+			toString(): string {
+				throw new Error("no text");
+			},
+		};
+
+		assert.doesNotThrow(() => logger.error("export failed", hostile));
+		assert.strictEqual(calls.length, 1);
+	});
 });
