@@ -69,9 +69,12 @@ describe("real collector", { skip: process.env.CONNECTUM_REAL_COLLECTOR === "1" 
         const endpoint = `http://127.0.0.1:${docker("port", CONTAINER, "4318/tcp").trim().split(":").pop()}`;
         for (let attempt = 0; attempt < 50 && !docker("logs", CONTAINER).includes("Everything is ready"); attempt++) await delay(200);
 
-        process.env.OTEL_TRACES_EXPORTER = "otlp/http";
+        // Upper case: the value is matched case-insensitively. The percent-encoded comma in the
+        // resource attribute must reach the collector decoded.
+        process.env.OTEL_TRACES_EXPORTER = "OTLP/HTTP";
         process.env.OTEL_METRICS_EXPORTER = "otlp/http";
         process.env.OTEL_LOGS_EXPORTER = "none";
+        process.env.OTEL_RESOURCE_ATTRIBUTES = "team=a%2Cb";
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT = endpoint;
         process.env.OTEL_SERVICE_NAME = "real-collector-test";
         await shutdownProvider();
@@ -146,6 +149,12 @@ describe("real collector", { skip: process.env.CONNECTUM_REAL_COLLECTOR === "1" 
             .filter((block) => block.includes(`-> Name: ${name}\n`))
             .flatMap((block) => blocksOf(block, /HistogramDataPoints #\d+\n/));
     const sumOf = (block: string) => Number(/Sum: ([0-9.e+-]+)/.exec(block)?.[1]);
+
+    it("receives the percent-decoded resource attribute on spans and metrics", () => {
+        assert.match(log, /-> team: Str\(a,b\)/);
+        assert.ok(!log.includes("a%2Cb"), "the encoded form must not reach the collector");
+        assert.ok(blocksOf(log, /Span #\d+\n/).length > 0, "spans arrived through the upper-case exporter name");
+    });
 
     it("receives the serialized sizes of a unary call", () => {
         const request = pointsOf("rpc.server.request.size").find((block) => block.includes("Str(streaming.v1.StreamingService/Echo)") && !block.includes("error.type"));
