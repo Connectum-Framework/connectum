@@ -1,0 +1,5 @@
+---
+"@connectum/events-nats": minor
+---
+
+feat: add `consumerOptions.redeliveryDelay`, an opt-in pause between a handler failure and the redelivery of the message, and report the delivery that uses up `maxDeliver`. A raw handler that throws used to get the message back at once (`nak()` without a delay), so the five deliveries of the default `maxDeliver` arrived within 4 ms (measured on JetStream 2.11 and 2.9.25) and nothing was logged. With `redeliveryDelay: 1000` the server holds the message for one second after each failure. The default is unchanged (`0`, redeliver at once), the pause does not apply to an explicit `nack()`, and the server keeps counting each delivery against `maxDeliver`, so a delay does not replace the `retry` and `dlq` middleware for a message that can never succeed. When a handler failure or `nack()` gives a message back on the last delivery the consumer allows, the adapter now logs one `[EventBus/NATS]` error line naming the topic, the consumer, the stream and the limit; the message stays in the stream until retention removes it, as before. A `redeliveryDelay` that is not an integer from `0` to `2147483647` makes `NatsAdapter()` throw.

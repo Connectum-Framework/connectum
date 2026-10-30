@@ -10,6 +10,22 @@
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
+import { validateTestServerOptions } from "./validateTestServerOptions.ts";
+
+/** Loopback only: the server has no authentication and its client runs in the same process. */
+const DEFAULT_HOST = "127.0.0.1";
+
+/**
+ * The host a client uses to reach a server bound to `host`: the bound address
+ * itself, except that the wildcard addresses and the default loopback address
+ * are reached as `localhost`.
+ */
+function clientHost(host: string): string {
+    if (host === DEFAULT_HOST || host === "0.0.0.0" || host === "::") {
+        return "localhost";
+    }
+    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
 
 /**
  * Create and start a test server on a random (or specified) port.
@@ -18,7 +34,11 @@ import type { CreateTestServerOptions, TestServer } from "./types.ts";
  * ready for use with ConnectRPC clients. The caller is responsible
  * for calling {@link TestServer.close} when done.
  *
- * @param options - Server configuration (services, interceptors, protocols, port)
+ * The server listens on `127.0.0.1` unless `options.host` says otherwise.
+ * {@link TestServer.close} waits up to `options.shutdown.timeout` (30 s by
+ * default) for calls that have not finished.
+ *
+ * @param options - Server configuration (services, interceptors, protocols, port, host, shutdown)
  * @returns Running test server with transport and cleanup function
  *
  * @example
@@ -30,14 +50,16 @@ import type { CreateTestServerOptions, TestServer } from "./types.ts";
  * ```
  */
 export async function createTestServer(options: CreateTestServerOptions): Promise<TestServer> {
+    validateTestServerOptions(options);
+    const host = options.host ?? DEFAULT_HOST;
+
     const server = createServer({
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        services: options.services as any[],
+        services: options.services,
         port: options.port ?? 0,
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        protocols: (options.protocols ?? []) as any[],
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        interceptors: (options.interceptors ?? []) as any[],
+        host,
+        protocols: [...(options.protocols ?? [])],
+        interceptors: [...(options.interceptors ?? [])],
+        ...(options.shutdown?.timeout !== undefined ? { shutdown: { timeout: options.shutdown.timeout } } : {}),
         allowHTTP1: false,
     });
 
@@ -55,7 +77,7 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
         throw err;
     }
 
-    const baseUrl = `http://localhost:${port}`;
+    const baseUrl = `http://${clientHost(host)}:${port}`;
 
     const transport = createGrpcTransport({
         baseUrl,

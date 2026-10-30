@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
+import { DataPointType } from "@opentelemetry/sdk-metrics";
 import type { NormalizedMetric, NormalizedSpan } from "../../src/otel-collectors.ts";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
@@ -150,7 +151,48 @@ describe("defaultCompare", () => {
                 assert.throws(() => defaultCompare({ [field]: { "x-a": "1" } }, {}), failure);
                 assert.throws(() => defaultCompare({}, { [field]: { "x-a": "1" } }), failure);
             });
+
+            it(`${field}: protocol headers that differ between the transports are ignored`, () => {
+                const http = { "x-a": "1", "content-type": "application/grpc+proto", date: "Thu, 29 Oct 2026 08:09:43 GMT", "grpc-encoding": "gzip", "grpc-status": "0", "grpc-message": "ok" };
+                const local = { "x-a": "1", "content-type": "application/proto", "content-length": "4", "connect-content-encoding": "identity", "Content-Encoding": "identity" };
+                defaultCompare({ [field]: http }, { [field]: local });
+                // A leg that reports nothing but protocol headers equals one that reports nothing.
+                const { "x-a": _application, ...protocolOnly } = http;
+                defaultCompare({ [field]: protocolOnly }, { [field]: {} });
+                defaultCompare({ [field]: protocolOnly }, {});
+            });
+
+            it(`${field}: a differing application entry still fails next to differing protocol headers`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1", "content-type": "a" } }, { [field]: { "x-a": "2", "content-type": "b" } }), failure);
+            });
+
+            it(`${field}: only the grpc- and connect- name families are protocol headers, not any name containing them`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-grpc-tag": "1" } }, { [field]: { "x-grpc-tag": "2" } }), failure);
+                assert.throws(() => defaultCompare({ [field]: { "x-connect-tag": "1" } }, { [field]: {} }), failure);
+            });
         }
+
+        it("error metadata: protocol headers are ignored, application entries still fail", () => {
+            const base = { code: 5, message: "nope" };
+            defaultCompare(
+                { error: { ...base, metadata: { "x-tag": "a", "content-type": "application/grpc+proto", "grpc-status": "5", "grpc-message": "nope", date: "x" } } },
+                { error: { ...base, metadata: { "x-tag": "a", "content-type": "application/json", "content-length": "37" } } },
+            );
+            assert.throws(
+                () => defaultCompare({ error: { ...base, metadata: { "x-tag": "a", "grpc-status": "5" } } }, { error: { ...base, metadata: { "x-tag": "b", "content-length": "37" } } }),
+                /error shape mismatch/,
+            );
+            assert.throws(
+                () => defaultCompare({ error: { ...base, metadata: { "grpc-status": "5" } } }, { error: { ...base, metadata: { "x-tag": "a" } } }),
+                /error shape mismatch/,
+            );
+        });
+
+        it("error metadata: reported on one side only still differs from an error that reports none", () => {
+            const base = { code: 5, message: "nope" };
+            assert.throws(() => defaultCompare({ error: { ...base, metadata: { "x-tag": "a" } } }, { error: base }), /error shape mismatch/);
+            defaultCompare({ error: base }, { error: base });
+        });
     });
 
     describe("spans", () => {
@@ -196,11 +238,12 @@ describe("defaultCompare", () => {
     });
 
     describe("metrics", () => {
+        // A counter: its value is a plain number, as the collector reports a sum.
         const metric = (overrides: Partial<NormalizedMetric> = {}): NormalizedMetric => ({
-            name: "rpc.server.duration",
-            description: "call duration",
-            unit: "ms",
-            type: "1",
+            name: "rpc.server.calls",
+            description: "calls served",
+            unit: "{call}",
+            type: String(DataPointType.SUM),
             points: [{ attributes: { "rpc.method": "Echo" }, value: 1 }],
             ...overrides,
         });
@@ -210,9 +253,9 @@ describe("defaultCompare", () => {
         });
 
         const divergences: { field: string; other: NormalizedMetric }[] = [
-            { field: "name", other: metric({ name: "rpc.client.duration" }) },
+            { field: "name", other: metric({ name: "rpc.client.calls" }) },
             { field: "unit", other: metric({ unit: "s" }) },
-            { field: "type", other: metric({ type: "2" }) },
+            { field: "type", other: metric({ type: String(DataPointType.GAUGE) }) },
             { field: "label set", other: metric({ points: [{ attributes: { "rpc.method": "SecureEcho" }, value: 1 }] }) },
             { field: "recorded value", other: metric({ points: [{ attributes: { "rpc.method": "Echo" }, value: 2 }] }) },
         ];
@@ -225,6 +268,70 @@ describe("defaultCompare", () => {
         it("metrics reported by one transport only fail", () => {
             assert.throws(() => defaultCompare({ metrics: [metric()] }, {}), /OTEL metrics mismatch/);
             assert.throws(() => defaultCompare({}, { metrics: [metric()] }), /OTEL metrics mismatch/);
+        });
+
+        // A duration histogram holds the wall-clock time of the run: its sum, minimum,
+        // maximum and buckets never agree between two runs, while the number of
+        // observations and the attributes they were recorded under do.
+        describe("duration histograms", () => {
+            const histogram = (overrides: { unit?: string; type?: string; count?: number; sum?: number; attributes?: Record<string, unknown> } = {}): NormalizedMetric => {
+                const { unit = "s", type = String(DataPointType.HISTOGRAM), count = 1, sum = 0.0004, attributes = { "rpc.method": "Echo" } } = overrides;
+                return {
+                    name: "rpc.server.call.duration",
+                    description: "call duration",
+                    unit,
+                    type,
+                    points: [{ attributes, value: { count, sum, min: sum, max: sum, buckets: { boundaries: [0.005, 0.01], counts: [count, 0, 0] } } }],
+                };
+            };
+
+            it("ignores the measured time", () => {
+                defaultCompare({ metrics: [histogram({ sum: 0.0004 })] }, { metrics: [histogram({ sum: 0.0014 })] });
+            });
+
+            it("ignores the measured time for every unit of time and for exponential histograms", () => {
+                for (const unit of ["s", "ms", "us", "ns"]) {
+                    defaultCompare({ metrics: [histogram({ unit, sum: 1 })] }, { metrics: [histogram({ unit, sum: 2 })] });
+                }
+                const exponential = String(DataPointType.EXPONENTIAL_HISTOGRAM);
+                defaultCompare({ metrics: [histogram({ type: exponential, sum: 1 })] }, { metrics: [histogram({ type: exponential, sum: 2 })] });
+            });
+
+            it("still fails when the number of observations differs", () => {
+                assert.throws(() => defaultCompare({ metrics: [histogram({ count: 1 })] }, { metrics: [histogram({ count: 2 })] }), /OTEL metrics mismatch/);
+            });
+
+            it("still fails when the attributes of the observations differ", () => {
+                assert.throws(
+                    () => defaultCompare({ metrics: [histogram()] }, { metrics: [histogram({ attributes: { "rpc.method": "SecureEcho" } })] }),
+                    /OTEL metrics mismatch/,
+                );
+            });
+
+            it("still compares name, unit and type", () => {
+                assert.throws(() => defaultCompare({ metrics: [histogram()] }, { metrics: [histogram({ unit: "By" })] }), /OTEL metrics mismatch/);
+                assert.throws(() => defaultCompare({ metrics: [histogram()] }, { metrics: [{ ...histogram(), name: "rpc.client.call.duration" }] }), /OTEL metrics mismatch/);
+                assert.throws(() => defaultCompare({ metrics: [histogram()] }, { metrics: [histogram({ type: String(DataPointType.EXPONENTIAL_HISTOGRAM) })] }), /OTEL metrics mismatch/);
+            });
+
+            it("still compares the recorded values of a histogram that does not measure time", () => {
+                assert.throws(
+                    () => defaultCompare({ metrics: [histogram({ unit: "By", sum: 12 })] }, { metrics: [histogram({ unit: "By", sum: 14 })] }),
+                    /OTEL metrics mismatch/,
+                );
+                defaultCompare({ metrics: [histogram({ unit: "By", sum: 12 })] }, { metrics: [histogram({ unit: "By", sum: 12 })] });
+            });
+
+            it("still compares the value of a counter whose unit is a unit of time", () => {
+                const counter = (value: number): NormalizedMetric => ({
+                    name: "busy.time",
+                    description: "",
+                    unit: "s",
+                    type: String(DataPointType.SUM),
+                    points: [{ attributes: {}, value }],
+                });
+                assert.throws(() => defaultCompare({ metrics: [counter(1)] }, { metrics: [counter(2)] }), /OTEL metrics mismatch/);
+            });
         });
     });
 
