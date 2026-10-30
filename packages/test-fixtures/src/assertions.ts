@@ -26,7 +26,9 @@ import { ConnectError } from "@connectrpc/connect";
  * @param messagePattern - Optional substring or RegExp to match against
  *   `error.message`.
  *
- * @throws {AssertionError} When any of the checks fail.
+ * @throws {AssertionError} When any of the checks fail. A value named `ConnectError` that
+ *   is not an instance of this package's class (an error from another installed copy of
+ *   `@connectrpc/connect`) fails with a message that says so.
  *
  * @example
  * ```ts
@@ -43,7 +45,17 @@ import { ConnectError } from "@connectrpc/connect";
  * ```
  */
 export function assertConnectError(error: unknown, expectedCode: Code, messagePattern?: string | RegExp): asserts error is ConnectError {
-    assert.ok(error instanceof ConnectError, `Expected ConnectError but got ${typeof error === "object" && error !== null ? (error.constructor?.name ?? "object") : typeof error}`);
+    if (!(error instanceof ConnectError)) {
+        const found = typeof error === "object" && error !== null ? (error.constructor?.name ?? "object") : typeof error;
+        // Two installed copies of @connectrpc/connect define two classes with the same name, and
+        // "Expected ConnectError but got ConnectError" would tell the reader nothing.
+        const looksLikeConnectError = typeof error === "object" && error !== null && ((error as { name?: unknown }).name === "ConnectError" || found === "ConnectError");
+        assert.fail(
+            looksLikeConnectError
+                ? `Expected ConnectError but got a ConnectError from another copy of @connectrpc/connect: instanceof fails across copies, which usually means two copies of the package are installed (check the lockfile for duplicates)`
+                : `Expected ConnectError but got ${found}`,
+        );
+    }
 
     assert.strictEqual(error.code, expectedCode, `Expected ConnectError code ${expectedCode} but got ${error.code}`);
 

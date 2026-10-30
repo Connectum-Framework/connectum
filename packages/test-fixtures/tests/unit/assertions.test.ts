@@ -141,6 +141,48 @@ describe("assertConnectError", () => {
         }
     });
 
+    // Two installed copies of @connectrpc/connect define two ConnectError classes with the same
+    // name; `instanceof` fails across them and the old message read "Expected ConnectError but
+    // got ConnectError", which tells the reader nothing.
+    describe("an error from another copy of @connectrpc/connect", () => {
+        class ConnectError extends Error {
+            code: number;
+            constructor(message: string, code: number) {
+                super(message);
+                this.name = "ConnectError";
+                this.code = code;
+            }
+        }
+
+        it("fails and says that two copies of the package are probably installed", () => {
+            assert.throws(
+                () => assertConnectError(new ConnectError("x", Code.NotFound), Code.NotFound),
+                (err: unknown) =>
+                    err instanceof assert.AssertionError &&
+                    err.message.includes("another copy of @connectrpc/connect") &&
+                    err.message.includes("two copies") &&
+                    !/Expected ConnectError but got ConnectError$/.test(err.message),
+            );
+        });
+
+        it("recognises the foreign class by constructor name when the name property was changed", () => {
+            const foreign = new ConnectError("x", Code.NotFound);
+            foreign.name = "Error";
+
+            assert.throws(() => assertConnectError(foreign, Code.NotFound), /two copies/);
+        });
+
+        it("does not blame duplicate copies for an ordinary Error, a plain object or a primitive", () => {
+            for (const value of [new Error("x"), { name: "Other", code: Code.NotFound }, "text", 5, null, undefined]) {
+                assert.throws(
+                    () => assertConnectError(value, Code.NotFound),
+                    (err: unknown) => err instanceof assert.AssertionError && err.message.startsWith("Expected ConnectError but got ") && !err.message.includes("two copies"),
+                    String(value),
+                );
+            }
+        });
+    });
+
     it("narrows type after assertion — error.code is accessible without cast", () => {
         const error: unknown = new ConnectError("typed", Code.AlreadyExists);
         assertConnectError(error, Code.AlreadyExists);
