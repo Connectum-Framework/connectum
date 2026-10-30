@@ -151,6 +151,17 @@ describe("createThrottledDiagLogger", () => {
 		assert.strictEqual(calls.length, 2);
 	});
 
+	it("tells errors with the same message apart by their cause", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+
+		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ECONNREFUSED") }));
+		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ETIMEDOUT") }));
+		logger.error("callback failed", new Error("fetch failed", { cause: new Error("ECONNREFUSED") }));
+
+		assert.strictEqual(calls.length, 2);
+	});
+
 	it("tells plain-object arguments apart by their content", () => {
 		const { target, calls } = recordingTarget();
 		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });

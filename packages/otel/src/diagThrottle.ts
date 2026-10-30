@@ -30,10 +30,26 @@ interface Seen {
  * different failures under one message (a metrics collection error is always the same sentence,
  * the cause is an argument), so the message alone would hide a second, unrelated failure.
  */
+function describeError(error: Error): string {
+    let text = `${error.name}: ${error.message}`;
+    // `Error("fetch failed", { cause })` names the failure in the cause; follow it a few levels.
+    let cause: unknown = error.cause;
+    for (let depth = 0; depth < 5 && cause !== undefined; depth++) {
+        if (cause instanceof Error) {
+            text += ` <- ${cause.name}: ${cause.message}`;
+            cause = cause.cause;
+        } else {
+            text += ` <- ${inspect(cause, { depth: 0 })}`;
+            cause = undefined;
+        }
+    }
+    return text;
+}
+
 function identityOf(message: string, args: readonly unknown[]): string {
     const parts = args.map((arg) => {
         if (arg instanceof Error) {
-            return `${arg.name}: ${arg.message}`;
+            return describeError(arg);
         }
         if (typeof arg === "string") {
             return arg;
