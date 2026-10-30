@@ -58,15 +58,16 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 /**
  * Thrown by {@link setAuthHeaders} when an identity field cannot be written into a header
  * without changing it: NUL, CR or LF in `subject`, `type`, `name` or a scope, a lone surrogate
- * (it has no UTF-8 form), or a scope with a space (the next hop splits the scopes header on spaces
- * and would read one scope as several), or a `roles` or `scopes` value that is not a list of at most
+ * (it has no UTF-8 form), or a scope that is empty or has a space (the next hop splits the scopes
+ * header on spaces and drops empty pieces, so it would read one scope as several or lose the empty
+ * one), or a `roles` or `scopes` value that is not a list of at most
  * 8192 strings without holes. `field` names the offending `AuthContext` field.
  */
 export class UnsafeHeaderValueError extends TypeError {
     readonly field: "subject" | "type" | "name" | "roles" | "scopes";
 
     constructor(field: UnsafeHeaderValueError["field"], notAList = false) {
-        const spaceRule = field === "scopes" ? ", and no scope may contain a space" : "";
+        const spaceRule = field === "scopes" ? ", and a scope may not be empty or contain a space" : "";
         super(
             notAList
                 ? `AuthContext.${field} must be an array of at most ${MAX_LIST_ITEMS} strings without holes, when auth headers are propagated`
@@ -173,7 +174,7 @@ function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] 
     if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
     if (HEADER_BREAKING_CHARS.test(context.type)) return "type";
     if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
-    if (context.scopes.some((scope) => HEADER_BREAKING_CHARS.test(scope) || scope.includes(" "))) return "scopes";
+    if (context.scopes.some((scope) => scope === "" || HEADER_BREAKING_CHARS.test(scope) || scope.includes(" "))) return "scopes";
     return undefined;
 }
 
@@ -207,7 +208,7 @@ function jsonForHeader(value: unknown): string {
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF, a scope with a space,
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF, an empty scope or a scope with a space,
  *   a value that does not fit its header, or a claim that cannot be serialized
  */
 export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
@@ -234,7 +235,7 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
  * @throws {TypeError} (`UnsafeHeaderValueError`) When `subject`, `type`, `name` or a scope contains NUL, CR or LF or a lone surrogate,
- *   or a scope contains a space, or `roles` or `scopes` is not an array of at most 8192 strings without holes;
+ *   or a scope is empty or contains a space, or `roles` or `scopes` is not an array of at most 8192 strings without holes;
  *   the message names the field and no header has been set
  * @throws {RangeError} (`HeaderValueTooLargeError`) When `subject` is longer than 512 characters, `type` than 128, `name` than 256,
  *   or the serialized roles, scopes or claims than 8192; no header has been set

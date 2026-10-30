@@ -93,8 +93,8 @@ handler for the whole call, including after its first `await` or `yield`.
   interceptor. A cache `ttl` must be finite and greater than 0 and `maxSize` an
   integer of at least 1.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
-  LF, or a lone surrogate, and a scope that contains a space (the reader splits
-  scopes on spaces), is rejected with `Unauthenticated` before it is cached.
+  LF, or a lone surrogate, and a scope that is empty or contains a space (the
+  reader splits scopes on spaces and drops empty pieces), is rejected with `Unauthenticated` before it is cached.
   Roles and claims are written as JSON with `\uXXXX` escapes for characters above
   U+00FF and read back as the parsed JSON.
 - With the `cache` option of the generic and session interceptors, every request
