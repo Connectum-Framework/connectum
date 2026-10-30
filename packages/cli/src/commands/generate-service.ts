@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { buildServiceFiles, packageName, pascalCase, registrationMessage, serviceModulePath } from "../scaffold/generateService.ts";
 import { serviceNameProblems } from "../scaffold/serviceName.ts";
-import { runReported } from "../utils/cliError.ts";
+import { CliError, runReported } from "../utils/cliError.ts";
 import { emitFiles } from "../utils/emit.ts";
 import { assertKnownFlags } from "../utils/flags.ts";
 
@@ -63,6 +63,53 @@ function assertProtoBelongsToName(options: { targetDir: string; name: string; wi
     }
 }
 
+/** Dependency sections of `package.json` in which a package counts as part of the project. */
+const DEPENDENCY_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
+
+/**
+ * Refuse a target directory that is not a project the generated files can work in.
+ *
+ * The generated module imports `@connectum/core`, and with `--with-events` its event route comes
+ * from `@connectum/events`; in a directory without a `package.json`, or in a project without the
+ * events module, the files are written and then fail to compile (`TS2307`, `TS7006`). The check
+ * runs before the first file is written, so a refusal leaves the directory as it was.
+ */
+function assertProjectFits(options: { targetDir: string; withEvents: boolean }): void {
+    const { targetDir, withEvents } = options;
+    const manifestPath = join(targetDir, "package.json");
+    let text: string;
+    try {
+        text = readFileSync(manifestPath, "utf8");
+    } catch {
+        throw new CliError(
+            `connectum generate service: no package.json in "${targetDir}". Run the command in the root of a Connectum project (\`connectum init\` creates one). Nothing was written.`,
+        );
+    }
+    let manifest: unknown;
+    try {
+        manifest = JSON.parse(text);
+    } catch (cause) {
+        throw new CliError(`connectum generate service: ${manifestPath} is not valid JSON (${cause instanceof Error ? cause.message : String(cause)}). Nothing was written.`, {
+            cause,
+        });
+    }
+    if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+        throw new CliError(`connectum generate service: ${manifestPath} does not hold a JSON object. Nothing was written.`);
+    }
+    if (!withEvents) {
+        return;
+    }
+    const declared = DEPENDENCY_SECTIONS.some((section) => {
+        const dependencies = (manifest as Record<string, unknown>)[section];
+        return typeof dependencies === "object" && dependencies !== null && "@connectum/events" in dependencies;
+    });
+    if (!declared) {
+        throw new CliError(
+            "connectum generate service: --with-events needs @connectum/events in the dependencies of package.json, and this project does not have it. Add it with an adapter (for example @connectum/events-nats), or scaffold the project with `connectum init --events <adapter>`. Nothing was written.",
+        );
+    }
+}
+
 /**
  * Execute the `generate service` pipeline.
  *
@@ -86,6 +133,7 @@ export async function executeGenerateService(options: GenerateServiceOptions): P
     const force = options.force ?? false;
     const targetDir = resolve(options.cwd ?? process.cwd());
 
+    assertProjectFits({ targetDir, withEvents });
     const files = buildServiceFiles(name, withEvents);
     if (!force) {
         assertProtoBelongsToName({ targetDir, name, withEvents });
