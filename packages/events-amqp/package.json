@@ -19,9 +19,13 @@
     "dist",
     "src"
   ],
+  "homepage": "https://connectum.dev/en/packages/events-amqp",
+  "bugs": {
+    "url": "https://github.com/Connectum-Framework/connectum/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Connectum-Framework/connectum.git",
+    "url": "git+https://github.com/Connectum-Framework/connectum.git",
     "directory": "packages/events-amqp"
   },
   "scripts": {

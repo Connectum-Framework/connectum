@@ -5,9 +5,9 @@
 // isolated and asserts real semantics where known. Signatures are not checked
 // here (this file runs type-stripped): usage.ts and usage-typecheck.mjs do that.
 import assert from "node:assert";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
@@ -313,6 +313,28 @@ check("testing.createMockContext returns a Context for a catalog", () => {
     assert.ok(ctx && typeof ctx === "object");
     assert.strictEqual(typeof ctx.call, "function");
 });
+check("testing fixtures refuse input they cannot honour, with the argument named", () => {
+    assert.throws(() => testing.createMockDescField("f", { type: "strng" as never }), /unknown scalar type "strng"/);
+    assert.throws(() => testing.createMockDescField("f", { fieldNumber: 19000 }), /field "f".*19000/);
+    assert.throws(() => testing.createMockNextSlow(-5), /delay/);
+    assert.strictEqual(testing.createMockDescField("f", { type: "int32" }).number, 1);
+});
+check("testing.createMockFn forwards this and records result and error", () => {
+    const owner = {
+        v: 7,
+        m: testing.createMockFn(function (this: { v: number }) {
+            return this.v;
+        }),
+    };
+    assert.strictEqual(owner.m(), 7);
+    assert.strictEqual(owner.m.mock.calls[0]?.result, 7);
+    const failing = testing.createMockFn(() => {
+        throw new Error("boom");
+    });
+    assert.throws(() => failing(), /boom/);
+    assert.strictEqual(failing.mock.callCount(), 1);
+    assert.match(String(failing.mock.calls[0]?.error), /boom/);
+});
 // Full catalog-call cardinality coverage: ctx.call (unary) + ctx.stream
 // (server/client/bidi) dispatched through createMockContext — the in-process
 // mock/local resolver path. Remote dispatch over a real gRPC transport
@@ -605,6 +627,32 @@ await checkAsync("reflection: an unknown long name is echoed in part in error_me
         bounded.end();
     } finally {
         await server.stop();
+    }
+});
+
+// ---------- @connectum/cli and @connectum/protoc-gen-catalog: input checks ----------
+// Input the packed tools used to accept silently and now refuse; none of it needs a network or a broker.
+await checkAsync("cli: generate service refuses a directory that is not a project and writes nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-generate-service-"));
+    try {
+        const { executeGenerateService } = await import("@connectum/cli/commands/generate-service");
+        await assert.rejects(() => executeGenerateService({ name: "foo", cwd: dir }), /no package\.json/);
+        assert.deepStrictEqual(readdirSync(dir), []);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+await checkAsync("cli: proto sync refuses an empty --from before it connects", async () => {
+    const { executeProtoSync } = await import("@connectum/cli/commands/proto-sync");
+    await assert.rejects(() => executeProtoSync({ from: "", out: "unused", dryRun: true }), /--from must not be empty/);
+});
+
+await checkAsync("protoc-gen-catalog: a target other than ts, or none, is refused", async () => {
+    const { protocGenCatalog } = await import("@connectum/protoc-gen-catalog");
+    const { CodeGeneratorRequestSchema } = await import("@bufbuild/protobuf/wkt");
+    for (const parameter of ["target=js", "target=dts", ""]) {
+        assert.throws(() => protocGenCatalog.run(create(CodeGeneratorRequestSchema, { parameter })), /TypeScript only/, `parameter ${JSON.stringify(parameter)}`);
     }
 });
 

@@ -129,6 +129,7 @@ const checks = [
     ["one module instance per package", ["node", "checks/module-identity.mjs"]],
     ["exported error class names", ["node", "checks/class-names.mjs"]],
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
+    ["manifest metadata", ["node", "checks/manifest-metadata.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
     ["packed resilience cancellation", ["node", "--test", "checks/resilience-cancellation.mjs"]],
     ["generated EventBus type-check", ["node", "checks/generated-eventbus.mjs"]],

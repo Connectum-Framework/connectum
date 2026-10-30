@@ -10,6 +10,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { createServer, defineCatalog, defineService, type NodeRequest, type NodeResponse, type ProtocolRegistration, type ServiceCatalog } from "@connectum/core";
 import { createEventBus, MemoryAdapter } from "@connectum/events";
 import { createDefaultInterceptors, defaultFailurePredicate } from "@connectum/interceptors";
+import { createMockDescField, type MockScalarType } from "@connectum/testing";
 import { serviceCatalog } from "../gen/catalog.gen.ts";
 import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
@@ -68,6 +69,10 @@ export const catalogBackedService = defineService(GreeterService, {
         for await (const r of reqs) yield create(HelloReplySchema, { message: r.name });
     },
 });
+
+// @connectum/testing re-exports the scalar-type union of the descriptor fixtures at its root.
+const scalarType: MockScalarType = "int32";
+createMockDescField("count", { type: scalarType });
 
 // Raw HTTP endpoints as the protocol guide writes them. `NodeResponse` is HTTP/1.1 or
 // HTTP/2, and `writeHead` is not callable on that union (the two overload sets are

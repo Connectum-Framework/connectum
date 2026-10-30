@@ -38,6 +38,11 @@ the behavioral smoke and a single-copy check:
    underscore-prefixed name (the inner name a bundler gives a class that refers to itself).
 7. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
    no prefix-only builtin (`node:test`/`sqlite`/`sea`) ships with its `node:` prefix stripped.
+7a. **manifest metadata** ([`checks/manifest-metadata.mjs`](./fixture/checks/manifest-metadata.mjs)) —
+   every installed `@connectum/*` manifest carries `homepage` (its page on the documentation
+   site), `bugs.url` (the repository issue tracker) and `repository` (type `git`, one shared
+   `git+https` URL, `directory` of the package), so the npm package page and
+   `npm docs` / `npm bugs` / `npm repo` work for every package.
 8. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
    a cast-free fixture ([`src/usage.ts`](./fixture/src/usage.ts)) compiles documented
    signatures against the packed `.d.ts`, catching signature regressions.

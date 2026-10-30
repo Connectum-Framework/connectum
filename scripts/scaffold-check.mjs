@@ -150,6 +150,11 @@ const COMBOS = [
     // every module cell: it pulls in the union of the module dependencies at the cost of
     // a single extra parallel job.
     { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], pack: true },
+    // The protocols are optional, and the generated code changes with them: no health import in
+    // the entry point, and an `--auth` chain that lists no protocol endpoints and imports no
+    // `AuthzEffect`. Each cell type-checks and runs the tests of such a project.
+    { name: "no-healthcheck", pm: "npm", args: ["--no-healthcheck"] },
+    { name: "auth-no-protocols", pm: "npm", args: ["--auth", "--no-healthcheck", "--no-reflection"], pack: true },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
     // The two axes are independent, so both crossings are worth a cell: the one above
     // runs a Bun-runtime project installed with npm, this one installs with bun and

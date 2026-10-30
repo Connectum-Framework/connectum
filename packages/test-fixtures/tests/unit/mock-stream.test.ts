@@ -76,7 +76,7 @@ describe("createMockStream", () => {
     ["no options", undefined],
     ["empty options", {}],
     ["delayMs: 0", { delayMs: 0 }],
-    ["negative delayMs", { delayMs: -5 }],
+    ["delayMs: undefined", { delayMs: undefined as never }],
   ] as const) {
     it(`without a delay no item waits for a timer: ${label}`, async () => {
       const items = Array.from({ length: 100 }, (_, i) => i);
@@ -96,6 +96,22 @@ describe("createMockStream", () => {
       assert.strictEqual(firedDuringIteration, false, "a timer fired while the stream was being consumed");
     });
   }
+
+  // setTimeout turns a negative, NaN or too large delay into 1 ms (with a warning on Node.js),
+  // so the stream would pace itself differently from what the test asked for.
+  it("a delay that cannot be honoured throws at creation and names the option", () => {
+    for (const delayMs of [-5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31, "10", null]) {
+      assert.throws(
+        () => createMockStream([1], { delayMs: delayMs as never }),
+        (err: unknown) => (err instanceof RangeError || err instanceof TypeError) && err.message.includes("delayMs"),
+        `delayMs ${String(delayMs)}`,
+      );
+    }
+  });
+
+  it("the largest delay setTimeout accepts is allowed", () => {
+    assert.doesNotThrow(() => createMockStream([1], { delayMs: 2 ** 31 - 1 }));
+  });
 
   it("is reusable — can iterate twice and get same items", async () => {
     const items = ["alpha", "beta", "gamma"];
