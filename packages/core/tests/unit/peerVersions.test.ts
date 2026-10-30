@@ -193,6 +193,14 @@ describe("PeerDependencyVersionError", () => {
         assert.doesNotMatch(error.message, /connect-node works only/);
     });
 
+    it("keeps its own class name and prototype chain", () => {
+        const error = new PeerDependencyVersionError([]);
+        assert.strictEqual(error.constructor, PeerDependencyVersionError);
+        assert.strictEqual(PeerDependencyVersionError.name, "PeerDependencyVersionError");
+        assert.strictEqual(Object.getPrototypeOf(error), PeerDependencyVersionError.prototype);
+        assert.ok(error instanceof Error);
+    });
+
     it("explains lockstep when connect-node's connect is the problem", () => {
         const error = new PeerDependencyVersionError([
             {

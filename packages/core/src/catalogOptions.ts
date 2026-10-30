@@ -93,8 +93,9 @@ export function assertEnabledServicesAreSupplied(enabledServices: readonly strin
  */
 export class InvalidResolverResultError extends ConnectError {
     constructor(message: string) {
+        // No self-referencing `setPrototypeOf` here: it makes the bundler give the class
+        // an underscore-prefixed name in the published code.
         super(message, Code.Internal);
-        Object.setPrototypeOf(this, InvalidResolverResultError.prototype);
     }
 }
 

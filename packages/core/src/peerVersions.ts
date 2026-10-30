@@ -75,8 +75,9 @@ export class PeerDependencyVersionError extends Error {
 
     constructor(problems: readonly PeerVersionProblem[]) {
         super(formatProblems(problems));
+        // No self-referencing `setPrototypeOf` here: it makes the bundler give the class
+        // an underscore-prefixed name in the published code.
         this.problems = problems;
-        Object.setPrototypeOf(this, PeerDependencyVersionError.prototype);
     }
 }
 
