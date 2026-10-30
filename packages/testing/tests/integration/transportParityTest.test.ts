@@ -150,7 +150,48 @@ describe("defaultCompare", () => {
                 assert.throws(() => defaultCompare({ [field]: { "x-a": "1" } }, {}), failure);
                 assert.throws(() => defaultCompare({}, { [field]: { "x-a": "1" } }), failure);
             });
+
+            it(`${field}: protocol headers that differ between the transports are ignored`, () => {
+                const http = { "x-a": "1", "content-type": "application/grpc+proto", date: "Thu, 29 Oct 2026 08:09:43 GMT", "grpc-encoding": "gzip", "grpc-status": "0", "grpc-message": "ok" };
+                const local = { "x-a": "1", "content-type": "application/proto", "content-length": "4", "connect-content-encoding": "identity", "Content-Encoding": "identity" };
+                defaultCompare({ [field]: http }, { [field]: local });
+                // A leg that reports nothing but protocol headers equals one that reports nothing.
+                const { "x-a": _application, ...protocolOnly } = http;
+                defaultCompare({ [field]: protocolOnly }, { [field]: {} });
+                defaultCompare({ [field]: protocolOnly }, {});
+            });
+
+            it(`${field}: a differing application entry still fails next to differing protocol headers`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-a": "1", "content-type": "a" } }, { [field]: { "x-a": "2", "content-type": "b" } }), failure);
+            });
+
+            it(`${field}: only the grpc- and connect- name families are protocol headers, not any name containing them`, () => {
+                assert.throws(() => defaultCompare({ [field]: { "x-grpc-tag": "1" } }, { [field]: { "x-grpc-tag": "2" } }), failure);
+                assert.throws(() => defaultCompare({ [field]: { "x-connect-tag": "1" } }, { [field]: {} }), failure);
+            });
         }
+
+        it("error metadata: protocol headers are ignored, application entries still fail", () => {
+            const base = { code: 5, message: "nope" };
+            defaultCompare(
+                { error: { ...base, metadata: { "x-tag": "a", "content-type": "application/grpc+proto", "grpc-status": "5", "grpc-message": "nope", date: "x" } } },
+                { error: { ...base, metadata: { "x-tag": "a", "content-type": "application/json", "content-length": "37" } } },
+            );
+            assert.throws(
+                () => defaultCompare({ error: { ...base, metadata: { "x-tag": "a", "grpc-status": "5" } } }, { error: { ...base, metadata: { "x-tag": "b", "content-length": "37" } } }),
+                /error shape mismatch/,
+            );
+            assert.throws(
+                () => defaultCompare({ error: { ...base, metadata: { "grpc-status": "5" } } }, { error: { ...base, metadata: { "x-tag": "a" } } }),
+                /error shape mismatch/,
+            );
+        });
+
+        it("error metadata: reported on one side only still differs from an error that reports none", () => {
+            const base = { code: 5, message: "nope" };
+            assert.throws(() => defaultCompare({ error: { ...base, metadata: { "x-tag": "a" } } }, { error: base }), /error shape mismatch/);
+            defaultCompare({ error: base }, { error: base });
+        });
     });
 
     describe("spans", () => {

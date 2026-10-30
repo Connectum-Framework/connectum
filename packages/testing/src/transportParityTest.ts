@@ -53,15 +53,20 @@ export interface ParityScenarioContext {
 export interface ParityScenarioResult {
     /** Successful response payload (must be JSON-serializable for diff). */
     response?: unknown;
-    /** Response headers reported by the client. */
+    /**
+     * Response headers reported by the client, as the client library hands
+     * them over. Protocol headers (see {@link defaultCompare}) may stay in; the
+     * default comparison ignores them.
+     */
     responseHeaders?: Record<string, string>;
-    /** Response trailers reported by the client. */
+    /** Response trailers reported by the client; protocol trailers may stay in. */
     trailers?: Record<string, string>;
     /** Error captured during the scenario. */
     error?: {
         code: number | string;
         message: string;
         details?: unknown;
+        /** `ConnectError.metadata` as the client sees it; protocol entries may stay in. */
         metadata?: Record<string, string>;
     };
     /** Spans observed during the scenario (already normalized — pass `await ctx.spans.flush()`). */
@@ -164,29 +169,59 @@ function isResourceExhausted(code: number | string | undefined): boolean {
 }
 
 /**
+ * Header names the transports add on their own, whatever the service does: the
+ * HTTP/2 gRPC leg answers with `content-type: application/grpc+proto`,
+ * `grpc-encoding`, `grpc-status`, `grpc-message` and a `date`, the in-process
+ * leg with `content-type: application/proto` or `application/json` and a
+ * `content-length`. Which of them a client sees depends on the wire protocol,
+ * not on the service, so the default comparison leaves them out.
+ */
+const PROTOCOL_HEADER_NAMES: ReadonlySet<string> = new Set(["content-type", "content-length", "content-encoding", "accept-encoding", "date", "te"]);
+
+/** The `grpc-` and `connect-` name families are reserved by their protocols for protocol use. */
+const PROTOCOL_HEADER_PREFIXES: readonly string[] = ["grpc-", "connect-"];
+
+function isProtocolHeader(name: string): boolean {
+    const lower = name.toLowerCase();
+    return PROTOCOL_HEADER_NAMES.has(lower) || PROTOCOL_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+/** The application headers of a header, trailer or metadata map: everything except protocol headers. */
+function withoutProtocolHeaders(map: Record<string, string> | undefined): Record<string, string> {
+    return Object.fromEntries(Object.entries(map ?? {}).filter(([name]) => !isProtocolHeader(name)));
+}
+
+/**
  * Default structural diff for two scenario results.
  *
  * Error messages are compared literally, with exactly one documented
  * exception: a `readMaxBytes` rejection (`ResourceExhausted`) whose diagnostic
  * text includes the observed message size on one transport and omits it on
- * the other, for the same configured limit. The code, the limit, metadata and
- * details are still compared as-is.
+ * the other, for the same configured limit. The code, the limit and details
+ * are still compared as-is.
+ *
+ * Response headers, trailers and error metadata are compared as application
+ * data: protocol headers (`content-type`, `content-length`, `content-encoding`,
+ * `accept-encoding`, `date`, `te` and the `grpc-*` and `connect-*` families) are
+ * dropped on both sides first, because the two transports carry different ones
+ * for identical behaviour. Every other entry is compared literally. A scenario
+ * that needs to compare a protocol header passes its own `compare`.
  */
 export function defaultCompare(http: ParityScenarioResult, local: ParityScenarioResult): void {
     assert.deepStrictEqual(local.response, http.response, "response payload mismatch between HTTP and local transports");
     if (http.error || local.error) {
         const [httpMessage, localMessage] = normalizeReadLimitMessages(http.error, local.error);
         assert.deepStrictEqual(
-            { code: local.error?.code, message: localMessage, details: local.error?.details, metadata: local.error?.metadata },
-            { code: http.error?.code, message: httpMessage, details: http.error?.details, metadata: http.error?.metadata },
+            { code: local.error?.code, message: localMessage, details: local.error?.details, metadata: errorMetadata(local.error) },
+            { code: http.error?.code, message: httpMessage, details: http.error?.details, metadata: errorMetadata(http.error) },
             "error shape mismatch between HTTP and local transports",
         );
     }
     if (http.responseHeaders || local.responseHeaders) {
-        assert.deepStrictEqual(local.responseHeaders ?? {}, http.responseHeaders ?? {}, "response headers mismatch");
+        assert.deepStrictEqual(withoutProtocolHeaders(local.responseHeaders), withoutProtocolHeaders(http.responseHeaders), "response headers mismatch");
     }
     if (http.trailers || local.trailers) {
-        assert.deepStrictEqual(local.trailers ?? {}, http.trailers ?? {}, "trailers mismatch");
+        assert.deepStrictEqual(withoutProtocolHeaders(local.trailers), withoutProtocolHeaders(http.trailers), "trailers mismatch");
     }
     if (http.spans || local.spans) {
         assert.deepStrictEqual(maskSpanIds(local.spans), maskSpanIds(http.spans), "OTEL spans mismatch (after stripping connectum.transport)");
@@ -194,6 +229,16 @@ export function defaultCompare(http: ParityScenarioResult, local: ParityScenario
     if (http.metrics || local.metrics) {
         assert.deepStrictEqual(local.metrics, http.metrics, "OTEL metrics mismatch (after stripping transport label)");
     }
+}
+
+/**
+ * The metadata of a reported error, without protocol headers. An error that
+ * reports no metadata at all stays `undefined` rather than becoming an empty
+ * map, so "no metadata reported" and "empty metadata reported" keep comparing
+ * as they did.
+ */
+function errorMetadata(error: ParityScenarioResult["error"]): Record<string, string> | undefined {
+    return error?.metadata === undefined ? undefined : withoutProtocolHeaders(error.metadata);
 }
 
 interface RunHarness {
