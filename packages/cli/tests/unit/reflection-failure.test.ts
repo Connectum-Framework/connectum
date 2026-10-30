@@ -47,6 +47,15 @@ describe("describeReflectionFailure", () => {
         assert.match(out.message, /^Cannot connect to http:\/\/localhost:5000: the server is unavailable\./);
     });
 
+    it("recognises a server that does not speak HTTP/2 and names the setting that selects it", () => {
+        const cause = errno("ERR_HTTP2_ERROR", "Protocol error");
+        const out = describeReflectionFailure(ADDRESS, new ConnectError("Protocol error", Code.Internal, undefined, undefined, cause));
+
+        assert.ok(out instanceof CliError);
+        assert.match(out.message, /^HTTP\/2 protocol error talking to http:\/\/localhost:5000 \(Protocol error\)\./);
+        assert.ok(out.message.includes("HTTP/1.1") && out.message.includes("allowHTTP1: false"), out.message);
+    });
+
     it("keeps the server's own words, with the address, for an error the server answered with", () => {
         const out = describeReflectionFailure(ADDRESS, new ConnectError("Authentication required for authorization", Code.Unauthenticated));
 

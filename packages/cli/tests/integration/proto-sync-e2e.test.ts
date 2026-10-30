@@ -85,6 +85,9 @@ const PLUGIN_TEMPLATE =(out: string): string => ["version: v2", "plugins:", "  -
 
 describe("proto sync as a process, with real buf", () => {
     let server: Server;
+    /** A server created the way the framework's docs create one: `allowHTTP1` left at its default. */
+    let http1Server: Server;
+    let http1Port: number;
     let port: number;
     let closedPort: number;
     let workdir: string;
@@ -113,6 +116,11 @@ describe("proto sync as a process, with real buf", () => {
         port = server.address?.port as number;
         assert.ok(port, "the server must have an assigned port");
 
+        http1Server = createServer({ services: [], port: 0, interceptors: [], protocols: [Healthcheck(), Reflection()] });
+        await http1Server.start();
+        http1Port = http1Server.address?.port as number;
+        assert.ok(http1Port, "the HTTP/1.1 server must have an assigned port");
+
         // A port nobody listens on and nobody can take in the meantime. A port freed by stopping a
         // server is not that: the files of this package run in parallel, and an ephemeral bind of
         // another test can receive the very number just released, so the CLI would reach a live
@@ -127,6 +135,7 @@ describe("proto sync as a process, with real buf", () => {
 
     after(async () => {
         await server?.stop();
+        await http1Server?.stop();
         if (workdir) {
             rmSync(workdir, { recursive: true, force: true });
         }
@@ -298,6 +307,17 @@ describe("proto sync as a process, with real buf", () => {
                 assertOneLine(run, new RegExp(`Cannot connect to http://127\\.0\\.0\\.1:${closedPort}: ECONNREFUSED`));
             });
         }
+
+        // createServer() without `allowHTTP1: false` is an HTTP/1.1-only server on plain TCP, and the
+        // command speaks HTTP/2 to it: Node reports `ERR_HTTP2_ERROR`, Connect `[internal] Protocol error`.
+        it("says that the server did not speak HTTP/2 and what to change when it serves HTTP/1.1 only", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${http1Port}`, "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assertOneLine(run, new RegExp(`HTTP/2 protocol error talking to http://127\\.0\\.0\\.1:${http1Port}`));
+            assert.ok(run.output.includes("HTTP/1.1"), run.output);
+            assert.ok(run.output.includes("allowHTTP1: false"), `the fix must be named:\n${run.output}`);
+        });
 
         it("refuses an empty --from before connecting", async () => {
             const { cwd, out, tmp } = sandbox();

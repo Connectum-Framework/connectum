@@ -53,6 +53,14 @@ export function describeReflectionFailure(url: string, error: unknown): unknown 
         return error;
     }
     const underlying = underlyingCode(error);
+    // Node raises ERR_HTTP2_ERROR when the peer answers an HTTP/2 connection preface with something
+    // else, which is what an HTTP/1.1-only server does. Connect reports it as `[internal] Protocol error`.
+    if (underlying === "ERR_HTTP2_ERROR") {
+        return new CliError(
+            `HTTP/2 protocol error talking to ${url} (${error.rawMessage}). The address probably serves HTTP/1.1 only, which this command cannot use: it speaks gRPC over HTTP/2. A Connectum server on plain TCP serves HTTP/1.1 only unless it is created with allowHTTP1: false.`,
+            { cause: error },
+        );
+    }
     if (error.code === Code.Unavailable) {
         return new CliError(`Cannot connect to ${url}: ${underlying ?? "the server is unavailable"}. Check the address and that the server is running.`, { cause: error });
     }
