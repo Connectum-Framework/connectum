@@ -200,8 +200,7 @@ describe("proto sync as a process, with real buf", () => {
             const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "template.yaml"], { cwd, tmpdir: tmp, path: withoutBuf });
 
             assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}`);
-            assert.match(run.output, /\bbuf\b/);
-            assert.match(run.output, /ENOENT/);
+            assert.match(run.output, /buf was not found on the PATH/);
             assert.equal(existsSync(out), false);
             assert.deepEqual(readdirSync(tmp), []);
         });
@@ -277,6 +276,80 @@ describe("proto sync as a process, with real buf", () => {
                 assert.match(run.output, new RegExp(`Missing required argument: ${missing}`));
             });
         }
+    });
+
+    // The user reads one line that names what failed. A raw error object (stack frames, `rawMessage`,
+    // `isWireError`) is a defect report about the CLI, not an answer to a mistyped address or a missing tool.
+    describe("failures read as one line", () => {
+        /** Asserts the run ended with exactly the line `Error: <message>` and no error dump. */
+        function assertOneLine(run: CliRun, message: RegExp): void {
+            assert.equal(run.killed, false, `the process hung:\n${run.output}`);
+            assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}\n${run.output}`);
+            assert.match(run.output, new RegExp(`^Error: ${message.source}`, "m"), run.output);
+            assert.ok(!/\n\s+at /.test(run.output), `a stack trace must not be printed:\n${run.output}`);
+            assert.ok(!/rawMessage|isWireError|ConnectError/.test(run.output), `an error object must not be printed:\n${run.output}`);
+        }
+
+        for (const mode of [["--dry-run"], []]) {
+            it(`names the address and the reason when nobody listens${mode.length > 0 ? " (dry run)" : " (full sync)"}`, async () => {
+                const { cwd, out, tmp } = sandbox();
+                const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${closedPort}`, "--out", out, ...mode], { cwd, tmpdir: tmp, path: withBuf });
+
+                assertOneLine(run, new RegExp(`Cannot connect to http://127\\.0\\.0\\.1:${closedPort}: ECONNREFUSED`));
+            });
+        }
+
+        it("refuses an empty --from before connecting", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", "", "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assertOneLine(run, /--from must not be empty/);
+            assert.ok(!run.output.includes("Connecting to"), `the address must be refused before any connection:\n${run.output}`);
+        });
+
+        it("names the value of a --from that is not a URL, before connecting", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", "local host:5305", "--out", out, "--dry-run"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assertOneLine(run, /--from "local host:5305" is not a valid server address/);
+            assert.ok(!run.output.includes("Connecting to"), `the address must be refused before any connection:\n${run.output}`);
+        });
+
+        it("refuses a --template that is not a file before connecting, naming it", async () => {
+            const { cwd, out, tmp } = sandbox();
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "nonexist.yaml"], { cwd, tmpdir: tmp, path: withBuf });
+
+            assertOneLine(run, /--template "nonexist\.yaml" is not an existing file/);
+            assert.ok(!run.output.includes("Connecting to"), `the template must be checked before any connection:\n${run.output}`);
+            assert.equal(existsSync(out), false);
+        });
+
+        it("refuses a --template that is a directory", async () => {
+            const { cwd, out, tmp } = sandbox();
+            mkdirSync(join(cwd, "a-directory"));
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "a-directory"], { cwd, tmpdir: tmp, path: withBuf });
+
+            assertOneLine(run, /--template "a-directory" is not an existing file/);
+        });
+
+        it("says that buf is not on the PATH instead of dumping the spawn error", async () => {
+            const { cwd, out, tmp } = sandbox();
+            writeFileSync(join(cwd, "template.yaml"), PLUGIN_TEMPLATE("."));
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "template.yaml"], { cwd, tmpdir: tmp, path: withoutBuf });
+
+            assertOneLine(run, /buf was not found on the PATH/);
+            assert.ok(run.output.includes("https://buf.build/docs/installation"), run.output);
+            assert.equal(existsSync(out), false);
+        });
+
+        it("reports the exit code of a failing buf after buf's own diagnostic", async () => {
+            const { cwd, out, tmp } = sandbox();
+            writeFileSync(join(cwd, "broken.yaml"), ["version: v2", "plugins:", "  - local: protoc-gen-no-such-plugin", "    out: .", ""].join("\n"));
+            const run = await runCli(["proto", "sync", "--from", `127.0.0.1:${port}`, "--out", out, "--template", "broken.yaml"], { cwd, tmpdir: tmp, path: withBuf });
+
+            assertOneLine(run, /buf generate failed with exit code 1/);
+            assert.match(run.output, /protoc-gen-no-such-plugin/);
+        });
     });
 
     describe("--timeout bounds", () => {
