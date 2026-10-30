@@ -20,6 +20,7 @@ import { applyAuthProtoAnnotations, GREETER_PROTO_PATH, generateAuthFile } from 
 import { generateBufGenYaml, generateBufYaml } from "./bufConfig.ts";
 import {
     adapterPackage,
+    brokerOf,
     EVENTS_OPTIONS_PROTO_PATH,
     generateEventBusFile,
     generateEventRouteFile,
@@ -450,7 +451,55 @@ generated code under \`gen/\` is always up to date.
 ## Next steps
 
 ${nextSteps}
+${moduleSections(config)}`;
+}
+
+/**
+ * README sections for the modules that need something from the person running the project: the
+ * environment of the auth chain, the broker of the event bus. A project without them has no such
+ * section, so its README stays what it was.
+ */
+function moduleSections(config: ScaffoldConfig): string {
+    const run = (script: string): string => `${config.packageManager} run ${script}`;
+    let sections = "";
+    if (config.modules.auth) {
+        sections += `
+## Authentication
+
+\`src/auth.ts\` verifies JWTs against a JWKS endpoint and authorizes calls from the
+\`(connectum.auth.v1.*)\` annotations in your protos. Configure it through the environment before
+\`${run("start")}\`:
+
+- \`JWKS_URI\` — where the signing keys are fetched from (default \`http://localhost:8080/.well-known/jwks.json\`)
+- \`JWT_ISSUER\` — the \`iss\` a token must carry; not checked when unset
+- \`JWT_AUDIENCE\` — the \`aud\` a token must carry; not checked when unset
+
+\`SayHello\` is annotated \`public\` and needs no token; \`SayGoodbye\` has no annotation, so it requires
+one (calls are denied by default). Health and reflection are open without a token, so probes and
+\`connectum proto sync\` work.
 `;
+    }
+    if (config.modules.events) {
+        const broker = brokerOf(config.modules.events.adapter);
+        const kafkaLike = config.modules.events.adapter === "kafka" || config.modules.events.adapter === "redpanda";
+        sections += `
+## Events
+
+\`src/greeterEventBus.ts\` publishes and consumes events through ${broker.label}. The project connects to
+the broker when the server starts, so one has to be reachable before \`${run("start")}\`. The address
+comes from \`${broker.env}\` (default \`${broker.fallback}\`${kafkaLike ? "; a comma-separated list of `host:port`" : ""}).
+`;
+        if (broker.docker !== undefined) {
+            sections += `
+A local broker for development:
+
+\`\`\`bash
+docker run --rm -p ${broker.docker.port}:${broker.docker.port} ${broker.docker.image}${broker.docker.args === undefined ? "" : ` ${broker.docker.args}`}
+\`\`\`
+`;
+        }
+    }
+    return sections;
 }
 
 // Re-export the config value types used by transform consumers.
