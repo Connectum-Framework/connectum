@@ -12,6 +12,9 @@ import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { defineService, type ProtocolRegistration } from "@connectum/core";
+import { Healthcheck } from "@connectum/healthcheck";
+import { createDefaultInterceptors } from "@connectum/interceptors";
+import { Reflection } from "@connectum/reflection";
 import { createTestServer, withTestServer } from "../../src/test-server.ts";
 import type { TestServer } from "../../src/types.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
@@ -144,6 +147,89 @@ describe("createTestServer options", () => {
 		}
 	});
 
+});
+
+// A value that is not what the type says must fail up front, naming the option and the
+// position of the element, and must not leave a listening server behind.
+describe("createTestServer option validation", () => {
+	const rejections: { name: string; options: unknown; message: RegExp }[] = [
+		{ name: "options that are not an object", options: undefined, message: /createTestServer: options must be an object .* got a undefined\./ },
+		{ name: "options that are an array", options: [], message: /options must be an object .* got an array\./ },
+		{ name: "missing services", options: {}, message: /createTestServer: services must be an array of service definitions, got nothing\./ },
+		{ name: "services that is not an array", options: { services: echoRoutes }, message: /services must be an array of service definitions, got a object\./ },
+		{ name: "a string among the services", options: { services: ["not-a-service"] }, message: /services\[0\] must be a service definition returned by defineService\(\) or defineLazyService\(\), got the string "not-a-service"\./ },
+		{ name: "a number among the services", options: { services: [echoRoutes, 42] }, message: /services\[1\] must be a service definition .* got a number\./ },
+		{ name: "null among the services", options: { services: [null] }, message: /services\[0\] must be a service definition .* got null\./ },
+		{ name: "an object that is not a service definition", options: { services: [{ descriptor: EchoService }] }, message: /services\[0\] must be a service definition/ },
+		{ name: "interceptors that is not an array", options: { services: [echoRoutes], interceptors: () => undefined }, message: /interceptors must be an array of interceptor functions, got a function\./ },
+		{ name: "a non-function among the interceptors", options: { services: [echoRoutes], interceptors: [(() => undefined) as unknown, "x"] }, message: /interceptors\[1\] must be an interceptor function, got the string "x"\./ },
+		{ name: "protocols that is not an array", options: { services: [echoRoutes], protocols: "x" }, message: /protocols must be an array of protocol registrations, got the string "x"\./ },
+		{ name: "a protocol without register()", options: { services: [echoRoutes], protocols: [{ name: "half" }] }, message: /protocols\[0\] must be a protocol registration with a name and a register\(\) function/ },
+		{ name: "a protocol without a name", options: { services: [echoRoutes], protocols: [{ register() {} }] }, message: /protocols\[0\] must be a protocol registration/ },
+	];
+	for (const { name, options, message } of rejections) {
+		it(`rejects ${name}, naming the option`, async () => {
+			await assert.rejects(
+				createTestServer(options as never),
+				(err: unknown) => err instanceof TypeError && message.test(err.message),
+			);
+		});
+	}
+
+	it("rejects the same values through withTestServer, without running the test function", async () => {
+		let ran = false;
+		await assert.rejects(
+			withTestServer({ services: ["not-a-service"] } as never, async () => {
+				ran = true;
+			}),
+			(err: unknown) => err instanceof TypeError && /services\[0\]/.test(err.message),
+		);
+		assert.strictEqual(ran, false);
+	});
+
+	it("is a compile-time error to pass a value that is not a service, an interceptor or a protocol", () => {
+		// The assertions below are the type-level contract: each line must NOT compile.
+		// Nothing runs: createTestServer is not called.
+		const compileOnly = () => {
+			// @ts-expect-error a string is not a service definition
+			void createTestServer({ services: ["not-a-service"] });
+			// @ts-expect-error a number is not a service definition
+			void createTestServer({ services: [42] });
+			// @ts-expect-error null is not a service definition
+			void createTestServer({ services: [null] });
+			// @ts-expect-error a string is not an interceptor
+			void createTestServer({ services: [echoRoutes], interceptors: ["x"] });
+			// @ts-expect-error a string is not a protocol registration
+			void createTestServer({ services: [echoRoutes], protocols: ["x"] });
+		};
+		assert.strictEqual(typeof compileOnly, "function");
+	});
+
+	it("accepts what the shipped factories return, as the documentation passes them", async () => {
+		// Type-level contract: the return types of the real factories fit the typed lists.
+		const server = await createTestServer({
+			services: [echoRoutes],
+			interceptors: createDefaultInterceptors(),
+			protocols: [Healthcheck(), Reflection()],
+		});
+		try {
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("accepts readonly arrays of the documented element types", async () => {
+		const services = [echoRoutes] as const;
+		const interceptors: readonly Interceptor[] = [(next) => next];
+		const protocols: readonly ProtocolRegistration[] = [];
+		const server = await createTestServer({ services, interceptors, protocols });
+		try {
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
 });
 
 describe("withTestServer", () => {

@@ -10,6 +10,7 @@
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
+import { validateTestServerOptions } from "./validateTestServerOptions.ts";
 
 /**
  * Create and start a test server on a random (or specified) port.
@@ -30,14 +31,13 @@ import type { CreateTestServerOptions, TestServer } from "./types.ts";
  * ```
  */
 export async function createTestServer(options: CreateTestServerOptions): Promise<TestServer> {
+    validateTestServerOptions(options);
+
     const server = createServer({
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        services: options.services as any[],
+        services: options.services,
         port: options.port ?? 0,
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        protocols: (options.protocols ?? []) as any[],
-        // biome-ignore lint/suspicious/noExplicitAny: bridging generic test types to internal createServer API
-        interceptors: (options.interceptors ?? []) as any[],
+        protocols: [...(options.protocols ?? [])],
+        interceptors: [...(options.interceptors ?? [])],
         allowHTTP1: false,
     });
 

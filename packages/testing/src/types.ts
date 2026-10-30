@@ -7,6 +7,9 @@
  * @module
  */
 
+import type { Interceptor } from "@connectrpc/connect";
+import type { ProtocolRegistration, ServiceDefinition } from "@connectum/core";
+
 export type {
     FakeMethodOptions,
     FakeServiceOptions,
@@ -34,14 +37,20 @@ export interface TestServer {
     close(): Promise<void>;
 }
 
-/** Options for {@link index.createTestServer | createTestServer}. */
+/**
+ * Options for {@link index.createTestServer | createTestServer}.
+ *
+ * The element types are those of `createServer()`; a value of another type is
+ * a compile error, and in untyped code `createTestServer()` rejects it with a
+ * `TypeError` that names the option and the index of the element.
+ */
 export interface CreateTestServerOptions {
-    /** ConnectRPC service route handlers. */
-    services: unknown[];
+    /** Services to serve, as `defineService()` and `defineLazyService()` return them. */
+    services: readonly ServiceDefinition[];
     /** Interceptors to apply. Default: `[]` */
-    interceptors?: unknown[];
+    interceptors?: readonly Interceptor[];
     /** Protocol extensions (Healthcheck, Reflection). Default: `[]` */
-    protocols?: unknown[];
+    protocols?: readonly ProtocolRegistration[];
     /** Port number. Default: `0` (random available port) */
     port?: number;
 }
