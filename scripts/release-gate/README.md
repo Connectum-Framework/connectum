@@ -33,6 +33,11 @@ the behavioral smoke and a single-copy check:
    and module state would exist once per subpath.
 6. **node: builtin prefixes** ([`checks/builtins.mjs`](./fixture/checks/builtins.mjs)) —
    no prefix-only builtin (`node:test`/`sqlite`/`sea`) ships with its `node:` prefix stripped.
+6a. **manifest metadata** ([`checks/manifest-metadata.mjs`](./fixture/checks/manifest-metadata.mjs)) —
+   every installed `@connectum/*` manifest carries `homepage` (its page on the documentation
+   site), `bugs.url` (the repository issue tracker) and `repository` (type `git`, one shared
+   `git+https` URL, `directory` of the package), so the npm package page and
+   `npm docs` / `npm bugs` / `npm repo` work for every package.
 7. **consumer usage type-check** ([`checks/usage-typecheck.mjs`](./fixture/checks/usage-typecheck.mjs)) —
    a cast-free fixture ([`src/usage.ts`](./fixture/src/usage.ts)) compiles documented
    signatures against the packed `.d.ts`, catching signature regressions.

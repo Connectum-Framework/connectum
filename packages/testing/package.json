@@ -20,6 +20,10 @@
     "dist",
     "src"
   ],
+  "homepage": "https://connectum.dev/en/packages/testing",
+  "bugs": {
+    "url": "https://github.com/Connectum-Framework/connectum/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Connectum-Framework/connectum.git",

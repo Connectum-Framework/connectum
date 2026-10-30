@@ -128,6 +128,7 @@ const checks = [
     ["runtime importability", ["node", "checks/runtime-import.mjs"]],
     ["one module instance per package", ["node", "checks/module-identity.mjs"]],
     ["node: builtin prefixes", ["node", "checks/builtins.mjs"]],
+    ["manifest metadata", ["node", "checks/manifest-metadata.mjs"]],
     ["consumer usage type-check", ["node", "checks/usage-typecheck.mjs"]],
     ["packed resilience cancellation", ["node", "--test", "checks/resilience-cancellation.mjs"]],
     ["generated EventBus type-check", ["node", "checks/generated-eventbus.mjs"]],
