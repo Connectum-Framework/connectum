@@ -13,7 +13,16 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { declaresTextEncoding, HEADER_BREAKING_CHARS, MAX_HEADER_BYTES, propagateAuthHeaders, readHeaderText } from "./headers.ts";
+import {
+    declaresTextEncoding,
+    HEADER_BREAKING_CHARS,
+    MAX_HEADER_BYTES,
+    MAX_NAME_LENGTH,
+    MAX_SUBJECT_LENGTH,
+    MAX_TYPE_LENGTH,
+    propagateAuthHeaders,
+    readHeaderText,
+} from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
@@ -81,15 +90,26 @@ function matchesIp(address: string, pattern: string): boolean {
 const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HEADERS));
 
 /**
+ * Refuse a roles or scopes header that is longer than the Connectum header format allows, when the
+ * mapping names a standard `x-auth-*` header. A custom header is taken as sent.
+ */
+function assertStandardHeaderFits(headerName: string, raw: string): void {
+    if (STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) && raw.length > MAX_HEADER_BYTES) {
+        throw new ConnectError("Authentication failed", Code.Unauthenticated);
+    }
+}
+
+/**
  * Read a text value of the identity from the header the mapping names. The standard `x-auth-*`
  * names carry text written by another Connectum service, which writes characters above U+00FF as
  * `utf-8''` plus percent-encoded UTF-8 and declares it in `x-auth-encoding`, so those values are decoded
  * when it is present. A text read from a standard name is held to the rules of the writer: NUL, CR and
- * LF are refused, and `strip` removes the other C0 controls and DEL (subject, type, name; a scope is read
- * as granted). A custom header comes from the gateway and is taken as it is.
+ * LF are refused, `strip` removes the other C0 controls and DEL (subject, type, name; a scope is read
+ * as granted), and a text longer than `limit` is refused instead of reaching the handler. A custom header
+ * comes from the gateway and is taken as it is.
  */
-function readIdentityText(headerName: string, raw: string, decode: boolean, strip: boolean): string {
-    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, Number.POSITIVE_INFINITY, decode, strip) : raw;
+function readIdentityText(headerName: string, raw: string, decode: boolean, strip: boolean, limit: number): string {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, limit, decode, strip) : raw;
 }
 
 /** SHA-256 of `text`; both sides of a secret comparison become 32 bytes whatever their length. */
@@ -250,22 +270,23 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
 
         // Extract subject (required)
         const subjectRaw = req.header.get(headerMapping.subject);
-        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true) : subjectRaw;
+        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true, MAX_SUBJECT_LENGTH) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
         // Extract optional fields
         const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
-        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode, true) : undefined;
+        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode, true, MAX_NAME_LENGTH) : undefined;
         const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
-        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true) : defaultType;
+        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true, MAX_TYPE_LENGTH) : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];
         if (headerMapping.roles) {
             const rolesRaw = req.header.get(headerMapping.roles);
             if (rolesRaw) {
+                assertStandardHeaderFits(headerMapping.roles, rolesRaw);
                 roles = parseRoles(rolesRaw);
             }
         }
@@ -275,10 +296,11 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         if (headerMapping.scopes) {
             const scopesRaw = req.header.get(headerMapping.scopes);
             if (scopesRaw) {
+                assertStandardHeaderFits(headerMapping.scopes, scopesRaw);
                 scopes = scopesRaw
                     .split(" ")
                     .filter(Boolean)
-                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode, false));
+                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode, false, MAX_HEADER_BYTES));
             }
         }
 
