@@ -68,4 +68,13 @@ export interface CreateTestServerOptions {
      * or `::`.
      */
     host?: string;
+    /**
+     * Graceful shutdown of `close()`. Only `timeout` is offered: the longest wait,
+     * in milliseconds (an integer from 0), for calls still in flight. A unary
+     * handler that does not observe `ctx.signal` keeps `close()` waiting until
+     * the timeout, 30 s by default, so a test with a handler that can hang sets
+     * a short one. When it expires the remaining connections are closed and the
+     * unfinished calls fail on the client.
+     */
+    shutdown?: { timeout?: number };
 }

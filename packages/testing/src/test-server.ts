@@ -35,8 +35,10 @@ function clientHost(host: string): string {
  * for calling {@link TestServer.close} when done.
  *
  * The server listens on `127.0.0.1` unless `options.host` says otherwise.
+ * {@link TestServer.close} waits up to `options.shutdown.timeout` (30 s by
+ * default) for calls that have not finished.
  *
- * @param options - Server configuration (services, interceptors, protocols, port, host)
+ * @param options - Server configuration (services, interceptors, protocols, port, host, shutdown)
  * @returns Running test server with transport and cleanup function
  *
  * @example
@@ -57,6 +59,7 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
         host,
         protocols: [...(options.protocols ?? [])],
         interceptors: [...(options.interceptors ?? [])],
+        ...(options.shutdown?.timeout !== undefined ? { shutdown: { timeout: options.shutdown.timeout } } : {}),
         allowHTTP1: false,
     });
 

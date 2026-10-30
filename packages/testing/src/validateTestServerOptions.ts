@@ -30,8 +30,9 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * the call boundary of untyped code: `services` (each element a service
  * definition, as `defineService()` and `defineLazyService()` return it),
  * `interceptors` (functions) and `protocols` (objects with a `name` and a
- * `register` function), and `host` (a non-empty string). `port` is checked by
- * `createServer()` itself.
+ * `register` function), `host` (a non-empty string) and the keys of `shutdown`.
+ * `port` and the value of `shutdown.timeout` are checked by `createServer()`
+ * itself.
  *
  * @throws TypeError naming the option, and the index of the offending element
  */
@@ -40,7 +41,19 @@ export function validateTestServerOptions(options: unknown): asserts options is 
         throw new TypeError(`createTestServer: options must be an object like { services: [...] }, got ${describeValue(options)}.`);
     }
 
-    const { services, interceptors, protocols, host } = options;
+    const { services, interceptors, protocols, host, shutdown } = options;
+
+    if (shutdown !== undefined) {
+        if (!isObject(shutdown) || Array.isArray(shutdown)) {
+            throw new TypeError(`createTestServer: shutdown must be an object like { timeout: 1000 }, got ${describeValue(shutdown)}.`);
+        }
+        // Only the timeout is passed on; any other key would be a setting that does nothing.
+        for (const key of Object.keys(shutdown)) {
+            if (key !== "timeout") {
+                throw new TypeError(`createTestServer: shutdown.${key} is not supported; only shutdown.timeout is.`);
+            }
+        }
+    }
 
     if (host !== undefined && (typeof host !== "string" || host === "")) {
         throw new TypeError(`createTestServer: host must be a non-empty string such as "127.0.0.1" or "0.0.0.0", got ${host === "" ? "an empty string" : describeValue(host)}.`);

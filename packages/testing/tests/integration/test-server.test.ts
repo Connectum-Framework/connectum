@@ -258,6 +258,65 @@ describe("createTestServer host", () => {
 	}
 });
 
+// close() waits for in-flight calls up to the shutdown timeout. A unary handler that does not
+// watch ctx.signal never ends on its own, so a test needs a way to bound that wait instead of
+// the 30 s default of the server.
+describe("createTestServer shutdown timeout", () => {
+	/** A service whose only working method never answers until `release()` is called. */
+	function hangingRoutes() {
+		let release: () => void = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const routes = defineService(EchoService, {
+			echo: async () => {
+				await released;
+				return create(EchoResponseSchema, { message: "late", timestamp: 0n });
+			},
+			secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+			rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+		});
+		return { routes, release };
+	}
+
+	it("close() gives up on an unfinished unary call after shutdown.timeout", async () => {
+		const { routes, release } = hangingRoutes();
+		const server = await createTestServer({ services: [routes], shutdown: { timeout: 300 } });
+		try {
+			const pending = createClient(EchoService, server.transport)
+				.echo(create(EchoRequestSchema, { message: "x" }))
+				.catch((err: unknown) => ConnectError.from(err));
+			await new Promise((resolve) => setTimeout(resolve, 200));
+
+			const started = Date.now();
+			await server.close();
+			const elapsed = Date.now() - started;
+
+			assert.ok(elapsed >= 250, `close() must wait for the call up to the timeout, took ${elapsed} ms`);
+			assert.ok(elapsed < 10_000, `close() must not wait for the 30 s default, took ${elapsed} ms`);
+			const outcome = await pending;
+			assert.ok(outcome instanceof ConnectError, "the unfinished call must fail once the server is closed");
+		} finally {
+			release();
+		}
+	});
+
+	for (const [name, shutdown, error, message] of [
+		["a negative timeout", { timeout: -1 }, RangeError, /shutdown\.timeout/],
+		["a timeout that is not a number", { timeout: "300" }, TypeError, /shutdown\.timeout/],
+		["a fractional timeout", { timeout: 1.5 }, RangeError, /shutdown\.timeout/],
+		["a shutdown that is not an object", "300", TypeError, /createTestServer: shutdown must be an object like \{ timeout: 1000 \}, got the string "300"/],
+		["an option the helper does not offer", { timeout: 300, autoShutdown: true }, TypeError, /createTestServer: shutdown\.autoShutdown is not supported; only shutdown\.timeout is/],
+	] as const) {
+		it(`rejects ${name}, naming the option, before a server starts`, async () => {
+			await assert.rejects(
+				createTestServer({ services: [echoRoutes], shutdown: shutdown as never }),
+				(err: unknown) => err instanceof error && message.test(err.message),
+			);
+		});
+	}
+});
+
 // A value that is not what the type says must fail up front, naming the option and the
 // position of the element, and must not leave a listening server behind.
 describe("createTestServer option validation", () => {
