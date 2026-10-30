@@ -111,6 +111,46 @@ describe("protoc-gen-connectum-catalog — generation", () => {
         assert.strictEqual(byDefault.name, "catalog.gen.ts");
     });
 
+    // The README states that the plugin emits TypeScript only: the module augmentation that types
+    // `ctx.call` is a `declare module` block, which a `.js` file cannot hold and a transpiled `.d.ts`
+    // does not carry. The standard `target` option of @bufbuild/protoplugin would otherwise
+    // transpile the TypeScript output into exactly those files, silently leaving every key untyped,
+    // and it defaults to `js+dts` when no target is given.
+    describe("target", () => {
+        for (const target of ["js", "dts", "js+dts", "ts+js", "ts+dts", "ts+js+dts"]) {
+            it(`rejects target=${target}, saying that the catalog is TypeScript only and what to use`, () => {
+                assert.throws(
+                    () => runPlugin(["echo/v1/echo.proto"], `target=${target},import_extension=.js`),
+                    (err: Error) =>
+                        err.message.includes("protoc-gen-connectum-catalog") &&
+                        err.message.includes(`target "${target}"`) &&
+                        /TypeScript only/.test(err.message) &&
+                        err.message.includes("target=ts"),
+                );
+            });
+        }
+
+        it("rejects a missing target, which the plugin protocol reads as js+dts, and names the default", () => {
+            assert.throws(
+                () => runPlugin(["echo/v1/echo.proto"], "import_extension=.js"),
+                (err: Error) => err.message.includes('target "js+dts"') && err.message.includes("when no target is given") && err.message.includes("target=ts"),
+            );
+            assert.throws(() => runPlugin(["echo/v1/echo.proto"], ""), /target=ts/);
+        });
+
+        it("writes exactly one file, catalog.gen.ts, for target=ts", () => {
+            const response = runPlugin(["echo/v1/echo.proto"], "target=ts,import_extension=.js");
+            assert.deepStrictEqual(
+                response.file.map((file) => file.name),
+                ["catalog.gen.ts"],
+            );
+        });
+
+        it("rejects the unsupported target whatever else the option list holds, including a custom output_file", () => {
+            assert.throws(() => runPlugin(["echo/v1/echo.proto"], "target=dts,output_file=gen/catalog.gen.ts"), /TypeScript only/);
+        });
+    });
+
     describe("output_file safety", () => {
         // Absolute paths and `..` traversal must be refused with an error naming the path and the rule,
         // and nothing may be written. Windows drive, UNC and backslash forms are covered by the package README.

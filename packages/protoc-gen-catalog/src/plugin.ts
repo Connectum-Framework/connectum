@@ -70,8 +70,28 @@ function servicesToGenerate(schema: Schema<CatalogOptions>): DescService[] {
     return schema.files.flatMap((file) => file.services);
 }
 
+/**
+ * The catalog is TypeScript only. `@bufbuild/protoplugin` accepts the standard `target` option and,
+ * for `js` and `dts`, transpiles the TypeScript output instead of asking the plugin: the `.js` file
+ * then has no `declare module` augmentation and the `.d.ts` types every service as `any`, so every
+ * `ctx.call` key silently loses its types. Without a `target` the protocol default is `js+dts`,
+ * which is the same thing. Anything but exactly `ts` is refused.
+ */
+function assertTypeScriptTarget(schema: Schema<CatalogOptions>): void {
+    const { targets } = schema;
+    if (targets.length === 1 && targets[0] === "ts") {
+        return;
+    }
+    const given = targets.join("+");
+    const byDefault = given === "js+dts" ? ` "js+dts" is also what the plugin protocol uses when no target is given.` : "";
+    throw new Error(
+        `protoc-gen-connectum-catalog: target "${given}" is not supported: the catalog is TypeScript only, because its \`declare module\` augmentation is lost in the transpiled .js and .d.ts. Use opt: [target=ts].${byDefault}`,
+    );
+}
+
 /** Generate the aggregated `catalog.gen.ts` for the buf module. */
 function generateCatalog(schema: Schema<CatalogOptions>): void {
+    assertTypeScriptTarget(schema);
     const services = servicesToGenerate(schema);
     const f = schema.generateFile(schema.options.outputFile);
 

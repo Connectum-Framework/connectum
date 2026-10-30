@@ -90,8 +90,11 @@ Separate directory invocations cannot produce one aggregate catalog: each
 invocation emits the same output filename for its own files-to-generate.
 
 The catalog plugin emits **TypeScript only** (the `declare module` augmentation
-is types-only). Generate it alongside `protoc-gen-es`, with the **same
-`import_extension`** so the catalog's imports match the protobuf-es output.
+is types-only). `target=ts` is therefore required: `target=js`, `target=dts`, a
+combination that includes either, and a missing `target` (which buf reads as
+`js+dts`) are rejected with an error instead of producing a `.js` or `.d.ts` file
+without the augmentation. Generate the catalog alongside `protoc-gen-es`, with the
+**same `import_extension`** so the catalog's imports match the protobuf-es output.
 
 - `import_extension=.js` — recommended (pre-compiled distribution: tsup → `.js`
   + `.d.ts`).
