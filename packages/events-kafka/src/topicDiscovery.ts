@@ -63,10 +63,11 @@ export function startTopicDiscovery(options: TopicDiscoveryOptions): () => Promi
         }
         resumeTimers.clear();
 
-        if (running) {
-            running = false;
-            await consumer.stop();
-        }
+        // Stopped whatever `running` says: a replacement of the consumer (see topicRecovery) starts one that
+        // this flag never heard of, and subscribing to a topic while a consumer runs is refused. Stopping a
+        // consumer that is not running does nothing.
+        running = false;
+        await consumer.stop();
         // The subscription was closed while the consumer was stopping: nothing is left to restart.
         if (stopped) {
             return;
