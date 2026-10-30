@@ -80,9 +80,16 @@ function assertProjectFits(options: { targetDir: string; withEvents: boolean }):
     let text: string;
     try {
         text = readFileSync(manifestPath, "utf8");
-    } catch {
+    } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+            // A directory called package.json, or a file the process may not read: not "missing".
+            throw new CliError(`connectum generate service: cannot read ${manifestPath} (${cause instanceof Error ? cause.message : String(cause)}). Nothing was written.`, {
+                cause,
+            });
+        }
         throw new CliError(
             `connectum generate service: no package.json in "${targetDir}". Run the command in the root of a Connectum project (\`connectum init\` creates one). Nothing was written.`,
+            { cause },
         );
     }
     let manifest: unknown;

@@ -275,6 +275,17 @@ describe("executeGenerateService", () => {
             assert.deepEqual(readdirSync(dir), ["package.json"]);
         });
 
+        it("says that package.json cannot be read, rather than that it is missing, when it is a directory", async () => {
+            rmSync(join(dir, "package.json"));
+            mkdirSync(join(dir, "package.json"));
+
+            await assert.rejects(
+                () => executeGenerateService({ name: "foo", cwd: dir }),
+                (err: unknown) => err instanceof CliError && err.message.includes(`cannot read ${join(dir, "package.json")}`) && !err.message.includes("no package.json"),
+            );
+            assert.deepEqual(readdirSync(dir), ["package.json"]);
+        });
+
         it("refuses a package.json that is not an object", async () => {
             writeFileSync(join(dir, "package.json"), "[]");
 
