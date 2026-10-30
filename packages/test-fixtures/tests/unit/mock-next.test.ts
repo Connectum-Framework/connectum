@@ -149,6 +149,58 @@ describe("createMockNext", () => {
     assert.notStrictEqual(copy.buffer, shared);
   });
 
+  // protobuf-es decodes every `bytes` field as a subarray of the wire buffer; the copy has to keep
+  // the views on one (copied) buffer instead of duplicating the whole buffer for each field.
+  it("views of one buffer keep sharing one buffer in the copy", async () => {
+    const wire = new Uint8Array([1, 2, 3, 4, 5, 6]);
+    const supplied = { a: wire.subarray(0, 2), b: wire.subarray(2, 6), c: Buffer.from(wire.buffer, 4, 2), d: new DataView(wire.buffer, 1, 3) };
+    const next = createMockNext({ message: supplied });
+
+    const copy = (await next({})).message as typeof supplied;
+
+    assert.deepStrictEqual([...copy.a], [1, 2]);
+    assert.deepStrictEqual([...copy.b], [3, 4, 5, 6]);
+    assert.deepStrictEqual([...copy.c], [5, 6]);
+    assert.strictEqual(copy.d.getUint8(0), 2);
+    assert.ok(Buffer.isBuffer(copy.c));
+    assert.strictEqual(copy.a.buffer, copy.b.buffer);
+    assert.strictEqual(copy.a.buffer, copy.c.buffer);
+    assert.strictEqual(copy.a.buffer, copy.d.buffer);
+    assert.notStrictEqual(copy.a.buffer, wire.buffer);
+    copy.b[0] = 99;
+    assert.strictEqual(wire[2], 3, "the supplied buffer stays untouched");
+    assert.strictEqual(copy.a.byteOffset, 0);
+    assert.strictEqual(copy.b.byteOffset, 2);
+  });
+
+  // The earlier shallow copy read each property once and stored the value as an ordinary editable
+  // property; the deep copy does the same, so a getter or a setter never reaches the supplied object.
+  it("a getter and a setter of the supplied message become plain editable properties", async () => {
+    let writes = 0;
+    const supplied = {
+      get computed() {
+        return { n: 1 };
+      },
+      get readonly() {
+        return "r";
+      },
+      set sink(_value: number) {
+        writes++;
+      },
+    };
+    const next = createMockNext({ message: supplied });
+
+    const copy = (await next({})).message as { computed: { n: number }; readonly: string };
+    copy.readonly = "changed";
+    copy.computed.n = 2;
+
+    assert.strictEqual(copy.readonly, "changed");
+    assert.strictEqual(copy.computed.n, 2);
+    assert.strictEqual(supplied.computed.n, 1);
+    assert.strictEqual(writes, 0);
+    assert.deepStrictEqual(Object.keys(copy), ["computed", "readonly", "sink"]);
+  });
+
   it("a message with a cycle and a shared reference is copied without looping", async () => {
     const shared = { n: 1 };
     const supplied: Record<string, unknown> = { a: shared, b: shared };

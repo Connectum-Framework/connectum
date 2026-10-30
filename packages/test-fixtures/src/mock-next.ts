@@ -37,13 +37,28 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), to
     if (known !== undefined) {
         return known;
     }
-    if (Buffer.isBuffer(value)) {
-        const copy = Buffer.from(value);
+    if (value instanceof ArrayBuffer) {
+        const copy = value.slice(0);
         seen.set(value, copy);
         return copy;
     }
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-        const copy = structuredClone(value);
+    if (ArrayBuffer.isView(value)) {
+        // The views of one backing buffer (a protobuf `bytes` field is a `subarray` of the
+        // wire buffer) have to keep sharing one buffer in the copy, and the buffer is
+        // copied once. A view over a SharedArrayBuffer cannot be copied and is kept.
+        if (!(value.buffer instanceof ArrayBuffer)) {
+            return value;
+        }
+        const buffer = cloneMessage(value.buffer, seen, false) as ArrayBuffer;
+        const copy = Buffer.isBuffer(value)
+            ? Buffer.from(buffer, value.byteOffset, value.byteLength)
+            : value instanceof DataView
+              ? new DataView(buffer, value.byteOffset, value.byteLength)
+              : new (value.constructor as new (buffer: ArrayBuffer, byteOffset: number, length: number) => ArrayBufferView)(
+                    buffer,
+                    value.byteOffset,
+                    (value as unknown as { length: number }).length,
+                );
         seen.set(value, copy);
         return copy;
     }
@@ -90,17 +105,15 @@ function cloneMessage(value: unknown, seen: Map<object, unknown> = new Map(), to
     const copy: object = isArray ? new Array(value.length) : Object.create(prototype);
     seen.set(value, copy);
     for (const key of Reflect.ownKeys(value)) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (descriptor === undefined || (isArray && key === "length")) {
+        // Own enumerable properties only, read through the property (a getter is called and
+        // its value copied), and written as plain editable data properties: the same result
+        // the earlier shallow copy gave, so a frozen message or an accessor yields responses
+        // a test can edit without touching the supplied object.
+        if (!Object.getOwnPropertyDescriptor(value, key)?.enumerable) {
             continue;
         }
-        if ("value" in descriptor) {
-            descriptor.value = cloneMessage(descriptor.value, seen, false);
-            // A frozen supplied message still yields responses a test can edit, as the shallow copy did.
-            descriptor.writable = true;
-            descriptor.configurable = true;
-        }
-        Object.defineProperty(copy, key, descriptor);
+        const entry = cloneMessage((value as Record<PropertyKey, unknown>)[key], seen, false);
+        Object.defineProperty(copy, key, { value: entry, writable: true, enumerable: true, configurable: true });
     }
     return copy;
 }
