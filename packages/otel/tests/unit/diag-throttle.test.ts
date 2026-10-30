@@ -151,6 +151,17 @@ describe("createThrottledDiagLogger", () => {
 		assert.strictEqual(calls.length, 2);
 	});
 
+	it("tells plain-object arguments apart by their content", () => {
+		const { target, calls } = recordingTarget();
+		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });
+
+		logger.error("batch callback registration failed", [{ name: "orders" }]);
+		logger.error("batch callback registration failed", [{ name: "payments" }]);
+		logger.error("batch callback registration failed", [{ name: "orders" }]);
+
+		assert.strictEqual(calls.length, 2);
+	});
+
 	it("reports an argument whose toString() throws instead of failing", () => {
 		const { target, calls } = recordingTarget();
 		const logger = createThrottledDiagLogger({ target, windowMs: 60_000, now: () => 0 });

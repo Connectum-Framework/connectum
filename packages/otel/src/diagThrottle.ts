@@ -4,6 +4,7 @@
  * @module diagThrottle
  */
 
+import { inspect } from "node:util";
 import type { DiagLogger } from "@opentelemetry/api";
 
 /** Entries kept before expired ones are dropped; bounds memory when every message differs. */
@@ -38,9 +39,11 @@ function identityOf(message: string, args: readonly unknown[]): string {
             return arg;
         }
         try {
-            return String(arg);
+            // Not String(): every plain object would read "[object Object]" and two different ones
+            // (the instruments of two failed batch callbacks) would count as one error.
+            return inspect(arg, { depth: 1, breakLength: Number.POSITIVE_INFINITY });
         } catch {
-            // An argument whose toString() throws still must not fail the report.
+            // An argument that cannot be inspected still must not fail the report.
             return "[unprintable]";
         }
     });
