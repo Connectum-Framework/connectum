@@ -153,6 +153,32 @@ describe("gateway interceptor reading x-auth-* text", () => {
         assert.strictEqual(seen?.name, "utf-8''%D0%98");
     });
 
+    it("accepts a defaultType above U+00FF and propagates it encoded", async () => {
+        const interceptor = createGatewayAuthInterceptor({
+            headerMapping: { subject: "x-user-id" },
+            trustSource: { header: "x-gateway-secret", expectedValues: ["s"] },
+            defaultType: "шлюз",
+            propagateHeaders: true,
+        });
+        const req = createMockRequest({ service: "t.v1.S", method: "M" });
+        req.header.set("x-gateway-secret", "s");
+        req.header.set("x-user-id", "u");
+
+        await interceptor((async () => ({ message: {} })) as never)(req);
+
+        assert.strictEqual(req.header.get("x-auth-type"), encodeHeaderText("шлюз"));
+        assert.strictEqual(parseAuthHeaders(req.header)?.type, "шлюз");
+    });
+
+    it("still refuses a defaultType with NUL, CR or LF when the interceptor is created", () => {
+        for (const defaultType of ["a\nb", "a\rb", "a\0b"]) {
+            assert.throws(
+                () => createGatewayAuthInterceptor({ headerMapping: { subject: "x" }, trustSource: { header: "h", expectedValues: ["s"] }, defaultType }),
+                /defaultType/,
+            );
+        }
+    });
+
     it("refuses a malformed encoded subject", async () => {
         const interceptor = chain({ subject: "x-auth-subject", name: "x-auth-name", scopes: "x-auth-scopes" });
         const req = createMockRequest({ service: "t.v1.S", method: "M" });

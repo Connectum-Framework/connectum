@@ -9,7 +9,7 @@
  * exactly as they may without a cache; the change stays inside their request.
  *
  * Cost: one pass over `roles`, `scopes` and `claims` per cache hit, proportional to the size of
- * the identity (a token's claims are a few hundred bytes), with no I/O.
+ * the identity, with no I/O.
  *
  * @module cached-identity
  */
