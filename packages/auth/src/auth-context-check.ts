@@ -23,15 +23,21 @@ export const MAX_LIST_ITEMS = 8192;
  * An array of at most {@link MAX_LIST_ITEMS} items that are all strings (the shape of `roles` and
  * `scopes`). The items are read by index, so a hole is read as `undefined` and fails: `every`,
  * `map` and `filter` skip holes, which would let a sparse list through and change it later.
- * An array subclass or a proxy of an array is accepted when its items are strings; properties
- * other than the items are not looked at. The length is checked before any item is read, and a
- * getter or proxy trap that throws makes the value no list.
+ * An array subclass, a proxy of an array, a frozen or a sealed array is accepted when its items are
+ * strings; properties other than the items are not looked at. A `String` object is not a string
+ * (its `typeof` is `object`) and is refused.
+ *
+ * The length is read once and must be a number that is a non-negative safe integer not above
+ * {@link MAX_LIST_ITEMS}; a proxy can report anything (`NaN`, a negative or fractional number, a
+ * string, a `bigint`, an object with `valueOf` or `Symbol.toPrimitive`), and a loop bounded by a
+ * coerced value would accept or walk it. Each item is read once, after that check. A getter or proxy
+ * trap that throws, or a revoked proxy, makes the value no list.
  */
 export function isStringList(value: unknown): value is string[] {
     try {
         if (!Array.isArray(value)) return false;
-        const length = value.length;
-        if (length > MAX_LIST_ITEMS) return false;
+        const length: unknown = value.length;
+        if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0 || length > MAX_LIST_ITEMS) return false;
         for (let index = 0; index < length; index++) {
             if (typeof value[index] !== "string") return false;
         }
@@ -47,7 +53,9 @@ export function isStringList(value: unknown): value is string[] {
  * string-list `roles` and `scopes`, an object `claims`, an optional string `name` and an
  * optional `Date` `expiresAt`. Only the shape is checked; the values are the verifier's.
  * An object whose property read throws (a getter, a proxy trap) is not an identity: the
- * answer is `false`, not an exception.
+ * answer is `false`, not an exception. The check reads each property as it is at that moment; an
+ * object whose getters answer differently on a later read is the verifier's own code misbehaving,
+ * and is not guarded against.
  */
 export function isAuthContext(value: unknown): value is AuthContext {
     if (typeof value !== "object" || value === null) return false;
