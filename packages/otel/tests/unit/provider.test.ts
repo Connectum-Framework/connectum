@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { trace } from "@opentelemetry/api";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { buildResourceAttributes, getProvider, initProvider, parseOtelResourceAttributesEnv, resolveServiceName, shutdownProvider } from "../../src/provider.ts";
@@ -91,6 +91,76 @@ describe("parseOtelResourceAttributesEnv", () => {
 
 	it("keeps '=' inside values and skips malformed pairs", () => {
 		assert.deepStrictEqual(parseOtelResourceAttributesEnv("url=http://x?a=b,=noKey,bad,k=v"), { url: "http://x?a=b", k: "v" });
+	});
+
+	// The Resource SDK specification requires `,` and `=` in keys and values to be percent-encoded, so a
+	// reader has to decode them: an operator who writes `v%2Cw` means the value `v,w`.
+	describe("percent-encoding", () => {
+		it("decodes an encoded comma and equals sign in values", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("k=v%2Cw,deployment.environment=prod"), { k: "v,w", "deployment.environment": "prod" });
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("expr=a%3Db"), { expr: "a=b" });
+		});
+
+		it("decodes keys", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("a%2Cb=1,c%3Dd=2"), { "a,b": "1", "c=d": "2" });
+		});
+
+		it("splits on the raw separators first: an encoded comma does not start a new pair", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("a=1%2Cb=2"), { a: "1,b=2" });
+		});
+
+		it("decodes multi-byte UTF-8 sequences", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("city=M%C3%BCnchen"), { city: "München" });
+		});
+
+		it("leaves '+' as it is: the value is not form-encoded", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv("k=a+b"), { k: "a+b" });
+		});
+
+		it("trims whitespace before decoding, so an encoded space survives", () => {
+			assert.deepStrictEqual(parseOtelResourceAttributesEnv(" k = %20v%20 "), { k: " v " });
+		});
+
+		describe("a value that cannot be decoded", () => {
+			let warnings: Array<Error & { code?: string }> = [];
+			// The test runner may emit warnings of its own; only this package's are of interest.
+			const onWarning = (warning: Error & { code?: string }) => {
+				if (warning.code === "CONNECTUM_OTEL_INVALID_ENV") {
+					warnings.push(warning);
+				}
+			};
+			beforeEach(() => {
+				warnings = [];
+				process.on("warning", onWarning);
+			});
+			afterEach(() => {
+				process.off("warning", onWarning);
+			});
+
+			it("discards the whole variable and warns once", async () => {
+				// A lone percent sign and a truncated multi-byte sequence are not valid percent-encoding.
+				assert.deepStrictEqual(parseOtelResourceAttributesEnv("a=1,b=100%"), {});
+				assert.deepStrictEqual(parseOtelResourceAttributesEnv("a=1,b=%E0%A4%A"), {});
+
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(warnings.length, 2);
+				assert.strictEqual(warnings[0]?.code, "CONNECTUM_OTEL_INVALID_ENV");
+				assert.ok(warnings[0]?.message.includes("OTEL_RESOURCE_ATTRIBUTES"));
+				assert.ok(warnings[0]?.message.includes('"a=1,b=100%"'));
+			});
+
+			it("is reported once per provider, not once per reader of the variable", async () => {
+				const env = { OTEL_RESOURCE_ATTRIBUTES: "service.name=svc,b=100%" };
+
+				const name = resolveServiceName({ env });
+				const attributes = buildResourceAttributes({ serviceName: name, serviceVersion: "1.0.0", env });
+
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(name, "unknown-service", "the discarded variable cannot supply the name");
+				assert.strictEqual(attributes["service.name"], "unknown-service");
+				assert.strictEqual(warnings.length, 1);
+			});
+		});
 	});
 });
 
