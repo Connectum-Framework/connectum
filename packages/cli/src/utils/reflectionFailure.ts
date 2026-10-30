@@ -61,7 +61,10 @@ export function describeReflectionFailure(url: string, error: unknown): unknown 
             { cause: error },
         );
     }
-    if (error.code === Code.Unavailable) {
+    // Unavailable is also what a server answers when it is shutting down or overloaded, with its own
+    // explanation. Only a failure that carries an operating-system code, or no text at all, is a
+    // connection that was never made; a server's own words are kept (the generic line below).
+    if (error.code === Code.Unavailable && (underlying !== undefined || error.rawMessage === "")) {
         return new CliError(`Cannot connect to ${url}: ${underlying ?? "the server is unavailable"}. Check the address and that the server is running.`, { cause: error });
     }
     return new CliError(`Reflection request to ${url} failed: ${error.message}`, { cause: error });

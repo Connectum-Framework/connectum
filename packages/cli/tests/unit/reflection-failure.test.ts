@@ -47,6 +47,13 @@ describe("describeReflectionFailure", () => {
         assert.match(out.message, /^Cannot connect to http:\/\/localhost:5000: the server is unavailable\./);
     });
 
+    it("keeps the explanation of a server that answered with Unavailable, instead of calling it a connection failure", () => {
+        const out = describeReflectionFailure(ADDRESS, new ConnectError("draining, retry in 30 s", Code.Unavailable));
+
+        assert.ok(out instanceof CliError);
+        assert.equal(out.message, "Reflection request to http://localhost:5000 failed: [unavailable] draining, retry in 30 s");
+    });
+
     it("recognises a server that does not speak HTTP/2 and names the setting that selects it", () => {
         const cause = errno("ERR_HTTP2_ERROR", "Protocol error");
         const out = describeReflectionFailure(ADDRESS, new ConnectError("Protocol error", Code.Internal, undefined, undefined, cause));
