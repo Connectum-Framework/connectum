@@ -93,7 +93,7 @@ handler for the whole call, including after its first `await` or `yield`.
   LF, or a lone surrogate, and a scope that contains a space (the reader splits
   scopes on spaces), is rejected with `Unauthenticated` before it is cached.
   Roles and claims are written as JSON with `\uXXXX` escapes for characters above
-  U+00FF and read back unchanged.
+  U+00FF and read back as the parsed JSON.
 - With the `cache` option of the generic and session interceptors, every request
   gets its own copy of the cached identity. `roles`, `scopes`, `expiresAt` and
   nested plain objects, arrays and dates in `claims` are copied; other values in
