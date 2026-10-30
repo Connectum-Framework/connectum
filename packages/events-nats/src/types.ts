@@ -10,7 +10,12 @@ import type { NodeConnectionOptions } from "@nats-io/transport-node";
  * Options for creating a NATS JetStream adapter.
  */
 export interface NatsAdapterOptions {
-    /** NATS server URL(s). Accepts a single string or an array. */
+    /**
+     * NATS server URL(s). Accepts a single string or an array.
+     *
+     * A non-empty string, or a non-empty array of non-empty strings; anything else makes `NatsAdapter()` throw
+     * (an empty value used to make the client dial its local default address).
+     */
     readonly servers: string | string[];
 
     /**
@@ -50,6 +55,8 @@ export interface NatsConsumerOptions {
      * - `"all"` — all available messages
      * - `"last"` — last message per subject
      *
+     * Any other value makes `NatsAdapter()` throw (it used to behave like `"new"`).
+     *
      * @default "new"
      */
     readonly deliverPolicy?: "new" | "all" | "last";
@@ -57,6 +64,10 @@ export interface NatsConsumerOptions {
     /**
      * Ack wait timeout in milliseconds.
      * After this period an unacknowledged message is redelivered.
+     *
+     * A finite number greater than 0 (a fraction is sent as whole nanoseconds); `0`, a negative
+     * number or `NaN` makes `NatsAdapter()` throw (`0` used to become the default, a negative
+     * number made the server redeliver at once).
      *
      * @default 30_000
      */
@@ -67,6 +78,9 @@ export interface NatsConsumerOptions {
      * JetStream stops redelivering the message and emits a max-deliver
      * advisory; the message remains in the stream subject to its retention
      * policy.
+     *
+     * `-1` means unlimited; otherwise a positive integer. `0`, other negative numbers and fractions
+     * make `NatsAdapter()` throw.
      *
      * @default 5
      */

@@ -31,7 +31,7 @@ describe("NATS adapter: metadata round trip", { skip: NATS_TEST_URL === undefine
         const adapter = NatsAdapter({ servers, stream });
         await adapter.connect();
         try {
-            let received: Map<string, string> | undefined;
+            let received: ReadonlyMap<string, string> | undefined;
             let eventId: string | undefined;
             await adapter.subscribe(
                 ["md.t"],

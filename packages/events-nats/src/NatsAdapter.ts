@@ -21,6 +21,7 @@ import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { OwnedPattern } from "./patternOwner.ts";
 import { comparePatterns, ownedPattern, runsHandler } from "./patternOwner.ts";
 import type { NatsAdapterOptions } from "./types.ts";
+import { MS_TO_NS, validateAdapterOptions } from "./validateOptions.ts";
 
 /** Default stream name when none is provided. */
 const DEFAULT_STREAM = "events";
@@ -33,9 +34,6 @@ const DEFAULT_MAX_DELIVER = 5;
 
 /** The header that carries the event id the adapter generated; a caller cannot set it through metadata. */
 const EVENT_ID_HEADER = "x-event-id";
-
-/** Milliseconds-to-nanoseconds multiplier. */
-const MS_TO_NS = 1_000_000;
 
 /**
  * Map a deliver-policy string to the NATS DeliverPolicy enum value.
@@ -90,6 +88,8 @@ export function consumerName(group: string, pattern: string): string {
  * ```
  */
 export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
+    validateAdapterOptions(options);
+
     const streamName = options.stream ?? DEFAULT_STREAM;
 
     let nc: NatsConnection | null = null;
@@ -235,7 +235,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
             const isAutoGroup = !subOptions?.group;
             const group = subOptions?.group ?? `sub-${randomUUID().slice(0, 8)}`;
 
-            const ackWaitNs = options.consumerOptions?.ackWait ? options.consumerOptions.ackWait * MS_TO_NS : DEFAULT_ACK_WAIT_NS;
+            // Whole nanoseconds: the server refuses a fraction, and a fractional millisecond count is a valid input.
+            const ackWaitNs = options.consumerOptions?.ackWait !== undefined ? Math.round(options.consumerOptions.ackWait * MS_TO_NS) : DEFAULT_ACK_WAIT_NS;
 
             const maxDeliver = options.consumerOptions?.maxDeliver ?? DEFAULT_MAX_DELIVER;
 
