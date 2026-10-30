@@ -342,7 +342,8 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
 
                 // Start the consumption loop in the background.
                 // The loop exits when messages.close() is called.
-                consumeLoop(messages, handler, { index, owned }, streamName, { durable, streamName, redeliveryDelay, deliveryLimit }).catch((err) => {
+                let lost = false;
+                consumeLoop(messages, handler, { index, owned, consumerLost: () => lost }, streamName, { durable, streamName, redeliveryDelay, deliveryLimit }).catch((err) => {
                     console.error(`[EventBus/NATS] Consume loop error for pattern "${pattern}":`, err);
                 });
 
@@ -354,7 +355,9 @@ export function NatsAdapter(options: NatsAdapterOptions): EventAdapter {
                     isConnectionClosed: () => connection === null || connection.isClosed(),
                 };
                 watchers.push(
-                    restoreLostConsumer(toRestore, messages, watching.signal)
+                    restoreLostConsumer(toRestore, messages, watching.signal, () => {
+                        lost = true;
+                    })
                         .then(async (first) => {
                             let restored = first;
                             if (restored === undefined) {
@@ -593,7 +596,7 @@ function returnForRedelivery(msg: JsMsg, topic: string, redelivery: Redelivery, 
 async function consumeLoop(
     messages: ConsumerMessages,
     handler: RawEventHandler,
-    pattern: { readonly index: number; readonly owned: readonly OwnedPattern[] },
+    pattern: { readonly index: number; readonly owned: readonly OwnedPattern[]; readonly consumerLost: () => boolean },
     streamName: string,
     redelivery: Redelivery,
 ): Promise<void> {
@@ -639,11 +642,20 @@ async function consumeLoop(
         // The first acknowledgement is final: the client ignores any later one, so a handler that settled the delivery
         // and then threw has nothing left to give back, and must not be reported as having used up its budget.
         let settled = false;
+        // Once the server lost the consumer, an acknowledgement of this delivery names a stream sequence of the old stream.
+        // The server matches it by sequence only, so it could settle a different message that the same sequence now
+        // names in the stream created again (delivered to another replica of the group, or to this one later).
         const ack = async (): Promise<void> => {
+            if (settled || pattern.consumerLost()) {
+                return;
+            }
             settled = true;
             msg.ack();
         };
         const nack = async (requeue?: boolean): Promise<void> => {
+            if (settled || pattern.consumerLost()) {
+                return;
+            }
             settled = true;
             if (requeue === false) {
                 msg.term();
@@ -657,7 +669,7 @@ async function consumeLoop(
             await handler(event, ack, nack);
         } catch {
             // Handler error — give an unsettled message back for redelivery, after the configured pause, and continue the loop.
-            if (!settled) {
+            if (!settled && !pattern.consumerLost()) {
                 returnForRedelivery(msg, eventType, redelivery, redelivery.redeliveryDelay);
             }
         }

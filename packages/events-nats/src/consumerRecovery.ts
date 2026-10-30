@@ -152,12 +152,18 @@ export async function recoverConsumer(consumer: ConsumerToRestore, signal: Abort
  * @returns The restored consumer, or `undefined` when the consumer was deleted on its own (reported),
  * or the message stream closed or `signal` aborted first.
  */
-export async function restoreLostConsumer(consumer: ConsumerToRestore, messages: ConsumerMessages, signal: AbortSignal): Promise<RestoredConsumer | undefined> {
+export async function restoreLostConsumer(
+    consumer: ConsumerToRestore,
+    messages: ConsumerMessages,
+    signal: AbortSignal,
+    onLoss: () => void = () => undefined,
+): Promise<RestoredConsumer | undefined> {
     for await (const status of messages.status()) {
         if (signal.aborted) {
             return undefined;
         }
         if (isConsumerLoss(status)) {
+            onLoss();
             return recoverConsumer(consumer, signal);
         }
     }

@@ -128,6 +128,14 @@ describe("NATS adapter: redelivery after a handler failure", { skip: NATS_TEST_U
         assert.deepEqual(await loggedWhenSettledThenThrows((ack) => ack()), []);
     });
 
+    it("does not report an exhausted budget for a nack(true) after the delivery was acknowledged", { timeout: 60_000 }, async () => {
+        const lines = await loggedWhenSettledThenThrows(async (ack, nack) => {
+            await ack();
+            await nack(true);
+        });
+        assert.deepEqual(lines, []);
+    });
+
     it("reports an exhausted budget once for a nack(true) followed by a throw", { timeout: 60_000 }, async () => {
         const lines = await loggedWhenSettledThenThrows((_ack, nack) => nack(true));
         assert.equal(lines.length, 1, `got ${JSON.stringify(lines)}`);

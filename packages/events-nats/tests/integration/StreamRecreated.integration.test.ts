@@ -142,6 +142,79 @@ describe("NATS adapter: the server loses the consumer", { skip: NATS_TEST_URL ==
         }
     });
 
+    it("drops the acknowledgement of a delivery made before the loss, so it cannot settle a message of the new stream", { timeout: 90_000 }, async () => {
+        const stream = `W${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+        const slow = NatsAdapter({ servers, stream });
+        const other = NatsAdapter({ servers, stream });
+        const admin = await connect({ servers });
+        const manager = await jetstreamManager(admin);
+        let releaseOld: () => void = () => undefined;
+        const oldMayFinish = new Promise<void>((resolve) => {
+            releaseOld = resolve;
+        });
+        let releaseNew: () => void = () => undefined;
+        const newMayFail = new Promise<void>((resolve) => {
+            releaseNew = resolve;
+        });
+        let oldHandling = false;
+        const newRuns: string[] = [];
+        let logs: string[] = [];
+        try {
+            logs = await withCapturedLogs(async () => {
+                await slow.connect();
+                await other.connect();
+                // Only this replica subscribes first, so it receives the first event and holds it.
+                await slow.subscribe(
+                    ["w.t"],
+                    async (event, ack) => {
+                        if (Buffer.from(event.payload).toString() === "old") {
+                            oldHandling = true;
+                            await oldMayFinish;
+                            await ack();
+                        } else {
+                            await ack();
+                        }
+                    },
+                    { group: "G" },
+                );
+                await slow.publish("w.t", Buffer.from("old"));
+                await until(() => oldHandling, "the old event reaching the slow replica", 15_000);
+                await other.subscribe(
+                    ["w.t"],
+                    async (event, ack) => {
+                        const payload = Buffer.from(event.payload).toString();
+                        newRuns.push(payload);
+                        if (newRuns.length === 1) {
+                            await newMayFail;
+                            throw new Error("fails once");
+                        }
+                        await ack();
+                    },
+                    { group: "G" },
+                );
+
+                await manager.streams.delete(stream);
+                await sleep(300);
+                await manager.streams.add({ name: stream, subjects: [`${stream}.>`] });
+
+                // The first event of the new stream has the same stream sequence as the old event the slow replica still handles.
+                await other.publish("w.t", Buffer.from("new"));
+                await until(() => newRuns.length === 1, "the new event reaching the other replica", 20_000);
+                releaseOld();
+                await sleep(1_000);
+                releaseNew();
+                await until(() => newRuns.length === 2, "the new event delivered again after it failed", 15_000);
+            });
+            assert.deepEqual(newRuns, ["new", "new"], `logs: ${JSON.stringify(logs)}`);
+        } finally {
+            releaseOld();
+            releaseNew();
+            await admin.close();
+            await other.disconnect();
+            await slow.disconnect();
+        }
+    });
+
     it("recovers again when the stream is lost a second time", { timeout: 90_000 }, async () => {
         const env = await open(["w.t"]);
         try {
