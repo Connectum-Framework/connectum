@@ -169,7 +169,7 @@ export function getOTLPSettings(): OTLPSettings {
  * A value that cannot be a URL is ignored with a process warning (code
  * `CONNECTUM_OTEL_INVALID_ENV`) and reads as not set. A bare `host:port` is kept: the
  * OTLP/gRPC exporter accepts it, and the OTLP/HTTP exporters check the scheme themselves
- * (see {@link getHttpExporterOptions}).
+ * (see `getHttpExporterOptions`).
  *
  * @returns Collector options object
  */
