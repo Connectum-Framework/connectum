@@ -135,10 +135,19 @@ export const ConnectumEnvSchema = z.object({
         .transform((v) => v === "true" || v === "1" || v === "yes"),
 
     /**
-     * Graceful shutdown timeout in milliseconds
+     * Graceful shutdown timeout in milliseconds: a whole number from 0 to
+     * 300000, the same kind of value `createServer({ shutdown: { timeout } })`
+     * accepts (a fraction is rejected here, naming this variable, instead of at
+     * server creation). A blank value is rejected rather than read as 0.
      * @default 30000
      */
-    GRACEFUL_SHUTDOWN_TIMEOUT_MS: z.coerce.number().min(0).max(300000).default(30000),
+    GRACEFUL_SHUTDOWN_TIMEOUT_MS: z.preprocess(
+        // `Number("")` is 0, which would pass the range check and silently turn
+        // connection draining off. A blank value is a missing value, so it is
+        // rejected like any other non-number.
+        (value) => (typeof value === "string" && value.trim() === "" ? Number.NaN : value),
+        z.coerce.number().int().min(0).max(300000).default(30000),
+    ),
 });
 
 /**

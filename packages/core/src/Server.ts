@@ -22,6 +22,7 @@ import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
+import { onProcessSignal } from "./processSignals.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
 import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
@@ -49,8 +50,13 @@ class ServerImpl extends EventEmitter implements Server {
     private readonly _registry: DescFile[] = [];
     private readonly _shutdownManager = new ShutdownManager();
     private readonly _abortController = new AbortController();
-    private _signalHandlers: Map<NodeJS.Signals, () => void> = new Map();
+    /** Ends of this server's subscriptions to the shared process signal listeners. */
+    private readonly _signalSubscriptions: Array<() => void> = [];
     private _stopPromise: Promise<void> | null = null;
+    /** Settles when start() has finished, successfully or not; set while the state is STARTING. */
+    private _startSettled: Promise<void> | null = null;
+    /** The stop() requested during start(): shared by every such call. */
+    private _stopAfterStart: Promise<void> | null = null;
     private readonly _transport = new TransportManager();
     private readonly _eventBus: EventBusLike | null = null;
 
@@ -188,6 +194,26 @@ class ServerImpl extends EventEmitter implements Server {
 
         this._state = ServerState.STARTING;
 
+        // A stop() requested while starting waits on this and runs once the start has
+        // settled. It resolves in `finally`, after the state is final, and before the
+        // caller of start() is resumed.
+        const settled = Promise.withResolvers<void>();
+        this._startSettled = settled.promise;
+
+        // The signal handlers exist from the first moment of the start: a SIGTERM during a
+        // slow startup (a broker connect, say) is the one termination request an operator
+        // cannot repeat, and without a handler the process dies abruptly, skipping hooks
+        // and the event bus shutdown.
+        this._setupAutoShutdown();
+
+        try {
+            await this._runStart();
+        } finally {
+            settled.resolve();
+        }
+    }
+
+    private async _runStart(): Promise<void> {
         try {
             // A throwing start/ready listener is a startup failure: it takes
             // the rollback path below instead of leaving the server half-started.
@@ -248,13 +274,12 @@ class ServerImpl extends EventEmitter implements Server {
             });
 
             this._state = ServerState.RUNNING;
-            this._setupAutoShutdown();
             this.emit("ready");
         } catch (error) {
+            this._removeAutoShutdown();
             // RUNNING means listen() completed: only a ready listener can fail
             // after that point, and the bound port must not outlive start().
             if (this._state === ServerState.RUNNING) {
-                this._removeAutoShutdown();
                 this._transport.destroyAllSessions();
                 await this._transport.close().catch(() => {});
                 this._transport.dispose();
@@ -280,6 +305,16 @@ class ServerImpl extends EventEmitter implements Server {
         // so it resolves without touching the transport or emitting events again.
         if (this._state === ServerState.STOPPED) {
             return;
+        }
+
+        // A termination request that arrives while start() is still in progress is honoured,
+        // not dropped: it waits for the start to settle and then stops the server. If the start
+        // fails the server is already stopped, and there is nothing left to stop. A listener of
+        // `ready` may have begun the stop by then: stop() then joins it, so this call settles with
+        // the outcome of the shutdown instead of before it.
+        if (this._state === ServerState.STARTING && this._startSettled) {
+            this._stopAfterStart ??= this._startSettled.then(() => this.stop());
+            return this._stopAfterStart;
         }
 
         if (this._state !== ServerState.RUNNING) {
@@ -643,11 +678,18 @@ class ServerImpl extends EventEmitter implements Server {
                 // stop() has already reported a failed shutdown through "error";
                 // reporting it again would duplicate the event and, without an
                 // "error" listener, turn it into an unhandled rejection.
+                const duringStart = this._state === ServerState.STARTING;
                 this.stop().catch(() => {});
+                if (duringStart) {
+                    // The stop now waits for a start that may never settle. Release the
+                    // handlers so that a repeated signal gets the default action and ends
+                    // the process, exactly as a repeated signal does once a running
+                    // server has begun to stop (stop() removes the handlers then too).
+                    this._removeAutoShutdown();
+                }
             };
 
-            this._signalHandlers.set(signal, handler);
-            process.on(signal, handler);
+            this._signalSubscriptions.push(onProcessSignal(signal, handler));
         }
     }
 
@@ -689,10 +731,10 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     private _removeAutoShutdown(): void {
-        for (const [signal, handler] of this._signalHandlers) {
-            process.removeListener(signal, handler);
+        for (const unsubscribe of this._signalSubscriptions) {
+            unsubscribe();
         }
-        this._signalHandlers.clear();
+        this._signalSubscriptions.length = 0;
     }
 }
 
