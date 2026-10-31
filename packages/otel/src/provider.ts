@@ -24,12 +24,21 @@ import { OTLPTraceExporter as OTLPTraceExporterHTTP } from "@opentelemetry/expor
 import { OTLPTraceExporter as OTLPTraceExporterProto } from "@opentelemetry/exporter-trace-otlp-proto";
 import type { Resource } from "@opentelemetry/resources";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { ConsoleLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor, ConsoleLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import type { CollectorOptions, OTLPSettings } from "./config.ts";
-import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getGrpcExporterOptions, getHttpExporterOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+import {
+    ExporterType,
+    getBatchLogRecordProcessorOptions,
+    getBatchSpanProcessorOptions,
+    getCollectorOptions,
+    getGrpcExporterOptions,
+    getHttpExporterOptions,
+    getOTLPSettings,
+    getServiceMetadata,
+} from "./config.ts";
 import { createThrottledDiagLogger } from "./diagThrottle.ts";
 
 /** How long an identical diagnostics error is held back after it was printed. */
@@ -487,10 +496,28 @@ class OtelProviderImpl implements OtelProvider {
             logExporter = new ConsoleLogRecordExporter();
         }
 
+        // An OTLP exporter gets records in batches, like spans: a processor that exports each
+        // record on its own opens one request per record, and the exporter refuses every
+        // request above its limit of concurrent exports without a retry, so a burst of 100
+        // records to a collector that answers in 100 ms delivered 10. The console exporter
+        // prints each record at once, which is what it is for.
+        let processor: SimpleLogRecordProcessor | BatchLogRecordProcessor;
+        if (logExporter instanceof ConsoleLogRecordExporter) {
+            processor = new SimpleLogRecordProcessor(logExporter);
+        } else {
+            const batchOptions = getBatchLogRecordProcessorOptions();
+            processor = new BatchLogRecordProcessor(logExporter, {
+                maxExportBatchSize: batchOptions.maxExportBatchSize,
+                maxQueueSize: batchOptions.maxQueueSize,
+                scheduledDelayMillis: batchOptions.scheduledDelayMillis,
+                exportTimeoutMillis: batchOptions.exportTimeoutMillis,
+            });
+        }
+
         // Create logger provider with processors
         this.loggerProvider = new LoggerProvider({
             resource: this.resource,
-            processors: [new SimpleLogRecordProcessor(logExporter)],
+            processors: [processor],
         });
 
         // Unlike the other setters this one returns the registered provider, and
