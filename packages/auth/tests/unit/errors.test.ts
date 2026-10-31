@@ -7,7 +7,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { Code } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { isSanitizableError } from "@connectum/core";
 import type { AuthzDeniedDetails } from "../../src/errors.ts";
 import { AuthzDeniedError } from "../../src/errors.ts";
@@ -25,13 +25,15 @@ describe("AuthzDeniedError", () => {
             assert.strictEqual(error.name, "AuthzDeniedError");
         });
 
-        it("should extend ConnectError (has ConnectError in prototype chain)", () => {
+        it("should be a ConnectError (Connect's own check accepts it) and an AuthzDeniedError", () => {
             const error = new AuthzDeniedError(fullDetails);
-            // Verify Error inheritance
             assert.ok(error instanceof Error);
-            // Verify ConnectError prototype in chain (structural check avoids ESM dual-package instanceof issues)
-            const proto = Object.getPrototypeOf(Object.getPrototypeOf(error));
-            assert.strictEqual(proto.constructor.name, "ConnectError");
+            assert.ok(error instanceof ConnectError);
+            assert.ok(error instanceof AuthzDeniedError);
+            // The prototype is exactly ConnectError.prototype: that is what Connect's protocol handler requires.
+            assert.strictEqual(Object.getPrototypeOf(error), ConnectError.prototype);
+            // Reported as the class for logs and `util.inspect`.
+            assert.strictEqual(error.constructor.name, "AuthzDeniedError");
             // Verify ConnectError-specific property
             assert.strictEqual(typeof error.code, "number");
         });

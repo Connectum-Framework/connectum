@@ -8,6 +8,8 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { assertClientCredential, describeKind } from "./option-validation.ts";
 import type { ClientBearerInterceptorOptions } from "./types.ts";
 
 /**
@@ -19,6 +21,11 @@ import type { ClientBearerInterceptorOptions } from "./types.ts";
  *
  * @param options - Configuration with a static token or async token factory
  * @returns A ConnectRPC client Interceptor
+ * @throws {TypeError} When `token` is neither a non-empty string nor a function
+ *
+ * A token factory that returns anything but a non-empty string (`undefined` or `null` after a failed
+ * refresh) fails that call with `Code.Unauthenticated` before any request is sent; the header is
+ * never set to the text `Bearer undefined`.
  *
  * @example Static token
  * ```typescript
@@ -51,8 +58,18 @@ import type { ClientBearerInterceptorOptions } from "./types.ts";
 export function createClientBearerInterceptor(options: ClientBearerInterceptorOptions): Interceptor {
     const { token } = options;
 
+    assertClientCredential("createClientBearerInterceptor", "token", token, true);
+
     return (next) => async (req) => {
-        const resolvedToken = typeof token === "function" ? await token() : token;
+        const resolvedToken: unknown = typeof token === "function" ? await token() : token;
+        // A factory whose refresh failed may return nothing. Sending `Bearer undefined` would be rejected
+        // by the server as an invalid credential, far from the cause, so the call fails here instead.
+        if (typeof resolvedToken !== "string" || resolvedToken.length === 0) {
+            throw new ConnectError(
+                `@connectum/auth: createClientBearerInterceptor token factory returned ${describeKind(resolvedToken)}; expected a non-empty string`,
+                Code.Unauthenticated,
+            );
+        }
         req.header.set("authorization", `Bearer ${resolvedToken}`);
         return await next(req);
     };

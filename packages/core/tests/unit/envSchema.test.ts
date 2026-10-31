@@ -13,6 +13,7 @@ import {
     parseEnvConfig,
     safeParseEnvConfig,
 } from "../../src/config/envSchema.ts";
+import { createServer } from "../../src/Server.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -485,6 +486,50 @@ describe("parseEnvConfig() GRACEFUL_SHUTDOWN_TIMEOUT_MS validation errors", () =
             );
         });
     }
+
+    // `createServer({ shutdown: { timeout } })` accepts only whole milliseconds, and the
+    // configuration guide passes this variable straight into it. A fraction accepted here
+    // would fail later, at server creation, with an error that does not name the variable.
+    for (const timeout of ["1.5", "0.5", "29999.9", "299999.999"]) {
+        it(`should reject the fractional ${timeout}, naming GRACEFUL_SHUTDOWN_TIMEOUT_MS and the integer requirement`, () => {
+            assert.throws(
+                () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout }),
+                (err) =>
+                    err instanceof ZodError &&
+                    err.issues.length === 1 &&
+                    err.issues[0]?.path.join(".") === "GRACEFUL_SHUTDOWN_TIMEOUT_MS" &&
+                    /int/i.test(err.issues[0]?.message ?? ""),
+            );
+        });
+    }
+
+    // An empty value (`GRACEFUL_SHUTDOWN_TIMEOUT_MS=` in a compose file or a manifest) is a
+    // missing value. `Number("")` is 0, which would silently pass the range check and mean
+    // "do not wait for in-flight requests": draining switched off by a blank line.
+    for (const timeout of ["", " ", "  ", "\t", "\n"]) {
+        it(`should reject the blank ${JSON.stringify(timeout)} instead of reading it as 0, naming GRACEFUL_SHUTDOWN_TIMEOUT_MS`, () => {
+            assert.throws(
+                () => parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout }),
+                (err) => err instanceof ZodError && err.issues.length === 1 && err.issues[0]?.path.join(".") === "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
+            );
+        });
+    }
+
+    it("should still use the default when the variable is absent or undefined", () => {
+        assert.equal(parseEnvConfig({}).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 30000);
+        assert.equal(parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: undefined }).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 30000);
+    });
+
+    it("should tolerate whitespace around a number", () => {
+        assert.equal(parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: " 5000 " }).GRACEFUL_SHUTDOWN_TIMEOUT_MS, 5000);
+    });
+
+    it("should only accept values that createServer({ shutdown: { timeout } }) accepts", () => {
+        for (const timeout of ["0", "1", "5000", "30000", "300000"]) {
+            const env = parseEnvConfig({ GRACEFUL_SHUTDOWN_TIMEOUT_MS: timeout });
+            assert.doesNotThrow(() => createServer({ services: [], shutdown: { timeout: env.GRACEFUL_SHUTDOWN_TIMEOUT_MS } }), `timeout ${timeout}`);
+        }
+    });
 });
 
 // ---------------------------------------------------------------------------

@@ -88,7 +88,7 @@ export interface AuthzRule {
     readonly name: string;
     /** Method patterns to match (e.g., "admin.v1.AdminService/*", "user.v1.UserService/DeleteUser") */
     readonly methods: ReadonlyArray<string>;
-    /** Effect when rule matches */
+    /** Effect when rule matches. Exactly `"allow"` or `"deny"`; any other value makes the factory throw. */
     readonly effect: AuthzEffect;
     /**
      * Required roles/scopes for this rule.
@@ -153,7 +153,8 @@ export interface AuthInterceptorOptions {
 
     /**
      * Methods to skip authentication for.
-     * Patterns: "Service/Method" or "Service/*". The catch-all `"*"` is refused: creating the
+     * Patterns: "Service/Method" or "Service/*"; any other pattern, a partial wildcard included, throws
+     * when the interceptor is created. The catch-all `"*"` is refused: creating the
      * interceptor throws, because it would switch authentication off for every method
      * (to disable the interceptor, do not register it).
      * @default [] (health and reflection methods are NOT auto-skipped)
@@ -229,9 +230,15 @@ export interface JwtAuthInterceptorOptions {
      * @see {@link https://github.com/panva/jose/blob/main/docs/types/types.CryptoKey.md | jose CryptoKey documentation}
      */
     publicKey?: CryptoKey | undefined;
-    /** Expected issuer(s) */
+    /**
+     * Expected issuer(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     issuer?: string | string[] | undefined;
-    /** Expected audience(s) */
+    /**
+     * Expected audience(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     audience?: string | string[] | undefined;
     /** Allowed algorithms */
     algorithms?: string[] | undefined;
@@ -250,7 +257,9 @@ export interface JwtAuthInterceptorOptions {
     /**
      * Maximum token age.
      * Passed to jose jwtVerify options.
-     * Number (seconds) or string (e.g., "2h", "7d").
+     * Number (seconds) or string (e.g., "2h", "7d"). Omit the option to skip the check; `0`, a
+     * negative or non-finite number, a blank string, a text jose cannot read ("1month") and a text
+     * jose reads as zero or negative ("0s", "-1h", "1h ago") throw when the interceptor is created.
      */
     maxTokenAge?: number | string | undefined;
     /**
@@ -283,7 +292,8 @@ export interface JwtAuthInterceptorOptions {
  */
 export interface AuthzInterceptorOptions {
     /**
-     * Default policy when no rule matches.
+     * Default policy when no rule matches. Exactly `"allow"` or `"deny"`; any other value
+     * (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;
@@ -301,7 +311,7 @@ export interface AuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 
@@ -348,11 +358,13 @@ export interface GatewayAuthInterceptorOptions {
     readonly headerMapping: GatewayHeaderMapping;
     /** Trust verification: check that request came from a trusted gateway */
     readonly trustSource: {
-        /** Header set by the gateway to prove trust */
+        /** Header set by the gateway to prove trust. A non-empty string; anything else throws when the interceptor is created. */
         readonly header: string;
         /**
          * Accepted values for the trust header: shared secrets compared exactly, and, only with
-         * `allowCallerControlledCidr`, IPv4 CIDR blocks such as `10.0.0.0/8`.
+         * `allowCallerControlledCidr`, IPv4 CIDR blocks such as `10.0.0.0/8`. Every entry must be
+         * a non-empty string, so an unset environment variable (`[process.env.GATEWAY_SECRET]`
+         * gives `[undefined]`) throws when the interceptor is created instead of failing every request.
          */
         readonly expectedValues: string[];
         /**
@@ -424,7 +436,8 @@ export interface InternalAuthInterceptorOptions {
      * trust marker only on these methods; all other methods pass through
      * unchanged (no-op).
      *
-     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`.
+     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`. Any other pattern, a partial
+     * wildcard included, throws when the interceptor is created.
      */
     readonly internalMethods: readonly string[];
 }
@@ -623,6 +636,10 @@ export interface ClientBearerInterceptorOptions {
      * When a string is provided, the same token is sent with every request.
      * When a function is provided, it is called before each request to
      * support token refresh flows.
+     *
+     * A static token must be a non-empty string (anything else throws when the interceptor is
+     * created). A factory that resolves to anything but a non-empty string fails that call with
+     * `Code.Unauthenticated` before a request is sent; the header is never `Bearer undefined`.
      */
     readonly token: string | (() => Promise<string>);
 }
@@ -661,7 +678,8 @@ export interface ClientGatewayInterceptorOptions {
  */
 export interface ProtoAuthzInterceptorOptions {
     /**
-     * Default policy when no proto option and no rule match.
+     * Default policy when no proto option and no rule match. Exactly `"allow"` or `"deny"`;
+     * any other value (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;
@@ -676,7 +694,7 @@ export interface ProtoAuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 }
