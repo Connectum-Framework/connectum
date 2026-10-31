@@ -33,8 +33,10 @@ describe("signals while start() never settles", () => {
             const child = fork(SERVER_SCRIPT, [], { execArgv, stdio: ["ignore", "inherit", "inherit", "ipc"] });
             children.push(child);
             const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-            await new Promise<void>((resolve) => {
+            await new Promise<void>((resolve, reject) => {
                 child.on("message", (message: { type: string }) => message.type === "starting" && resolve());
+                // A child that dies before it reports must fail the test at once, not after the test timeout.
+                child.once("exit", (code, killedBy) => reject(new Error(`the server process ended before it started (exit ${code}, signal ${killedBy})`)));
             });
             await pause(200);
 
