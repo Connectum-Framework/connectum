@@ -15,6 +15,7 @@ import { LruCache } from "./cache.ts";
 import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertSessionInterceptorOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, SessionAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -44,6 +45,7 @@ function defaultExtractToken(req: { header: Headers }): string | null {
  *
  * @param options - Session auth configuration
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `verifySession` or `mapSession` is not a function, or `extractToken` is set and is not a function
  * @throws {Error} When `skipMethods` contains `"*"`
  * @throws {RangeError} When `cache` has a `ttl` that is not finite and positive, or a `maxSize` that is not an integer of at least 1
  *
@@ -66,6 +68,7 @@ function defaultExtractToken(req: { header: Headers }): string | null {
  * ```
  */
 export function createSessionAuthInterceptor(options: SessionAuthInterceptorOptions): Interceptor {
+    assertSessionInterceptorOptions(options);
     const { verifySession, mapSession, extractToken = defaultExtractToken, cache: cacheOptions, skipMethods = [], propagateHeaders = false, propagatedClaims } = options;
 
     assertNoCatchAllSkip(skipMethods);

@@ -602,6 +602,8 @@ export interface SessionAuthInterceptorOptions {
     /**
      * Custom token extraction.
      * Default: extracts Bearer token from Authorization header.
+     * `verifySession`, `mapSession` and a set `extractToken` must be functions; creating the
+     * interceptor throws a `TypeError` naming the option otherwise.
      */
     readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
     /**
