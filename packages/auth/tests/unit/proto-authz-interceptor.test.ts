@@ -709,7 +709,16 @@ describe("proto-authz-interceptor", () => {
             const next = createMockNext();
             // The marker belongs to the object the internal interceptor handed to the chain, not to its content.
             const handler = interceptor(next);
-            const copyOfInternalIdentity = { ...internalContext };
+            // Take the identity the real internal interceptor hands to the chain, and copy it: the copy
+            // equals an established identity in every field and is still not one.
+            let established: AuthContext | undefined;
+            await createInternalAuthInterceptor({ internalMethods: ["*"], trustSource: () => ({ ...internalContext }) })(async () => {
+                established = authContextStorage.getStore();
+                return {} as never;
+            })(createProtoMockRequest(service, method));
+            assert.ok(established, "the internal interceptor must hand an identity to the chain");
+            const copyOfInternalIdentity: AuthContext = { ...established };
+            assert.deepStrictEqual(copyOfInternalIdentity, established);
 
             await assert.rejects(
                 () => authContextStorage.run(copyOfInternalIdentity, () => handler(createProtoMockRequest(service, method))),

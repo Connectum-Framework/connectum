@@ -26,7 +26,7 @@ import { isAuthContext } from "./auth-context-check.ts";
 import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
 import { assertHeaderName } from "./option-checks.ts";
-import { assertMethodPatterns } from "./option-validation.ts";
+import { assertExpectedClaim, assertMaxTokenAge, assertMethodPatterns } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
     AuthContext,
@@ -296,6 +296,9 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
     for (const iss of issuerKeys) {
         const cfg = issuers[iss];
         if (!cfg) continue;
+        // The same rules as the JWT interceptor: an expectation that is present must be usable.
+        assertExpectedClaim(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, "audience", cfg.audience);
+        assertMaxTokenAge(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, cfg.maxTokenAge);
         keysets.set(iss, createRemoteJWKSet(new URL(cfg.jwksUri)));
     }
 

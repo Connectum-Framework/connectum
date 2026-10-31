@@ -9,6 +9,7 @@
  */
 
 import { inspect } from "node:util";
+import { SignJWT } from "jose";
 import type { AuthzEffect, AuthzRule } from "./types.ts";
 
 /** Render a rejected value for an error message. Only used for values that are not secrets (policies, effects). */
@@ -89,6 +90,16 @@ export function assertMaxTokenAge(factory: string, value: unknown): void {
     if (typeof value === "string") {
         if (value.trim().length === 0) {
             throw new RangeError(`@connectum/auth: ${factory} maxTokenAge must not be blank (omit the option to skip the check); got ${describeValue(value)}`);
+        }
+        // jose reads the text with its own parser on every request and throws for one it does not
+        // know ("1month"), which rejects every token as "Authentication failed". Its token builder
+        // reads an expiration text with the same parser, so asking it here keeps the two in step.
+        try {
+            new SignJWT({}).setExpirationTime(value);
+        } catch {
+            throw new RangeError(
+                `@connectum/auth: ${factory} maxTokenAge must be a duration such as "2h", "7d" or "30 minutes" (seconds, minutes, hours, days, weeks, years); got ${describeValue(value)}`,
+            );
         }
         return;
     }

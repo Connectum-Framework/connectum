@@ -64,10 +64,21 @@ describe("createJwtAuthInterceptor: maxTokenAge", () => {
         });
     }
 
-    it("accepts a positive number, a duration string and an omitted option", () => {
+    // jose reads the string on every request and throws for a text it does not know, so such a
+    // configuration used to be created and then rejected every token as "Authentication failed".
+    for (const value of ["1month", "banana", "2 fortnights", "h", "1 h 30 m", "1h;"]) {
+        it(`refuses the duration text ${JSON.stringify(value)} that jose cannot read`, () => {
+            assert.throws(
+                () => create({ maxTokenAge: value }),
+                (err: unknown) => err instanceof RangeError && /maxTokenAge must be a duration such as "2h", "7d" or "30 minutes"/.test(err.message),
+            );
+        });
+    }
+
+    it("accepts a positive number, the duration texts jose reads and an omitted option", () => {
         create({ maxTokenAge: 60 });
         create({ maxTokenAge: 0.5 });
-        create({ maxTokenAge: "2h" });
+        for (const text of ["2h", "30m", "7d", "1.5 hours", "1 week", "90 secs", "2 HOURS"]) create({ maxTokenAge: text });
         create({ maxTokenAge: undefined });
     });
 });
