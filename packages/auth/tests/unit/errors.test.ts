@@ -32,6 +32,8 @@ describe("AuthzDeniedError", () => {
             assert.ok(error instanceof AuthzDeniedError);
             // The prototype is exactly ConnectError.prototype: that is what Connect's protocol handler requires.
             assert.strictEqual(Object.getPrototypeOf(error), ConnectError.prototype);
+            // Reported as the class for logs and `util.inspect`.
+            assert.strictEqual(error.constructor.name, "AuthzDeniedError");
             // Verify ConnectError-specific property
             assert.strictEqual(typeof error.code, "number");
         });

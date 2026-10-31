@@ -41,6 +41,8 @@ export class AuthzDeniedError extends ConnectError implements SanitizableError {
         const error = new ConnectError(`Access denied by rule: ${details.ruleName}`, Code.PermissionDenied);
         Object.defineProperties(error, {
             name: { value: "AuthzDeniedError", writable: true, configurable: true },
+            // Reports the class as the constructor (`error.constructor.name`, the head of `util.inspect`).
+            constructor: { value: new.target, writable: true, configurable: true },
             clientMessage: { value: "Access denied", enumerable: true },
             ruleName: { value: details.ruleName, enumerable: true },
             authzDetails: { value: details, enumerable: true },
