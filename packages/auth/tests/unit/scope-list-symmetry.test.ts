@@ -119,6 +119,22 @@ describe("round trip of every accepted list", () => {
     });
 });
 
+describe("lists that a proxy hides from the in operator", () => {
+    it("are written whole: every scope and role is read by index", () => {
+        const hidden = (items: string[]): string[] => new Proxy(items, { has: () => false });
+        const headers = new Headers();
+        setAuthHeaders(headers, contextWith(hidden(["read", "write"]), hidden(["a", "b"])));
+
+        assert.strictEqual(headers.get("x-auth-scopes"), "read write");
+        assert.strictEqual(headers.get("x-auth-roles"), '["a","b"]');
+    });
+
+    it("are checked whole: a scope with a space behind a hidden index is still refused", () => {
+        const hidden = new Proxy(["read", "a b"], { has: () => false });
+        assert.throws(() => setAuthHeaders(new Headers(), contextWith(hidden)), UnsafeHeaderValueError);
+    });
+});
+
 describe("the reader is tolerant of other writers", () => {
     it("reads doubled, leading and trailing spaces as separators and an empty header as no scopes", () => {
         const read = (value: string): readonly string[] | undefined => parseAuthHeaders(new Headers({ "x-auth-subject": "s", "x-auth-scopes": value }))?.scopes;

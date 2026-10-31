@@ -175,7 +175,12 @@ function findUnsafeField(context: AuthContext): UnsafeHeaderValueError["field"] 
     if (HEADER_BREAKING_CHARS.test(context.subject)) return "subject";
     if (HEADER_BREAKING_CHARS.test(context.type)) return "type";
     if (context.name && HEADER_BREAKING_CHARS.test(context.name)) return "name";
-    if (context.scopes.some((scope) => scope === "" || HEADER_BREAKING_CHARS.test(scope) || scope.includes(" "))) return "scopes";
+    // By index: `some` and `map` ask the `in` operator first, and a proxy can answer it differently
+    // from `get`, which would skip an item the list check has accepted.
+    for (let index = 0; index < context.scopes.length; index++) {
+        const scope = context.scopes[index] as string;
+        if (scope === "" || HEADER_BREAKING_CHARS.test(scope) || scope.includes(" ")) return "scopes";
+    }
     return undefined;
 }
 
@@ -283,7 +288,9 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     }
 
     if (context.scopes.length > 0) {
-        const scopesValue = context.scopes.map((scope) => encode("scopes", scope)).join(" ");
+        const encodedScopes: string[] = [];
+        for (let index = 0; index < context.scopes.length; index++) encodedScopes.push(encode("scopes", context.scopes[index] as string));
+        const scopesValue = encodedScopes.join(" ");
         if (scopesValue.length > MAX_HEADER_BYTES) throw new HeaderValueTooLargeError("scopes", MAX_HEADER_BYTES);
         toSet.push([AUTH_HEADERS.SCOPES, scopesValue]);
     }
