@@ -157,7 +157,9 @@ export interface AmqpAdapterOptions {
      *
      * `maxRetries` governs BOTH the initial connect and steady-state recovery
      * (counter reset on success); under the default `Infinity`, `connect()`
-     * blocks until the broker is reachable rather than failing fast (see
+     * blocks until the broker is reachable rather than failing fast;
+     * `disconnect()` cancels that wait and the pending `connect()` rejects with
+     * `AmqpConnectionError` (see
      * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
      * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
      * for the retry-budget scope and the delay bounds. With a finite
