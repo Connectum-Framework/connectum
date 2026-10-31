@@ -7,9 +7,10 @@
 // checked only. Mirrors the documented patterns in examples/getting-started.
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { createServer, defineCatalog, defineService, type ServiceCatalog } from "@connectum/core";
+import { createServer, defineCatalog, defineService, type NodeRequest, type NodeResponse, type ProtocolRegistration, type ServiceCatalog } from "@connectum/core";
 import { createEventBus, MemoryAdapter } from "@connectum/events";
 import { createDefaultInterceptors, defaultFailurePredicate } from "@connectum/interceptors";
+import { createMockDescField, type MockScalarType } from "@connectum/testing";
 import { serviceCatalog } from "../gen/catalog.gen.ts";
 import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
@@ -68,3 +69,25 @@ export const catalogBackedService = defineService(GreeterService, {
         for await (const r of reqs) yield create(HelloReplySchema, { message: r.name });
     },
 });
+
+// @connectum/testing re-exports the scalar-type union of the descriptor fixtures at its root.
+const scalarType: MockScalarType = "int32";
+createMockDescField("count", { type: scalarType });
+
+// Raw HTTP endpoints as the protocol guide writes them. `NodeResponse` is HTTP/1.1 or
+// HTTP/2, and `writeHead` is not callable on that union (the two overload sets are
+// incompatible), so the documented handlers set `statusCode` and the headers and
+// call `end` — the members both response classes share.
+export const customHealth: ProtocolRegistration = {
+    name: "custom-health",
+    register(): void {},
+    httpHandler(req: NodeRequest, res: NodeResponse): boolean {
+        if (req.url === "/healthz" && req.method === "GET") {
+            res.statusCode = 200;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ status: "ok", timestamp: Date.now() }));
+            return true;
+        }
+        return false;
+    },
+};

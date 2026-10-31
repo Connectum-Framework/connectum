@@ -12,7 +12,8 @@ pnpm add @connectum/otel
 ```
 
 The package requires Node.js `>=22.13.0`. OpenTelemetry APIs, SDKs, and
-exporters are regular dependencies. Peer dependencies are
+exporters are regular dependencies; `@opentelemetry/api` stays on `>=1.9.0 <1.10.0`,
+the range that the SDK packages used here accept. Peer dependencies are
 `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`; share these
 with the rest of the application. See
 [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
@@ -54,6 +55,21 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   return server;
 }
 ```
+
+## Default exporter
+
+With no `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER`
+set, each signal is sent over OTLP/HTTP with a protobuf body to
+`http://localhost:4318`, as the OpenTelemetry specification requires. Nothing is
+printed. Set the variable to `console` to print a signal to standard output, or
+to `none` to switch it off. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at your
+collector.
+
+If nothing listens at the endpoint, calls are not affected and the exporter
+reports each distinct failure on standard error at most once a minute.
+`shutdownProvider()` then rejects once the exporters give up (measured: about
+8 seconds with the default settings; pass `{ timeout }` to bound it). Registered
+with `server.onShutdown()`, the rejection does not end the process.
 
 ## Limitations
 

@@ -5,11 +5,13 @@
 // isolated and asserts real semantics where known. Signatures are not checked
 // here (this file runs type-stripped): usage.ts and usage-typecheck.mjs do that.
 import assert from "node:assert";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { connect } from "node:net";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { GreeterService, HelloReplySchema, HelloRequestSchema } from "../gen/greeter/v1/greeter_pb.ts";
 
@@ -140,6 +142,35 @@ check("interceptors.createDefaultInterceptors bare = [errorHandler, validation] 
 
 // ---------- @connectum/otel: provider getters ----------
 const otel = await import("@connectum/otel");
+check("otel.getOTLPSettings defaults every signal to OTLP/HTTP protobuf and honours console and none", () => {
+    const names = [
+        "OTEL_TRACES_EXPORTER",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_LOGS_EXPORTER",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+    ];
+    const saved = names.map((name) => [name, process.env[name]] as const);
+    try {
+        for (const name of names) delete process.env[name];
+        assert.deepStrictEqual(otel.getOTLPSettings(), { traces: "otlp/http-protobuf", metrics: "otlp/http-protobuf", logs: "otlp/http-protobuf" });
+        process.env.OTEL_TRACES_EXPORTER = "console";
+        process.env.OTEL_METRICS_EXPORTER = "none";
+        assert.deepStrictEqual(otel.getOTLPSettings(), { traces: "console", metrics: "none", logs: "otlp/http-protobuf" });
+    } finally {
+        for (const [name, value] of saved) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+    }
+});
+// The checks below create a real provider. Without these variables it would export to localhost:4318,
+// so whether the smoke passes would depend on a collector being there.
+process.env.OTEL_TRACES_EXPORTER = "none";
+process.env.OTEL_METRICS_EXPORTER = "none";
+process.env.OTEL_LOGS_EXPORTER = "none";
 check("otel.getTracer/getMeter/getLogger return objects pre-init (no-op safe)", () => {
     assert.ok(otel.getTracer());
     assert.ok(otel.getMeter());
@@ -148,6 +179,12 @@ check("otel.getTracer/getMeter/getLogger return objects pre-init (no-op safe)", 
 check("otel.initProvider + shutdownProvider are functions", () => {
     assert.strictEqual(typeof otel.initProvider, "function");
     assert.strictEqual(typeof otel.shutdownProvider, "function");
+});
+check("otel.initProvider rejects an unknown exporter name in settings", () => {
+    assert.throws(() => otel.initProvider({ settings: { traces: "bogus" as never } }), TypeError);
+});
+await checkAsync("otel.shutdownProvider rejects a timeout that is not a positive number", async () => {
+    await assert.rejects(otel.shutdownProvider({ timeout: 0 }), TypeError);
 });
 
 // ---------- @connectum/auth: pure header helpers + pattern ----------
@@ -276,6 +313,28 @@ check("testing.createMockContext returns a Context for a catalog", () => {
     assert.ok(ctx && typeof ctx === "object");
     assert.strictEqual(typeof ctx.call, "function");
 });
+check("testing fixtures refuse input they cannot honour, with the argument named", () => {
+    assert.throws(() => testing.createMockDescField("f", { type: "strng" as never }), /unknown scalar type "strng"/);
+    assert.throws(() => testing.createMockDescField("f", { fieldNumber: 19000 }), /field "f".*19000/);
+    assert.throws(() => testing.createMockNextSlow(-5), /delay/);
+    assert.strictEqual(testing.createMockDescField("f", { type: "int32" }).number, 1);
+});
+check("testing.createMockFn forwards this and records result and error", () => {
+    const owner = {
+        v: 7,
+        m: testing.createMockFn(function (this: { v: number }) {
+            return this.v;
+        }),
+    };
+    assert.strictEqual(owner.m(), 7);
+    assert.strictEqual(owner.m.mock.calls[0]?.result, 7);
+    const failing = testing.createMockFn(() => {
+        throw new Error("boom");
+    });
+    assert.throws(() => failing(), /boom/);
+    assert.strictEqual(failing.mock.callCount(), 1);
+    assert.match(String(failing.mock.calls[0]?.error), /boom/);
+});
 // Full catalog-call cardinality coverage: ctx.call (unary) + ctx.stream
 // (server/client/bidi) dispatched through createMockContext — the in-process
 // mock/local resolver path. Remote dispatch over a real gRPC transport
@@ -336,6 +395,85 @@ check("testing.mockResolver + mockService are callable", () => {
 check("testing.assertConnectError validates a ConnectError", () => {
     const fn = testing.assertConnectError as (e: unknown, code?: unknown) => void;
     fn(new ConnectError("x", Code.NotFound), Code.NotFound);
+});
+check("testing.createMockContext describes the method named by `method`", () => {
+    const ctx = testing.createMockContext({
+        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+        mocks: [],
+        method: "greeter.v1.GreeterService/SayHelloStream",
+    });
+    assert.strictEqual(ctx.service.typeName, "greeter.v1.GreeterService");
+    assert.strictEqual(ctx.method.name, "SayHelloStream");
+    assert.throws(
+        () => testing.createMockContext({ catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }), mocks: [], method: "greeter.v1.GreeterService/Nope" }),
+        (e: unknown) => e instanceof TypeError && /options\.method/.test(e.message),
+    );
+});
+await checkAsync("testing.mockService — an exception in the implementation keeps its message and cause", async () => {
+    const typo = new TypeError("typo in the mock");
+    const ctx = testing.createMockContext({
+        catalog: core.defineCatalog({ "greeter.v1.GreeterService": GreeterService }),
+        mocks: [
+            testing.mockService(GreeterService, {
+                sayHello: () => {
+                    throw typo;
+                },
+            }),
+        ],
+    });
+    await assert.rejects(ctx.call("greeter.v1.GreeterService/SayHello", create(HelloRequestSchema, { name: "x" })), (e: unknown) => {
+        const err = ConnectError.from(e);
+        return err.code === Code.Internal && err.rawMessage === "typo in the mock" && err.cause === typo;
+    });
+});
+await checkAsync("testing.InMemoryMetricCollector.flush() reports only what was recorded since the previous flush", async () => {
+    const collector = new testing.InMemoryMetricCollector();
+    const hits = collector.provider.getMeter("smoke").createCounter("hits");
+    hits.add(1);
+    assert.deepStrictEqual(
+        (await collector.flush()).map((m) => m.points.map((p) => p.value)),
+        [[1]],
+    );
+    hits.add(5);
+    assert.deepStrictEqual(
+        (await collector.flush()).map((m) => m.points.map((p) => p.value)),
+        [[5]],
+    );
+    await collector.dispose();
+    await assert.rejects(collector.flush(), /after dispose/);
+});
+await checkAsync("testing.createTestServer — loopback by default, wrong service rejected by option name, shutdown timeout bounds close()", async () => {
+    const routes = core.defineService(GreeterService, {
+        sayHello: (req: { name: string }) => create(HelloReplySchema, { message: `hi ${req.name}` }),
+    });
+    await assert.rejects(testing.createTestServer({ services: ["nope"] } as never), (e: unknown) => e instanceof TypeError && /services\[0\]/.test(e.message));
+    const server = await testing.createTestServer({ services: [routes], shutdown: { timeout: 500 } });
+    try {
+        const reply = await createClient(GreeterService, server.transport).sayHello(create(HelloRequestSchema, { name: "x" }));
+        assert.strictEqual(reply.message, "hi x");
+        assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+        const external = Object.values(networkInterfaces())
+            .flat()
+            .find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal)?.address;
+        if (external !== undefined) {
+            const reach = (host: string) =>
+                new Promise<boolean>((resolveReach) => {
+                    const socket = connect({ port: server.port, host });
+                    socket.once("connect", () => {
+                        socket.destroy();
+                        resolveReach(true);
+                    });
+                    socket.once("error", () => {
+                        socket.destroy();
+                        resolveReach(false);
+                    });
+                });
+            assert.strictEqual(await reach("127.0.0.1"), true);
+            assert.strictEqual(await reach(external), false, `${external} must refuse connections`);
+        }
+    } finally {
+        await server.close();
+    }
 });
 
 // ---------- @connectum/core: shutdown ----------
@@ -489,6 +627,32 @@ await checkAsync("reflection: an unknown long name is echoed in part in error_me
         bounded.end();
     } finally {
         await server.stop();
+    }
+});
+
+// ---------- @connectum/cli and @connectum/protoc-gen-catalog: input checks ----------
+// Input the packed tools used to accept silently and now refuse; none of it needs a network or a broker.
+await checkAsync("cli: generate service refuses a directory that is not a project and writes nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-generate-service-"));
+    try {
+        const { executeGenerateService } = await import("@connectum/cli/commands/generate-service");
+        await assert.rejects(() => executeGenerateService({ name: "foo", cwd: dir }), /no package\.json/);
+        assert.deepStrictEqual(readdirSync(dir), []);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+await checkAsync("cli: proto sync refuses an empty --from before it connects", async () => {
+    const { executeProtoSync } = await import("@connectum/cli/commands/proto-sync");
+    await assert.rejects(() => executeProtoSync({ from: "", out: "unused", dryRun: true }), /--from must not be empty/);
+});
+
+await checkAsync("protoc-gen-catalog: a target other than ts, or none, is refused", async () => {
+    const { protocGenCatalog } = await import("@connectum/protoc-gen-catalog");
+    const { CodeGeneratorRequestSchema } = await import("@bufbuild/protobuf/wkt");
+    for (const parameter of ["target=js", "target=dts", ""]) {
+        assert.throws(() => protocGenCatalog.run(create(CodeGeneratorRequestSchema, { parameter })), /TypeScript only/, `parameter ${JSON.stringify(parameter)}`);
     }
 });
 

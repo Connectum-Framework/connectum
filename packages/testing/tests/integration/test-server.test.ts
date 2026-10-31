@@ -8,10 +8,14 @@
 
 import assert from "node:assert";
 import { connect } from "node:net";
+import { networkInterfaces } from "node:os";
 import { describe, it } from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { defineService, type ProtocolRegistration } from "@connectum/core";
+import { Healthcheck } from "@connectum/healthcheck";
+import { createDefaultInterceptors } from "@connectum/interceptors";
+import { Reflection } from "@connectum/reflection";
 import { createTestServer, withTestServer } from "../../src/test-server.ts";
 import type { TestServer } from "../../src/types.ts";
 import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/echo/v1/echo_pb.ts";
@@ -144,6 +148,256 @@ describe("createTestServer options", () => {
 		}
 	});
 
+});
+
+/** An address of this machine that is not loopback, or undefined when it has none (a sandbox without a network). */
+function externalAddress(): string | undefined {
+	return Object.values(networkInterfaces())
+		.flat()
+		.find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal)?.address;
+}
+
+/** Resolves true when a TCP connection to the address is accepted, false when it is refused. */
+function acceptsConnectionsAt(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = connect({ port, host });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
+
+// The server and its client live in one process, so the helper listens on loopback unless the
+// caller asks for another host: a test server has no authentication and must not be reachable
+// from the network for the duration of a test run.
+describe("createTestServer host", () => {
+	const external = externalAddress();
+
+	it("listens on loopback only by default", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes] });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), true, "loopback must accept connections");
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), false, `${external} must refuse connections`);
+			assert.strictEqual(await callEcho(server), "echo:ping", "the returned transport must still reach the server");
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("listens on the given host and points baseUrl at it", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes], host: external });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), true, `${external} must accept connections`);
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), false, "loopback must refuse: only the given host is bound");
+			assert.strictEqual(new URL(server.baseUrl).hostname, external);
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("listens on all interfaces when asked for 0.0.0.0", async (t) => {
+		if (external === undefined) {
+			t.skip("this machine has no non-loopback IPv4 address");
+			return;
+		}
+		const server = await createTestServer({ services: [echoRoutes], host: "0.0.0.0" });
+		try {
+			assert.strictEqual(await acceptsConnectionsAt(external, server.port), true);
+			assert.strictEqual(await acceptsConnectionsAt("127.0.0.1", server.port), true);
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost", "a wildcard address is reached through localhost");
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("accepts the :: wildcard and reaches it through localhost", async (t) => {
+		const server = await createTestServer({ services: [echoRoutes], host: "::" }).catch((err: unknown) => {
+			if ((err as NodeJS.ErrnoException).code === "EAFNOSUPPORT" || (err as NodeJS.ErrnoException).code === "EADDRNOTAVAIL") {
+				return undefined;
+			}
+			throw err;
+		});
+		if (server === undefined) {
+			t.skip("this machine has no IPv6 support");
+			return;
+		}
+		try {
+			assert.strictEqual(new URL(server.baseUrl).hostname, "localhost");
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	for (const [name, host] of [
+		["an empty string", ""],
+		["a number", 127],
+	] as const) {
+		it(`rejects ${name} as host, naming the option`, async () => {
+			await assert.rejects(
+				createTestServer({ services: [echoRoutes], host: host as never }),
+				(err: unknown) => err instanceof TypeError && /createTestServer: host must be a non-empty string/.test(err.message),
+			);
+		});
+	}
+});
+
+// close() waits for in-flight calls up to the shutdown timeout. A unary handler that does not
+// watch ctx.signal never ends on its own, so a test needs a way to bound that wait instead of
+// the 30 s default of the server.
+describe("createTestServer shutdown timeout", () => {
+	/** A service whose only working method never answers until `release()` is called. */
+	function hangingRoutes() {
+		let release: () => void = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const routes = defineService(EchoService, {
+			echo: async () => {
+				await released;
+				return create(EchoResponseSchema, { message: "late", timestamp: 0n });
+			},
+			secureEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+			rateLimitedEcho: (req) => create(EchoResponseSchema, { message: req.message, timestamp: 0n }),
+		});
+		return { routes, release };
+	}
+
+	it("close() gives up on an unfinished unary call after shutdown.timeout", async () => {
+		const { routes, release } = hangingRoutes();
+		const server = await createTestServer({ services: [routes], shutdown: { timeout: 300 } });
+		try {
+			const pending = createClient(EchoService, server.transport)
+				.echo(create(EchoRequestSchema, { message: "x" }))
+				.catch((err: unknown) => ConnectError.from(err));
+			await new Promise((resolve) => setTimeout(resolve, 200));
+
+			const started = Date.now();
+			await server.close();
+			const elapsed = Date.now() - started;
+
+			assert.ok(elapsed >= 250, `close() must wait for the call up to the timeout, took ${elapsed} ms`);
+			assert.ok(elapsed < 10_000, `close() must not wait for the 30 s default, took ${elapsed} ms`);
+			const outcome = await pending;
+			assert.ok(outcome instanceof ConnectError, "the unfinished call must fail once the server is closed");
+		} finally {
+			release();
+		}
+	});
+
+	for (const [name, shutdown, error, message] of [
+		["a negative timeout", { timeout: -1 }, RangeError, /shutdown\.timeout/],
+		["a timeout that is not a number", { timeout: "300" }, TypeError, /shutdown\.timeout/],
+		["a fractional timeout", { timeout: 1.5 }, RangeError, /shutdown\.timeout/],
+		["a shutdown that is not an object", "300", TypeError, /createTestServer: shutdown must be an object like \{ timeout: 1000 \}, got the string "300"/],
+		["an option the helper does not offer", { timeout: 300, autoShutdown: true }, TypeError, /createTestServer: shutdown\.autoShutdown is not supported; only shutdown\.timeout is/],
+	] as const) {
+		it(`rejects ${name}, naming the option, before a server starts`, async () => {
+			await assert.rejects(
+				createTestServer({ services: [echoRoutes], shutdown: shutdown as never }),
+				(err: unknown) => err instanceof error && message.test(err.message),
+			);
+		});
+	}
+});
+
+// A value that is not what the type says must fail up front, naming the option and the
+// position of the element, and must not leave a listening server behind.
+describe("createTestServer option validation", () => {
+	const rejections: { name: string; options: unknown; message: RegExp }[] = [
+		{ name: "options that are not an object", options: undefined, message: /createTestServer: options must be an object .* got a undefined\./ },
+		{ name: "options that are an array", options: [], message: /options must be an object .* got an array\./ },
+		{ name: "missing services", options: {}, message: /createTestServer: services must be an array of service definitions, got nothing\./ },
+		{ name: "services that is not an array", options: { services: echoRoutes }, message: /services must be an array of service definitions, got a object\./ },
+		{ name: "a string among the services", options: { services: ["not-a-service"] }, message: /services\[0\] must be a service definition returned by defineService\(\) or defineLazyService\(\), got the string "not-a-service"\./ },
+		{ name: "a number among the services", options: { services: [echoRoutes, 42] }, message: /services\[1\] must be a service definition .* got a number\./ },
+		{ name: "null among the services", options: { services: [null] }, message: /services\[0\] must be a service definition .* got null\./ },
+		{ name: "an object that is not a service definition", options: { services: [{ descriptor: EchoService }] }, message: /services\[0\] must be a service definition/ },
+		{ name: "interceptors that is not an array", options: { services: [echoRoutes], interceptors: () => undefined }, message: /interceptors must be an array of interceptor functions, got a function\./ },
+		{ name: "a non-function among the interceptors", options: { services: [echoRoutes], interceptors: [(() => undefined) as unknown, "x"] }, message: /interceptors\[1\] must be an interceptor function, got the string "x"\./ },
+		{ name: "protocols that is not an array", options: { services: [echoRoutes], protocols: "x" }, message: /protocols must be an array of protocol registrations, got the string "x"\./ },
+		{ name: "a protocol without register()", options: { services: [echoRoutes], protocols: [{ name: "half" }] }, message: /protocols\[0\] must be a protocol registration with a name and a register\(\) function/ },
+		{ name: "a protocol without a name", options: { services: [echoRoutes], protocols: [{ register() {} }] }, message: /protocols\[0\] must be a protocol registration/ },
+	];
+	for (const { name, options, message } of rejections) {
+		it(`rejects ${name}, naming the option`, async () => {
+			await assert.rejects(
+				createTestServer(options as never),
+				(err: unknown) => err instanceof TypeError && message.test(err.message),
+			);
+		});
+	}
+
+	it("rejects the same values through withTestServer, without running the test function", async () => {
+		let ran = false;
+		await assert.rejects(
+			withTestServer({ services: ["not-a-service"] } as never, async () => {
+				ran = true;
+			}),
+			(err: unknown) => err instanceof TypeError && /services\[0\]/.test(err.message),
+		);
+		assert.strictEqual(ran, false);
+	});
+
+	it("is a compile-time error to pass a value that is not a service, an interceptor or a protocol", () => {
+		// The assertions below are the type-level contract: each line must NOT compile.
+		// Nothing runs: createTestServer is not called.
+		const compileOnly = () => {
+			// @ts-expect-error a string is not a service definition
+			void createTestServer({ services: ["not-a-service"] });
+			// @ts-expect-error a number is not a service definition
+			void createTestServer({ services: [42] });
+			// @ts-expect-error null is not a service definition
+			void createTestServer({ services: [null] });
+			// @ts-expect-error a string is not an interceptor
+			void createTestServer({ services: [echoRoutes], interceptors: ["x"] });
+			// @ts-expect-error a string is not a protocol registration
+			void createTestServer({ services: [echoRoutes], protocols: ["x"] });
+		};
+		assert.strictEqual(typeof compileOnly, "function");
+	});
+
+	it("accepts what the shipped factories return, as the documentation passes them", async () => {
+		// Type-level contract: the return types of the real factories fit the typed lists.
+		const server = await createTestServer({
+			services: [echoRoutes],
+			interceptors: createDefaultInterceptors(),
+			protocols: [Healthcheck(), Reflection()],
+		});
+		try {
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("accepts readonly arrays of the documented element types", async () => {
+		const services = [echoRoutes] as const;
+		const interceptors: readonly Interceptor[] = [(next) => next];
+		const protocols: readonly ProtocolRegistration[] = [];
+		const server = await createTestServer({ services, interceptors, protocols });
+		try {
+			assert.strictEqual(await callEcho(server), "echo:ping");
+		} finally {
+			await server.close();
+		}
+	});
 });
 
 describe("withTestServer", () => {
