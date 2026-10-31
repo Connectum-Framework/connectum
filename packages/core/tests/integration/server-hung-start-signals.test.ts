@@ -44,8 +44,18 @@ describe("signals while start() never settles", () => {
             assert.strictEqual(child.signalCode, null);
 
             child.kill(signal);
-            const [code, killedBy] = await Promise.race([exited, pause(10_000).then(() => assert.fail("a repeated signal must end a process whose start never settles"))]);
-            assert.ok(killedBy === signal || code !== null, `ended by ${killedBy ?? code}`);
+            // The deadline timer is cleared once the child has exited: a pending timer would keep
+            // the test process alive for the rest of the 10 seconds.
+            let deadline: NodeJS.Timeout | undefined;
+            const expired = new Promise<never>((_, reject) => {
+                deadline = setTimeout(() => reject(new Error("a repeated signal must end a process whose start never settles")), 10_000);
+            });
+            try {
+                const [code, killedBy] = await Promise.race([exited, expired]);
+                assert.ok(killedBy === signal || code !== null, `ended by ${killedBy ?? code}`);
+            } finally {
+                clearTimeout(deadline);
+            }
         });
     }
 });
