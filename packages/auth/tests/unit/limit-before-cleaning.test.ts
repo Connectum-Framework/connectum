@@ -116,10 +116,11 @@ describe("createClientGatewayInterceptor", () => {
                 return req.header;
             };
 
-            await assert.rejects(() => send(`${"a".repeat(512)}${control}`), (err: unknown) => {
-                assertConnectError(err, Code.InvalidArgument);
-                return true;
-            });
+            // Refused when the interceptor is created, on the original text, as the writer would.
+            await assert.rejects(
+                () => send(`${"a".repeat(512)}${control}`),
+                (err: unknown) => err instanceof RangeError && /subject/.test(err.message),
+            );
             assert.strictEqual((await send(`${"a".repeat(511)}${control}`)).get("x-auth-subject"), "a".repeat(511));
         });
     }
