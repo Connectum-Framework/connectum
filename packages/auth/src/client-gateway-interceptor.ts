@@ -9,8 +9,8 @@
 
 import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { encodeHeaderText, MAX_HEADER_BYTES, MAX_SUBJECT_LENGTH, sanitizeHeaderValue, TEXT_ENCODING_MARKER } from "./headers.ts";
-import { assertHeaderValue, assertIdentityText, assertRolesList } from "./option-checks.ts";
+import { encodeHeaderText, jsonForHeader, MAX_SUBJECT_LENGTH, sanitizeHeaderValue, TEXT_ENCODING_MARKER } from "./headers.ts";
+import { assertHeaderValue, assertWritable } from "./option-checks.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -56,25 +56,24 @@ export function createClientGatewayInterceptor(options: ClientGatewayInterceptor
 
     // Checked once, here: a bad secret or subject would otherwise fail every call (or be altered on
     // the wire: Headers.set removes a space or tab at either end of the secret, which would then
-    // never match). The size of the subject and of the roles is still checked per call, because the
+    // never match). The roles are checked again on every call, because the
     // roles array can be changed after this point.
     assertHeaderValue("createClientGatewayInterceptor secret", secret);
-    assertIdentityText("createClientGatewayInterceptor subject", subject, Number.POSITIVE_INFINITY);
-    if (roles !== undefined) assertRolesList("createClientGatewayInterceptor roles", roles);
+    assertWritable("createClientGatewayInterceptor subject", { subject });
+    if (roles !== undefined) assertWritable("createClientGatewayInterceptor roles", { roles });
 
     return (next) => async (req) => {
-        // Check everything before the first header is set. A subject or roles list that does not fit
-        // is refused, not cut or left out: the service would otherwise authorize a different identity.
-        if (subject.length > MAX_SUBJECT_LENGTH) {
-            throw new ConnectError(`createClientGatewayInterceptor: subject is longer than ${MAX_SUBJECT_LENGTH} characters`, Code.InvalidArgument);
+        // Check everything before the first header is set. The roles array can have been changed since
+        // creation; a list that does not fit is refused, not cut or left out: the service would
+        // otherwise authorize a different identity. The writer decides, as at creation.
+        if (roles !== undefined) {
+            try {
+                assertWritable("createClientGatewayInterceptor roles", { roles });
+            } catch (err) {
+                throw new ConnectError((err as Error).message, Code.InvalidArgument, undefined, undefined, err);
+            }
         }
-        const rolesValue = roles && roles.length > 0 ? JSON.stringify(roles).replace(/[Ā-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : undefined;
-        if (rolesValue !== undefined && rolesValue.length > MAX_HEADER_BYTES) {
-            throw new ConnectError(
-                `createClientGatewayInterceptor: roles do not fit the ${AUTH_HEADERS.ROLES} header (limit ${MAX_HEADER_BYTES} characters)`,
-                Code.InvalidArgument,
-            );
-        }
+        const rolesValue = roles && roles.length > 0 ? jsonForHeader(roles) : undefined;
 
         req.header.set(GATEWAY_SECRET_HEADER, secret);
         const subjectValue = encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH));

@@ -641,12 +641,14 @@ export interface ClientGatewayInterceptorOptions {
     readonly secret: string;
     /**
      * Authenticated subject identifier (e.g., service name). Creating the interceptor throws if it
-     * is empty or contains NUL, CR, LF or a lone surrogate; a subject over 512 characters is refused per call.
+     * is empty, over 512 characters, or contains NUL, CR, LF or a lone surrogate (the header writer decides).
      */
     readonly subject: string;
     /**
      * Optional roles to propagate (JSON-encoded in header). Creating the interceptor throws if this
-     * is not an array of at most 8192 strings without holes whose JSON form fits the roles header.
+     * is not an array of at most 8192 strings without holes whose JSON form fits the roles header
+     * (measured as the header writer measures it, with every character above U+00FF written as six characters).
+     * The roles are checked again on each call, so a change made after creation is refused with `InvalidArgument`.
      */
     readonly roles?: string[] | undefined;
 }

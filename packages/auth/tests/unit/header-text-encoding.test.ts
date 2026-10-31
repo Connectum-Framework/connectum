@@ -266,13 +266,10 @@ describe("createClientGatewayInterceptor", () => {
     });
 
     it("refuses a subject over 512 characters and roles over 8192 instead of cutting them", async () => {
-        // The subject is refused per call; roles that cannot fit are refused when the interceptor is created.
+        // Both are refused when the interceptor is created, by the same check as the writer.
         await assert.rejects(
             () => headersFor("s".repeat(513)),
-            (err: unknown) => {
-                assertConnectError(err, Code.InvalidArgument);
-                return true;
-            },
+            (err: unknown) => err instanceof RangeError && /subject/.test(err.message),
         );
         await assert.rejects(
             () => headersFor("svc", ["r".repeat(8189)]),

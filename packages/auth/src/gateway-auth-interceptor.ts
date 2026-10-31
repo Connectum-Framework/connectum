@@ -24,7 +24,7 @@ import {
     readHeaderText,
 } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
-import { assertHeaderName, assertIdentityText } from "./option-checks.ts";
+import { assertHeaderName, assertWritable } from "./option-checks.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -230,7 +230,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
     // refused here instead of failing each request. Without propagation it is only the context's
     // type and any text is kept as before.
     if (propagateHeaders) {
-        assertIdentityText("Gateway auth defaultType", defaultType, MAX_TYPE_LENGTH);
+        assertWritable("Gateway auth defaultType", { type: defaultType });
     }
     // Header names are used on every request: an invalid one fails inside Headers as an internal error.
     assertHeaderName("Gateway auth headerMapping.subject", headerMapping.subject);

@@ -193,7 +193,7 @@ function encodeField(field: UnsafeHeaderValueError["field"], text: string): stri
  * so each character above U+00FF is written as a `\uXXXX` escape; the reader's `JSON.parse`
  * restores the original value, nothing is lost and the other characters stay as they are.
  */
-function jsonForHeader(value: unknown): string {
+export function jsonForHeader(value: unknown): string {
     return JSON.stringify(value).replace(/[Ā-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 

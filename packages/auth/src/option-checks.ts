@@ -6,92 +6,93 @@
  * arrives, inside `Headers` or the header writer, and the caller sees an internal error. These
  * checks fail loudly when the interceptor is created, naming the option.
  *
+ * Each check runs the very operation the request path performs instead of restating its rules: an
+ * identity text or a roles list goes through {@link setAuthHeaders}, a header name and a secret
+ * through `Headers`. A second copy of a limit or a rule would drift (the roles JSON, for example,
+ * grows by five characters for each character above U+00FF), and a configuration would then be
+ * accepted here and refused on every request, or the other way round.
+ *
  * @module option-checks
  */
 
-import { isStringList } from "./auth-context-check.ts";
-import { HEADER_BREAKING_CHARS, MAX_HEADER_BYTES } from "./headers.ts";
+import { HeaderValueTooLargeError, setAuthHeaders, UnsafeHeaderValueError } from "./headers.ts";
+import type { AuthContext } from "./types.ts";
 
-/** An HTTP token (RFC 9110 section 5.6.2): what a header name may consist of. */
-const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-
-/** A high surrogate without a low one after it, or a low surrogate without a high one before it. */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-
-/** Space or tab at the start or the end: `Headers.set` removes it, so the value would change on the wire. */
-const EDGE_WHITESPACE = /^[ \t]|[ \t]$/;
+/** An identity with plain values everywhere, so that only the field under test can make the writer refuse it. */
+const PLAIN_IDENTITY: AuthContext = { subject: "subject", type: "type", roles: [], scopes: [], claims: {} };
 
 /**
- * Check that `value` can be a header name; throws a `TypeError` naming `option` otherwise.
+ * Check that `value` can be used as a header name; throws a `TypeError` naming `option` otherwise.
+ * The platform decides: a name that `Headers` refuses, or an empty one, fails every request.
  *
  * @param option - The option path as the user wrote it, for the message (for example `trustSource.header`)
  * @param value - The configured header name
  */
 export function assertHeaderName(option: string, value: unknown): asserts value is string {
-    if (typeof value !== "string" || !HEADER_NAME.test(value)) {
+    let valid = typeof value === "string" && value !== "";
+    if (valid) {
+        try {
+            new Headers().has(value as string);
+        } catch {
+            valid = false;
+        }
+    }
+    if (!valid) {
         throw new TypeError(`@connectum/auth: ${option} must be a valid HTTP header name (letters, digits and the characters !#$%&'*+-.^_\`|~), got ${JSON.stringify(value)}`);
     }
 }
 
 /**
- * Check that `value` can be written as an identity text (`type`, `subject`) into an `x-auth-*`
- * header and read back: a non-empty string without NUL, CR or LF and without a lone surrogate, not
- * longer than `maxLength` characters. Throws a `TypeError` naming `option` otherwise.
- *
- * @param option - The option path for the message
- * @param value - The configured text
- * @param maxLength - The header limit of the field
- */
-export function assertIdentityText(option: string, value: unknown, maxLength: number): asserts value is string {
-    if (typeof value !== "string" || value === "") {
-        throw new TypeError(`@connectum/auth: ${option} must be a non-empty string, got ${JSON.stringify(value)}`);
-    }
-    if (HEADER_BREAKING_CHARS.test(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must not contain NUL, CR or LF characters`);
-    }
-    if (LONE_SURROGATE.test(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must not contain a lone surrogate (it has no UTF-8 form)`);
-    }
-    if (value.length > maxLength) {
-        throw new RangeError(`@connectum/auth: ${option} must be at most ${maxLength} characters, got ${value.length}`);
-    }
-}
-
-/**
- * Check that `value` can be sent as a header value exactly as written: a non-empty string of
- * characters up to U+00FF without NUL, CR or LF and without a space or tab at either end. Throws a
- * `TypeError` naming `option` otherwise.
+ * Check that `value` can be set on a request as a header value and read back unchanged: a
+ * non-empty string that `Headers` accepts (no NUL, CR or LF, no character above U+00FF) and does not
+ * alter (it removes a space or tab at either end). Throws a `TypeError` naming `option` otherwise.
  *
  * @param option - The option path for the message
  * @param value - The configured secret
  */
 export function assertHeaderValue(option: string, value: unknown): asserts value is string {
-    if (typeof value !== "string" || value === "") {
-        throw new TypeError(`@connectum/auth: ${option} must be a non-empty string`);
+    let delivered = typeof value === "string" && value !== "";
+    if (delivered) {
+        try {
+            const headers = new Headers();
+            headers.set("x-check", value as string);
+            delivered = headers.get("x-check") === value;
+        } catch {
+            delivered = false;
+        }
     }
-    if (HEADER_BREAKING_CHARS.test(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must not contain NUL, CR or LF characters`);
-    }
-    if (/[Ā-\u{10FFFF}]/u.test(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must not contain characters above U+00FF (a header value is a byte string)`);
-    }
-    if (EDGE_WHITESPACE.test(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must not start or end with a space or tab (the platform removes it from a header value)`);
+    if (!delivered) {
+        throw new TypeError(
+            `@connectum/auth: ${option} must be a non-empty string that a header value carries unchanged: no NUL, CR or LF, no character above U+00FF, and no space or tab at either end (the platform removes it)`,
+        );
     }
 }
 
 /**
- * Check that `value` is a list of at most 8192 strings without holes whose JSON form fits the
- * roles header; throws a `TypeError` naming `option` otherwise.
+ * Check that the header writer accepts `patch` in an otherwise plain identity: runs
+ * {@link setAuthHeaders} on a scratch `Headers` and turns its refusal into an error naming `option`
+ * (a `RangeError` for a size, a `TypeError` for everything else). The writer is the one place that
+ * knows the limits, the expansion of non-Latin text in JSON and the rules for empty values, lone
+ * surrogates and lists.
  *
  * @param option - The option path for the message
- * @param value - The configured roles
+ * @param patch - The identity fields that carry the configured value
  */
-export function assertRolesList(option: string, value: unknown): asserts value is string[] {
-    if (!isStringList(value)) {
-        throw new TypeError(`@connectum/auth: ${option} must be an array of at most 8192 strings without holes`);
+export function assertWritable(option: string, patch: Partial<AuthContext>): void {
+    for (const [field, value] of Object.entries(patch)) {
+        if ((field === "subject" || field === "type") && typeof value !== "string") {
+            throw new TypeError(`@connectum/auth: ${option} must be a string, got ${JSON.stringify(value)}`);
+        }
     }
-    if (JSON.stringify(value).length > MAX_HEADER_BYTES) {
-        throw new RangeError(`@connectum/auth: ${option} does not fit the roles header (limit ${MAX_HEADER_BYTES} characters)`);
+    try {
+        setAuthHeaders(new Headers(), { ...PLAIN_IDENTITY, ...patch });
+    } catch (err) {
+        if (err instanceof HeaderValueTooLargeError) {
+            throw new RangeError(`@connectum/auth: ${option}: ${err.message}`, { cause: err });
+        }
+        if (err instanceof UnsafeHeaderValueError) {
+            throw new TypeError(`@connectum/auth: ${option}: ${err.message}`, { cause: err });
+        }
+        throw err;
     }
 }
