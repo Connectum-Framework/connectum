@@ -54,6 +54,16 @@ export interface BatchSpanProcessorOptions {
     exportTimeoutMillis: number;
 }
 
+/**
+ * Batch log record processor options
+ */
+export interface BatchLogRecordProcessorOptions {
+    maxExportBatchSize: number;
+    maxQueueSize: number;
+    scheduledDelayMillis: number;
+    exportTimeoutMillis: number;
+}
+
 /** Telemetry signal, as spelled inside the `OTEL_EXPORTER_OTLP_<SIGNAL>_*` variable names. */
 export type OTLPSignal = "TRACES" | "METRICS" | "LOGS";
 
@@ -304,6 +314,32 @@ export function getBatchSpanProcessorOptions(): BatchSpanProcessorOptions {
         maxQueueSize: countFromEnv({ name: "OTEL_BSP_MAX_QUEUE_SIZE", fallback: 1000, minimum: 1 }),
         scheduledDelayMillis: countFromEnv({ name: "OTEL_BSP_SCHEDULE_DELAY", fallback: 1000, minimum: 0 }),
         exportTimeoutMillis: countFromEnv({ name: "OTEL_BSP_EXPORT_TIMEOUT", fallback: 10000, minimum: 0 }),
+    };
+}
+
+/**
+ * Gets batch log record processor options from environment variables
+ *
+ * `@opentelemetry/sdk-logs` does not read these variables itself, so the provider passes them
+ * to the processor explicitly.
+ *
+ * Environment variables:
+ * - OTEL_BLRP_MAX_EXPORT_BATCH_SIZE: Max number of log records in one export request (default: 512)
+ * - OTEL_BLRP_MAX_QUEUE_SIZE: Max queue size - if reached, new log records are dropped (default: 2048)
+ * - OTEL_BLRP_SCHEDULE_DELAY: Time to wait before automatically exporting queued log records in ms (default: 1000)
+ * - OTEL_BLRP_EXPORT_TIMEOUT: Max time allowed for a single export operation in ms (default: 10000)
+ *
+ * Invalid values are handled as in {@link getBatchSpanProcessorOptions}: a warning and the
+ * default. A batch or queue size must be at least 1; the two durations accept 0.
+ *
+ * @returns Batch log record processor options
+ */
+export function getBatchLogRecordProcessorOptions(): BatchLogRecordProcessorOptions {
+    return {
+        maxExportBatchSize: countFromEnv({ name: "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", fallback: 512, minimum: 1 }),
+        maxQueueSize: countFromEnv({ name: "OTEL_BLRP_MAX_QUEUE_SIZE", fallback: 2048, minimum: 1 }),
+        scheduledDelayMillis: countFromEnv({ name: "OTEL_BLRP_SCHEDULE_DELAY", fallback: 1000, minimum: 0 }),
+        exportTimeoutMillis: countFromEnv({ name: "OTEL_BLRP_EXPORT_TIMEOUT", fallback: 10000, minimum: 0 }),
     };
 }
 

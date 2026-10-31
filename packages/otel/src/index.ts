@@ -36,6 +36,7 @@ export {
 // Client interceptor (outgoing RPC tracing + metrics)
 export { createOtelClientInterceptor } from "./client-interceptor.ts";
 export type {
+    BatchLogRecordProcessorOptions,
     BatchSpanProcessorOptions,
     CollectorOptions,
     OTLPSettings,
@@ -43,6 +44,7 @@ export type {
 // Config
 export {
     ExporterType,
+    getBatchLogRecordProcessorOptions,
     getBatchSpanProcessorOptions,
     getCollectorOptions,
     getOTLPSettings,
