@@ -8,7 +8,9 @@
  */
 
 import type { Interceptor } from "@connectrpc/connect";
-import { MAX_HEADER_BYTES, sanitizeHeaderValue } from "./headers.ts";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { encodeHeaderText, jsonForHeader, MAX_SUBJECT_LENGTH, sanitizeHeaderValue, TEXT_ENCODING_MARKER } from "./headers.ts";
+import { assertHeaderValue, assertWritable } from "./option-checks.ts";
 import type { ClientGatewayInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
 
@@ -52,15 +54,36 @@ const GATEWAY_SECRET_HEADER = "x-gateway-secret";
 export function createClientGatewayInterceptor(options: ClientGatewayInterceptorOptions): Interceptor {
     const { secret, subject, roles } = options;
 
-    return (next) => async (req) => {
-        req.header.set(GATEWAY_SECRET_HEADER, secret);
-        req.header.set(AUTH_HEADERS.SUBJECT, sanitizeHeaderValue(subject, 512));
+    // Checked once, here: a bad secret or subject would otherwise fail every call (or be altered on
+    // the wire: Headers.set removes a space or tab at either end of the secret, which would then
+    // never match). The roles are checked again on every call, because the
+    // roles array can be changed after this point.
+    assertHeaderValue("createClientGatewayInterceptor secret", secret);
+    assertWritable("createClientGatewayInterceptor subject", { subject });
+    if (roles !== undefined) assertWritable("createClientGatewayInterceptor roles", { roles });
 
-        if (roles && roles.length > 0) {
-            const rolesValue = JSON.stringify(roles);
-            if (rolesValue.length <= MAX_HEADER_BYTES) {
-                req.header.set(AUTH_HEADERS.ROLES, rolesValue);
+    return (next) => async (req) => {
+        // Check everything before the first header is set. The roles array can have been changed since
+        // creation; a list that does not fit is refused, not cut or left out: the service would
+        // otherwise authorize a different identity. The writer decides, as at creation.
+        if (roles !== undefined) {
+            try {
+                assertWritable("createClientGatewayInterceptor roles", { roles });
+            } catch (err) {
+                throw new ConnectError((err as Error).message, Code.InvalidArgument, undefined, undefined, err);
             }
+        }
+        const rolesValue = roles && roles.length > 0 ? jsonForHeader(roles) : undefined;
+
+        req.header.set(GATEWAY_SECRET_HEADER, secret);
+        const subjectValue = encodeHeaderText(sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH));
+        req.header.set(AUTH_HEADERS.SUBJECT, subjectValue);
+        // An existing marker stays: other x-auth-* texts already on the request may be encoded.
+        if (subjectValue !== sanitizeHeaderValue(subject, MAX_SUBJECT_LENGTH)) {
+            req.header.set(AUTH_HEADERS.ENCODING, TEXT_ENCODING_MARKER);
+        }
+        if (rolesValue !== undefined) {
+            req.header.set(AUTH_HEADERS.ROLES, rolesValue);
         }
 
         return await next(req);

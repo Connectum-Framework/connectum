@@ -7,6 +7,12 @@
  * the runtime assertions only show that the value carries the declared members.
  */
 
+// Without a variable the default exporter is OTLP towards localhost:4318; this test creates a real
+// provider and must not depend on whether something listens there.
+process.env.OTEL_TRACES_EXPORTER = "none";
+process.env.OTEL_METRICS_EXPORTER = "none";
+process.env.OTEL_LOGS_EXPORTER = "none";
+
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import type { OtelProvider as OtelProviderFromRoot } from "../../src/index.ts";

@@ -62,6 +62,7 @@ export type {
     MockDescMethodOptions,
     MockNextOptions,
     MockRequestOptions,
+    MockScalarType,
     MockStreamOptions,
     TestServer,
 } from "./types.ts";

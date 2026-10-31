@@ -25,7 +25,9 @@ import type { CloneFn } from "../scaffold/fetchBase.ts";
 import { DEFAULT_BASE_REF, fetchBase, readTree } from "../scaffold/fetchBase.ts";
 import { collectConfig } from "../scaffold/prompts.ts";
 import { transformBase } from "../scaffold/transform.ts";
+import { runReported } from "../utils/cliError.ts";
 import { emitFiles } from "../utils/emit.ts";
+import { assertKnownFlags } from "../utils/flags.ts";
 
 /**
  * Options for the `init` pipeline.
@@ -127,6 +129,74 @@ export async function executeInit(options: InitOptions): Promise<void> {
     }
 }
 
+/** Flags and positional arguments of `connectum init`; also the list unknown flags are checked against. */
+const initArgs = {
+    name: {
+        type: "positional",
+        description: "Destination path; its last segment is the package name (a valid new npm package name)",
+        required: false,
+    },
+    runtime: {
+        type: "string",
+        description: "Target runtime: node (default) or bun",
+    },
+    "package-manager": {
+        type: "string",
+        description: "Package manager: pnpm (default), npm or bun",
+    },
+    "node-exec": {
+        type: "string",
+        description: "Node execution model: raw (default, Node >=25.2) or tsx (Node >=22.13)",
+    },
+    sample: {
+        type: "boolean",
+        description: "Emit the runnable sample Greeter service (default: true); --no-sample emits a config-only project (not combinable with --auth or --events)",
+    },
+    otel: {
+        type: "boolean",
+        description: "Add OpenTelemetry instrumentation",
+    },
+    events: {
+        type: "string",
+        description: "Add EventBus with an adapter: nats | kafka | redpanda | redis | amqp",
+    },
+    auth: {
+        type: "boolean",
+        description: "Add JWT authentication + proto authorization",
+    },
+    resilience: {
+        type: "string",
+        description: "Enable resilience interceptors (comma list: timeout,bulkhead,circuitBreaker,retry)",
+    },
+    healthcheck: {
+        type: "boolean",
+        description: "Include the gRPC health protocol (default: true)",
+    },
+    reflection: {
+        type: "boolean",
+        description: "Include gRPC server reflection (default: true)",
+    },
+    catalog: {
+        type: "boolean",
+        description: "Add the service catalog (typed ctx.call / ctx.stream)",
+    },
+    yes: {
+        type: "boolean",
+        alias: "y",
+        description: "Non-interactive mode (skip prompts; use flags/defaults)",
+        default: false,
+    },
+    force: {
+        type: "boolean",
+        description: "Overwrite existing files",
+        default: false,
+    },
+    ref: {
+        type: "string",
+        description: `Base example git ref to fetch (advanced; default: ${DEFAULT_BASE_REF})`,
+    },
+} as const;
+
 /**
  * citty command definition for `connectum init`.
  */
@@ -135,89 +205,27 @@ export const initCommand = defineCommand({
         name: "init",
         description: "Scaffold a new Connectum project",
     },
-    args: {
-        name: {
-            type: "positional",
-            description: "Destination path; its last segment is the package name (a valid new npm package name)",
-            required: false,
-        },
-        runtime: {
-            type: "string",
-            description: "Target runtime: node (default) or bun",
-        },
-        "package-manager": {
-            type: "string",
-            description: "Package manager: pnpm (default), npm or bun",
-        },
-        "node-exec": {
-            type: "string",
-            description: "Node execution model: raw (default, Node >=25.2) or tsx (Node >=22.13)",
-        },
-        sample: {
-            type: "boolean",
-            description: "Emit the runnable sample Greeter service (default: true); --no-sample emits a config-only project (not combinable with --auth or --events)",
-        },
-        otel: {
-            type: "boolean",
-            description: "Add OpenTelemetry instrumentation",
-        },
-        events: {
-            type: "string",
-            description: "Add EventBus with an adapter: nats | kafka | redpanda | redis | amqp",
-        },
-        auth: {
-            type: "boolean",
-            description: "Add JWT authentication + proto authorization",
-        },
-        resilience: {
-            type: "string",
-            description: "Enable resilience interceptors (comma list: timeout,bulkhead,circuitBreaker,retry)",
-        },
-        healthcheck: {
-            type: "boolean",
-            description: "Include the gRPC health protocol (default: true)",
-        },
-        reflection: {
-            type: "boolean",
-            description: "Include gRPC server reflection (default: true)",
-        },
-        catalog: {
-            type: "boolean",
-            description: "Add the service catalog (typed ctx.call / ctx.stream)",
-        },
-        yes: {
-            type: "boolean",
-            alias: "y",
-            description: "Non-interactive mode (skip prompts; use flags/defaults)",
-            default: false,
-        },
-        force: {
-            type: "boolean",
-            description: "Overwrite existing files",
-            default: false,
-        },
-        ref: {
-            type: "string",
-            description: `Base example git ref to fetch (advanced; default: ${DEFAULT_BASE_REF})`,
-        },
-    },
-    async run({ args }) {
-        await executeInit({
-            name: args.name,
-            runtime: args.runtime,
-            packageManager: args["package-manager"],
-            nodeExec: args["node-exec"],
-            sample: args.sample,
-            otel: args.otel,
-            events: args.events,
-            auth: args.auth,
-            resilience: args.resilience,
-            healthcheck: args.healthcheck,
-            reflection: args.reflection,
-            catalog: args.catalog,
-            yes: args.yes,
-            force: args.force,
-            ref: args.ref,
+    args: initArgs,
+    async run({ args, rawArgs }) {
+        await runReported(async () => {
+            assertKnownFlags("connectum init", args, rawArgs, initArgs);
+            await executeInit({
+                name: args.name,
+                runtime: args.runtime,
+                packageManager: args["package-manager"],
+                nodeExec: args["node-exec"],
+                sample: args.sample,
+                otel: args.otel,
+                events: args.events,
+                auth: args.auth,
+                resilience: args.resilience,
+                healthcheck: args.healthcheck,
+                reflection: args.reflection,
+                catalog: args.catalog,
+                yes: args.yes,
+                force: args.force,
+                ref: args.ref,
+            });
         });
     },
 });

@@ -5,6 +5,7 @@
  */
 
 import assert from "node:assert";
+import { isRegExp } from "node:util/types";
 import type { Code } from "@connectrpc/connect";
 import { ConnectError } from "@connectrpc/connect";
 
@@ -26,7 +27,11 @@ import { ConnectError } from "@connectrpc/connect";
  * @param messagePattern - Optional substring or RegExp to match against
  *   `error.message`.
  *
- * @throws {AssertionError} When any of the checks fail.
+ * @throws {TypeError} When `messagePattern` is given and is neither a string nor a RegExp
+ *   (a number or a plain object would otherwise skip the message check and pass).
+ * @throws {AssertionError} When any of the checks fail. A value named `ConnectError` that
+ *   is not an instance of this package's class (an error from another installed copy of
+ *   `@connectrpc/connect`) fails with a message that says so.
  *
  * @example
  * ```ts
@@ -43,9 +48,27 @@ import { ConnectError } from "@connectrpc/connect";
  * ```
  */
 export function assertConnectError(error: unknown, expectedCode: Code, messagePattern?: string | RegExp): asserts error is ConnectError {
-    assert.ok(error instanceof ConnectError, `Expected ConnectError but got ${typeof error === "object" && error !== null ? (error.constructor?.name ?? "object") : typeof error}`);
+    if (!(error instanceof ConnectError)) {
+        const found = typeof error === "object" && error !== null ? (error.constructor?.name ?? "object") : typeof error;
+        // Two installed copies of @connectrpc/connect define two classes with the same name, and
+        // "Expected ConnectError but got ConnectError" would tell the reader nothing.
+        const looksLikeConnectError = typeof error === "object" && error !== null && ((error as { name?: unknown }).name === "ConnectError" || found === "ConnectError");
+        assert.fail(
+            looksLikeConnectError
+                ? `Expected ConnectError but got a ConnectError from another copy of @connectrpc/connect: instanceof fails across copies, which usually means two copies of the package are installed (check the lockfile for duplicates)`
+                : `Expected ConnectError but got ${found}`,
+        );
+    }
 
     assert.strictEqual(error.code, expectedCode, `Expected ConnectError code ${expectedCode} but got ${error.code}`);
+
+    // A pattern of another kind (a number, a plain object) used to skip the message check, so the
+    // assertion passed without looking at the text.
+    if (messagePattern !== undefined && typeof messagePattern !== "string" && !isRegExp(messagePattern)) {
+        throw new TypeError(
+            `assertConnectError: messagePattern must be a string or a RegExp, got ${typeof messagePattern === "object" ? (messagePattern === null ? "null" : "an object") : typeof messagePattern}`,
+        );
+    }
 
     if (messagePattern !== undefined && error.message.length > 1000) {
         assert.fail(`ConnectError message is unexpectedly long (${error.message.length} chars), refusing to match pattern`);
@@ -60,7 +83,7 @@ export function assertConnectError(error: unknown, expectedCode: Code, messagePa
     const haystack = error.message.slice(0, 1000);
     if (typeof messagePattern === "string") {
         assert.ok(haystack.includes(messagePattern), `ConnectError message "${error.message}" does not include "${messagePattern}"`);
-    } else if (messagePattern instanceof RegExp) {
+    } else if (messagePattern !== undefined) {
         // `g` and `y` make test() read and move `lastIndex`, so the caller's pattern would answer
         // differently on the second use. A fresh copy starts at offset 0 on every call, so the
         // verdict depends on the message only and the caller's object is left untouched. The copy

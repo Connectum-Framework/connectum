@@ -73,8 +73,41 @@ export function applyAuthProtoAnnotations(source: string): string {
     return lines.join("\n");
 }
 
-/** `src/auth.ts` — builds the JWT + proto-authz interceptor chain. */
-export function generateAuthFile(): string {
+/** The gRPC services of the health and reflection protocols, as the `Service/*` patterns the auth interceptors match. */
+const HEALTH_METHODS = ["grpc.health.v1.Health/*"];
+/** Reflection is served as v1 and as the older v1alpha, and a client may use either. */
+const REFLECTION_METHODS = ["grpc.reflection.v1.ServerReflection/*", "grpc.reflection.v1alpha.ServerReflection/*"];
+
+/**
+ * `src/auth.ts` — builds the JWT + proto-authz interceptor chain.
+ *
+ * The health and reflection services have no credentials to present (probes and `proto sync`
+ * ask for them unauthenticated), so each enabled one is opened in BOTH places that would
+ * otherwise refuse it: the JWT interceptor skips it, and the authorizer — deny-by-default, and
+ * without a rule for it — would still answer `unauthenticated`, so it gets an allow rule.
+ * Listing them only in `skipMethods` is the mistake this guards against.
+ *
+ * @param modules - Which of the two protocols the project mounts; a protocol that is not mounted gets no entry
+ */
+export function generateAuthFile(modules: { healthcheck?: boolean | undefined; reflection?: boolean | undefined } = {}): string {
+    const protocolMethods = [...(modules.healthcheck !== false ? HEALTH_METHODS : []), ...(modules.reflection !== false ? REFLECTION_METHODS : [])];
+    const open = protocolMethods.length > 0;
+    const protocolBlock = open
+        ? `
+// The health and reflection services carry no credentials, so they are opened twice: the JWT
+// interceptor skips them, and the authorizer, which denies by default, gets an allow rule for them.
+// Listing them in \`skipMethods\` alone leaves them answering \`unauthenticated\`. Delete an entry to
+// require a token for that service.
+const protocolMethods = [${protocolMethods.map((method) => JSON.stringify(method)).join(", ")}];
+`
+        : "";
+    const authImport = open ? "AuthzEffect, createJwtAuthInterceptor" : "createJwtAuthInterceptor";
+    const skipMethods = open ? "[...publicMethods, ...protocolMethods]" : "[...publicMethods]";
+    const authzCall = open
+        ? `createProtoAuthzInterceptor({
+        rules: [{ name: "protocol-endpoints", methods: protocolMethods, effect: AuthzEffect.ALLOW }],
+    })`
+        : "createProtoAuthzInterceptor()";
     return `/**
  * Authentication (JWT via JWKS) + authorization (driven by proto \`(connectum.auth.v1.*)\`
  * annotations). Configure via env: JWKS_URI, JWT_ISSUER, JWT_AUDIENCE.
@@ -82,7 +115,7 @@ export function generateAuthFile(): string {
  * @module auth
  */
 
-import { createJwtAuthInterceptor } from "@connectum/auth";
+import { ${authImport} } from "@connectum/auth";
 import { createProtoAuthzInterceptor, getPublicMethods } from "@connectum/auth/proto";
 import type { Interceptor } from "@connectrpc/connect";
 import { GreeterService } from "#gen/greeter/v1/greeter_pb.ts";
@@ -90,7 +123,7 @@ import { GreeterService } from "#gen/greeter/v1/greeter_pb.ts";
 // Methods annotated \`(connectum.auth.v1.method_auth) = { public: true }\` in your proto
 // are read here and skipped by the JWT interceptor. Add your services to this list.
 const publicMethods = getPublicMethods([GreeterService]);
-
+${protocolBlock}
 /**
  * Build the auth interceptor chain: JWT authentication followed by proto-driven
  * authorization (deny-by-default — annotate methods/services to allow).
@@ -101,9 +134,9 @@ export function buildAuthInterceptors(): Interceptor[] {
         issuer: process.env.JWT_ISSUER,
         audience: process.env.JWT_AUDIENCE,
         algorithms: ["RS256"],
-        skipMethods: [...publicMethods, "grpc.health.v1.Health/*", "grpc.reflection.v1.ServerReflection/*"],
+        skipMethods: ${skipMethods},
     });
-    const authz = createProtoAuthzInterceptor();
+    const authz = ${authzCall};
     return [jwtAuth, authz];
 }
 `;

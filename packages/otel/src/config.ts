@@ -64,21 +64,64 @@ const HTTP_SIGNAL_PATH: Record<OTLPSignal, string> = {
     LOGS: "v1/logs",
 };
 
-const EXPORTER_VALUES = ["console", "otlp", "otlp/http", "otlp/http-protobuf", "otlp/grpc", "none"];
-const PROTOCOL_VALUES = ["grpc", "http/protobuf", "http/json"];
+const EXPORTER_VALUES = ["console", "otlp", "otlp/http", "otlp/http-protobuf", "otlp/grpc", "none"] as const;
+const PROTOCOL_VALUES = ["grpc", "http/protobuf", "http/json"] as const;
+
+/** Code of every process warning this module emits about an unusable environment value. */
+const INVALID_ENV_CODE = "CONNECTUM_OTEL_INVALID_ENV";
 
 /**
- * Resolves one signal's exporter. The standard bare `otlp` value defers to the
- * protocol variables (per-signal first, then the general one); with none set the
- * OpenTelemetry default, `http/protobuf`, applies. `otlp/http` (JSON),
- * `otlp/http-protobuf` and `otlp/grpc` are explicit and ignore the protocol variables.
+ * Reports an unusable environment value. It goes through `process.emitWarning`
+ * rather than the OpenTelemetry diagnostic channel: the provider sets that
+ * channel to ERROR level, which would hide it.
+ *
+ * Nothing in this module throws for a value read from the environment. The
+ * provider is created lazily by the first instrumented call, so an exception
+ * would fail that call, leave the provider uncreated and fail the next one the
+ * same way.
+ */
+function warnInvalidEnv(message: string): void {
+    process.emitWarning(message, { code: INVALID_ENV_CODE });
+}
+
+/** A variable that is set and not empty; the specification treats an empty value as unset. */
+function nonEmptyEnv(name: string): string | undefined {
+    const value = process.env[name];
+    return value === undefined || value === "" ? undefined : value;
+}
+
+/**
+ * Reads an enum variable: empty counts as unset, matching is case-insensitive,
+ * and an unrecognised value yields a warning and `undefined`, as the
+ * OpenTelemetry specification requires.
+ */
+function enumFromEnv<T extends string>(name: string, allowed: readonly T[]): T | undefined {
+    const raw = nonEmptyEnv(name);
+    if (raw === undefined) {
+        return undefined;
+    }
+    const value = raw.toLowerCase();
+    const match = allowed.find((candidate) => candidate === value);
+    if (match === undefined) {
+        warnInvalidEnv(`${name}="${raw}" is not one of ${allowed.join(", ")}; the variable is ignored.`);
+    }
+    return match;
+}
+
+/**
+ * Resolves one signal's exporter. A variable that is unset, empty or not
+ * recognised yields the OpenTelemetry default, `otlp`, exactly as if `otlp` had
+ * been written. The standard bare `otlp` value defers to the protocol variables
+ * (per-signal first, then the general one); with none usable the OpenTelemetry
+ * default, `http/protobuf`, applies. `otlp/http` (JSON), `otlp/http-protobuf` and
+ * `otlp/grpc` are explicit and ignore the protocol variables.
  */
 function resolveExporter(signal: OTLPSignal): ExporterType {
-    const exporter = env.get(`OTEL_${signal}_EXPORTER`).asEnum(EXPORTER_VALUES);
-    if (exporter !== "otlp") {
-        return exporter as ExporterType;
+    const exporter = enumFromEnv(`OTEL_${signal}_EXPORTER`, EXPORTER_VALUES);
+    if (exporter !== undefined && exporter !== "otlp") {
+        return exporter;
     }
-    const protocol = env.get(`OTEL_EXPORTER_OTLP_${signal}_PROTOCOL`).asEnum(PROTOCOL_VALUES) ?? env.get("OTEL_EXPORTER_OTLP_PROTOCOL").asEnum(PROTOCOL_VALUES);
+    const protocol = enumFromEnv(`OTEL_EXPORTER_OTLP_${signal}_PROTOCOL`, PROTOCOL_VALUES) ?? enumFromEnv("OTEL_EXPORTER_OTLP_PROTOCOL", PROTOCOL_VALUES);
     if (protocol === "grpc") {
         return ExporterType.OTLP_GRPC;
     }
@@ -97,6 +140,15 @@ function resolveExporter(signal: OTLPSignal): ExporterType {
  *   OTLP/gRPC, `http/protobuf` protobuf-encoded OTLP/HTTP, `http/json` JSON-encoded
  *   OTLP/HTTP; unset means `http/protobuf`
  *
+ * An exporter variable that is unset, empty or not recognised yields the OpenTelemetry
+ * default, `otlp`, which resolves through the protocol variables like the explicit value:
+ * OTLP/HTTP with a protobuf body unless a protocol variable says otherwise, sent to
+ * `http://localhost:4318` unless an endpoint variable says otherwise. Set the variable to
+ * `console` to print telemetry to standard output, or to `none` to disable the signal.
+ * Values are matched case-insensitively. A value that is not recognised (a
+ * comma-separated list included) is ignored with a process warning (code
+ * `CONNECTUM_OTEL_INVALID_ENV`); this function never throws for the environment.
+ *
  * @returns OTLP settings object
  */
 export function getOTLPSettings(): OTLPSettings {
@@ -113,31 +165,117 @@ export function getOTLPSettings(): OTLPSettings {
  * Environment variables:
  * - OTEL_EXPORTER_OTLP_ENDPOINT: Collector endpoint URL; empty is treated as not set
  *
+ * A value that cannot be a URL is ignored with a process warning (code
+ * `CONNECTUM_OTEL_INVALID_ENV`) and reads as not set. A bare `host:port` is kept: the
+ * OTLP/gRPC exporter accepts it, and the OTLP/HTTP exporters check the scheme themselves
+ * (see `getHttpExporterOptions`).
+ *
  * @returns Collector options object
  */
 export function getCollectorOptions(): CollectorOptions {
-    const replaceRule = /\/$/;
+    const raw = nonEmptyEnv("OTEL_EXPORTER_OTLP_ENDPOINT");
+    if (raw !== undefined && !isUsableEndpoint(raw, "grpc")) {
+        warnInvalidEnv(`OTEL_EXPORTER_OTLP_ENDPOINT="${raw}" is not a URL; the variable is ignored and the exporter default applies.`);
+        return { concurrencyLimit: 10, url: undefined };
+    }
     return {
         concurrencyLimit: 10,
-        url: env.get("OTEL_EXPORTER_OTLP_ENDPOINT").asString()?.replace(replaceRule, "") || undefined,
+        url: raw?.replace(/\/$/, ""),
     };
+}
+
+/** Where each exporter family sends telemetry when no endpoint is configured. */
+const DEFAULT_HTTP_ORIGIN = "http://localhost:4318";
+const DEFAULT_GRPC_URL = "http://localhost:4317";
+
+/**
+ * Whether the exporters of a transport can use an endpoint.
+ *
+ * OTLP/HTTP appends a signal path to the endpoint and sends over `http:` or
+ * `https:`; anything else (a bare `host:port` parses as the scheme `host:`) fails on
+ * the first export, which surfaces only when the provider is shut down. The OTLP/gRPC
+ * exporter prepends `https://` to a value without a scheme, so there only text that
+ * does not parse as a URL after that is unusable.
+ */
+function isUsableEndpoint(value: string, transport: "http" | "grpc"): boolean {
+    const text = value.trim();
+    try {
+        if (transport === "http") {
+            const { protocol } = new URL(text);
+            return protocol === "http:" || protocol === "https:";
+        }
+        return URL.canParse(/^\w{1,8}:\/\//.test(text) ? text : `https://${text}`);
+    } catch {
+        return false;
+    }
 }
 
 /**
  * Builds the options for one signal's OTLP/HTTP exporter.
  *
- * The `url` is set only when a base endpoint is configured and no
+ * The `url` is set only when a base endpoint is configured and no usable
  * `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT` exists: the signal path is appended to the
  * base endpoint. Otherwise it is left out so the exporter applies the per-signal
  * endpoint as given, or its own default (`http://localhost:4318/<path>`). Passing
  * a URL built from an unset endpoint would make the exporter reject it.
+ *
+ * An endpoint without an `http:` or `https:` scheme (`localhost:4318`) is ignored with a
+ * process warning (code `CONNECTUM_OTEL_INVALID_ENV`). An unusable per-signal endpoint
+ * is replaced by an explicit URL (the base endpoint, else the exporter default), since
+ * the exporter would otherwise read the broken variable itself.
  */
 export function getHttpExporterOptions(collector: CollectorOptions, signal: OTLPSignal): { concurrencyLimit: number; url?: string } {
-    const signalEndpoint = env.get(`OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`).asString();
-    if (collector.url === undefined || signalEndpoint) {
-        return { concurrencyLimit: collector.concurrencyLimit };
+    const options = { concurrencyLimit: collector.concurrencyLimit };
+    const signalVariable = `OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`;
+    const signalEndpoint = nonEmptyEnv(signalVariable);
+    const signalUsable = signalEndpoint === undefined || isUsableEndpoint(signalEndpoint, "http");
+    if (signalEndpoint !== undefined && signalUsable) {
+        return options;
     }
-    return { concurrencyLimit: collector.concurrencyLimit, url: `${collector.url}/${HTTP_SIGNAL_PATH[signal]}` };
+    if (!signalUsable) {
+        warnInvalidEnv(`${signalVariable}="${signalEndpoint}" is not an http: or https: URL and cannot be used by the OTLP/HTTP exporter; the variable is ignored.`);
+    }
+    const base = collector.url;
+    if (base !== undefined && isUsableEndpoint(base, "http")) {
+        return { ...options, url: `${base}/${HTTP_SIGNAL_PATH[signal]}` };
+    }
+    if (base !== undefined) {
+        warnInvalidEnv(`OTEL_EXPORTER_OTLP_ENDPOINT="${base}" is not an http: or https: URL and cannot be used by the OTLP/HTTP exporter; the exporter default applies.`);
+    }
+    // Nothing usable is configured. When a variable is nevertheless set, the exporter would read
+    // it again from the environment (and fail on the first export), so the default is passed
+    // explicitly.
+    const brokenVariableSet = !signalUsable || nonEmptyEnv("OTEL_EXPORTER_OTLP_ENDPOINT") !== undefined;
+    return brokenVariableSet ? { ...options, url: `${DEFAULT_HTTP_ORIGIN}/${HTTP_SIGNAL_PATH[signal]}` } : options;
+}
+
+/**
+ * Builds the options for one signal's OTLP/gRPC exporter.
+ *
+ * The base endpoint, when set, is passed explicitly and takes precedence over the
+ * per-signal variables. Otherwise the `url` is left out so the exporter reads its own
+ * defaults, unless the per-signal endpoint cannot be parsed: the exporter would throw
+ * while it is constructed, so it is replaced by the exporter default and a process
+ * warning (code `CONNECTUM_OTEL_INVALID_ENV`) names the variable.
+ */
+export function getGrpcExporterOptions(collector: CollectorOptions, signal: OTLPSignal): { concurrencyLimit: number; url?: string } {
+    const options = { concurrencyLimit: collector.concurrencyLimit };
+    if (collector.url !== undefined) {
+        return { ...options, url: collector.url };
+    }
+    const signalVariable = `OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`;
+    const signalEndpoint = nonEmptyEnv(signalVariable);
+    const signalUsable = signalEndpoint === undefined || isUsableEndpoint(signalEndpoint, "grpc");
+    if (!signalUsable) {
+        warnInvalidEnv(`${signalVariable}="${signalEndpoint}" is not a URL; the variable is ignored and the exporter default applies.`);
+    }
+    // getCollectorOptions() has already reported and dropped an unusable base endpoint, but the
+    // exporter would read the variable again from the environment and throw, so a usable signal
+    // endpoint or the default is passed explicitly.
+    if (!signalUsable || nonEmptyEnv("OTEL_EXPORTER_OTLP_ENDPOINT") !== undefined) {
+        return { ...options, url: signalUsable && signalEndpoint !== undefined ? signalEndpoint : DEFAULT_GRPC_URL };
+    }
+    return options;
 }
 
 /**
@@ -186,7 +324,7 @@ function countFromEnv(options: { readonly name: string; readonly fallback: numbe
         return value;
     } catch {
         const kind = minimum === 1 ? "positive" : "non-negative";
-        process.emitWarning(`${name}="${process.env[name]}" is not a valid ${kind} integer; using the default ${fallback}.`, { code: "CONNECTUM_OTEL_INVALID_ENV" });
+        warnInvalidEnv(`${name}="${process.env[name]}" is not a valid ${kind} integer; using the default ${fallback}.`);
         return fallback;
     }
 }

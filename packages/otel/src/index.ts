@@ -57,7 +57,7 @@ export { getMeter } from "./meter.ts";
 export type { RpcClientMetrics, RpcServerMetrics } from "./metrics.ts";
 // Metrics
 export { createRpcClientMetrics, createRpcServerMetrics, RPC_DURATION_BUCKETS } from "./metrics.ts";
-export type { OtelProvider, ProviderOptions } from "./provider.ts";
+export type { OtelProvider, ProviderOptions, ShutdownProviderOptions } from "./provider.ts";
 // Provider management
 export { getProvider, initProvider, shutdownProvider } from "./provider.ts";
 // Shared utilities (for advanced users)

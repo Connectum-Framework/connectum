@@ -14,6 +14,7 @@ import { create } from "@bufbuild/protobuf";
 import { protoCamelCase, safeObjectProperty } from "@bufbuild/protobuf/reflect";
 import { Edition, FieldOptionsSchema } from "@bufbuild/protobuf/wkt";
 import type { MockDescFieldOptions, MockDescMessageOptions, MockDescMethodOptions } from "./types.ts";
+import { assertMethodKind } from "./validate.ts";
 
 /**
  * Field presence value of google.protobuf.FeatureSet.FieldPresence.IMPLICIT:
@@ -23,6 +24,36 @@ import type { MockDescFieldOptions, MockDescMessageOptions, MockDescMethodOption
  * @internal
  */
 const PRESENCE_IMPLICIT = 2;
+
+/** Largest field number protobuf allows (2^29 - 1). @internal */
+const MAX_FIELD_NUMBER = 536_870_911;
+
+/** First and last field number the protobuf implementation reserves. @internal */
+const RESERVED_FIELD_NUMBERS_FROM = 19_000;
+const RESERVED_FIELD_NUMBERS_TO = 19_999;
+
+/**
+ * Protobuf scalar type names and their `google.protobuf.FieldDescriptorProto.Type` values.
+ *
+ * @internal
+ */
+const SCALAR_TYPES: ReadonlyMap<string, number> = new Map([
+    ["double", 1],
+    ["float", 2],
+    ["int64", 3],
+    ["uint64", 4],
+    ["int32", 5],
+    ["fixed64", 6],
+    ["fixed32", 7],
+    ["bool", 8],
+    ["string", 9],
+    ["bytes", 12],
+    ["uint32", 13],
+    ["sfixed32", 15],
+    ["sfixed64", 16],
+    ["sint32", 17],
+    ["sint64", 18],
+]);
 
 /**
  * Lower-case the first character only, the way protobuf-es derives the
@@ -43,25 +74,35 @@ function methodLocalName(name: string): string {
  * @see https://protobuf.dev/programming-guides/proto3/#scalar
  * @internal
  */
-function mapTypeToScalar(type: string): number {
-    const scalars: Record<string, number> = {
-        double: 1,
-        float: 2,
-        int64: 3,
-        uint64: 4,
-        int32: 5,
-        fixed64: 6,
-        fixed32: 7,
-        bool: 8,
-        string: 9,
-        bytes: 12,
-        uint32: 13,
-        sfixed32: 15,
-        sfixed64: 16,
-        sint32: 17,
-        sint64: 18,
-    };
-    return scalars[type] ?? 9; // default to STRING
+function mapTypeToScalar(type: unknown, context: string): number {
+    // A Map, not an object literal: a lookup by `"toString"` or `"constructor"` must not
+    // find a property inherited from Object.prototype.
+    const scalar = typeof type === "string" ? SCALAR_TYPES.get(type) : undefined;
+    if (scalar === undefined) {
+        throw new TypeError(`${context}: unknown scalar type ${JSON.stringify(type) ?? String(type)}; expected one of: ${[...SCALAR_TYPES.keys()].join(", ")}`);
+    }
+    return scalar;
+}
+
+/**
+ * Check a field number against the protobuf rules: an integer from 1 to 2^29 - 1 outside
+ * the range 19000 to 19999, which the implementation reserves. `protoc` rejects every
+ * other number, so a fixture carrying one describes a message that cannot exist.
+ *
+ * @internal
+ */
+function assertFieldNumber(fieldNumber: unknown, context: string): asserts fieldNumber is number {
+    const valid =
+        typeof fieldNumber === "number" &&
+        Number.isInteger(fieldNumber) &&
+        fieldNumber >= 1 &&
+        fieldNumber <= MAX_FIELD_NUMBER &&
+        !(fieldNumber >= RESERVED_FIELD_NUMBERS_FROM && fieldNumber <= RESERVED_FIELD_NUMBERS_TO);
+    if (!valid) {
+        throw new RangeError(
+            `${context}: field number ${String(fieldNumber)} is not allowed; use an integer from 1 to ${MAX_FIELD_NUMBER}, outside ${RESERVED_FIELD_NUMBERS_FROM} to ${RESERVED_FIELD_NUMBERS_TO}`,
+        );
+    }
 }
 
 /**
@@ -92,6 +133,12 @@ function mapTypeToScalar(type: string): number {
  *   A custom `json_name` option cannot be expressed.
  * @param options - Optional overrides for field number, scalar type, and sensitivity.
  * @returns A mock `DescField` object.
+ * @throws TypeError when `options.type` is not one of the protobuf scalar type names
+ *   (`double`, `float`, `int64`, `uint64`, `int32`, `fixed64`, `fixed32`, `bool`,
+ *   `string`, `bytes`, `uint32`, `sfixed32`, `sfixed64`, `sint32`, `sint64`); `"message"`
+ *   and `"enum"` are field kinds, not scalar types. The message names the field and the value.
+ * @throws RangeError when `options.fieldNumber` is not an integer from 1 to 536870911
+ *   outside the reserved range 19000 to 19999.
  *
  * @example
  * ```ts
@@ -104,6 +151,19 @@ function mapTypeToScalar(type: string): number {
  * ```
  */
 export function createMockDescField(name: string, options?: MockDescFieldOptions): DescField {
+    return buildField(name, options, `createMockDescField: field "${name}"`);
+}
+
+/**
+ * Build a field descriptor; `context` prefixes the errors so a failure inside
+ * {@link createMockDescMessage} names the message as well as the field.
+ *
+ * @internal
+ */
+function buildField(name: string, options: MockDescFieldOptions | undefined, context: string): DescField {
+    const fieldNumber = options?.fieldNumber ?? 1;
+    assertFieldNumber(fieldNumber, context);
+    const scalar = mapTypeToScalar(options?.type === undefined ? "string" : options.type, context);
     const jsonName = protoCamelCase(name);
     return {
         kind: "field",
@@ -114,8 +174,8 @@ export function createMockDescField(name: string, options?: MockDescFieldOptions
         presence: PRESENCE_IMPLICIT,
         longAsString: false,
         getDefaultValue: () => undefined,
-        scalar: mapTypeToScalar(options?.type ?? "string"),
-        number: options?.fieldNumber ?? 1,
+        scalar,
+        number: fieldNumber,
         repeated: false,
         packed: false,
         optional: false,
@@ -158,6 +218,10 @@ export function createMockDescField(name: string, options?: MockDescFieldOptions
  *   proto name (see {@link createMockDescField}).
  * @returns A mock `DescMessage` object.
  * @throws Error when two fields share the same field number.
+ * @throws TypeError when a field `type` is not a protobuf scalar type name, as in
+ *   {@link createMockDescField}.
+ * @throws RangeError when a field number is not allowed, as in {@link createMockDescField}
+ *   (this includes a number continued automatically past 18999).
  *
  * @example
  * ```ts
@@ -181,11 +245,6 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
     let highestNumber = 0;
     const fields: DescField[] = (options?.fields ?? []).map((f) => {
         const fieldNumber = f.fieldNumber ?? highestNumber + 1;
-        if (usedNumbers.has(fieldNumber)) {
-            throw new Error(`${typeName}: field number ${fieldNumber} is used by more than one field (field "${f.name}")`);
-        }
-        usedNumbers.add(fieldNumber);
-        highestNumber = Math.max(highestNumber, fieldNumber);
         const fieldOpts: MockDescFieldOptions = { fieldNumber };
         if (f.type !== undefined) {
             fieldOpts.type = f.type;
@@ -193,7 +252,14 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
         if (f.isSensitive !== undefined) {
             fieldOpts.isSensitive = f.isSensitive;
         }
-        return createMockDescField(f.name, fieldOpts);
+        // Built first: the type and the number are checked before the number is compared with the others.
+        const field = buildField(f.name, fieldOpts, `${typeName}: field "${f.name}"`);
+        if (usedNumbers.has(fieldNumber)) {
+            throw new Error(`${typeName}: field number ${fieldNumber} is used by more than one field (field "${f.name}")`);
+        }
+        usedNumbers.add(fieldNumber);
+        highestNumber = Math.max(highestNumber, fieldNumber);
+        return field;
     });
 
     const oneofs = (options?.oneofs ?? []).map((oneofName) => ({
@@ -251,6 +317,8 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
  *   (`useSensitiveRedaction` is deprecated: `MethodOptions` has no such property, so the
  *   `{ debug_redact: true }` marker it produces is fixture-only and nothing in Connectum reads it).
  * @returns A mock `DescMethod` object.
+ * @throws TypeError when `options.kind` is not `unary`, `server_streaming`,
+ *   `client_streaming` or `bidi_streaming`.
  *
  * @example
  * ```ts
@@ -267,6 +335,8 @@ export function createMockDescMessage(typeName: string, options?: MockDescMessag
  * ```
  */
 export function createMockDescMethod(name: string, options?: MockDescMethodOptions): DescMethod {
+    const kind = options?.kind === undefined ? "unary" : options.kind;
+    assertMethodKind(kind, `createMockDescMethod: method "${name}"`);
     const defaultInput = createMockDescMessage(`test.${name}Request`);
     const defaultOutput = createMockDescMessage(`test.${name}Response`);
 
@@ -275,7 +345,7 @@ export function createMockDescMethod(name: string, options?: MockDescMethodOptio
         name,
         localName: methodLocalName(name),
         parent: undefined,
-        methodKind: options?.kind ?? "unary",
+        methodKind: kind,
         input: options?.input ?? defaultInput,
         output: options?.output ?? defaultOutput,
         deprecated: false,
