@@ -18,6 +18,7 @@ import { CatalogConfigError } from "./catalogErrors.ts";
 import { assertEnabledServicesAreSupplied, assertNoDuplicateService, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
+import { createShutdownReason } from "./finishStreamOnAbort.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
@@ -327,8 +328,10 @@ class ServerImpl extends EventEmitter implements Server {
         // listener runs even if an earlier one throws.
         this._emitIsolated("stopping");
 
-        // Phase 1: Signal shutdown to ConnectRPC handlers (streaming RPCs)
-        this._abortController.abort();
+        // Phase 1: Signal shutdown to ConnectRPC handlers (streaming RPCs). The reason
+        // lets a stream that has to be cut end with `unavailable` instead of looking
+        // like a complete response.
+        this._abortController.abort(createShutdownReason());
 
         this._stopPromise = (async () => {
             let failure: { readonly error: unknown } | undefined;

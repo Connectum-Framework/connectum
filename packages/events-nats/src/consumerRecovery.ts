@@ -15,7 +15,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ConsumerConfig, ConsumerMessages, ConsumerNotification, JetStreamManager } from "@nats-io/jetstream";
 import { DeliverPolicy } from "@nats-io/jetstream";
-import { ensureConsumer, isConsumerNotFound } from "./consumerSetup.ts";
+import { ensureConsumer, isConsumerNotFound, isStreamNotFound } from "./consumerSetup.ts";
 
 /** First pause between attempts to bring the consumer back; it doubles up to {@link MAX_RETRY_DELAY_MS}. */
 const FIRST_RETRY_DELAY_MS = 250;
@@ -142,7 +142,28 @@ export async function recoverConsumer(consumer: ConsumerToRestore, signal: Abort
 }
 
 /**
+ * Whether the server no longer has the consumer or its stream. Used when the client reports that
+ * nobody serves its request for messages, which is not a statement about the consumer by itself
+ * (a server that is restarting answers the same way): only a "not found" answer to the question
+ * counts, and any other failure leaves the consumer as it was.
+ */
+async function isGone(consumer: ConsumerToRestore): Promise<boolean> {
+    try {
+        await consumer.jsm.consumers.info(consumer.streamName, consumer.config.durable_name);
+        return false;
+    } catch (err: unknown) {
+        return isConsumerNotFound(err) || isStreamNotFound(err);
+    }
+}
+
+/**
  * Watch one consumer of a subscription and bring it back when the server lost it with its stream.
+ *
+ * The server tells the client about the loss only through a request for messages that is waiting
+ * when the stream goes ("consumer deleted"), and does not always do so. A client that asks for
+ * messages after the stream is gone gets "no responders" instead, which says nothing about why;
+ * the client then stays silent until two heartbeats are missed, tens of seconds. That answer is
+ * therefore checked against the server.
  *
  * It handles one loss: the client's message stream does not deliver from the new consumer for tens
  * of seconds (it waits for missed heartbeats), so the caller replaces the message stream with a new
@@ -162,7 +183,7 @@ export async function restoreLostConsumer(
         if (signal.aborted) {
             return undefined;
         }
-        if (isConsumerLoss(status)) {
+        if (isConsumerLoss(status) || (status.type === "no_responders" && (await isGone(consumer)))) {
             onLoss();
             return recoverConsumer(consumer, signal);
         }

@@ -792,6 +792,12 @@ export interface Server extends EventEmitter {
      *
      * Use this to signal streaming RPCs and long-running operations
      * that the server is shutting down.
+     *
+     * A server stream whose handler is still sending when the signal aborts is
+     * ended by the framework: the client receives the messages already sent and
+     * then an `unavailable` error, never a normal end of stream that would pass
+     * for a complete response. A handler that returns by itself after seeing the
+     * signal ends the call normally; that is its own decision.
      */
     readonly shutdownSignal: AbortSignal;
 
