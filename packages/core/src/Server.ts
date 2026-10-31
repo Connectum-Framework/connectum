@@ -309,9 +309,11 @@ class ServerImpl extends EventEmitter implements Server {
 
         // A termination request that arrives while start() is still in progress is honoured,
         // not dropped: it waits for the start to settle and then stops the server. If the start
-        // fails the server is already stopped, and there is nothing left to stop.
+        // fails the server is already stopped, and there is nothing left to stop. A listener of
+        // `ready` may have begun the stop by then: stop() then joins it, so this call settles with
+        // the outcome of the shutdown instead of before it.
         if (this._state === ServerState.STARTING && this._startSettled) {
-            this._stopAfterStart ??= this._startSettled.then(() => (this._state === ServerState.RUNNING ? this.stop() : undefined));
+            this._stopAfterStart ??= this._startSettled.then(() => this.stop());
             return this._stopAfterStart;
         }
 

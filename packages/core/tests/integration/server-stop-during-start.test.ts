@@ -106,6 +106,32 @@ describe("stop() and signals during start()", () => {
         assert.strictEqual(hookRuns, 1, "a stop() after the server stopped does nothing");
     });
 
+    it("a stop() deferred by the start joins a stop that a ready listener has already begun", async () => {
+        const { bus } = slowBus(150);
+        const server = boot({ services: [], eventBus: bus });
+        let hookDone = false;
+        server.onShutdown(async () => {
+            await pause(100);
+            hookDone = true;
+            throw new Error("hook failed");
+        });
+        server.on("error", () => {});
+        // The listener runs inside start(), after the deferred stop() was requested.
+        let fromListener: Promise<void> | undefined;
+        server.on("ready", () => {
+            fromListener = server.stop();
+        });
+
+        const starting = server.start();
+        await pause(20);
+        const deferred = server.stop();
+
+        await starting;
+        await assert.rejects(() => deferred, { message: "hook failed" });
+        assert.strictEqual(hookDone, true, "the deferred stop() must not settle while the hooks are still running");
+        await assert.rejects(() => fromListener as Promise<void>, { message: "hook failed" });
+    });
+
     it("stop() called while starting resolves, and start() rejects, when the start fails", async () => {
         const { bus } = slowBus(100, new Error("broker unreachable"));
         const server = boot({ services: [], eventBus: bus });
