@@ -141,8 +141,36 @@ describe("startTopicDiscovery", () => {
             console.error = originalError;
             console.warn = originalWarn;
         }
-        assert.deepEqual(calls, ["stop", "subscribe orders.a fromBeginning=true", "run failed", "run"]);
+        // The second check stops the consumer again: after a failed run the discovery cannot tell whether a replacement of the consumer (topicRecovery) started one, and a stop of a consumer that is not running does nothing.
+        assert.deepEqual(calls, ["stop", "subscribe orders.a fromBeginning=true", "run failed", "stop", "run"]);
         assert.equal(logged.length, 1);
+    });
+
+    it("stops the consumer before it subscribes a new topic even after a restart that failed half-way", async () => {
+        const { consumer, calls } = fakeConsumer({ failRunTimes: 1 });
+        const originalError = console.error;
+        const originalWarn = console.warn;
+        console.error = () => undefined;
+        console.warn = () => undefined;
+        let listings = 0;
+        try {
+            const stop = startTopicDiscovery({
+                consumer,
+                wildcards: [/^orders\..+$/],
+                known: new Set(),
+                runConfig,
+                resumeTimers: new Set(),
+                interval: 5,
+                listTopics: async () => (++listings < 2 ? ["orders.a"] : ["orders.a", "orders.b"]),
+            });
+            await waitFor(() => calls.includes("subscribe orders.b fromBeginning=true"), "the second topic is subscribed");
+            await stop();
+        } finally {
+            console.error = originalError;
+            console.warn = originalWarn;
+        }
+        const subscribeB = calls.indexOf("subscribe orders.b fromBeginning=true");
+        assert.equal(calls[subscribeB - 1], "stop", "a running consumer refuses to subscribe, so it is stopped first");
     });
 
     it("keeps checking after a failed topic listing", async () => {

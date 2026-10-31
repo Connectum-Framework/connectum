@@ -21,7 +21,7 @@ export interface TopicCreationWait {
 export const defaultTopicCreationWait: TopicCreationWait = { timeoutMs: 10_000, pollMs: 250 };
 
 /** Whether a client error, or one of its causes, is the broker's answer "no such topic". */
-function isUnknownTopic(error: unknown): boolean {
+export function isUnknownTopic(error: unknown): boolean {
     let current: unknown = error;
     for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth++) {
         if ((current as { type?: unknown }).type === "UNKNOWN_TOPIC_OR_PARTITION") {
