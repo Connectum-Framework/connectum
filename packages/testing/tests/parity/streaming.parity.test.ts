@@ -10,7 +10,9 @@
  */
 
 import assert from "node:assert";
-import { create } from "@bufbuild/protobuf";
+import { create, createFileRegistry } from "@bufbuild/protobuf";
+import type { GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { FieldDescriptorProto_Label, FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { defineService } from "@connectum/core";
 import { defaultCompare, type ParityScenarioResult, transportParityTest } from "../../src/transportParityTest.ts";
@@ -349,3 +351,89 @@ transportParityTest("parity: break alone aborts the handler's signal and runs it
         defaultCompare(http, local);
     },
 });
+
+// server.stop() while a server stream is still sending. The handler ignores its signal and
+// wants to send ten items; the stop arrives after three. A stream the server cuts must not
+// end like a complete response, on either transport: the items sent before the stop arrive
+// in order and the stream then fails with `unavailable`.
+//
+// The service is described at runtime because the shared streaming fixture declares a bidi
+// method, and a server that mounts one refuses to start over plaintext HTTP/1.1, which is
+// how the harness builds its in-process server when a scenario starts it to stop it.
+{
+    const field = (name: string, number: number, type: FieldDescriptorProto_Type) => ({ name, number, type, label: FieldDescriptorProto_Label.OPTIONAL, jsonName: name });
+    const countFile = create(FileDescriptorProtoSchema, {
+        name: "parity/v1/count.proto",
+        package: "parity.v1",
+        syntax: "proto3",
+        messageType: [
+            { name: "Req", field: [field("text", 1, FieldDescriptorProto_Type.STRING)] },
+            { name: "Res", field: [field("n", 1, FieldDescriptorProto_Type.INT32)] },
+        ],
+        service: [{ name: "Counter", method: [{ name: "Count", inputType: ".parity.v1.Req", outputType: ".parity.v1.Res", serverStreaming: true }] }],
+    });
+    // The descriptor comes from the runtime registry, so its static type is the generic
+    // `DescService`; the cast gives it the one method the handler and the client use.
+    const registered = createFileRegistry(countFile, () => undefined).getService("parity.v1.Counter");
+    assert.ok(registered, "the runtime service descriptor must exist");
+    const counter = registered as unknown as GenService<{
+        count: { methodKind: "server_streaming"; input: GenMessage<{ $typeName: "parity.v1.Req"; text: string }>; output: GenMessage<{ $typeName: "parity.v1.Res"; n: number }> };
+    }>;
+
+    const itemsWanted = 10;
+    const stopAfter = 3;
+    let reachedStopPoint = Promise.withResolvers<void>();
+    transportParityTest("parity: server.stop() cutting a server stream ends it with Unavailable", {
+        services: [
+            defineService(counter, {
+                async *count() {
+                    for (let i = 0; i < itemsWanted; i++) {
+                        yield { n: i };
+                        if (i + 1 === stopAfter) {
+                            reachedStopPoint.resolve();
+                        }
+                        await new Promise<void>((resolve) => setTimeout(resolve, 40));
+                    }
+                },
+            }),
+        ],
+        scenario: async ({ transport, server, transportKind }) => {
+            reachedStopPoint = Promise.withResolvers<void>();
+            if (transportKind === "local") {
+                // The local harness never binds a socket on its own; start it so it can be stopped.
+                await server.start();
+            }
+            const received: number[] = [];
+            const outcome = (async (): Promise<ParityScenarioResult> => {
+                try {
+                    for await (const item of createClient(counter, transport).count({})) {
+                        received.push(item.n);
+                    }
+                } catch (err) {
+                    const code = err instanceof ConnectError ? err.code : -1;
+                    return { response: { received }, error: { code, message: "<cut>" } };
+                }
+                return { response: { received } };
+            })();
+            await reachedStopPoint.promise;
+            await server.stop();
+            return await outcome;
+        },
+        compare: (http, local) => {
+            for (const [name, result] of [
+                ["HTTP", http],
+                ["local", local],
+            ] as const) {
+                assert.strictEqual(result.error?.code, Code.Unavailable, `${name} transport must tell the client the stream was cut`);
+                const received = (result.response as { received: number[] }).received;
+                assert.ok(received.length >= stopAfter && received.length < itemsWanted, `${name} transport: ${received.length} of ${itemsWanted} items`);
+                assert.deepStrictEqual(
+                    received,
+                    Array.from({ length: received.length }, (_, i) => i),
+                    `${name} transport: the items sent before the stop arrive in order`,
+                );
+            }
+            assert.strictEqual(http.error?.code, local.error?.code);
+        },
+    });
+}
