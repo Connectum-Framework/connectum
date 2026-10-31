@@ -111,6 +111,12 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                     await iterator.return?.();
                 });
 
+                // Settles when the handler's cleanup has run. The read that reports a cut waits for
+                // it: the transport closes the request once that read fails, and graceful shutdown
+                // proceeds to the shutdown hooks when the requests are closed, so reporting earlier
+                // would let a hook close a resource that the handler's `finally` is still releasing.
+                let closing: Promise<void> | undefined;
+
                 const finish = async (reportCut: boolean): Promise<void> => {
                     if (finished) {
                         return;
@@ -120,11 +126,10 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                         cut = cutStreamError(req.signal.reason);
                     }
                     req.signal.removeEventListener("abort", onAbort);
-                    try {
-                        await closeIterator();
-                    } catch {
+                    closing = closeIterator().catch(() => {
                         // see the interceptor documentation: nobody is left to receive this error
-                    }
+                    });
+                    await closing;
                 };
 
                 const onAbort = (): void => {
@@ -142,6 +147,7 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                 return {
                     async next() {
                         if (cut) {
+                            await closing;
                             throw cut;
                         }
                         pulling = true;

@@ -233,6 +233,44 @@ describe("finishStreamOnAbort: the read after a cut fails", () => {
         assert.strictEqual(second, first);
     });
 
+    it("does not report the cut before the handler's asynchronous cleanup has finished", async () => {
+        // The handler's `finally` releases a resource asynchronously. The failing read must wait for it:
+        // the transport closes the request when the read fails, and graceful shutdown moves on to the
+        // shutdown hooks once the requests are closed, which would close that resource under the handler.
+        let finishCleanup: () => void = () => {};
+        let cleanupFinished = false;
+        const iterator: AsyncIterator<string> = {
+            async next() {
+                return { done: false, value: "item" };
+            },
+            async return() {
+                await new Promise<void>((resolve) => {
+                    finishCleanup = resolve;
+                });
+                cleanupFinished = true;
+                return { done: true, value: undefined };
+            },
+        };
+        const abort = new AbortController();
+        const wrapped = await wrap({ [Symbol.asyncIterator]: () => iterator }, abort.signal);
+
+        abort.abort(createShutdownReason());
+        await settle();
+
+        let readSettled = false;
+        const read = readError(wrapped).then((error) => {
+            readSettled = true;
+            return error;
+        });
+        await settle();
+        assert.strictEqual(readSettled, false, "the read must wait while the handler's cleanup is running");
+
+        finishCleanup();
+        const error = await read;
+        assert.strictEqual(cleanupFinished, true);
+        assert.strictEqual(error?.code, Code.Unavailable);
+    });
+
     it("does not fail a handler that ended by itself, even when the abort comes right after", async () => {
         const abort = new AbortController();
         const iterator = await wrap(makeFiniteSource(["a"]), abort.signal);
