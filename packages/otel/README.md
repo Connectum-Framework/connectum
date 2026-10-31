@@ -71,6 +71,19 @@ reports each distinct failure on standard error at most once a minute.
 8 seconds with the default settings; pass `{ timeout }` to bound it). Registered
 with `server.onShutdown()`, the rejection does not end the process.
 
+## Log batching
+
+Log records sent over OTLP (HTTP or gRPC) are queued and exported in batches, as
+spans are: a batch leaves when it is full or after `OTEL_BLRP_SCHEDULE_DELAY`
+milliseconds (1000 by default), so a record reaches the collector up to that long
+after it is emitted. `shutdownProvider()` sends the records still in the queue.
+The `console` exporter prints each record at once. Tune the queue with the
+standard variables `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE` (512),
+`OTEL_BLRP_MAX_QUEUE_SIZE` (2048), `OTEL_BLRP_SCHEDULE_DELAY` (1000) and
+`OTEL_BLRP_EXPORT_TIMEOUT` (10000). Records that arrive while the queue is full
+and a batch is being exported are dropped; an invalid value produces a process
+warning and the default.
+
 ## Limitations
 
 - Set `recordMessages: true` to add per-message events to streaming spans; the
