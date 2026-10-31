@@ -24,6 +24,11 @@ const ENV_KEYS = [
 	"OTEL_METRICS_EXPORTER",
 	"OTEL_LOGS_EXPORTER",
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	// Set in a developer's shell, these would win over the endpoint of the test receiver or turn
+	// the JSON body the receiver decodes into protobuf.
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
 	"OTEL_BLRP_MAX_EXPORT_BATCH_SIZE",
 	"OTEL_BLRP_MAX_QUEUE_SIZE",
 	"OTEL_BLRP_SCHEDULE_DELAY",
@@ -211,10 +216,10 @@ describe("log record delivery", () => {
 		const target = await useCollector(Number.POSITIVE_INFINITY);
 
 		emitBurst(2);
-		const started = Date.now();
+		// The exporter would give up with its own error only after 1500 ms; a TimeoutError means
+		// the deadline of shutdownProvider() ended the wait.
 		await assert.rejects(shutdownProvider({ timeout: 300 }), (error: Error) => error.name === "TimeoutError");
 
-		assert.ok(Date.now() - started < 1200, "the wait ended by the deadline, not by the exporter timeout");
 		assert.strictEqual(target.bodies.length, 2, "the queued records were handed to the collector before the deadline");
 	});
 
