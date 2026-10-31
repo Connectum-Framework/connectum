@@ -1,5 +1,116 @@
 # @connectum/healthcheck
 
+## 1.3.0
+
+### Minor Changes
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `createHttpHealthHandler(manager, healthPaths)` applies the same path rules as the `httpPaths` option of `Healthcheck()`. An empty array throws `RangeError`; a value that is not an array, or an entry that is not a string, does not start with `/`, or contains `?` or `#`, throws `TypeError`, with a message naming `healthPaths`. Before, such a list was accepted and produced a handler that never matched a request. Omitting the argument still serves `/healthz`, `/health` and `/readyz`.
+
+- [#392](https://github.com/Connectum-Framework/connectum/pull/392) [`179e408`](https://github.com/Connectum-Framework/connectum/commit/179e408ffab88c10748c4122504f809412f81e39) Thanks [@intech](https://github.com/intech)! - fix: the `service` query parameter of the HTTP health endpoint no longer depends on the `Host` header. `parseServiceFromUrl` used to build its base URL from `Host`, so a request with an empty or syntactically invalid `Host` (possible over HTTP/1.1) made the URL constructor throw, the parameter was silently dropped, and `/healthz?service=<name>` answered with the overall state instead of the state of `<name>`. The base is now a constant; the `host` argument of `parseServiceFromUrl` is still accepted but has no effect (it is removed in the next major version).
+  
+  **BREAKING** configuration check: `Healthcheck()` now validates `httpPaths` whenever it is passed, also with `httpEnabled: false`. An empty array throws `RangeError`; an entry that is not a string, does not start with `/`, or contains `?` or `#` throws `TypeError` (as does a value that is not an array). Before, `httpPaths: []` with `httpEnabled: true` silently left an endpoint that matched nothing, and a malformed entry was accepted and never matched. Shipped as minor on purpose: the `@connectum/*` packages are one fixed version group, so a major here would release every package as 2.0.0. `undefined` still selects the default paths `/healthz`, `/health`, `/readyz`.
+  
+  **Migration.** To turn the HTTP endpoint off, drop `httpPaths` and set `httpEnabled: false` (or omit `httpEnabled`: it is off by default). Replace any entry without a leading `/` with an absolute path (`"healthz"` becomes `"/healthz"`) and remove `?...` and `#...` parts from entries.
+  
+  Matching rules, unchanged and now documented and pinned by tests: the request path is compared with the configured paths exactly and case-sensitively (`/healthz/` does not match `/healthz`), the query string is ignored when matching, the request method is not checked, an empty `service=` reports the overall state, and an unknown service answers 404 with `"service": "<name>"`.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `HealthcheckManager.update()`, `register()` and `set()` refuse a status that is not one of the four `ServingStatus` values (0 to 3), and a component or service name that is not a string. A wrong type throws `TypeError`, a number outside the enum (a fraction, `NaN`, `99`) throws `RangeError`, and the registry is left as it was. Before, such a value was stored: `set("db", "SERVING")` made every later `Health.List` and the `Health.Check` of that component fail with an internal serialization error that leaked the serializer text, and `99` went onto the wire as an unknown status. Valid calls behave as before.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `Healthcheck()` validates its options when it is called and refuses a duplicate registration. `Healthcheck(null)`, a `manager` that is not a `HealthcheckManager` (`"x"`, `{}`, `null`) and an `httpEnabled` that is not a boolean (`"yes"`, `1`) now throw `TypeError` naming the option; before they failed later with an unrelated message (`manager.initialize is not a function` at `start()`), or were silently read as true. A second `Healthcheck()` in the same server, or an application service that is already `grpc.health.v1.Health`, is rejected when the server builds its routes: `start()` (and the first call made through `localClient()`) fails with an error naming the Health service, instead of starting with one of the two managers silently ignored. Valid configurations are unchanged; one `Healthcheck()` registration object can still be passed to several servers.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `Healthcheck()` validates `watchInterval` when it is called. The option must be an integer from 1 to 2147483647 (milliseconds); a number outside that set (`0`, a fraction, `NaN`, a negative number, `Infinity`, a larger value) throws `RangeError`, and a value that is not a number (a string, `null`) throws `TypeError`, both naming `watchInterval`. Before, `0`, `NaN`, negative and oversized values made every `Health.Watch` call poll about once per millisecond (roughly 900 reads a second per watcher, plus a Node timer warning), and a string or `null` made every `Watch` end with an internal error while `Check` and `Healthcheck()` still worked. Omitting the option still means 500.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `Health.Watch` delivers every change of the watched status, in order, as soon as it happens. It used to compare the status once per `watchInterval`, so a service set to `NOT_SERVING` and back to `SERVING` inside one interval never showed the outage to a watcher, against "send a new message whenever the service's serving status changes". `HealthcheckManager` gains `subscribe(listener)`, which `Watch` uses; it returns a function that removes the listener. A listener must not change the registry: `update`, `register`, `set`, `unregister`, `initialize` and `clear` called from inside a listener throw, so every listener sees the state of the change that notified it. `watchInterval` stays as the period of a re-check. Watchers now also see short intermediate states, for example `UNKNOWN` between a service being registered and its first `update`. `Healthcheck()` requires a `manager` that has `subscribe`, which every `HealthcheckManager` does.
+
+- [#282](https://github.com/Connectum-Framework/connectum/pull/282) [`36ce828`](https://github.com/Connectum-Framework/connectum/commit/36ce828cd36d84285e657b843b65ddbf28111107) Thanks [@intech](https://github.com/intech)! - feat: declare protobuf and Connect as peer dependencies, so an application runs with one copy of each
+  
+  `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` were regular dependencies. An application that pinned its own version could end up with a second copy that nothing reported: message and service types generated against one copy then stopped type-checking against the other, and a `connect-node` next to a different `connect` formed a pair `connect-node` does not support (it requires one exact `connect` version).
+  
+  - `@connectum/core`, `auth`, `events`, `healthcheck`, `interceptors`, `otel`, `reflection`, `testing` and `test-fixtures` now declare `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0` in `peerDependencies`; `core` and `testing` also declare `@connectrpc/connect-node` `^2.2.0`.
+  - `auth`, `events` and `interceptors` declare `@connectum/core` as a peer dependency instead of a dependency, so they use the application's own `@connectum/core`.
+  - `@connectum/interceptors` now depends on `@bufbuild/protovalidate` directly. The validation interceptor imports it whether or not validation is enabled; it used to install only because npm, pnpm and Bun add missing peers of `@connectrpc/validate`.
+  - `@connectum/cli` and `@connectum/protoc-gen-catalog` are unchanged: they are executables, and `@bufbuild/protoplugin` pins `@bufbuild/protobuf` exactly, so they keep their own copy and are outside the single-copy guarantee.
+  
+  With pins inside these ranges, or no pins at all, npm, pnpm and Bun now install exactly one copy of each library for the application and every Connectum runtime package. This includes `@connectum/reflection`, which now serves gRPC Server Reflection with Connectum's own implementation instead of a third-party library that kept its own protobuf / Connect copy.
+  
+  `createServer()` now checks the `@bufbuild/protobuf`, `@connectrpc/connect` and `@connectrpc/connect-node` that `@connectum/core` actually loaded against these ranges, and throws `PeerDependencyVersionError` (exported from `@connectum/core`) naming the package, the loaded version and its location, the required range and the fix. Lockstep is checked at startup too: the `@connectrpc/connect` that `@connectrpc/connect-node` itself loads must be the exact version connect-node declares, and the same copy `@connectum/core` loads. This makes an out-of-range version a visible startup failure on every package manager, including the ones that only warn at install time. When the version cannot be determined — `@connectum/core` bundled into the application, or a runtime without `import.meta.resolve` — the check is skipped rather than guessed.
+  
+  **BREAKING (installation and startup):** an install or a start that worked before can now fail.
+  
+  - npm refuses an application whose `@bufbuild/protobuf`, `@connectrpc/connect` or `@connectrpc/connect-node` pin is outside the ranges above, with `ERESOLVE unable to resolve dependency tree`. pnpm prints `Issues with peer dependencies found` (`pnpm peers check` names the library) and keeps the application's too-old copy; Bun warns in the same way, but stays silent about a too-old `@bufbuild/protobuf` when a code generator such as `protoc-gen-es` brings its own in-range copy. On pnpm and Bun the application then stops at `createServer()` with `PeerDependencyVersionError`.
+  
+  Under strict Semantic Versioning this is a major change, and Connectum's breaking-changes strategy does not plan breaking changes for minor versions. It ships in 1.3.0 as an explicit, recorded exception, so that applications get the single-copy fix now rather than with 2.0.
+  
+  Migration: raise any pin of `@bufbuild/protobuf` to `^2.16.0` and of `@connectrpc/connect` / `@connectrpc/connect-node` to `^2.2.0`, keeping `connect` and `connect-node` on the same version — or remove the pins and let npm, pnpm or Bun install the peers. Do not work around a conflict with `--legacy-peer-deps` or `--force`: that reinstates the duplicate copies. Generate code with `protoc-gen-es` 2.16 or later.
+
+- [#265](https://github.com/Connectum-Framework/connectum/pull/265) [`bc770be`](https://github.com/Connectum-Framework/connectum/commit/bc770bee1669e91804f6115b5dfe2e254f129760) Thanks [@intech](https://github.com/intech)! - fix: health, reflection and lazy services stay consistent across the HTTP and in-process transports
+  
+  A server builds one router for the HTTP adapter and one per in-process transport (`server.localClient()`, the catalog transport behind `ctx.call`). Every extra router re-ran one-time work:
+  
+  - **Healthcheck** — the first in-process call re-initialized the health manager: application services were dropped and `grpc.health.v1.Health` itself was tracked as `UNKNOWN`, so overall health fell from `SERVING` to `NOT_SERVING` and readiness probes started failing after the first `ctx.call` / `localClient()`. Overall health and the tracked service set are now unaffected by in-process transports.
+  - **Reflection** — the in-process listing was rebuilt from the grown registry and additionally advertised `grpc.reflection.v1.ServerReflection` / `grpc.reflection.v1alpha.ServerReflection`, diverging from the HTTP listing. Both transports now serve the same descriptor set.
+  - **`defineLazyService`** — `factory` ran once per router, so HTTP and in-process callers reached different implementation instances and resources opened by the factory were duplicated. `factory` now runs once per server; the same definition mounted on two servers still yields one instance per server.
+  
+  **BREAKING (custom protocol authors only):** `ProtocolRegistration` separates one-time initialization from route registration. The new optional `setup(context)` runs exactly once per server, immediately before the protocol's first `register`, with a frozen snapshot of the registry (application services plus the services of protocols listed earlier). `register(router)` no longer receives `context`, runs once per router, and must only add routes. Move everything that reads `context` or has side effects from `register` into `setup`. A two-argument `register` no longer type-checks. Applications that only use the built-in `Healthcheck()` / `Reflection()` need no changes.
+
+### Patch Changes
+
+- [#243](https://github.com/Connectum-Framework/connectum/pull/243) [`10a3e58`](https://github.com/Connectum-Framework/connectum/commit/10a3e584a1f8c6c80d96c533d88dc02300805289) Thanks [@intech](https://github.com/intech)! - Clear the remaining dependency advisories, and keep one `@bufbuild/protobuf` in the
+  workspace.
+  
+  `@bufbuild/buf` moves to 1.72.0. `@bufbuild/protoplugin` now moves together with
+  `@bufbuild/protobuf` and `@bufbuild/protoc-gen-es` under the single-instance pin: it
+  had lagged one release behind and pinned a second copy of `@bufbuild/protobuf`, which
+  is exactly the split the pin exists to prevent -- two instances break
+  `@connectrpc/connect`'s protobuf peer and the reflection DTS build. The protobuf-es and
+  connect-es versions this release requires are in the protobuf-es 2.16 / Connect 2.2
+  entry.
+  
+  Several `overrides` were pinned to the version that closed an *earlier* advisory
+  and had since been superseded: `brace-expansion` 5.0.5 -> 5.0.9, `js-yaml` 4.2.0 ->
+  4.3.0 (plus a new pin for the 3.x line `@changesets/cli` pulls), `fast-uri` 3.1.2 ->
+  3.1.5, `basic-ftp` 5.2.2 -> 5.3.1, `protobufjs` 7.6.3 -> 7.6.5, and new pins for
+  `ip-address`, `linkify-it`, `undici` and `ws`. Every target is published and stays
+  inside the major already installed.
+  
+  `pnpm audit` now reports no vulnerabilities at any severity, dev included; it
+  previously reported 1 critical, 21 high and 14 moderate.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: the `NOT_FOUND` message of `Health.Check` repeats at most the first 128 characters of the requested service name (cut with an ellipsis; shorter names are echoed unchanged). The whole name used to be embedded, so a name of about 70,000 characters made the response larger than an HTTP/2 frame: the stream failed with a frame-size error and the next call on the same connection could be refused. Such a request now gets an ordinary `NOT_FOUND` and the connection stays usable.
+
+- [#635](https://github.com/Connectum-Framework/connectum/pull/635) [`de65ce7`](https://github.com/Connectum-Framework/connectum/commit/de65ce732d84852bb3840fe7402ef445477bff61) Thanks [@intech](https://github.com/intech)! - fix: `GET /healthz?service=` (an empty `service` value) now reports `"service": "overall"` in the JSON body, as a request without the parameter does and as the guide documents. The status and the HTTP code were already those of the overall state; only the body field was an empty string.
+
+- [#651](https://github.com/Connectum-Framework/connectum/pull/651) [`70b91ca`](https://github.com/Connectum-Framework/connectum/commit/70b91caeffef5753cef81dccd1bfe2fdd7b50a93) Thanks [@intech](https://github.com/intech)! - fix: every package manifest now carries `homepage` (the package page on https://connectum.dev), `bugs.url` (the repository issue tracker) and one `repository` form (`git+https://github.com/Connectum-Framework/connectum.git` plus the package `directory`). Before, none of the 15 packages declared `homepage` or `bugs`, so the npm package page had no documentation or issue links and `npm docs` / `npm bugs` had nothing to open; the four events adapters also wrote `repository.url` without the `git+` prefix. The release gate now fails if any installed package differs from this form.
+
+- [#278](https://github.com/Connectum-Framework/connectum/pull/278) [`f4dc088`](https://github.com/Connectum-Framework/connectum/commit/f4dc0888255c9c9cf1c2e9bba2b18a7341bcf95d) Thanks [@intech](https://github.com/intech)! - feat(otel): export the `OtelProvider` type returned by `getProvider()`
+  
+  - `@connectum/otel`: `getProvider()` returned a type the package did not
+    export, so callers could not name it to store or pass the provider on. It is
+    now exported (from the root entry and from `@connectum/otel/provider`) as an
+    interface — `tracer`, `meter`, `logger` and `shutdown()` — with no public
+    constructor: the package still keeps exactly one provider per process.
+    `provider.shutdown()` does not reset that instance; `shutdownProvider()` does.
+  - `@connectum/testing`: the `InMemorySpanCollector` docs named a
+    `registerGlobal` method that does not exist. They now describe the real way to
+    make the collector global: `trace.setGlobalTracerProvider(collector.provider)`,
+    then `trace.disable()` before `dispose()`.
+  - `@connectum/healthcheck`: the `ServingStatus` docs list the enum values of the
+    gRPC Health Checking Protocol it re-exports.
+
+- [#325](https://github.com/Connectum-Framework/connectum/pull/325) [`3591014`](https://github.com/Connectum-Framework/connectum/commit/35910149aa614a388cfadbb11968b3deb57aad13) Thanks [@intech](https://github.com/intech)! - docs: the package READMEs are short entry points (install, a runnable start, constraints, links) and the long reference tables now live on the documentation site and in the API reference. The facts that exist only in a README stay there: the cancellation migration notes of `@connectum/interceptors`, the request initializer migration of `@connectum/protoc-gen-catalog`, the dependency injection and testing section of `@connectum/events`, the verified RabbitMQ and Kafka broker lines and the integration-suite instructions of the AMQP and Kafka adapters. Examples in the READMEs of eight packages and the Quickstart are executed against the packed packages by `pnpm docs:check`. JSDoc of a few exports was corrected to match the code; no runtime behavior changes.
+
+- [#277](https://github.com/Connectum-Framework/connectum/pull/277) [`90a5a5f`](https://github.com/Connectum-Framework/connectum/commit/90a5a5fcddb895b8ca2b5a922ea5ca54bdad6ba5) Thanks [@intech](https://github.com/intech)! - Require `@bufbuild/protobuf`, `@bufbuild/protoc-gen-es` and `@bufbuild/protoplugin` `^2.16.0` and `@connectrpc/connect` / `@connectrpc/connect-node` `^2.2.0`. Generate your code with `protoc-gen-es` 2.16 and keep one `@bufbuild/protobuf` version in your project. When an application pins an older `@bufbuild/protobuf` than the one Connectum resolves, two copies get installed, and message and service types generated against one copy no longer match the other.
+
+- [#283](https://github.com/Connectum-Framework/connectum/pull/283) [`0cc15bb`](https://github.com/Connectum-Framework/connectum/commit/0cc15bb38fe23d8e9ac1a4b669b97c0b496d5e76) Thanks [@intech](https://github.com/intech)! - `ProtocolContext` gains `services`: the services mounted before the protocol, in registration order, as a frozen snapshot next to `registry`.
+  
+  `registry` holds the files of the mounted services, and a file may declare more services than are mounted (several services in one proto file, or `enabledServices` mounting a subset). Everything that reasons about served services now uses the mounted ones:
+  
+  - `@connectum/healthcheck` tracks only mounted services: an unmounted service declared in the same file as a mounted one no longer appears in `List`, and `Check` for it answers `NOT_FOUND`.
+  - `@connectum/reflection` lists only mounted services in `list_services`.
+  - `server.start()` transport validation checks only mounted application services. Before, a mounted unary service whose file also declared an unmounted bidi service failed startup on plaintext HTTP/1.1 with `CONNECTUM_UNSUPPORTED_STREAMING_TRANSPORT` for a method nobody could call. `collectStreamingMethods` now also accepts `DescService`s; passing files keeps the previous meaning (every service the files declare).
+  
+  Custom protocols that derived service names from `context.registry[].services` should switch to `context.services`. Code that builds a `ProtocolContext` by hand (tests calling `setup` directly) must now pass `services` as well.
+
 ## 1.2.0
 
 ## 1.1.0

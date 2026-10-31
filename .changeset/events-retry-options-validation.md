@@ -1,5 +1,0 @@
----
-"@connectum/events": minor
----
-
-fix: `retryMiddleware` (and `createEventBus` with `middleware.retry`) now validates `initialDelay`, `maxDelay`, `multiplier` and `backoff` when it is created, as it already did for `maxRetries`. Bad values used to produce pauses of 1 to 3 ms between attempts (a retry storm), `TimeoutNaNWarning` / `TimeoutOverflowWarning`, or a silent fall-back to fixed backoff for an unknown strategy name. The accepted ranges are: `initialDelay` a finite number from 0 to 2147483647 ms, `maxDelay` from 1 to 2147483647 ms, `multiplier` a finite number of at least 1, `backoff` one of `"exponential"`, `"linear"`, `"fixed"`. Anything else throws a `RangeError` (or a `TypeError` for the wrong type) naming the option and the received value. **Behaviour change:** configurations with these values used to start and misbehave at delivery time, and now throw at creation; an omitted option and every value inside the ranges are unchanged. Shipped as minor because a configuration that used to start now throws.
