@@ -88,6 +88,9 @@ function warnOnConfigurationDrift(streamName: string, existing: ConsumerInfo, re
 /** JetStream API error code: the consumer does not exist. */
 const CONSUMER_NOT_FOUND = 10014;
 
+/** JetStream API error code: the stream does not exist. */
+const STREAM_NOT_FOUND = 10059;
+
 /** JetStream API error code: a consumer of that name exists with a different configuration. */
 const CONSUMER_ALREADY_EXISTS = 10148;
 
@@ -103,6 +106,11 @@ function apiErrorCode(err: unknown): number | undefined {
 /** Whether `err` is the JetStream "consumer not found" API error. A missing stream is a different error and is not matched. */
 export function isConsumerNotFound(err: unknown): boolean {
     return apiErrorCode(err) === CONSUMER_NOT_FOUND;
+}
+
+/** Whether `err` is the JetStream "stream not found" API error. */
+export function isStreamNotFound(err: unknown): boolean {
+    return apiErrorCode(err) === STREAM_NOT_FOUND;
 }
 
 /** Whether `err` is the JetStream refusal to create a consumer that exists with a different configuration. */
