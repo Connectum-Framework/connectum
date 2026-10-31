@@ -29,7 +29,11 @@ import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader } f
 import { BatchSpanProcessor, ConsoleSpanExporter, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import type { CollectorOptions, OTLPSettings } from "./config.ts";
-import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getHttpExporterOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+import { ExporterType, getBatchSpanProcessorOptions, getCollectorOptions, getGrpcExporterOptions, getHttpExporterOptions, getOTLPSettings, getServiceMetadata } from "./config.ts";
+import { createThrottledDiagLogger } from "./diagThrottle.ts";
+
+/** How long an identical diagnostics error is held back after it was printed. */
+const DIAG_REPEAT_WINDOW_MS = 60_000;
 
 /** OpenTelemetry semconv key for the service instance id. */
 const ATTR_SERVICE_INSTANCE_ID = "service.instance.id";
@@ -54,8 +58,84 @@ export interface ProviderOptions {
      * over attributes parsed from the `OTEL_RESOURCE_ATTRIBUTES` env var.
      */
     resourceAttributes?: Record<string, string | number | boolean>;
-    /** Override OTLP exporter settings (defaults to env-based config) */
+    /**
+     * Override the exporter of a signal (defaults to the environment, see
+     * {@link getOTLPSettings}). `initProvider()` throws `TypeError` for a key other
+     * than `traces`, `metrics` or `logs` and for a value that is not an
+     * {@link ExporterType}; the bare `otlp` accepted by the environment variables is
+     * not one, use `otlp/http-protobuf`. An entry that is absent or `undefined`
+     * falls back to the environment.
+     */
     settings?: Partial<OTLPSettings>;
+}
+
+/** Options of {@link shutdownProvider}. */
+export interface ShutdownProviderOptions {
+    /**
+     * Longest time in milliseconds the call waits for the exporters to deliver what they
+     * hold. When it passes, the call rejects with an error named `TimeoutError`. The
+     * provider is released either way, and the exporters keep trying in the background
+     * until their own timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`, 10 seconds by default) ends.
+     * The OpenTelemetry API global registrations (tracer provider, context manager,
+     * propagator, meter and logger provider) are released only when that stop ends, so a
+     * provider created before then does not obtain them.
+     * Must be above 0 and at most 2147483647 (the longest delay a Node.js timer keeps). Without it the call waits as long as the
+     * exporters need.
+     */
+    timeout?: number;
+}
+
+const SETTINGS_SIGNALS: readonly string[] = ["traces", "metrics", "logs"];
+const SETTINGS_EXPORTERS: readonly string[] = Object.values(ExporterType);
+
+/**
+ * Throws `TypeError` for `settings` that name no signal or no exporter. The
+ * environment variables are lenient because they are read inside the first
+ * instrumented call; a value written in code is the programmer's and fails at once.
+ */
+function validateSettings(settings: unknown): void {
+    if (settings === undefined) {
+        return;
+    }
+    if (typeof settings !== "object" || settings === null) {
+        throw new TypeError(`initProvider: settings must be an object with the keys ${SETTINGS_SIGNALS.join(", ")}, got ${JSON.stringify(settings)}.`);
+    }
+    for (const [signal, exporter] of Object.entries(settings)) {
+        if (!SETTINGS_SIGNALS.includes(signal)) {
+            throw new TypeError(`initProvider: unknown key ${JSON.stringify(signal)} in settings; expected ${SETTINGS_SIGNALS.join(", ")}.`);
+        }
+        if (exporter !== undefined && !SETTINGS_EXPORTERS.includes(exporter as string)) {
+            throw new TypeError(`initProvider: settings.${signal} is ${JSON.stringify(exporter)}; expected one of ${SETTINGS_EXPORTERS.join(", ")}.`);
+        }
+    }
+}
+
+/**
+ * Splits `key1=value1,key2=value2` on the raw `,` and the first `=`, trims the
+ * whitespace around each part and percent-decodes it. Returns `undefined` when a
+ * part is not valid percent-encoding.
+ */
+function readResourceAttributes(raw: string | undefined): Record<string, string> | undefined {
+    if (raw === undefined || raw === "") {
+        return {};
+    }
+    const result: Record<string, string> = {};
+    try {
+        for (const pair of raw.split(",")) {
+            const eq = pair.indexOf("=");
+            if (eq <= 0) {
+                continue;
+            }
+            const key = decodeURIComponent(pair.slice(0, eq).trim());
+            const value = decodeURIComponent(pair.slice(eq + 1).trim());
+            if (key !== "") {
+                result[key] = value;
+            }
+        }
+    } catch {
+        return undefined;
+    }
+    return result;
 }
 
 /**
@@ -63,24 +143,21 @@ export interface ProviderOptions {
  * (`key1=value1,key2=value2`) into an attribute record. Malformed pairs (no
  * `=`, empty key) are skipped. Values are kept as strings; whitespace around
  * keys and values is trimmed.
+ *
+ * Keys and values are percent-decoded, as the OpenTelemetry Resource SDK
+ * specification requires: `,` and `=` inside a key or value are written `%2C` and
+ * `%3D`. The text is split on the raw separators first, so an encoded comma stays
+ * in its value; `+` is not a space. When a part is not valid percent-encoding the
+ * whole variable is discarded: this returns `{}` and emits a process warning (code
+ * `CONNECTUM_OTEL_INVALID_ENV`) naming the variable.
  */
 export function parseOtelResourceAttributesEnv(raw: string | undefined): Record<string, string> {
-    if (raw === undefined || raw === "") {
+    const attributes = readResourceAttributes(raw);
+    if (attributes === undefined) {
+        process.emitWarning(`OTEL_RESOURCE_ATTRIBUTES="${raw}" is not valid percent-encoding; the whole variable is ignored.`, { code: "CONNECTUM_OTEL_INVALID_ENV" });
         return {};
     }
-    const result: Record<string, string> = {};
-    for (const pair of raw.split(",")) {
-        const eq = pair.indexOf("=");
-        if (eq <= 0) {
-            continue;
-        }
-        const key = pair.slice(0, eq).trim();
-        const value = pair.slice(eq + 1).trim();
-        if (key !== "") {
-            result[key] = value;
-        }
-    }
-    return result;
+    return attributes;
 }
 
 /** Inputs for {@link resolveServiceName}. */
@@ -105,7 +182,8 @@ export function resolveServiceName(inputs: ServiceNameInputs = {}): string {
     return (
         nonEmpty(inputs.explicit) ??
         nonEmpty(env.OTEL_SERVICE_NAME) ??
-        nonEmpty(parseOtelResourceAttributesEnv(env.OTEL_RESOURCE_ATTRIBUTES)[ATTR_SERVICE_NAME]) ??
+        // Read silently: the same variable is read again, and reported, by buildResourceAttributes().
+        nonEmpty(readResourceAttributes(env.OTEL_RESOURCE_ATTRIBUTES)?.[ATTR_SERVICE_NAME]) ??
         nonEmpty(env.npm_package_name) ??
         "unknown-service"
     );
@@ -224,8 +302,9 @@ class OtelProviderImpl implements OtelProvider {
     private readonly resource: Resource;
 
     constructor(options?: ProviderOptions) {
-        // Set diagnostic logger to ERROR level
-        diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+        // Diagnostics at ERROR level. Export failures arrive here, and with a collector that is
+        // down they would otherwise repeat for every span batch, log record and metric interval.
+        diag.setLogger(createThrottledDiagLogger({ target: new DiagConsoleLogger(), windowMs: DIAG_REPEAT_WINDOW_MS }), DiagLogLevel.ERROR);
 
         // Load configuration from environment, apply overrides
         const envSettings = getOTLPSettings();
@@ -288,11 +367,9 @@ class OtelProviderImpl implements OtelProvider {
         } else if (this.settings.traces === ExporterType.OTLP_HTTP_PROTOBUF) {
             traceExporter = new OTLPTraceExporterProto(getHttpExporterOptions(this.collectorOptions, "TRACES"));
         } else if (this.settings.traces === ExporterType.OTLP_GRPC) {
-            traceExporter = new OTLPTraceExporterGRPC(
-                this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
-            );
+            traceExporter = new OTLPTraceExporterGRPC(getGrpcExporterOptions(this.collectorOptions, "TRACES"));
         } else {
-            // Default to console
+            // `console`: the only value left once the settings have been resolved and validated
             traceExporter = new ConsoleSpanExporter();
         }
 
@@ -359,11 +436,9 @@ class OtelProviderImpl implements OtelProvider {
         } else if (this.settings.metrics === ExporterType.OTLP_HTTP_PROTOBUF) {
             metricExporter = new OTLPMetricExporterProto(getHttpExporterOptions(this.collectorOptions, "METRICS"));
         } else if (this.settings.metrics === ExporterType.OTLP_GRPC) {
-            metricExporter = new OTLPMetricExporterGRPC(
-                this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
-            );
+            metricExporter = new OTLPMetricExporterGRPC(getGrpcExporterOptions(this.collectorOptions, "METRICS"));
         } else {
-            // Default to console
+            // `console`: the only value left once the settings have been resolved and validated
             metricExporter = new ConsoleMetricExporter();
         }
 
@@ -406,11 +481,9 @@ class OtelProviderImpl implements OtelProvider {
         } else if (this.settings.logs === ExporterType.OTLP_HTTP_PROTOBUF) {
             logExporter = new OTLPLogExporterProto(getHttpExporterOptions(this.collectorOptions, "LOGS"));
         } else if (this.settings.logs === ExporterType.OTLP_GRPC) {
-            logExporter = new OTLPLogExporterGRPC(
-                this.collectorOptions.url ? { ...this.collectorOptions, url: this.collectorOptions.url } : { concurrencyLimit: this.collectorOptions.concurrencyLimit },
-            );
+            logExporter = new OTLPLogExporterGRPC(getGrpcExporterOptions(this.collectorOptions, "LOGS"));
         } else {
-            // Default to console
+            // `console`: the only value left once the settings have been resolved and validated
             logExporter = new ConsoleLogRecordExporter();
         }
 
@@ -466,6 +539,13 @@ class OtelProviderImpl implements OtelProvider {
 
 let provider: OtelProvider | undefined;
 
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+// Stops that have not settled yet. The provider reference is cleared when a stop
+// starts, so without this a second call would see nothing to stop and return before
+// the first call's flush had finished.
+const stopping = new Set<Promise<void>>();
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -479,11 +559,26 @@ let provider: OtelProvider | undefined;
  * Call {@link shutdownProvider} first to re-initialize with new options.
  *
  * @param options - Optional provider configuration overrides
+ * @throws TypeError when `options.settings` names a signal or an exporter that
+ * does not exist. The check runs before anything is created, also when a provider
+ * already exists and the options would otherwise be ignored.
  */
 export function initProvider(options?: ProviderOptions): void {
+    validateSettings(options?.settings);
     if (provider === undefined) {
         provider = new OtelProviderImpl(options);
     }
+}
+
+/**
+ * Whether a provider exists, without creating one. The provider registers the
+ * OpenTelemetry diagnostics logger when it is created, so code that wants to report
+ * through `diag` can tell whether the report would be seen.
+ *
+ * @internal
+ */
+export function hasProvider(): boolean {
+    return provider !== undefined;
 }
 
 /**
@@ -516,16 +611,58 @@ export function getProvider(): OtelProvider {
  * to other code is left alone. Interceptors created earlier keep working: they
  * record into whichever provider is current.
  *
+ * A call made while another call is still stopping a provider waits for that stop
+ * too and settles with the same outcome, so two independent shutdown hooks cannot
+ * race ahead of the flush. Once the stop has settled, a further call is a no-op.
+ *
+ * The wait is bounded by the exporters (`OTEL_EXPORTER_OTLP_TIMEOUT`, 10 seconds
+ * by default, per export). Pass `timeout` to bound it to what the surrounding shutdown
+ * allows; see {@link ShutdownProviderOptions.timeout}.
+ *
+ * @param options - Optional deadline for this call
  * @throws The failure of the one signal that could not stop, or an
  * `AggregateError` carrying the failures when several could not
+ * @throws An error named `TimeoutError` when `options.timeout` passed first
+ * @throws TypeError when `options.timeout` is not a number above 0 and at most 2147483647
  */
-export async function shutdownProvider(): Promise<void> {
-    if (provider === undefined) {
+export async function shutdownProvider(options?: ShutdownProviderOptions): Promise<void> {
+    const timeout = options?.timeout;
+    // 2147483647 ms is the longest delay a Node.js timer keeps; a larger one fires after 1 ms.
+    if (timeout !== undefined && !(typeof timeout === "number" && timeout > 0 && timeout <= MAX_TIMER_DELAY)) {
+        throw new TypeError(`shutdownProvider: timeout must be a number of milliseconds above 0 and at most ${MAX_TIMER_DELAY}, got ${String(timeout)}.`);
+    }
+    if (provider !== undefined) {
+        const current = provider;
+        // Cleared whatever the outcome: a provider whose shutdown failed is
+        // half-stopped, and handing it out again would send telemetry nowhere.
+        provider = undefined;
+        const run: Promise<void> = current.shutdown().finally(() => stopping.delete(run));
+        stopping.add(run);
+    }
+    if (stopping.size === 0) {
         return;
     }
-    const stopping = provider;
-    // Cleared whatever the outcome: a provider whose shutdown failed is
-    // half-stopped, and handing it out again would send telemetry nowhere.
-    provider = undefined;
-    await stopping.shutdown();
+    // Every stop is awaited before the first failure is rethrown: a hook that exits the process must
+    // not run while a later stop is still flushing.
+    const settled = Promise.allSettled([...stopping]).then((outcomes) => {
+        for (const outcome of outcomes) {
+            if (outcome.status === "rejected") {
+                throw outcome.reason;
+            }
+        }
+    });
+    await (timeout === undefined ? settled : withDeadline(settled, timeout));
+}
+
+/** Rejects with a `TimeoutError` when `work` has not settled within `timeout` milliseconds. */
+function withDeadline(work: Promise<void>, timeout: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(`OpenTelemetry provider shutdown did not finish within ${timeout} ms.`);
+            error.name = "TimeoutError";
+            reject(error);
+        }, timeout);
+    });
+    return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
 }

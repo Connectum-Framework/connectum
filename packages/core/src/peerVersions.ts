@@ -75,8 +75,9 @@ export class PeerDependencyVersionError extends Error {
 
     constructor(problems: readonly PeerVersionProblem[]) {
         super(formatProblems(problems));
+        // No self-referencing `setPrototypeOf` here: it makes the bundler give the class
+        // an underscore-prefixed name in the published code.
         this.problems = problems;
-        Object.setPrototypeOf(this, PeerDependencyVersionError.prototype);
     }
 }
 
@@ -96,7 +97,7 @@ function formatProblems(problems: readonly PeerVersionProblem[]): string {
         ...lines,
         "Generated code and the framework must share one in-range copy of each library; an older copy breaks generated types and Connect at runtime.",
         ...(lockstep ? ["@connectrpc/connect-node works only with the exact @connectrpc/connect version it declares: keep both on the same version, with a single copy."] : []),
-        `Fix: raise your pins to the required ranges${installs ? ` (npm install ${installs}, or the pnpm / bun equivalent)` : ""}, or force one in-range version with "overrides" (npm, Bun) or pnpm "overrides", then reinstall.`,
+        `Fix: raise your pins to the required ranges${installs ? ` (npm install ${installs}, or the pnpm / bun equivalent)` : ""}, or force one in-range version with "overrides" in package.json (npm, Bun), "resolutions" in package.json (Yarn) or "overrides" in pnpm-workspace.yaml (pnpm 11 and later; the "pnpm" field of package.json is no longer read), then reinstall.`,
     ].join("\n");
 }
 

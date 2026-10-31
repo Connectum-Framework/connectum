@@ -10,7 +10,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { TimeoutStrategy, timeout } from "cockatiel";
 import type { TimeoutOptions } from "./types.ts";
-import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
+import { MAX_TIMER_MS, requireBoolean, requireInteger, requireOptionsObject } from "./validate.ts";
 
 /**
  * Create timeout interceptor
@@ -67,10 +67,12 @@ import { MAX_TIMER_MS, requireInteger } from "./validate.ts";
  * ```
  */
 export function createTimeoutInterceptor(options: TimeoutOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createTimeoutInterceptor", value: options });
     const { duration = 30000, skipStreaming = true } = options;
 
     // Validate options
     requireInteger({ caller: "createTimeoutInterceptor", option: "duration", value: duration, min: 1, max: MAX_TIMER_MS, unit: "milliseconds" });
+    requireBoolean({ caller: "createTimeoutInterceptor", option: "skipStreaming", value: skipStreaming });
 
     // A successfully opened stream must keep running after the policy returns.
     const policy = timeout(duration, { strategy: TimeoutStrategy.Aggressive, abortOnReturn: false });
@@ -90,7 +92,9 @@ export function createTimeoutInterceptor(options: TimeoutOptions = {}): Intercep
         let derivedSignal: AbortSignal | undefined;
         const cancelFromParent = () => {
             cancellation ??= ConnectError.from(req.signal.reason, Code.Canceled);
-            relay.abort(cancellation);
+            // Downstream sees the caller's own reason, as it would from a signal derived
+            // from the caller's; the mapped ConnectError is what this call throws.
+            relay.abort(req.signal.reason);
         };
         const cancelFromPolicy = () => {
             cancellation ??= new ConnectError(`Request timeout after ${duration}ms`, Code.DeadlineExceeded);
@@ -108,11 +112,20 @@ export function createTimeoutInterceptor(options: TimeoutOptions = {}): Intercep
                     cancelFromPolicy();
                 }
 
-                // Keep the original parent linked after the policy disposes its
-                // own link on successful stream opening. Other fields retain
-                // their descriptors and shared headers/context/message identity.
+                // A unary call is over when `next` settles, so the relay is all it needs:
+                // the caller's abort reaches it through the listener above, which is
+                // removed in `finally`. Deriving the signal with `AbortSignal.any` here
+                // would hang a dependent signal on the caller's, and on a signal that
+                // lives as long as the application (a shutdown signal shared by every
+                // call) those links pile up, about 8 KB per call, and are never freed.
+                //
+                // An opened stream outlives this function, and the policy disposes its
+                // own link on successful opening, so a stream keeps the original parent
+                // linked through `AbortSignal.any`. Other fields retain their
+                // descriptors and shared headers/context/message identity.
+                const downstreamSignal = req.stream ? AbortSignal.any([req.signal, relay.signal]) : relay.signal;
                 const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(req);
-                descriptors.signal = { value: AbortSignal.any([req.signal, relay.signal]), enumerable: true, configurable: true, writable: true };
+                descriptors.signal = { value: downstreamSignal, enumerable: true, configurable: true, writable: true };
                 const downstreamRequest: typeof req = Object.create(Object.getPrototypeOf(req), descriptors);
                 return next(downstreamRequest);
             }, req.signal);

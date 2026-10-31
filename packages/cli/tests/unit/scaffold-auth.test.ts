@@ -51,8 +51,11 @@ describe("generateAuthFile", () => {
         assert.equal(publicMethods?.arguments.map((a) => a.getText()).join(), "[GreeterService]");
         const skipMethods = jwtOptions.find((p) => p.name === "skipMethods")?.value ?? "";
         assert.ok(skipMethods.includes("...publicMethods"), skipMethods);
-        // The gRPC health and reflection protocols are reachable by probes and tooling without a token.
-        assert.ok(skipMethods.includes('"grpc.health.v1.Health/*"') && skipMethods.includes('"grpc.reflection.v1.ServerReflection/*"'), skipMethods);
+        // The gRPC health and reflection protocols are reachable by probes and tooling without a token:
+        // skipped by the JWT interceptor AND allowed by the authorizer (see the next test, and the
+        // integration test that runs the generated chain on a real server).
+        assert.ok(skipMethods.includes("...protocolMethods"), skipMethods);
+        assert.deepEqual(protocolMethodsOf(sf), ["grpc.health.v1.Health/*", "grpc.reflection.v1.ServerReflection/*", "grpc.reflection.v1alpha.ServerReflection/*"]);
 
         // The chain is authentication, then authorization: the authorizer reads the identity the
         // JWT interceptor established.
@@ -61,6 +64,85 @@ describe("generateAuthFile", () => {
         assert.equal(returned, "[jwtAuth, authz]");
         const declared = Object.fromEntries(collectNodes(fn as ts.Node, ts.isVariableDeclaration).map((d) => [d.name.getText(), d.initializer?.getText().split("(")[0]]));
         assert.deepEqual(declared, { jwtAuth: "createJwtAuthInterceptor", authz: "createProtoAuthzInterceptor" });
+    });
+});
+
+/** The string literals of `const protocolMethods = [...]`, or undefined when the module has no such constant. */
+function protocolMethodsOf(sf: ts.SourceFile): string[] | undefined {
+    const declaration = collectNodes(sf, ts.isVariableDeclaration).find((d) => d.name.getText() === "protocolMethods");
+    const array = declaration?.initializer;
+    return array !== undefined && ts.isArrayLiteralExpression(array) ? array.elements.filter(ts.isStringLiteral).map((e) => e.text) : undefined;
+}
+
+describe("generateAuthFile: the protocol endpoints", () => {
+    // The authorizer is deny-by-default. A service named only in the JWT interceptor's `skipMethods`
+    // gets past authentication, reaches the authorizer without an identity and is refused there with
+    // `unauthenticated`: this was the state of the scaffolded chain for Health and reflection.
+    it("gives the authorizer an unconditional allow rule for exactly the services the JWT interceptor skips", () => {
+        const sf = parseGenerated(generateAuthFile({ healthcheck: true, reflection: true }), "auth.ts");
+        const [authz] = callsTo(sf, "createProtoAuthzInterceptor");
+        assert.ok(authz !== undefined);
+        const options = propertiesOf(authz.arguments[0] as ts.Node);
+        assert.deepEqual(
+            options.map((p) => p.name).filter((name) => !interfaceKeys("auth/src/types.ts", "ProtoAuthzInterceptorOptions").has(name)),
+            [],
+            "createProtoAuthzInterceptor is given an option it does not have",
+        );
+        const rules = collectNodes(authz, ts.isArrayLiteralExpression)[0];
+        assert.ok(rules !== undefined, authz.getText());
+        const [rule] = collectNodes(rules, ts.isObjectLiteralExpression);
+        const ruleProperties = propertiesOf(rule as ts.Node);
+        assert.deepEqual(
+            ruleProperties.map((p) => p.name).filter((name) => !interfaceKeys("auth/src/types.ts", "AuthzRule").has(name)),
+            [],
+            "the rule has a property AuthzRule does not have",
+        );
+        // No `requires`: an allow rule that demanded roles or scopes would again need an identity.
+        assert.deepEqual(
+            ruleProperties.map((p) => p.name),
+            ["name", "methods", "effect"],
+        );
+        assert.equal(ruleProperties.find((p) => p.name === "methods")?.value, "protocolMethods");
+        assert.equal(ruleProperties.find((p) => p.name === "effect")?.value, "AuthzEffect.ALLOW");
+    });
+
+    it("lists the health service only when the project mounts it, and the reflection services only when it mounts those", () => {
+        const protocols = (modules: { healthcheck?: boolean; reflection?: boolean }): string[] | undefined => protocolMethodsOf(parseGenerated(generateAuthFile(modules), "auth.ts"));
+
+        assert.deepEqual(protocols({ healthcheck: true, reflection: false }), ["grpc.health.v1.Health/*"]);
+        assert.deepEqual(protocols({ healthcheck: false, reflection: true }), ["grpc.reflection.v1.ServerReflection/*", "grpc.reflection.v1alpha.ServerReflection/*"]);
+        // Unset means mounted: both are on by default.
+        assert.equal(protocols({})?.length, 3);
+    });
+
+    it("opens nothing, and imports nothing for it, when neither protocol is mounted", () => {
+        const source = generateAuthFile({ healthcheck: false, reflection: false });
+        const sf = parseGenerated(source, "auth.ts");
+
+        assert.equal(protocolMethodsOf(sf), undefined);
+        assert.doesNotMatch(source, /AuthzEffect|protocolMethods|grpc\.health|grpc\.reflection/);
+        const [authz] = callsTo(sf, "createProtoAuthzInterceptor");
+        assert.equal(authz?.arguments.length, 0);
+        const [jwt] = callsTo(sf, "createJwtAuthInterceptor");
+        assert.equal(propertiesOf(jwt?.arguments[0] as ts.Node).find((p) => p.name === "skipMethods")?.value, "[...publicMethods]");
+    });
+
+    it("resolves every name it imports against @connectum/auth, with the protocols both on and both off", () => {
+        for (const modules of [{}, { healthcheck: false, reflection: false }]) {
+            assert.deepEqual(unresolvedWorkspaceImports(parseGenerated(generateAuthFile(modules), "auth.ts")), [], JSON.stringify(modules));
+        }
+    });
+
+    it("is what the transform writes for a project with the protocols switched off", () => {
+        const out = transformBase(
+            new Map<string, string>([
+                ["package.json", JSON.stringify({ name: "b", dependencies: { "@connectum/core": "^1.2.0" }, devDependencies: {} })],
+                ["proto/greeter/v1/greeter.proto", BASE_GREETER_PROTO],
+            ]),
+            { ...authConfig, modules: { auth: true, healthcheck: false, reflection: true } },
+        );
+
+        assert.deepEqual(protocolMethodsOf(parseGenerated(out.get("src/auth.ts") ?? "", "auth.ts")), ["grpc.reflection.v1.ServerReflection/*", "grpc.reflection.v1alpha.ServerReflection/*"]);
     });
 });
 

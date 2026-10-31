@@ -12,6 +12,8 @@
  * @module validate
  */
 
+import { Code } from "@connectrpc/connect";
+
 /**
  * Largest delay in milliseconds the Node.js timer honours. A longer delay does not
  * wait longer: the runtime fires the timer after 1 ms, so a "very long" timeout
@@ -37,6 +39,47 @@ function describeValue(value: unknown): string {
         return `${value}n`;
     }
     return String(value);
+}
+
+/**
+ * Require an options argument to be an object. `null`, numbers, strings, arrays and
+ * functions are refused: destructuring them would either throw a raw `TypeError` that
+ * does not name the factory or, for a string or an array, silently read nothing.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.value - the received argument
+ * @param options.name - what the argument is called in the message; `"options"` by default
+ * @throws TypeError if `value` is not an object
+ */
+export function requireOptionsObject(options: { caller: string; value: unknown; name?: string }): void {
+    const { caller, value, name = "options" } = options;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${name} must be an object, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require a value to be an array whose entries are all functions. An entry that is
+ * `null`, `undefined` or anything else is refused instead of being skipped, so a
+ * missing interceptor cannot go unnoticed.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.subject - what the array is, e.g. `the interceptors of "svc/*"`
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not an array, or an entry is not a function
+ */
+export function requireFunctionArray(options: { caller: string; subject: string; value: unknown }): void {
+    const { caller, subject, value } = options;
+    if (!Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${subject} must be an array of functions, got ${describeValue(value)}`);
+    }
+    // An index loop, not forEach: forEach skips the holes of a sparse array.
+    for (let index = 0; index < value.length; index++) {
+        const entry: unknown = value[index];
+        if (typeof entry !== "function") {
+            throw new TypeError(`${caller}: entry ${index} of ${subject} must be a function, got ${describeValue(entry)}`);
+        }
+    }
 }
 
 /**
@@ -126,4 +169,104 @@ export function requireDefaultOption(options: { option: string; value: unknown; 
         return;
     }
     throw new TypeError(`${option} must be ${EXPECTATION[kind]}, got ${describeValue(value)}`);
+}
+
+/**
+ * Require every own enumerable key of an options object to be one the factory
+ * knows. A mistyped key is otherwise ignored, so the caller asks for a behavior
+ * (a timeout, say) and silently gets none. A key whose value is `undefined` still
+ * counts: its name is wrong whatever it holds.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.value - the received options object
+ * @param options.known - every key the factory accepts, in the order to list them
+ * @throws TypeError naming every unknown key and listing the known ones
+ */
+export function requireKnownKeys(options: { caller: string; value: object; known: readonly string[] }): void {
+    const { caller, value, known } = options;
+    const unknown = Object.keys(value).filter((key) => !known.includes(key));
+    if (unknown.length > 0) {
+        const names = unknown.map((key) => JSON.stringify(key)).join(", ");
+        throw new TypeError(`${caller}: unknown option${unknown.length > 1 ? "s" : ""} ${names}; the known options are ${known.join(", ")}`);
+    }
+}
+
+/**
+ * Require an option to be a boolean. Truthy and falsy values of other types are
+ * refused: `"no"` or `"yes"` would otherwise be read as `true`, `0` or `null` as `false`.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not a boolean
+ */
+export function requireBoolean(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (typeof value !== "boolean") {
+        throw new TypeError(`${caller}: ${option} must be true or false, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require an option to be a function.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not a function
+ */
+export function requireFunction(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (typeof value !== "function") {
+        throw new TypeError(`${caller}: ${option} must be a function, got ${describeValue(value)}`);
+    }
+}
+
+/**
+ * Require an option to be one of a fixed list of strings.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @param options.allowed - the accepted strings
+ * @throws TypeError if `value` is not a string
+ * @throws RangeError if `value` is a string outside the list
+ */
+export function requireOneOf(options: { caller: string; option: string; value: unknown; allowed: readonly string[] }): void {
+    const { caller, option, value, allowed } = options;
+    const message = `${caller}: ${option} must be one of ${allowed.map((entry) => JSON.stringify(entry)).join(", ")}, got ${describeValue(value)}`;
+    if (typeof value !== "string") {
+        throw new TypeError(message);
+    }
+    if (!allowed.includes(value)) {
+        throw new RangeError(message);
+    }
+}
+
+/**
+ * Require an option to be an array of Connect status codes (`Code.Unavailable` and
+ * the like). A string such as `"14"`, a bare number or `null` would otherwise be
+ * accepted and make the interceptor retry nothing, or fail on its first failing call.
+ *
+ * @param options.caller - factory name shown in the message
+ * @param options.option - option name shown in the message
+ * @param options.value - the received value
+ * @throws TypeError if `value` is not an array, or an entry is not a number
+ * @throws RangeError if an entry is a number that is not a Connect code
+ */
+export function requireConnectCodes(options: { caller: string; option: string; value: unknown }): void {
+    const { caller, option, value } = options;
+    if (!Array.isArray(value)) {
+        throw new TypeError(`${caller}: ${option} must be an array of Connect codes, got ${describeValue(value)}`);
+    }
+    // An index loop, not forEach: forEach skips the holes of a sparse array.
+    for (let index = 0; index < value.length; index++) {
+        const entry: unknown = value[index];
+        if (typeof entry !== "number") {
+            throw new TypeError(`${caller}: entry ${index} of ${option} must be a Connect code, got ${describeValue(entry)}`);
+        }
+        if (typeof Code[entry] !== "string") {
+            throw new RangeError(`${caller}: entry ${index} of ${option} must be a Connect code from 1 to 16, got ${describeValue(entry)}`);
+        }
+    }
 }

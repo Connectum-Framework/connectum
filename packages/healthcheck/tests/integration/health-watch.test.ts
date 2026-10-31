@@ -114,8 +114,8 @@ describe("Health.Watch and per-service Health.Check over gRPC", () => {
         }
     });
 
-    // The server is configured with a 20 ms polling interval: a change reaches the
-    // client within a few polls, long before the 500 ms default would deliver it.
+    // The server's re-check interval is 20 ms and a change is announced by the
+    // manager: it reaches the client well before the 500 ms default interval.
     it("delivers a change within the configured watchInterval, not the 500 ms default", async () => {
         manager.initialize([SERVICE]);
         manager.update(ServingStatus.NOT_SERVING, SERVICE);
@@ -155,11 +155,14 @@ describe("Health.Watch and per-service Health.Check over gRPC", () => {
             await delay(100);
             assert.deepStrictEqual(call.received, [ServingStatus.SERVICE_UNKNOWN], "the call stays open and silent while the service is unknown");
 
+            // The service is tracked as UNKNOWN until its first update; every
+            // change is delivered, so the watcher sees that step too instead of
+            // only the state a poll happened to catch.
             manager.initialize([SERVICE, "watch.v1.Later"]);
             manager.update(ServingStatus.SERVING, "watch.v1.Later");
-            await call.until(2);
+            await call.until(3);
 
-            assert.deepStrictEqual(call.received, [ServingStatus.SERVICE_UNKNOWN, ServingStatus.SERVING]);
+            assert.deepStrictEqual(call.received, [ServingStatus.SERVICE_UNKNOWN, ServingStatus.UNKNOWN, ServingStatus.SERVING]);
         } finally {
             await call.stop();
         }

@@ -6,7 +6,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { MAX_TIMER_MS, requireDefaultOption, requireFiniteNumber, requireInteger } from "../../src/validate.ts";
+import { MAX_TIMER_MS, requireDefaultOption, requireFiniteNumber, requireFunctionArray, requireInteger, requireOptionsObject } from "../../src/validate.ts";
 
 const base = { caller: "createX", option: "size" } as const;
 
@@ -120,5 +120,62 @@ describe("requireDefaultOption", () => {
             assert.throws(() => requireDefaultOption({ option: "k", value: null, kind }), TypeError);
             assert.throws(() => requireDefaultOption({ option: "k", value: [], kind }), TypeError);
         }
+    });
+});
+
+describe("requireOptionsObject", () => {
+    it("accepts plain objects, class instances and empty objects", () => {
+        requireOptionsObject({ caller: "createX", value: {} });
+        requireOptionsObject({ caller: "createX", value: { a: 1 } });
+        requireOptionsObject({ caller: "createX", value: new Map() });
+    });
+
+    for (const [label, value, got] of [
+        ["null", null, "null"],
+        ["undefined", undefined, "undefined"],
+        ["a number", 3, "3"],
+        ["a string", "x", '"x"'],
+        ["an array", [], "an array"],
+        ["a function", () => 1, "a function"],
+    ] as const) {
+        it(`refuses ${label} with a TypeError that names the factory and the argument`, () => {
+            assert.throws(
+                () => requireOptionsObject({ caller: "createX", value }),
+                (err: unknown) => err instanceof TypeError && err.message === `createX: options must be an object, got ${got}`,
+            );
+        });
+    }
+
+    it("uses the given name for the argument", () => {
+        assert.throws(
+            () => requireOptionsObject({ caller: "createX", name: "methods", value: null }),
+            (err: unknown) => err instanceof TypeError && err.message === "createX: methods must be an object, got null",
+        );
+    });
+});
+
+describe("requireFunctionArray", () => {
+    it("accepts an empty array and an array of functions", () => {
+        requireFunctionArray({ caller: "createX", subject: "the list", value: [] });
+        requireFunctionArray({ caller: "createX", subject: "the list", value: [() => 1, async () => 2] });
+    });
+
+    it("refuses a non-array with a TypeError that names the subject", () => {
+        assert.throws(
+            () => requireFunctionArray({ caller: "createX", subject: "the list", value: () => 1 }),
+            (err: unknown) => err instanceof TypeError && err.message === "createX: the list must be an array of functions, got a function",
+        );
+    });
+
+    it("refuses an entry that is not a function and names its position", () => {
+        assert.throws(
+            () => requireFunctionArray({ caller: "createX", subject: "the list", value: [() => 1, null] }),
+            (err: unknown) => err instanceof TypeError && err.message === "createX: entry 1 of the list must be a function, got null",
+        );
+    });
+
+    it("refuses a hole in a sparse array", () => {
+        // forEach skips holes, so a sparse array would pass an element-wise check
+        assert.throws(() => requireFunctionArray({ caller: "createX", subject: "the list", value: [() => 1, , () => 3] }), TypeError);
     });
 });

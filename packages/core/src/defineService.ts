@@ -18,6 +18,7 @@
 import type { DescService } from "@bufbuild/protobuf";
 import type { ConnectRouter, ServiceImpl } from "@connectrpc/connect";
 import { validateReadMaxBytes } from "./admission.ts";
+import { assertServiceHandlers } from "./catalogOptions.ts";
 import type { ConnectumServiceImpl } from "./context.ts";
 
 /**
@@ -58,6 +59,11 @@ export interface ServiceDefinition {
 /**
  * Define a service from its descriptor and handler map.
  *
+ * `handlers` must be an object whose present members are functions (a method
+ * left out answers `unimplemented`); anything else throws a `TypeError` naming
+ * the service. Two definitions for one service type name are rejected by
+ * `createServer()` and `addService()`.
+ *
  * Pass {@link ServiceOptions} to set per-service handler options, e.g.
  * interceptors applied to every method of this service:
  *
@@ -74,6 +80,7 @@ export interface ServiceDefinition {
  */
 export function defineService<S extends DescService>(descriptor: S, handlers: ConnectumServiceImpl<S>, options?: ServiceOptions): ServiceDefinition {
     validateReadMaxBytes(options?.readMaxBytes, "defineService");
+    assertServiceHandlers(descriptor, handlers, "defineService");
     return {
         descriptor,
         register(router, ctx) {
@@ -89,6 +96,10 @@ export function defineService<S extends DescService>(descriptor: S, handlers: Co
  * it is in `enabledServices` (or `enabledServices` is `undefined`). A service
  * routed to a remote process never instantiates its local dependencies. Useful
  * for DI-heavy monoliths where wiring a service is expensive.
+ *
+ * `factory` must be synchronous and return the handlers object (see
+ * {@link defineService}); an `async` factory, or a result that is not an object
+ * of functions, throws a `TypeError` naming the service when the factory runs.
  *
  * `factory` runs once per server: the HTTP adapter, `server.localClient` and
  * `ctx.call` all reach the same instance. The same definition mounted on two
@@ -108,6 +119,7 @@ export function defineLazyService<S extends DescService>(descriptor: S, factory:
             let handlers = instances.get(ctx);
             if (handlers === undefined) {
                 handlers = factory();
+                assertServiceHandlers(descriptor, handlers, "defineLazyService");
                 instances.set(ctx, handlers);
             }
             router.service(descriptor, ctx.wrapHandlers(descriptor, handlers), options);

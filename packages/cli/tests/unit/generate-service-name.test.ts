@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { after, afterEach, before, beforeEach, describe, it, mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { executeGenerateService } from "../../src/commands/generate-service.ts";
+import { writeProjectManifest } from "../helpers/projectManifest.ts";
 
 /** Gitignored scratch area of the repository: nothing here is written outside it. */
 const scratchRoot = fileURLToPath(new URL("../../../../.tmp/", import.meta.url));
@@ -45,6 +46,7 @@ describe("generate service: the service name", () => {
     });
     beforeEach(() => {
         dir = mkdtempSync(join(root, "run-"));
+        writeProjectManifest(dir);
         mock.method(console, "log", () => undefined);
     });
     afterEach(() => {
@@ -138,7 +140,7 @@ describe("generate service: the service name", () => {
                 return true;
             },
         );
-        assert.deepEqual(listing(dir), []);
+        assert.deepEqual(listing(dir), ["package.json"]);
     });
 
     describe("accepted names", () => {
@@ -153,7 +155,7 @@ describe("generate service: the service name", () => {
             it(`scaffolds ${JSON.stringify(name)} into ${protoPath} and ${modulePath}`, async () => {
                 await executeGenerateService({ name, cwd: dir });
                 assert.deepEqual(
-                    listing(dir).filter((entry) => !entry.endsWith("/")),
+                    listing(dir).filter((entry) => !entry.endsWith("/") && entry !== "package.json"),
                     [protoPath, modulePath].sort(),
                 );
             });
@@ -166,7 +168,7 @@ describe("generate service: the service name", () => {
 
         it("refuses a blank name with the message that a name is required, and writes nothing", async () => {
             await assert.rejects(() => executeGenerateService({ name: "   ", cwd: dir }), /service name is required/);
-            assert.deepEqual(listing(dir), []);
+            assert.deepEqual(listing(dir), ["package.json"]);
         });
     });
 });
@@ -184,6 +186,7 @@ describe("generate service: a name that maps onto another service's proto", () =
     });
     beforeEach(() => {
         dir = mkdtempSync(join(root, "run-"));
+        writeProjectManifest(dir);
         mock.method(console, "log", () => undefined);
     });
     afterEach(() => {

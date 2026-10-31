@@ -4,13 +4,28 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import { create, isMessage } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
+import { createMockRequest as createBaseRequest, createMockNext, createMockNextError } from "@connectum/test-fixtures";
+import { ItemSchema } from "../../../testing/tests/fixtures/streaming/v1/streaming_pb.ts";
 import { createFallbackInterceptor } from "../../src/fallback.ts";
+
+/** A request the way a server or client chain builds it: the method knows its output message type. */
+function createMockRequest(options?: Parameters<typeof createBaseRequest>[0]) {
+    const request = createBaseRequest(options);
+    request.method.output = ItemSchema;
+    return request;
+}
+
+/** The text of a response message after checking it is a real message of the output type, not a bare object. */
+function valueOf(message: unknown): string {
+    assert.ok(isMessage(message, ItemSchema), "the response must be a message of the output type");
+    return message.value;
+}
 
 describe("fallback interceptor", () => {
     it("should pass request on success without asking the fallback handler", async () => {
-        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const fallbackHandler = mock.fn(() => ({ value: "value" }));
         const interceptor = createFallbackInterceptor({
             handler: fallbackHandler,
         });
@@ -29,7 +44,7 @@ describe("fallback interceptor", () => {
     // A fallback value stands in for a failed dependency, never for a refusal of access.
     for (const code of [Code.Unauthenticated, Code.PermissionDenied]) {
         it(`should rethrow a ${Code[code]} failure as it is and not ask the fallback handler`, async () => {
-            const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+            const fallbackHandler = mock.fn(() => ({ value: "value" }));
             const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
             const refusal = new ConnectError("refused", code);
             const handler = interceptor((async () => {
@@ -46,19 +61,19 @@ describe("fallback interceptor", () => {
 
     for (const code of [Code.Canceled, Code.Unknown, Code.InvalidArgument, Code.DeadlineExceeded, Code.NotFound, Code.Internal, Code.Unavailable]) {
         it(`should still ask the fallback handler for a ${Code[code]} failure`, async () => {
-            const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+            const fallbackHandler = mock.fn(() => ({ value: "value" }));
             const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
             const handler = interceptor(createMockNextError(code, "failed") as any);
 
             const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
 
             assert.strictEqual(fallbackHandler.mock.calls.length, 1);
-            assert.deepStrictEqual(result.message, { fallback: "value" });
+            assert.strictEqual(valueOf(result.message), "value");
         });
     }
 
     it("should still ask the fallback handler for an error that is not a ConnectError", async () => {
-        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const fallbackHandler = mock.fn(() => ({ value: "value" }));
         const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
         const handler = interceptor((async () => {
             throw new Error("plain failure");
@@ -67,7 +82,7 @@ describe("fallback interceptor", () => {
         const result = await handler(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } }));
 
         assert.strictEqual(fallbackHandler.mock.calls.length, 1);
-        assert.deepStrictEqual(result.message, { fallback: "value" });
+        assert.strictEqual(valueOf(result.message), "value");
     });
 
     it("should call handler on failure", async () => {
@@ -75,7 +90,7 @@ describe("fallback interceptor", () => {
         const interceptor = createFallbackInterceptor({
             handler: () => {
                 handlerCalled = true;
-                return { fallback: "value" };
+                return { value: "value" };
             },
         });
 
@@ -91,7 +106,7 @@ describe("fallback interceptor", () => {
 
     it("should return fallback value from handler", async () => {
         const interceptor = createFallbackInterceptor({
-            handler: () => ({ fallback: "cached_data" }),
+            handler: () => ({ value: "cached_data" }),
         });
 
         const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
@@ -101,7 +116,7 @@ describe("fallback interceptor", () => {
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
 
-        assert.deepStrictEqual(result.message, { fallback: "cached_data" });
+        assert.strictEqual(valueOf(result.message), "cached_data");
     });
 
     it("should propagate error if handler throws", async () => {
@@ -128,7 +143,7 @@ describe("fallback interceptor", () => {
     });
 
     it("should skip streaming when skipStreaming=true", async () => {
-        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const fallbackHandler = mock.fn(() => ({ value: "value" }));
         const interceptor = createFallbackInterceptor({
             handler: fallbackHandler,
             skipStreaming: true,
@@ -155,7 +170,7 @@ describe("fallback interceptor", () => {
         const interceptor = createFallbackInterceptor({
             handler: async () => {
                 await new Promise((resolve) => setTimeout(resolve, 50));
-                return { fallback: "async_value" };
+                return { value: "async_value" };
             },
         });
 
@@ -166,12 +181,12 @@ describe("fallback interceptor", () => {
         const handler = interceptor(next as any);
         const result = await handler(mockReq);
 
-        assert.deepStrictEqual(result.message, { fallback: "async_value" });
+        assert.strictEqual(valueOf(result.message), "async_value");
     });
 
     // skipStreaming is not given: a failing streaming call is left alone by default.
     it("should skip streaming by default", async () => {
-        const fallbackHandler = mock.fn(() => ({ fallback: "value" }));
+        const fallbackHandler = mock.fn(() => ({ value: "value" }));
         const interceptor = createFallbackInterceptor({ handler: fallbackHandler });
         const failure = new ConnectError("Service error", Code.Internal);
         const next = mock.fn(async () => {
@@ -187,7 +202,7 @@ describe("fallback interceptor", () => {
 
     // With skipStreaming: false a failing streaming call gets a streaming response whose only message is the substitute.
     it("should replace a failing streaming call when skipStreaming=false, with a streaming response of one message", async () => {
-        const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "value" }), skipStreaming: false });
+        const interceptor = createFallbackInterceptor({ handler: () => ({ value: "value" }), skipStreaming: false });
         const next = createMockNextError(Code.Internal, "Service error");
 
         const result = await interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" }, stream: true }));
@@ -197,7 +212,7 @@ describe("fallback interceptor", () => {
         for await (const message of result.message as AsyncIterable<unknown>) {
             messages.push(message);
         }
-        assert.deepStrictEqual(messages, [{ fallback: "value" }]);
+        assert.deepStrictEqual(messages.map(valueOf), ["value"]);
     });
 
     it("should preserve original error context", async () => {
@@ -205,7 +220,7 @@ describe("fallback interceptor", () => {
         const interceptor = createFallbackInterceptor({
             handler: (error) => {
                 capturedError = error;
-                return { fallback: "value" };
+                return { value: "value" };
             },
         });
 
@@ -232,7 +247,7 @@ describe("fallback interceptor", () => {
         ["a string", "not a function"],
         ["undefined", undefined],
         ["null", null],
-        ["an object", { fallback: "value" }],
+        ["an object", { value: "value" }],
         ["a number", 42],
     ] as const) {
         it(`should reject ${label} as the handler with a TypeError`, () => {
@@ -246,25 +261,99 @@ describe("fallback interceptor", () => {
         });
     }
 
-    it("should handle handler returning different types", async () => {
-        const interceptor = createFallbackInterceptor({
-            handler: () => null,
+    // The value of the handler becomes the response message of the call, so it must be one. A
+    // plain object is turned into the method's output message; a message passes as it is; any
+    // other value would fail much later in the protocol layer with a serialization text that says
+    // nothing about the handler, so it is refused here and the error names the handler.
+    describe("what the handler may return", () => {
+        const failing = () => createMockNextError(Code.Internal, "Service error") as any;
+
+        it("turns a plain object into a message of the output type", async () => {
+            const result = await createFallbackInterceptor({ handler: () => ({ value: "plain", sequence: 7 }) })(failing())(createMockRequest());
+
+            assert.ok(isMessage(result.message, ItemSchema));
+            assert.deepStrictEqual({ value: result.message.value, sequence: result.message.sequence }, { value: "plain", sequence: 7 });
         });
 
-        const mockReq = createMockRequest({ service: "test.Service", method: "Method", message: { field: "value" } });
+        it("uses a message of the output type as it is", async () => {
+            const message = create(ItemSchema, { value: "made" });
+            const result = await createFallbackInterceptor({ handler: () => message })(failing())(createMockRequest());
 
-        const next = createMockNextError(Code.Internal, "Service error");
+            assert.strictEqual(result.message, message);
+        });
 
-        const handler = interceptor(next as any);
-        const result = await handler(mockReq);
+        it("turns the plain object into a message for a streaming call as well", async () => {
+            const result = await createFallbackInterceptor({ handler: () => ({ value: "plain" }), skipStreaming: false })(failing())(createMockRequest({ stream: true }));
 
-        assert.strictEqual(result.message, null);
+            const messages: unknown[] = [];
+            for await (const message of result.message as AsyncIterable<unknown>) messages.push(message);
+            assert.deepStrictEqual(messages.map(valueOf), ["plain"]);
+        });
+
+        it("accepts an object without fields as the empty message", async () => {
+            const result = await createFallbackInterceptor({ handler: () => ({}) })(failing())(createMockRequest());
+
+            assert.strictEqual(valueOf(result.message), "");
+        });
+
+        for (const [label, produce] of [
+            ["undefined", () => undefined],
+            ["null", () => null],
+            ["a string", () => "text"],
+            ["a number", () => 5],
+            ["an array", () => []],
+            ["a class instance", () => new (class Holder {
+                value = "x";
+            })()],
+        ] as const) {
+            it(`refuses ${label}, naming the handler and the expected type`, async () => {
+                const interceptor = createFallbackInterceptor({ handler: produce as () => unknown });
+
+                await assert.rejects(
+                    () => interceptor(failing())(createMockRequest()),
+                    (err: unknown) => {
+                        assert.ok(err instanceof TypeError);
+                        assert.match(err.message, /^createFallbackInterceptor: handler must return a streaming\.v1\.Item message or a plain object/);
+                        return true;
+                    },
+                );
+            });
+        }
+
+        it("refuses an object with a field the output type does not have, naming the field", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ items: [] }) });
+
+            await assert.rejects(
+                () => interceptor(failing())(createMockRequest()),
+                (err: unknown) => err instanceof TypeError && /items is not a field of streaming\.v1\.Item/.test(err.message),
+            );
+        });
+
+        it("refuses a message of another type", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => create(ItemSchema, { value: "x" }) });
+            const request = createMockRequest();
+            request.method.output = { ...ItemSchema, typeName: "other.v1.Other" };
+
+            await assert.rejects(
+                () => interceptor(failing())(request),
+                (err: unknown) => err instanceof TypeError && /handler must return a other\.v1\.Other message/.test(err.message),
+            );
+        });
+
+        it("refuses a number the encoder cannot write (a fraction in an int32) and keeps the cause", async () => {
+            const interceptor = createFallbackInterceptor({ handler: () => ({ sequence: 1.5 }) });
+
+            await assert.rejects(
+                () => interceptor(failing())(createMockRequest()),
+                (err: unknown) => err instanceof TypeError && /cannot be converted/.test(err.message) && err.cause instanceof Error,
+            );
+        });
     });
 
     describe("fallback response properties", () => {
         it("should return response with correct service, method, and stream: false", async () => {
             const interceptor = createFallbackInterceptor({
-                handler: () => ({ fallback: "data" }),
+                handler: () => ({ value: "data" }),
             });
 
             const mockReq = createMockRequest({
@@ -285,14 +374,14 @@ describe("fallback interceptor", () => {
                 "fallback response should preserve service",
             );
             assert.strictEqual(result.method.name, "GetItems", "fallback response should preserve method");
-            assert.deepStrictEqual(result.message, { fallback: "data" });
+            assert.strictEqual(valueOf(result.message), "data");
         });
 
         // The headers of a request include credentials, identity written by authentication
         // interceptors and hop-by-hop fields. None of them belongs in a synthesised response; the
         // content type is the one protocol field the response needs.
         it("should answer with the content-type header alone, whatever the request carried", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
             const headers = new Headers({
                 authorization: "Bearer token-1",
                 cookie: "sid=abc",
@@ -315,7 +404,7 @@ describe("fallback interceptor", () => {
         });
 
         it("should answer with an empty header when the request names no content type", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
             const headers = new Headers({ authorization: "Bearer token-1", "x-auth-subject": "alice" });
             const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(createMockRequest({ headers }));
 
@@ -337,7 +426,7 @@ describe("fallback interceptor", () => {
             ["application/connect+proto", []],
         ] as const) {
             it(`should give the trailer ${JSON.stringify(expectedTrailer)} for the request content type ${contentType}`, async () => {
-                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
                 const headers = new Headers({ "content-type": contentType });
                 const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(createMockRequest({ headers }));
 
@@ -347,7 +436,7 @@ describe("fallback interceptor", () => {
         }
 
         it("should not hand back the request header object, nor follow later changes to the request", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
             const request = createMockRequest({ headers: new Headers({ "content-type": "application/proto" }) });
             const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
 
@@ -366,7 +455,7 @@ describe("fallback interceptor", () => {
             ["proto", "application/proto"],
         ] as const) {
             it(`should derive ${expected} for a Connect GET request with encoding=${encoding} and no content-type`, async () => {
-                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
                 const request = createMockRequest({
                     url: `http://localhost/test.TestService/TestMethod?connect=v1&encoding=${encoding}&message=e30`,
                     headers: new Headers({ authorization: "Bearer token-1" }),
@@ -387,7 +476,7 @@ describe("fallback interceptor", () => {
             ["no encoding", "http://localhost/test.TestService/TestMethod?connect=v1"],
         ] as const) {
             it(`should leave the header empty for a Connect GET request with ${label}`, async () => {
-                const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+                const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
                 const request = createMockRequest({ url });
                 request.requestMethod = "GET";
                 const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);
@@ -397,7 +486,7 @@ describe("fallback interceptor", () => {
         }
 
         it("should prefer the request content-type over the encoding parameter of a GET request", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
             const request = createMockRequest({
                 url: "http://localhost/test.TestService/TestMethod?encoding=json",
                 headers: new Headers({ "content-type": "application/proto" }),
@@ -409,7 +498,7 @@ describe("fallback interceptor", () => {
         });
 
         it("should ignore the encoding parameter of a request that is not a GET", async () => {
-            const interceptor = createFallbackInterceptor({ handler: () => ({ fallback: "data" }) });
+            const interceptor = createFallbackInterceptor({ handler: () => ({ value: "data" }) });
             const request = createMockRequest({ url: "http://localhost/test.TestService/TestMethod?encoding=json" });
             request.requestMethod = "POST";
             const result = await interceptor(createMockNextError(Code.Internal, "Service error") as any)(request);

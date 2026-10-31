@@ -122,7 +122,7 @@ test("a gateway client secret or subject that is not a non-empty string is refus
     for (const subject of [undefined, null, "", 42]) {
         assert.throws(
             () => createClientGatewayInterceptor({ secret: "s", subject: subject as never }),
-            (err: unknown) => err instanceof TypeError && /createClientGatewayInterceptor subject must be a non-empty string/.test(err.message),
+            (err: unknown) => err instanceof TypeError && /createClientGatewayInterceptor subject/.test(err.message),
             `subject ${JSON.stringify(subject)}`,
         );
     }

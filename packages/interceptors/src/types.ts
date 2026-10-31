@@ -27,7 +27,9 @@ export interface ErrorHandlerOptions {
     logErrors?: boolean;
 
     /**
-     * Include stack trace in logs
+     * Pass the stack of the failure to `onError` as `info.stack`. The console log is not
+     * affected: it prints the failure as an object, which already carries its stack and
+     * its `cause` chain, once per handled error.
      * @default process.env.NODE_ENV !== "production"
      */
     includeStackTrace?: boolean;
@@ -35,6 +37,11 @@ export interface ErrorHandlerOptions {
     /**
      * Callback for error logging. Replaces console.error when provided.
      * Receives rich error info including serverDetails from SanitizableError.
+     *
+     * The callback may be `async`. The interceptor does not wait for it. A failure
+     * of the callback, a throw or a rejected promise, never changes what the caller
+     * receives and never becomes an unhandled rejection: the first failure is
+     * written once to `console.error`, later ones are dropped.
      */
     onError?: (info: { error: Error; code: number; serverDetails?: Readonly<Record<string, unknown>>; stack?: string }) => void;
 
@@ -45,8 +52,10 @@ export interface ErrorHandlerOptions {
      * `SanitizableError` (an `Error`, a thrown string, an object with a numeric
      * `code`) never leaves the server: the client receives the fixed text
      * `"internal error"` for code `Internal`, and an empty text when the exception
-     * carried its own numeric code. Such text routinely contains connection strings,
-     * queries, file paths or values from the request (CWE-209).
+     * carried its own numeric code from 1 to 16 other than `Internal`, or is an
+     * `AbortError` or `TimeoutError` (sent as `Canceled`). Such text
+     * routinely contains connection strings, queries, file paths or values from the
+     * request (CWE-209).
      *
      * The original is kept on the server in three places: as `cause` of the
      * thrown `ConnectError` (it is never serialized onto the wire), as
@@ -75,7 +84,9 @@ export interface LoggerOptions {
     level?: "debug" | "info" | "warn" | "error";
 
     /**
-     * Skip logging for health check services
+     * Skip logging for the gRPC health service: a service type name with `grpc.health`
+     * as whole package segments (`grpc.health.v1.Health`). A name that only contains the
+     * text inside a longer segment, such as `acme.grpc.healthcare.v1.Svc`, is logged.
      * @default true
      */
     skipHealthCheck?: boolean;
@@ -286,7 +297,20 @@ export interface BulkheadOptions {
  */
 export interface FallbackOptions<T = unknown> {
     /**
-     * Fallback function to call on error
+     * Fallback function to call on error.
+     *
+     * Returns the response message of the method being called: a message created for
+     * its output type, or a plain object holding that message's fields (a oneof is set
+     * as `{ case, value }` under the oneof's name). A plain object is checked field by
+     * field: `undefined`, `null`, a key that is not a field, a value of another kind than
+     * its field takes (a number in a string field, a non-boolean in a bool field, a
+     * non-array in a repeated field), a map key that is not in the canonical form of its
+     * key type (`"01"` for an int32, `"yes"` for a bool), a string with a lone surrogate,
+     * bytes that are not a `Uint8Array` or an array of integers 0 to 255, a non-canonical
+     * string for a 64-bit integer and a number the encoder cannot write fail the call
+     * with a `TypeError` naming the expected type and the path of the problem. Fields use
+     * the protobuf-es forms: a wrapper such as `StringValue` in a singular field outside a
+     * oneof is its bare value, and a `Struct` is a plain JSON object.
      */
     handler: (error: Error) => T | Promise<T>;
 

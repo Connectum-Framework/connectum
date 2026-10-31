@@ -157,8 +157,8 @@ export function describeKind(value: unknown): string {
  * be created and then failed every request with `internal`. Messages name the kind of a bad
  * value, never the value, because it may be a secret.
  *
- * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, `trustSource.header`
- *   is not a non-empty string, or `trustSource.expectedValues` is not an array of non-empty strings
+ * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, or
+ *   `trustSource.expectedValues` is not an array of non-empty strings
  */
 export function assertGatewayOptions(options: unknown): void {
     const factory = "createGatewayAuthInterceptor";
@@ -169,10 +169,8 @@ export function assertGatewayOptions(options: unknown): void {
     if (!isRecord(trustSource)) {
         throw new TypeError(`@connectum/auth: ${factory} trustSource must be an object with header and expectedValues; got ${describeKind(trustSource)}`);
     }
-    const { header, expectedValues } = trustSource;
-    if (typeof header !== "string" || header.trim().length === 0) {
-        throw new TypeError(`@connectum/auth: ${factory} trustSource.header must be a non-empty string naming the trust header; got ${describeKind(header)}`);
-    }
+    // The trust header name is checked by the header-name check that runs after this one.
+    const { expectedValues } = trustSource;
     if (!Array.isArray(expectedValues)) {
         throw new TypeError(`@connectum/auth: ${factory} trustSource.expectedValues must be an array of non-empty strings; got ${describeKind(expectedValues)}`);
     }

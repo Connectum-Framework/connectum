@@ -59,6 +59,11 @@ export const AUTH_HEADERS = {
     NAME: "x-auth-name",
     /** Credential type (jwt, api-key, mtls, etc.) */
     TYPE: "x-auth-type",
+    /**
+     * Set to `percent-utf8` when the sender encoded a text (subject, name, type or scope) as
+     * `utf-8''` plus percent-encoded UTF-8. Readers decode `utf-8''` texts only when it is present.
+     */
+    ENCODING: "x-auth-encoding",
 } as const;
 
 /**
@@ -137,7 +142,9 @@ export interface AuthInterceptorOptions {
      *
      * Error contract: a thrown `ConnectError` reaches the client unchanged (its code and
      * message are sent verbatim, so keep the text public); any other thrown value becomes
-     * `Unauthenticated: Authentication failed` and its text is not sent.
+     * `Unauthenticated: Authentication failed` and its text is not sent. A returned value that is
+     * not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or mistyped `subject`,
+     * `type`, `roles`, `scopes` or `claims`) is treated the same way and is never cached.
      *
      * @param credentials - Extracted credential string
      * @returns AuthContext for valid credentials
@@ -163,6 +170,11 @@ export interface AuthInterceptorOptions {
     /**
      * LRU cache for credentials verification results.
      * Caches AuthContext by credential string to reduce verification overhead.
+     *
+     * The cache stores a private copy of the identity, and every request served from it receives its
+     * own copy (including `roles`, `scopes` and `claims`, nested plain objects and arrays too), so a
+     * handler that changes its `AuthContext` does not change what a later request with the same
+     * credential receives. Each hit costs one pass over the identity, proportional to its size.
      */
     cache?: CacheOptions | undefined;
 
@@ -266,6 +278,9 @@ export interface JwtAuthInterceptorOptions {
      * Propagate auth context as headers for downstream services.
      * A subject, type, name or scope containing NUL, CR or LF is rejected with
      * `Unauthenticated` (and never cached) while this is on.
+     * Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver.
+     * An identity that does not fit its header (subject over 512 characters, type over 128, name over
+     * 256, serialized roles, scopes or claims over 8192) is rejected too, instead of being cut or left out.
      * @default false
      */
     propagateHeaders?: boolean | undefined;
@@ -345,11 +360,24 @@ export interface GatewayAuthInterceptorOptions {
         /** Header set by the gateway to prove trust. A non-empty string; anything else throws when the interceptor is created. */
         readonly header: string;
         /**
-         * Accepted values for the trust header. Every entry must be a non-empty string, so an
-         * unset environment variable (`[process.env.GATEWAY_SECRET]` gives `[undefined]`) throws
-         * when the interceptor is created instead of failing every request.
+         * Accepted values for the trust header: shared secrets compared exactly, and, only with
+         * `allowCallerControlledCidr`, IPv4 CIDR blocks such as `10.0.0.0/8`. Every entry must be
+         * a non-empty string, so an unset environment variable (`[process.env.GATEWAY_SECRET]`
+         * gives `[undefined]`) throws when the interceptor is created instead of failing every request.
          */
         readonly expectedValues: string[];
+        /**
+         * Allow IPv4 CIDR blocks in `expectedValues`. Off by default: with a CIDR block present and
+         * this option unset, creating the interceptor throws.
+         *
+         * A block is matched against the value of the trust header, and a caller that reaches the
+         * service directly chooses that value itself, so `10.0.0.0/8` admits anyone who sends
+         * `10.9.9.9`. Enable it only when a trusted upstream overwrites the header on every request
+         * and no client can reach the service without passing through it. Trust based on the peer
+         * address of the connection belongs in the mTLS or mesh-identity trust helpers.
+         * @default false
+         */
+        readonly allowCallerControlledCidr?: boolean | undefined;
     };
     /** Headers to strip from the request after extraction (prevent spoofing) */
     readonly stripHeaders?: string[] | undefined;
@@ -357,12 +385,14 @@ export interface GatewayAuthInterceptorOptions {
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**
      * Credential type used when the gateway sends no type header.
-     * A value containing NUL, CR or LF throws when the interceptor is created.
+     * A value containing NUL, CR or LF throws when the interceptor is created. With `propagateHeaders`
+     * on, an empty value, a value longer than 128 characters and a value with a lone surrogate throw
+     * too, because the value is written into `x-auth-type`; with it off they are accepted.
      * @default "gateway"
      */
     readonly defaultType?: string | undefined;
@@ -381,7 +411,8 @@ export interface GatewayAuthInterceptorOptions {
  * call composes with the existing `requires {roles,scopes}` authz model.
  *
  * @param req - The request (read-only access to headers).
- * @returns AuthContext for a trusted internal caller, or null to reject.
+ * @returns AuthContext for a trusted internal caller, or null to reject. A result that is not an
+ *   `AuthContext` (a truthy `true`, `{}`, a sparse `roles` list) is rejected like `null`.
  */
 export type InternalTrustSource = (req: { header: Headers }) => AuthContext | null | Promise<AuthContext | null>;
 
@@ -559,6 +590,10 @@ export interface SessionAuthInterceptorOptions {
     /**
      * Map raw session data to AuthContext.
      *
+     * A result that is not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or
+     * mistyped `subject`, `type`, `roles`, `scopes` or `claims`) ends the call with
+     * `Unauthenticated: Session mapping failed`; it is never cached.
+     *
      * @param session - Raw session data from verifySession
      * @returns Normalized auth context
      */
@@ -568,13 +603,16 @@ export interface SessionAuthInterceptorOptions {
      * Default: extracts Bearer token from Authorization header.
      */
     readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
-    /** LRU cache for session verification results */
+    /**
+     * LRU cache for session verification results. Every request receives its own copy of the stored
+     * identity, as described for `AuthInterceptorOptions.cache`.
+     */
     readonly cache?: CacheOptions | undefined;
     /** Methods to skip authentication for. The catch-all `"*"` is refused (creation throws). */
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**
@@ -611,11 +649,23 @@ export interface ClientBearerInterceptorOptions {
  * @see {@link createClientGatewayInterceptor}
  */
 export interface ClientGatewayInterceptorOptions {
-    /** Shared secret for gateway trust verification. A non-empty string; an unset environment variable (`undefined`) throws when the interceptor is created. */
+    /**
+     * Shared secret for gateway trust verification. Creating the interceptor throws if it is empty,
+     * contains NUL, CR, LF or a character above U+00FF, or starts or ends with a space or tab (the
+     * platform removes that whitespace from a header value, so the secret would never match).
+     */
     readonly secret: string;
-    /** Authenticated subject identifier (e.g., service name). A non-empty string. */
+    /**
+     * Authenticated subject identifier (e.g., service name). Creating the interceptor throws if it
+     * is empty, over 512 characters, or contains NUL, CR, LF or a lone surrogate (the header writer decides).
+     */
     readonly subject: string;
-    /** Optional roles to propagate (JSON-encoded in header) */
+    /**
+     * Optional roles to propagate (JSON-encoded in header). Creating the interceptor throws if this
+     * is not an array of at most 8192 strings without holes whose JSON form fits the roles header
+     * (measured as the header writer measures it, with every character above U+00FF written as six characters).
+     * The roles are checked again on each call, so a change made after creation is refused with `InvalidArgument`.
+     */
     readonly roles?: string[] | undefined;
 }
 

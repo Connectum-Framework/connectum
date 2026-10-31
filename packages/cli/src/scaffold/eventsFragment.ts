@@ -11,6 +11,28 @@
 
 import type { EventAdapter, ScaffoldConfig } from "./types.ts";
 
+/**
+ * What a person needs to know to run the broker an adapter talks to. The variable and the default
+ * repeat what `ctor` writes into the generated project; a test reads both back from the generated
+ * code, so the README cannot drift from it.
+ */
+export interface BrokerInfo {
+    /** Name of the broker as a person says it. */
+    label: string;
+    /** Environment variable that holds the address. */
+    env: string;
+    /** Address used when the variable is not set. */
+    fallback: string;
+    /**
+     * A local broker to start with Docker, with the arguments the repository's CI starts it with.
+     * Present only for images that CI runs the adapter against with nothing more than that; a
+     * broker that needs a configuration of its own (Kafka listeners, for one) has none rather
+     * than a command nobody has run. NATS needs `-js`: the adapter uses JetStream, which the
+     * default server does not enable.
+     */
+    docker?: { image: string; port: number; args?: string };
+}
+
 interface AdapterSpec {
     /** npm package providing the adapter. */
     pkg: string;
@@ -18,6 +40,8 @@ interface AdapterSpec {
     importName: string;
     /** Renders the adapter constructor call for a project named `name`. */
     ctor: (name: string) => string;
+    /** The broker the adapter connects to. */
+    broker: BrokerInfo;
 }
 
 const ADAPTERS: Record<EventAdapter, AdapterSpec> = {
@@ -25,28 +49,38 @@ const ADAPTERS: Record<EventAdapter, AdapterSpec> = {
         pkg: "@connectum/events-nats",
         importName: "NatsAdapter",
         ctor: () => 'NatsAdapter({ servers: process.env.NATS_SERVERS ?? "nats://localhost:4222" })',
+        broker: { label: "NATS", env: "NATS_SERVERS", fallback: "nats://localhost:4222", docker: { image: "nats:2.10.29-alpine", port: 4222, args: "-js" } },
     },
     kafka: {
         pkg: "@connectum/events-kafka",
         importName: "KafkaAdapter",
         ctor: (name) => `KafkaAdapter({ brokers: (process.env.KAFKA_BROKERS ?? "localhost:9092").split(","), clientId: ${JSON.stringify(name)} })`,
+        broker: { label: "Kafka", env: "KAFKA_BROKERS", fallback: "localhost:9092" },
     },
     redpanda: {
         pkg: "@connectum/events-kafka",
         importName: "KafkaAdapter",
         ctor: (name) => `KafkaAdapter({ brokers: (process.env.REDPANDA_BROKERS ?? "localhost:9092").split(","), clientId: ${JSON.stringify(name)} })`,
+        broker: { label: "Redpanda", env: "REDPANDA_BROKERS", fallback: "localhost:9092" },
     },
     redis: {
         pkg: "@connectum/events-redis",
         importName: "RedisAdapter",
         ctor: () => 'RedisAdapter({ url: process.env.REDIS_URL ?? "redis://localhost:6379" })',
+        broker: { label: "Redis", env: "REDIS_URL", fallback: "redis://localhost:6379", docker: { image: "redis:6.2-alpine", port: 6379 } },
     },
     amqp: {
         pkg: "@connectum/events-amqp",
         importName: "AmqpAdapter",
         ctor: (name) => `AmqpAdapter({ url: process.env.AMQP_URL ?? "amqp://localhost:5672", exchange: ${JSON.stringify(name)} })`,
+        broker: { label: "RabbitMQ", env: "AMQP_URL", fallback: "amqp://localhost:5672", docker: { image: "rabbitmq:4.3.6-alpine", port: 5672 } },
     },
 };
+
+/** The broker an adapter connects to, for the README of the generated project. */
+export function brokerOf(adapter: EventAdapter): BrokerInfo {
+    return ADAPTERS[adapter].broker;
+}
 
 /** The npm package a given adapter needs (for package.json dependencies). */
 export function adapterPackage(adapter: EventAdapter): string {

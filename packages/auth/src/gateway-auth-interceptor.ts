@@ -10,13 +10,25 @@
  * @module gateway-auth-interceptor
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { HEADER_BREAKING_CHARS, propagateAuthHeaders } from "./headers.ts";
+import {
+    declaresTextEncoding,
+    HEADER_BREAKING_CHARS,
+    MAX_HEADER_BYTES,
+    MAX_NAME_LENGTH,
+    MAX_SUBJECT_LENGTH,
+    MAX_TYPE_LENGTH,
+    propagateAuthHeaders,
+    readHeaderText,
+} from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertHeaderName, assertWritable } from "./option-checks.ts";
 import { assertGatewayOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, GatewayAuthInterceptorOptions } from "./types.ts";
+import { AUTH_HEADERS } from "./types.ts";
 
 /** One decimal octet: `0` or 1-3 digits without a leading zero, so `010` and `1e1` are not octets. */
 const OCTET = /^(?:0|[1-9]\d{0,2})$/;
@@ -44,41 +56,84 @@ function parseIPv4(text: string): number | null {
     return value;
 }
 
+/** The network and prefix length of a well-formed `a.b.c.d/prefix` block, or `null` for any other text. */
+function parseCidrBlock(pattern: string): { network: number; prefix: number } | null {
+    const slash = pattern.indexOf("/");
+    if (slash === -1) return null;
+    const prefixText = pattern.slice(slash + 1);
+    if (!PREFIX.test(prefixText)) return null;
+    const prefix = Number(prefixText);
+    if (prefix > 32) return null;
+    const network = parseIPv4(pattern.slice(0, slash));
+    return network === null ? null : { network, prefix };
+}
+
 /**
- * Match an IPv4 address against a pattern: an exact string or `a.b.c.d/prefix`.
+ * Match an IPv4 address against a `a.b.c.d/prefix` block.
  *
  * A pattern that is not a well-formed CIDR block (for example `10.0.0.0/33`,
- * `10.0.0.0/abc`) matches nothing but its exact text: `expectedValues` also
- * carries shared secrets, which may legitimately contain `/`, so a malformed
- * block cannot be told apart from a secret and must not widen trust.
+ * `10.0.0.0/abc`) matches nothing here and is left to the exact comparison in
+ * {@link isTrusted}: `expectedValues` also carries shared secrets, which may
+ * legitimately contain `/`, so a malformed block cannot be told apart from a
+ * secret and must not widen trust.
  */
 function matchesIp(address: string, pattern: string): boolean {
-    if (address === pattern) return true;
-
-    const slash = pattern.indexOf("/");
-    if (slash === -1) return false;
-    const prefixText = pattern.slice(slash + 1);
-    if (!PREFIX.test(prefixText)) return false;
-    const prefix = Number(prefixText);
-    if (prefix > 32) return false;
-    const network = parseIPv4(pattern.slice(0, slash));
+    const block = parseCidrBlock(pattern);
     const peer = parseIPv4(address);
-    if (network === null || peer === null) return false;
+    if (block === null || peer === null) return false;
+    const { network, prefix } = block;
     // Two addresses share the first `prefix` bits exactly when they fall into
     // the same aligned block of 2^(32 - prefix) addresses.
     const blockSize = 2 ** (32 - prefix);
     return Math.floor(peer / blockSize) === Math.floor(network / blockSize);
 }
 
+/** Lower-case names of the standard `x-auth-*` headers, the only ones whose texts a reader decodes. */
+const STANDARD_AUTH_HEADERS: ReadonlySet<string> = new Set(Object.values(AUTH_HEADERS));
+
+/**
+ * Refuse a roles or scopes header that is longer than the Connectum header format allows, when the
+ * mapping names a standard `x-auth-*` header. A custom header is taken as sent.
+ */
+function assertStandardHeaderFits(headerName: string, raw: string): void {
+    if (STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) && raw.length > MAX_HEADER_BYTES) {
+        throw new ConnectError("Authentication failed", Code.Unauthenticated);
+    }
+}
+
+/**
+ * Read a text value of the identity from the header the mapping names. The standard `x-auth-*`
+ * names carry text written by another Connectum service, which writes characters above U+00FF as
+ * `utf-8''` plus percent-encoded UTF-8 and declares it in `x-auth-encoding`, so those values are decoded
+ * when it is present. A text read from a standard name is held to the rules of the writer: NUL, CR and
+ * LF are refused, `strip` removes the other C0 controls and DEL (subject, type, name; a scope is read
+ * as granted), and a text longer than `limit` is refused instead of reaching the handler. A custom header
+ * comes from the gateway and is taken as it is.
+ */
+function readIdentityText(headerName: string, raw: string, decode: boolean, strip: boolean, limit: number): string {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, limit, decode, strip) : raw;
+}
+
+/** SHA-256 of `text`; both sides of a secret comparison become 32 bytes whatever their length. */
+function digest(text: string): Buffer {
+    // utf16le keeps every code unit distinct; utf8 would map any lone surrogate to U+FFFD and make unequal texts equal.
+    return createHash("sha256").update(text, "utf16le").digest();
+}
+
 /**
  * Check if a trust header value matches any of the expected values.
  *
  * For each expected value, tries exact match first, then CIDR match.
+ *
+ * The exact match is constant time: a shared secret is compared through fixed-size digests with
+ * `timingSafeEqual`, so neither the position of the first differing byte nor the length of the
+ * guess shows in the response time.
  */
-function isTrusted(headerValue: string, expectedValues: readonly string[]): boolean {
+function isTrusted(headerValue: string, expectedValues: readonly string[], allowCidr: boolean): boolean {
+    const headerDigest = digest(headerValue);
     for (const expected of expectedValues) {
-        if (headerValue === expected) return true;
-        if (expected.includes("/") && matchesIp(headerValue, expected)) return true;
+        if (timingSafeEqual(headerDigest, digest(expected))) return true;
+        if (allowCidr && expected.includes("/") && matchesIp(headerValue, expected)) return true;
     }
     return false;
 }
@@ -112,16 +167,24 @@ function parseRoles(raw: string): string[] {
  *
  * Reads pre-authenticated identity from gateway-injected headers.
  * Trust is established by checking a designated header value against
- * a list of expected values (shared secrets or CIDR ranges applied to the header value).
+ * a list of expected values: shared secrets, compared exactly, and, only with
+ * `trustSource.allowCallerControlledCidr`, IPv4 CIDR blocks applied to the header value.
  * A trusted gateway must overwrite this header; it is not the connection's peer address.
+ *
+ * Once the identity is read, the interceptor deletes every standard `x-auth-*` identity header
+ * together with the mapped headers, the trust header and `stripHeaders` (also on `skipMethods`).
+ * With `propagateHeaders` the verified identity is then written back, so an `x-auth-*` header seen
+ * downstream comes from the verified identity, not from the client.
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
- * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, `trustSource.header` is not a
- *   non-empty string, or `trustSource.expectedValues` is not an array of non-empty strings (`[undefined]`
- *   from an unset environment variable included)
+ * @throws {TypeError} When `headerMapping` or `trustSource` is not an object, or `trustSource.expectedValues`
+ *   is not an array of non-empty strings (`[undefined]` from an unset environment variable included)
  * @throws {Error} When `headerMapping.subject` or `trustSource.expectedValues` is missing, `skipMethods`
- *   contains `"*"`, or `defaultType` contains NUL, CR or LF
+ *   contains `"*"`, `defaultType` contains NUL, CR or LF (with `propagateHeaders`: or is empty, longer than 128
+ *   characters or holds a lone surrogate), or `trustSource.expectedValues` contains a CIDR block
+ *   while `trustSource.allowCallerControlledCidr` is not `true`
+ * @throws {TypeError} When a header name in `headerMapping`, `trustSource.header` or `stripHeaders` is not a valid HTTP header name
  *
  * @example Kong/Envoy gateway with shared secret
  * ```typescript
@@ -150,14 +213,46 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         throw new Error("@connectum/auth: Gateway auth requires non-empty trustSource.expectedValues");
     }
     assertNoCatchAllSkip(skipMethods);
+    // A CIDR block is matched against a header the caller itself chooses, so it proves nothing
+    // about who the caller is. Refuse it unless the deployment asked for it by name.
+    const allowCidr = trustSource.allowCallerControlledCidr === true;
+    if (!allowCidr) {
+        const block = trustSource.expectedValues.find((value) => parseCidrBlock(value) !== null);
+        if (block !== undefined) {
+            throw new Error(
+                `@connectum/auth: Gateway auth trustSource.expectedValues contains the CIDR block "${block}". A block is matched against the value of the "${trustSource.header}" header, which a caller that reaches the service directly chooses itself, so it does not prove the request came through the gateway. Use a shared secret, or set trustSource.allowCallerControlledCidr: true only when a trusted upstream overwrites that header on every request and no client can reach the service without passing through it.`,
+            );
+        }
+    }
     // defaultType becomes AuthContext.type of every request that sends no type header, and
     // is propagated as a header; a value that cannot be a header would fail every such request.
     if (HEADER_BREAKING_CHARS.test(defaultType)) {
-        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters, or characters above U+00FF");
+        throw new Error("@connectum/auth: Gateway auth defaultType must not contain NUL, CR or LF characters");
     }
+    // With propagation the type is written into x-auth-type for every request that falls back to
+    // it, so a value the writer would refuse (empty, over the header limit, a lone surrogate) is
+    // refused here instead of failing each request. Without propagation it is only the context's
+    // type and any text is kept as before.
+    if (propagateHeaders) {
+        assertWritable("Gateway auth defaultType", { type: defaultType });
+    }
+    // Header names are used on every request: an invalid one fails inside Headers as an internal error.
+    assertHeaderName("Gateway auth headerMapping.subject", headerMapping.subject);
+    for (const field of ["name", "roles", "scopes", "type", "claims"] as const) {
+        const mapped = headerMapping[field];
+        if (mapped) assertHeaderName(`Gateway auth headerMapping.${field}`, mapped);
+    }
+    assertHeaderName("Gateway auth trustSource.header", trustSource.header);
+    for (const header of stripHeaders) assertHeaderName("Gateway auth stripHeaders entry", header);
 
-    // Pre-compute headers to strip (prevents downstream spoofing on all routes)
+    // Pre-compute headers to strip (prevents downstream spoofing on all routes).
+    // The standard identity headers are always included, whatever the mapping says: with
+    // propagateHeaders only the fields the verified identity has are written back, so a
+    // client-supplied value for an absent field (roles, scopes, name, claims) would
+    // otherwise reach the next hop as if it were verified. Stripping happens after the
+    // mapped input is read, because a gateway behind another gateway maps these very names.
     const headersToStrip = [
+        ...Object.values(AUTH_HEADERS),
         headerMapping.subject,
         headerMapping.name,
         headerMapping.roles,
@@ -168,6 +263,7 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         ...stripHeaders,
     ];
 
+    /** Delete the headers the gateway contributes, so none of them can be forwarded or forged downstream. */
     function stripGatewayHeaders(headers: Headers): void {
         for (const header of headersToStrip) {
             if (header) headers.delete(header);
@@ -186,25 +282,33 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
 
         // Verify trust
         const trustHeaderValue = req.header.get(trustSource.header);
-        if (!trustHeaderValue || !isTrusted(trustHeaderValue, trustSource.expectedValues)) {
+        if (!trustHeaderValue || !isTrusted(trustHeaderValue, trustSource.expectedValues, allowCidr)) {
             throw new ConnectError("Untrusted request source", Code.Unauthenticated);
         }
 
+        // The standard x-auth-* texts are decoded only when the sender declared the encoding;
+        // otherwise a literal `utf-8''admin` subject from an older service stays that literal text.
+        const decode = declaresTextEncoding(req.header);
+
         // Extract subject (required)
-        const subject = req.header.get(headerMapping.subject);
+        const subjectRaw = req.header.get(headerMapping.subject);
+        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true, MAX_SUBJECT_LENGTH) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
         // Extract optional fields
-        const name = headerMapping.name ? (req.header.get(headerMapping.name) ?? undefined) : undefined;
-        const type = headerMapping.type ? (req.header.get(headerMapping.type) ?? defaultType) : defaultType;
+        const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
+        const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode, true, MAX_NAME_LENGTH) : undefined;
+        const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
+        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true, MAX_TYPE_LENGTH) : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];
         if (headerMapping.roles) {
             const rolesRaw = req.header.get(headerMapping.roles);
             if (rolesRaw) {
+                assertStandardHeaderFits(headerMapping.roles, rolesRaw);
                 roles = parseRoles(rolesRaw);
             }
         }
@@ -214,7 +318,11 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         if (headerMapping.scopes) {
             const scopesRaw = req.header.get(headerMapping.scopes);
             if (scopesRaw) {
-                scopes = scopesRaw.split(" ").filter(Boolean);
+                assertStandardHeaderFits(headerMapping.scopes, scopesRaw);
+                scopes = scopesRaw
+                    .split(" ")
+                    .filter(Boolean)
+                    .map((scope) => readIdentityText(headerMapping.scopes as string, scope, decode, false, MAX_HEADER_BYTES));
             }
         }
 
@@ -222,7 +330,12 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         let claims: Record<string, unknown> = {};
         if (headerMapping.claims) {
             const claimsRaw = req.header.get(headerMapping.claims);
-            if (claimsRaw && claimsRaw.length <= 8192) {
+            // A claims header that does not fit is refused, not read as `{}`: a deny rule or an
+            // authorize callback that looks at a claim would otherwise stop matching.
+            if (claimsRaw && claimsRaw.length > MAX_HEADER_BYTES) {
+                throw new ConnectError("Authentication failed", Code.Unauthenticated);
+            }
+            if (claimsRaw) {
                 try {
                     const parsed: unknown = JSON.parse(claimsRaw);
                     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {

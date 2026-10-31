@@ -76,6 +76,19 @@ handler for the whole call, including after its first `await` or `yield`.
   non-empty string (or an array of them) and a present `maxTokenAge` a number
   of seconds above 0 or a duration string; omit the option to skip a check.
   Anything else throws when the interceptor is created.
+- `createGatewayAuthInterceptor` trusts a shared secret in `trustSource`. A CIDR
+  block in `expectedValues` is matched against a header the caller chooses, so
+  creating the interceptor with one throws unless `allowCallerControlledCidr: true`
+  is set. Creating it also throws, naming the option, for a header name that is
+  not a valid HTTP header name and, with `propagateHeaders` on, for a
+  `defaultType` that is empty, over 128 characters or holds a lone surrogate.
+- `verifyCredentials` and `mapSession` must return a complete `AuthContext`;
+  `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
+  field (`roles` and `scopes` must be arrays of at most 8192 strings, without
+  holes) ends the call with `Unauthenticated`, with or without `propagateHeaders`,
+  and is never cached. So does a result that passes that check but cannot be
+  copied for the cache or written into headers (a throwing getter, a proxy whose
+  trap throws, a cyclic or `BigInt` claim, a throwing `toJSON`).
 - The generic and session interceptors accept `propagatedClaims` to limit the
   claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
 - `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length
@@ -100,13 +113,30 @@ handler for the whole call, including after its first `await` or `yield`.
   and a client token factory that returns nothing fails the call instead of
   sending `Bearer undefined`.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
-  LF, or a character above U+00FF (a header value is a byte string) is rejected
-  with `Unauthenticated` before it is cached. Roles and claims are written as
-  JSON with `\uXXXX` escapes for such characters and read back unchanged.
+  LF, or a lone surrogate, and a scope that is empty or contains a space (the
+  reader splits scopes on spaces and drops empty pieces), is rejected with `Unauthenticated` before it is cached.
+  Roles and claims are written as JSON with `\uXXXX` escapes for characters above
+  U+00FF and read back as the parsed JSON.
+- With the `cache` option of the generic and session interceptors, every request
+  gets its own copy of the cached identity. `roles`, `scopes`, `expiresAt` and
+  nested plain objects, arrays and dates in `claims` are copied; other values in
+  `claims` (a `Map`, a class instance) are shared. A handler that changes its
+  copy does not change what a later request with the same credential receives.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
-  headers before setting verified auth
-  context. Header values for roles, scopes, and claims are bounded; oversized
-  values are omitted.
+  headers (the names in `AUTH_HEADERS`) before setting verified auth
+  context. The gateway interceptor strips them too, after it has read its own
+  mapped input, so a client-supplied value of one of those headers is not
+  forwarded to the next hop.
+- With `propagateHeaders`, text above U+00FF in a subject, type, name, or scope
+  (Cyrillic, CJK, emoji) is written as `utf-8''` plus percent-encoded UTF-8 and
+  read back by the receiver (the writer sets `x-auth-encoding: percent-utf8`,
+  and readers decode only when it is present). ASCII and Latin-1 text is written
+  as is, with two exceptions that are encoded too: a text that starts with
+  `utf-8''` (readers decode that prefix when the marker is present), and a text
+  with a space or tab at either end (`Headers.set` would otherwise remove that
+  whitespace). A subject over 512 characters, a type over 128, a name over 256,
+  or roles, scopes, or claims whose serialized value is over 8192 characters is
+  rejected with `Unauthenticated` instead of being cut or left out.
 
 For gateway and service-to-service trust boundaries, see the
 [authentication guide](https://connectum.dev/en/guide/auth) and the

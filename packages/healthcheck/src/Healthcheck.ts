@@ -8,7 +8,6 @@
  * @module @connectum/healthcheck/Healthcheck
  */
 
-import { setTimeout } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
 import type { ConnectRouter } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -18,6 +17,7 @@ import { HealthcheckManager } from "./HealthcheckManager.ts";
 import { createHttpHealthHandler } from "./httpHandler.ts";
 import type { HealthcheckOptions } from "./types.ts";
 import { ServingStatus } from "./types.ts";
+import { assertBooleanOption, assertHttpPaths, assertManager, assertOptionsObject, assertWatchInterval } from "./validation.ts";
 
 /**
  * Default watch interval for streaming health updates (ms)
@@ -54,32 +54,28 @@ function resolveServiceStatus(manager: HealthcheckManager, service: string): Ser
 }
 
 /**
- * Reject an `httpPaths` value that could never match a request or would
- * silently turn the HTTP endpoint into a no-op.
- *
- * A request path always starts with "/" and never contains the query or
- * fragment delimiters, so an element lacking the slash or containing them can
- * never be matched. An empty array would leave `httpEnabled: true` with no
- * reachable endpoint.
+ * Longest part of a requested service name that an error message repeats.
+ * The name comes from the client without a limit of its own: echoing all of it
+ * lets one request build a response larger than an HTTP/2 frame, which kills
+ * the stream and can take the session down with it.
  */
-function validateHttpPaths(httpPaths: unknown): void {
-    if (!Array.isArray(httpPaths)) {
-        throw new TypeError(`Healthcheck(): option 'httpPaths' must be an array of paths, got ${typeof httpPaths}`);
+const MAX_ECHOED_NAME_LENGTH = 128;
+
+/**
+ * Cut a client-supplied name to {@link MAX_ECHOED_NAME_LENGTH} UTF-16 code
+ * units for use in a message, marking the cut with an ellipsis. A name that
+ * fits is returned unchanged. A cut never leaves half of a surrogate pair.
+ */
+function boundedName(name: string): string {
+    if (name.length <= MAX_ECHOED_NAME_LENGTH) {
+        return name;
     }
-    if (httpPaths.length === 0) {
-        throw new RangeError("Healthcheck(): option 'httpPaths' must not be empty; to disable the HTTP endpoint set 'httpEnabled: false'");
+    let end = MAX_ECHOED_NAME_LENGTH;
+    const last = name.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) {
+        end -= 1;
     }
-    for (const path of httpPaths as unknown[]) {
-        if (typeof path !== "string") {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' must contain only strings, got ${typeof path}`);
-        }
-        if (!path.startsWith("/")) {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must start with '/'`);
-        }
-        if (path.includes("?") || path.includes("#")) {
-            throw new TypeError(`Healthcheck(): option 'httpPaths' entry '${path}' must not contain '?' or '#'`);
-        }
-    }
+    return `${name.slice(0, end)}…`;
 }
 
 /**
@@ -96,9 +92,19 @@ function validateHttpPaths(httpPaths: unknown): void {
  *
  * @param options - Healthcheck configuration options
  * @returns ProtocolRegistration for createServer
- * @throws {RangeError} when `httpPaths` is an empty array
- * @throws {TypeError} when `httpPaths` is not an array, or an entry is not a
- *   string, does not start with `/`, or contains `?` or `#`
+ * @throws {RangeError} when `httpPaths` is an empty array, or `watchInterval`
+ *   is a number that is not an integer from 1 to 2147483647
+ * @throws {TypeError} when `options` is not an object (`null` included),
+ *   `manager` is not a HealthcheckManager, `httpEnabled` is not a boolean,
+ *   `httpPaths` is not an array, or an entry is not a string, does not start
+ *   with `/`, or contains `?` or `#`; or when `watchInterval` is not a number
+ *   (including `null`)
+ *
+ * A second `Healthcheck()` in one server (or an application service that
+ * already is `grpc.health.v1.Health`) cannot be seen from here. It is refused
+ * with an `Error` when the server builds its routes: `start()` rejects, and so
+ * does the first call made through `localClient()` (the client itself is
+ * created without building routes).
  *
  * @example
  * ```typescript
@@ -118,11 +124,17 @@ function validateHttpPaths(httpPaths: unknown): void {
  * ```
  */
 export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistration {
+    assertOptionsObject(options);
     const { httpEnabled = false, httpPaths, watchInterval = DEFAULT_WATCH_INTERVAL } = options;
-    const manager = options.manager ?? healthcheckManager;
+    // Only an omitted manager selects the singleton; null is a mistake.
+    const manager = options.manager === undefined ? healthcheckManager : options.manager;
+
+    assertBooleanOption(httpEnabled, "httpEnabled");
+    assertManager(manager);
+    assertWatchInterval(watchInterval);
 
     if (httpPaths !== undefined) {
-        validateHttpPaths(httpPaths);
+        assertHttpPaths(httpPaths, "Healthcheck(): option 'httpPaths'", "to disable the HTTP endpoint set 'httpEnabled: false'");
     }
 
     const protocol: ProtocolRegistration = {
@@ -135,6 +147,15 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
         // without mounting it, because initialize keeps only the services in its
         // input (with their status) and removes the rest.
         setup(context: ProtocolContext): void {
+            // `context.services` includes those of the protocols before this
+            // one, so a second Healthcheck() (or an application that mounts its
+            // own Health service) shows up here. Two answers for one service
+            // would silently ignore one of the managers.
+            if (context.services.some((service) => service.typeName === Health.typeName)) {
+                throw new Error(
+                    `Healthcheck(): the '${Health.typeName}' service is already registered by the application or by an earlier Healthcheck(); register Healthcheck() once per server`,
+                );
+            }
             // The mounted services, not every service of their files.
             const serviceNames = context.services.map((service) => service.typeName);
             manager.initialize(serviceNames);
@@ -156,12 +177,13 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                 /**
                  * Check health status of a specific service
                  *
-                 * Per gRPC spec: returns NOT_FOUND for unknown services.
+                 * Per gRPC spec: returns NOT_FOUND for unknown services. The
+                 * message repeats at most the first 128 characters of the name.
                  */
                 check: ({ service }) => {
                     const status = resolveServiceStatus(manager, service);
                     if (status === ServingStatus.SERVICE_UNKNOWN) {
-                        throw new ConnectError(`Service '${service}' not found`, Code.NotFound);
+                        throw new ConnectError(`Service '${boundedName(service)}' not found`, Code.NotFound);
                     }
                     return create(HealthCheckResponseSchema, { status });
                 },
@@ -171,30 +193,66 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                  *
                  * Per gRPC spec:
                  * - Sends initial status immediately
-                 * - Sends updates only when status changes
+                 * - Sends a message for every change of the status, in order,
+                 *   and nothing while it holds
                  * - For unknown services: sends SERVICE_UNKNOWN (does not terminate the call)
                  * - Terminates when client disconnects (AbortSignal)
+                 *
+                 * Changes come from the manager's change notifications, so one
+                 * that is made and reverted between two ticks still reaches the
+                 * client, and nothing waits for `watchInterval`. That interval
+                 * only paces a periodic re-check of the status, which also
+                 * covers a manager whose state changes without announcing it.
+                 *
+                 * A client that stops reading while its status keeps flapping
+                 * makes the call hold one pending message per change; dropping
+                 * them would reintroduce the lost transitions.
                  */
                 async *watch({ service }, context) {
-                    let currentStatus = resolveServiceStatus(manager, service);
+                    const { signal } = context;
+                    // Statuses queued by the manager's notifications and not yet sent.
+                    const pending: ServingStatus[] = [];
+                    let lastObserved = resolveServiceStatus(manager, service);
+                    let wake: (() => void) | undefined;
 
-                    yield create(HealthCheckResponseSchema, { status: currentStatus });
+                    const observe = (): void => {
+                        const status = resolveServiceStatus(manager, service);
+                        if (status !== lastObserved) {
+                            lastObserved = status;
+                            pending.push(status);
+                            wake?.();
+                        }
+                    };
 
-                    while (!context.signal.aborted) {
-                        try {
-                            await setTimeout(watchInterval, undefined, { signal: context.signal });
-                        } catch (err) {
-                            if (err instanceof Error && err.name === "AbortError") {
+                    // Subscribed before the first message is built so no change slips in between.
+                    const unsubscribe = manager.subscribe(observe);
+                    try {
+                        yield create(HealthCheckResponseSchema, { status: lastObserved });
+
+                        while (!signal.aborted) {
+                            for (let next = pending.shift(); next !== undefined; next = pending.shift()) {
+                                yield create(HealthCheckResponseSchema, { status: next });
+                            }
+                            if (signal.aborted) {
                                 break;
                             }
-                            throw err;
-                        }
 
-                        const newStatus = resolveServiceStatus(manager, service);
-                        if (newStatus !== currentStatus) {
-                            currentStatus = newStatus;
-                            yield create(HealthCheckResponseSchema, { status: currentStatus });
+                            // Sleep until a notification, the re-check interval or the end of the call.
+                            await new Promise<void>((resolve) => {
+                                const done = (): void => {
+                                    clearTimeout(timer);
+                                    signal.removeEventListener("abort", done);
+                                    wake = undefined;
+                                    resolve();
+                                };
+                                const timer = setTimeout(done, watchInterval);
+                                signal.addEventListener("abort", done, { once: true });
+                                wake = done;
+                            });
+                            observe();
                         }
+                    } finally {
+                        unsubscribe();
                     }
                 },
             });

@@ -44,6 +44,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -65,6 +66,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -91,6 +93,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["0.0.0.0/0"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -112,6 +115,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/33"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -168,6 +172,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -194,6 +199,7 @@ describe("Gateway Auth Advanced — Integration", () => {
                 trustSource: {
                     header: "x-forwarded-for",
                     expectedValues: ["10.0.0.0/8"],
+                    allowCallerControlledCidr: true,
                 },
             });
 
@@ -283,14 +289,14 @@ describe("Gateway Auth Advanced — Integration", () => {
             assert.deepStrictEqual(captured.claims, claims);
         });
 
-        // Guide (context.md): a claims value has a limit of 8192 characters; over it, the value is
-        // ignored and claims are empty, while the request itself is still authenticated.
+        // A claims header has a limit of 8192 characters. Over it, the request is refused: reading the
+        // claims as empty would stop a deny rule or an authorize callback that looks at a claim from matching.
         // {"d":"<n>"} is n + 8 characters, so 8184 filler characters give exactly 8192.
         for (const [label, filler, expectedAdmitted] of [
             ["exactly 8192 characters", 8184, true],
             ["8193 characters", 8185, false],
         ] as const) {
-            it(`should ${expectedAdmitted ? "keep" : "drop"} claims of ${label}`, async () => {
+            it(`should ${expectedAdmitted ? "keep" : "refuse"} claims of ${label}`, async () => {
                 const interceptor = createGateway();
                 const claimsJson = JSON.stringify({ d: "x".repeat(filler) });
                 assert.strictEqual(claimsJson.length, filler + 8);
@@ -307,11 +313,23 @@ describe("Gateway Auth Advanced — Integration", () => {
                     return { message: {} };
                 });
 
+                if (!expectedAdmitted) {
+                    await assert.rejects(
+                        () => interceptor(next as any)(req),
+                        (err: unknown) => {
+                            assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                            return true;
+                        },
+                    );
+                    assert.strictEqual(captured, undefined, "the handler must not run");
+                    return;
+                }
+
                 await interceptor(next as any)(req);
 
-                assert.ok(captured, "an oversized claims header must not reject the request");
+                assert.ok(captured);
                 assert.strictEqual(captured.subject, "user-1");
-                assert.deepStrictEqual(captured.claims, expectedAdmitted ? { d: "x".repeat(filler) } : {});
+                assert.deepStrictEqual(captured.claims, { d: "x".repeat(filler) });
             });
         }
 

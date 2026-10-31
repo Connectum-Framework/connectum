@@ -56,7 +56,20 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   `circuitBreaker.halfOpenAfter`, `retry.initialDelay` and `retry.maxDelay` 0 to 2147483647 ms, all integers
   (`retry.maxRetries` is a finite number >= 0). A non-number throws `TypeError`, any other violation
   `RangeError`. `createDefaultInterceptors` accepts `true`, `false` or an options object per key (`fallback`:
-  `false` or an options object with a handler; `validation`: a boolean) and throws `TypeError` otherwise.
+  `false` or an options object with a handler; `validation`: a boolean) and throws `TypeError` otherwise;
+  a key it does not know (`timout`, `logger`) is refused with a `TypeError` that lists the known keys.
+- The other options are checked the same way: every factory refuses an options argument that is not an object
+  (`TypeError` naming the factory); `skipStreaming`, `skipHealthCheck`, `includeTransport`, `includeBodies`,
+  `skipGrpcServices`, `alwaysEmitImplicit` and `ignoreUnknownFields` must be booleans; `logger` and
+  `failurePredicate` must be functions; `level` must be `debug`, `info`, `warn` or `error`; `retryableCodes`
+  must be an array of Connect codes.
+- `createMethodFilterInterceptor` accepts only the keys `*`, `Service/*` and `Service/Method` (names non-empty,
+  without `*`, `/` or whitespace) and arrays of functions as values, and throws at creation otherwise. Names
+  are compared exactly, case included.
+- A bulkhead call that waits in the queue leaves it when its request signal aborts and never reaches the handler.
+  A circuit breaker in the half-open state lets one probe through and rejects every other call at once.
+- The logger's `skipHealthCheck` skips the `grpc.health` package (`grpc.health.v1.Health`), not every service
+  whose name contains that text.
 - Since 1.3, request and response bodies are omitted from
   logger output by default. See the [logger migration note](https://connectum.dev/en/migration/logger-bodies).
 
@@ -70,16 +83,28 @@ from the request.
 | Thrown by the handler | Client receives |
 |---|---|
 | `ConnectError` | Unchanged: code, text, details, metadata |
-| `SanitizableError` | Its `clientMessage` and code; `serverDetails` stay on the server |
-| `Error` or a thrown string | `Internal` with the text `internal error` |
-| An error with a numeric `code` | That code with an empty text |
+| `SanitizableError` | Its `clientMessage` and code (`Internal` when the code is not an integer from 1 to 16); `serverDetails` stay on the server |
+| An `Error` named `AbortError` or `TimeoutError` (a `DOMException` from an aborted `fetch` or `AbortSignal.timeout()` too), whatever its `code` | `Canceled` with an empty text |
+| Any other value with an integer `code` from 1 to 16 | That code; the text is empty, except for `Internal` (13), which carries `internal error` |
+| Anything else: an `Error` without a `code`, a thrown string, a `code` that is not an integer from 1 to 16 (`0`, `17`, `1.5`, `NaN`, an HTTP status, an errno, `"ECONNRESET"`) | `Internal` with the text `internal error` |
+
+The rows are checked in this order, and the first match decides. A `SanitizableError` is
+recognised before the name check, so one that happens to be named `AbortError` still sends
+its `clientMessage` and code. With `exposeErrorMessages: true` the rows from the third on
+keep their codes and carry the original text instead; the first two rows do not change.
 
 The original failure stays on the server: as `cause` of the thrown `ConnectError`
 (no transport serializes `cause`), as `info.error` of `onError` with its original
 text, and in the console log. The behavior is the same over gRPC, Connect and
 `server.localClient()`.
 
-To send the original text, set `exposeErrorMessages: true`: only for trusted
+`onError` is a reporting hook and cannot change the outcome of a call. If it throws, or
+an `async` one rejects, the client still receives the error from the table above and the
+process sees no unhandled rejection. The first failure of the callback is written once to
+`console.error`; later ones are dropped.
+
+To send the original text (for a thrown value that is not an `Error`, its string form), set
+`exposeErrorMessages: true`: only for trusted
 internal callers or while debugging. It is a server-side option, independent of
 `NODE_ENV`:
 
@@ -102,10 +127,41 @@ on a server chain and on a client transport alike:
 | Header | One field, `content-type`, equal to the request `content-type`. For a Connect GET request, which sends none, it comes from the `encoding` query parameter (`json` gives `application/json`, `proto` gives `application/proto`). |
 | Trailer | `grpc-status: 0` when the request `content-type` starts with `application/grpc` (gRPC and gRPC-web); empty otherwise. |
 
+The `handler` returns the response message of the method: a message made with
+`create(OutputSchema, { ... })`, or a plain object with that message's fields, which the
+interceptor turns into one (a field of a oneof is set as `pick: { case: "a", value }`, under
+the name of the oneof). A plain object is checked field by field before the message is built,
+and the first problem fails the call with a `TypeError` that names `createFallbackInterceptor`,
+the expected type and the path of the problem. Refused are: `undefined`, `null`, a string or an
+array instead of the object; a key that is not a field (nested objects included); a value
+of another kind than the field takes (a number in a string field, a non-boolean in a bool field,
+a string in an int32 field, a non-array in a repeated field, an enum name instead of its
+number, a bare oneof member name); and a number the encoder cannot write (a fraction or a value
+beyond the range in an int32, `NaN`). Keys of a map are held to the form the encoder writes back unchanged:
+an integer key must be the canonical decimal form (no `01`, `+1`, `" 1"`, `1e3`, `0x10`, `""`, `-0`) inside the
+range of the key type, a bool key is `"true"` or `"false"`. A 64-bit integer value is a bigint or a safe
+integer inside its range, or a canonical decimal string. Bytes are a `Uint8Array` or an array of integers 0 to
+255 without holes (an `ArrayBuffer` or a `DataView` is refused). A string must be well formed (no lone surrogate), wherever it stands: field values, map keys and values, the keys and strings inside a `Struct`, `Value` and `ListValue`, an `Any` type URL, a `FieldMask` path. A `Struct` also refuses `NaN` and `Infinity`, which JSON cannot carry.
+The object of a oneof holds only `case` and `value`. An enum number that the enum does not name is accepted.
+The forms are those of protobuf-es: a wrapper (`StringValue`, `Int64Value`, ...) in a singular
+field outside a oneof is its bare value (`name: "cached"`, not `{ value: "cached" }`), and a
+`Struct` is a plain JSON object (a ready message is refused in both places; a plain object that only carries another `$typeName` is just a JSON object in a `Struct` field); `Timestamp`,
+`Duration`, `Value`, `ListValue`, `Any`, `FieldMask` and `Empty` are objects with their own
+fields (`{ seconds: 1n }`), and a wrapper in a list or a oneof is an object with `value`.
+Behind the error handler the client sees `Internal: internal error` and the server side sees the
+full text.
+
 No header of the request is copied into the response, whichever interceptor added
 it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
 HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
 not in response headers.
+
+In `createDefaultInterceptors` validation stands outside the fallback (the order is
+`errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, fallback, serializer`).
+A request that breaks a validation rule is rejected with `INVALID_ARGUMENT` before it
+reaches the handler, and the fallback value does not stand in for that rejection: the
+fallback is for failed dependencies, timeouts and bugs. It never replaces `Unauthenticated`
+or `PermissionDenied` either.
 
 ## Cancellation behavior in 1.3
 
@@ -138,7 +194,8 @@ To keep timeouts from tripping the breaker, exclude `DeadlineExceeded` in
 `failurePredicate`; see the
 [circuit breaker guide](https://connectum.dev/en/guide/interceptors/built-in#circuit-breaker-placement-and-error-classification).
 
-Options, defaults and chain order are unchanged.
+Options and defaults are unchanged. The chain order is unchanged apart from the
+position of validation relative to the fallback, described above.
 
 ## Learn and reference
 

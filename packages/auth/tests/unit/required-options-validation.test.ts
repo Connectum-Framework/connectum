@@ -58,7 +58,7 @@ describe("createGatewayAuthInterceptor: required options", () => {
         it(`refuses trustSource.header ${JSON.stringify(header)}`, () => {
             assert.throws(
                 () => gateway({ trustSource: { header, expectedValues: [SECRET] } }),
-                (err: unknown) => err instanceof TypeError && /createGatewayAuthInterceptor trustSource\.header must be a non-empty string/.test(err.message),
+                (err: unknown) => err instanceof TypeError && /trustSource\.header must be a valid HTTP header name/.test(err.message),
             );
         });
     }

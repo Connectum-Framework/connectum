@@ -1,0 +1,5 @@
+---
+"@connectum/events-kafka": minor
+---
+
+fix: a wildcard subscription keeps delivering when one of the topics it matched is deleted. The Kafka client library cannot drop a topic from a consumer: after the deletion the consumer crashed and restarted with the same topic list, which failed on the deleted topic every time, so the healthy topics of the subscription delivered nothing for about five minutes (hundreds of `consumer-restore-failed` events) whatever `topicDiscoveryInterval` was. The adapter now replaces the crashed consumer with one in the same group that subscribes the literal topics and the matches that still exist; the lifecycle reports `consumer-lost` and then `consumer-restored`, and one warning names the deleted topics. A wildcard subscription now lists the broker's topics once when it starts even with `topicDiscoveryInterval: false` (two metadata requests through the admin connection, before and after subscribing, and no periodic check); with `false` the replacement subscribes no topic created since the start. A subscription made of literal topic names is not replaced.

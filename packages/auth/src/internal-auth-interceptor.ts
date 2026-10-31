@@ -22,8 +22,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
+import { isAuthContext } from "./auth-context-check.ts";
 import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { assertHeaderName } from "./option-checks.ts";
 import { assertMethodPatterns } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
@@ -121,7 +123,8 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             authContext = null;
         }
 
-        if (!authContext) {
+        // A custom trust source may return any truthy value; only an AuthContext is an identity.
+        if (!authContext || !isAuthContext(authContext)) {
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 
@@ -154,6 +157,7 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
  */
 export function meshIdentityTrust(options: MeshIdentityTrustOptions): InternalTrustSource {
     const { allowlist, header = "x-forwarded-client-principal", type = "mesh" } = options;
+    assertHeaderName("meshIdentityTrust header", header);
 
     if (allowlist.length === 0) {
         throw new Error("@connectum/auth: meshIdentityTrust requires a non-empty allowlist");
@@ -280,6 +284,7 @@ function stripBearer(value: string): string {
  */
 export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrustSource {
     const { issuers, header = "x-internal-token", type = "service" } = options;
+    assertHeaderName("signedTokenTrust header", header);
 
     const issuerKeys = Object.keys(issuers);
     if (issuerKeys.length === 0) {
@@ -409,6 +414,7 @@ function constantTimeEqual(a: string, b: string): boolean {
  */
 export function sharedSecretTrust(options: SharedSecretTrustOptions): InternalTrustSource {
     const { secret, header = "x-internal-secret", subject = "internal", roles, scopes, type = "internal" } = options;
+    assertHeaderName("sharedSecretTrust header", header);
 
     if (!secret) {
         throw new Error("@connectum/auth: sharedSecretTrust requires a non-empty secret");
