@@ -15,6 +15,7 @@ import { LruCache } from "./cache.ts";
 import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertAuthInterceptorOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, AuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -47,6 +48,7 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
  *
  * @param options - Authentication options
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `verifyCredentials` is not a function, or `extractCredentials` is set and is not a function
  * @throws {Error} When `skipMethods` contains `"*"`
  * @throws {RangeError} When `cache` has a `ttl` that is not finite and positive, or a `maxSize` that is not an integer of at least 1
  *
@@ -87,6 +89,7 @@ function defaultExtractCredentials(req: { header: Headers }): string | null {
  * ```
  */
 export function createAuthInterceptor(options: AuthInterceptorOptions): Interceptor {
+    assertAuthInterceptorOptions(options);
     const { extractCredentials = defaultExtractCredentials, verifyCredentials, skipMethods = [], propagateHeaders = false, cache: cacheOptions, propagatedClaims } = options;
 
     assertNoCatchAllSkip(skipMethods);

@@ -7,6 +7,8 @@
  * @module method-match
  */
 
+import { assertMethodPatterns } from "./option-validation.ts";
+
 /**
  * Refuse the catch-all pattern `"*"` in a `skipMethods` list.
  *
@@ -22,6 +24,9 @@
 export function assertNoCatchAllSkip(skipMethods: readonly string[] | undefined): void {
     if (skipMethods?.includes("*")) {
         throw new Error('@connectum/auth: skipMethods must not contain the catch-all pattern "*"; to disable this interceptor, do not register it, or list Service/* patterns');
+    }
+    if (skipMethods !== undefined) {
+        assertMethodPatterns("skipMethods", skipMethods);
     }
 }
 

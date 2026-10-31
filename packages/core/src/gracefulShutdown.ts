@@ -31,9 +31,11 @@ export interface GracefulShutdownOptions {
  * Steps 4 and 5 run even when closing the transport fails: hooks release the
  * application's own resources (brokers, databases), and skipping them because
  * the listener could not close cleanly would leak exactly what the shutdown
- * exists to release. Step 5 also runs when a hook fails. Errors are re-thrown
- * afterwards — the close error, the hook error, or an `AggregateError` with
- * both.
+ * exists to release. Step 4 itself is best-effort: every hook runs and is
+ * awaited even when another one fails, and step 5 also runs when a hook fails.
+ * Errors are re-thrown afterwards — the close error, the hook error (a single
+ * failure, or an `AggregateError` of all failed hooks), or an `AggregateError`
+ * with the close error and the hook error.
  *
  * @param transport - The transport manager to close
  * @param shutdownManager - The shutdown hook manager
