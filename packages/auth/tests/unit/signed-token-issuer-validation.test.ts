@@ -23,7 +23,7 @@ describe("signedTokenTrust: issuer expectations", () => {
         });
     }
 
-    for (const maxTokenAge of [0, -1, Number.NaN, "", "1month"]) {
+    for (const maxTokenAge of [0, -1, Number.NaN, "", "1month", "-1h", "1h ago", "0s"]) {
         it(`refuses maxTokenAge ${JSON.stringify(maxTokenAge)} and names the issuer`, () => {
             assert.throws(
                 () => create({ maxTokenAge }),

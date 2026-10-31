@@ -258,7 +258,8 @@ export interface JwtAuthInterceptorOptions {
      * Maximum token age.
      * Passed to jose jwtVerify options.
      * Number (seconds) or string (e.g., "2h", "7d"). Omit the option to skip the check; `0`, a
-     * negative or non-finite number and a blank string throw when the interceptor is created.
+     * negative or non-finite number, a blank string, a text jose cannot read ("1month") and a text
+     * jose reads as zero or negative ("0s", "-1h", "1h ago") throw when the interceptor is created.
      */
     maxTokenAge?: number | string | undefined;
     /**

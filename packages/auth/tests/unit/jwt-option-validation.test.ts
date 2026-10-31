@@ -75,7 +75,20 @@ describe("createJwtAuthInterceptor: maxTokenAge", () => {
         });
     }
 
+    // jose reads a leading "-" and a trailing "ago" as a negative limit and "0s" as zero: every token
+    // is then older than the limit and is rejected, which is the unusable setting the number 0 already is.
+    for (const value of ["-1h", "1h ago", "1 hour ago", "0s", "0 minutes", "0.4s", "-30 secs"]) {
+        it(`refuses the zero or negative duration ${JSON.stringify(value)}`, () => {
+            assert.throws(
+                () => create({ maxTokenAge: value }),
+                (err: unknown) => err instanceof RangeError && /maxTokenAge must be a duration greater than 0/.test(err.message),
+            );
+        });
+    }
+
     it("accepts a positive number, the duration texts jose reads and an omitted option", () => {
+        for (const text of ["+1h", "1h from now", "1 hour", "1s"]) create({ maxTokenAge: text });
+        create({ maxTokenAge: 3600 });
         create({ maxTokenAge: 60 });
         create({ maxTokenAge: 0.5 });
         for (const text of ["2h", "30m", "7d", "1.5 hours", "1 week", "90 secs", "2 HOURS"]) create({ maxTokenAge: text });

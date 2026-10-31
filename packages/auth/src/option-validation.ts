@@ -9,7 +9,7 @@
  */
 
 import { inspect } from "node:util";
-import { SignJWT } from "jose";
+import { decodeJwt, UnsecuredJWT } from "jose";
 import type { AuthzEffect, AuthzRule } from "./types.ts";
 
 /** Render a rejected value for an error message. Only used for values that are not secrets (policies, effects). */
@@ -68,11 +68,40 @@ export function assertExpectedClaim(factory: string, option: "issuer" | "audienc
 }
 
 /**
- * Check a `maxTokenAge`: absent, a finite number of seconds greater than 0, or a non-empty duration string.
+ * Read a duration text the way jose reads `maxTokenAge`, in seconds, or `undefined` for a text jose
+ * does not know ("1month"). The sign matters: a leading "-" and a trailing "ago" give a negative
+ * value, and "0s" gives zero.
  *
- * `0` used to be skipped as falsy, which switched the age check off.
+ * jose does not export its parser, but its token builder reads an expiration text with the very same
+ * one and stores `now + duration` in `exp`. So the text is put through the builder and the duration is
+ * the distance of `exp` from the current second. If the second changes while the token is built the
+ * distance is off by one, so the reading is repeated until the clock did not move.
+ */
+function readDurationSeconds(text: string): number | undefined {
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const before = Math.floor(Date.now() / 1000);
+        let exp: number | undefined;
+        try {
+            exp = decodeJwt(new UnsecuredJWT({}).setExpirationTime(text).encode()).exp;
+        } catch {
+            return undefined;
+        }
+        if (exp !== undefined && Math.floor(Date.now() / 1000) === before) {
+            return exp - before;
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Check a `maxTokenAge`: absent, a finite number of seconds greater than 0, or a duration text that
+ * jose reads as a positive duration.
  *
- * @throws {RangeError} When the number is not finite and greater than 0, or the string is blank
+ * `0` used to be skipped as falsy, which switched the age check off. A text that jose reads as zero or
+ * negative ("0s", "-1h", "1h ago") makes the limit smaller than any age, so every token is rejected;
+ * it is refused like the number 0.
+ *
+ * @throws {RangeError} When the number is not finite and greater than 0, the string is blank, unreadable, zero or negative
  * @throws {TypeError} When the value is neither a number nor a string
  */
 export function assertMaxTokenAge(factory: string, value: unknown): void {
@@ -91,14 +120,15 @@ export function assertMaxTokenAge(factory: string, value: unknown): void {
         if (value.trim().length === 0) {
             throw new RangeError(`@connectum/auth: ${factory} maxTokenAge must not be blank (omit the option to skip the check); got ${describeValue(value)}`);
         }
-        // jose reads the text with its own parser on every request and throws for one it does not
-        // know ("1month"), which rejects every token as "Authentication failed". Its token builder
-        // reads an expiration text with the same parser, so asking it here keeps the two in step.
-        try {
-            new SignJWT({}).setExpirationTime(value);
-        } catch {
+        const seconds = readDurationSeconds(value);
+        if (seconds === undefined) {
             throw new RangeError(
                 `@connectum/auth: ${factory} maxTokenAge must be a duration such as "2h", "7d" or "30 minutes" (seconds, minutes, hours, days, weeks, years); got ${describeValue(value)}`,
+            );
+        }
+        if (seconds <= 0) {
+            throw new RangeError(
+                `@connectum/auth: ${factory} maxTokenAge must be a duration greater than 0, but jose reads ${describeValue(value)} as ${seconds} seconds (a leading "-" or a trailing "ago" makes it negative); got ${describeValue(value)}`,
             );
         }
         return;
