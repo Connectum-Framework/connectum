@@ -165,6 +165,79 @@ describe("restoreLostConsumer", () => {
         assert.deepEqual(created, []);
     });
 
+    const NO_RESPONDERS: ConsumerNotification = { type: "no_responders", code: 503 };
+
+    it("treats 'no responders' as a loss when the server no longer has the stream, since no 'consumer deleted' will follow", async () => {
+        const { jsm, created } = serverWith({ streamCreated: NEWER_STREAM, consumerExists: false });
+        // The question asked on 'no responders' finds no stream; once the stream exists again (the lookups of the recovery) only the consumer is missing.
+        let asked = 0;
+        (jsm.consumers as { info: unknown }).info = async () => {
+            asked += 1;
+            throw apiError(asked === 1 ? 10059 : 10014);
+        };
+        let lost = false;
+        let restored: Awaited<ReturnType<typeof restoreLostConsumer>> = NOTHING_RESTORED;
+        await loggedErrors(async () => {
+            restored = await restoreLostConsumer(
+                { jsm, streamName: STREAM, config, createdAt: CONSUMER_CREATED, isConnectionClosed: () => false },
+                messagesReporting(NO_RESPONDERS),
+                new AbortController().signal,
+                () => {
+                    lost = true;
+                },
+            );
+        });
+        assert.equal(lost, true, "the subscription is told about the loss");
+        assert.deepEqual(restored, { startSeq: 1, streamReplaced: true, streamCreatedAt: NEWER_STREAM });
+        assert.equal(created.length, 1);
+    });
+
+    it("treats 'no responders' as a loss when only the consumer is missing", async () => {
+        const { jsm, created } = serverWith({ streamCreated: OLD_STREAM, consumerExists: false });
+        let restored: Awaited<ReturnType<typeof restoreLostConsumer>> = NOTHING_RESTORED;
+        const lines = await loggedErrors(async () => {
+            restored = await restoreLostConsumer({ jsm, streamName: STREAM, config, createdAt: CONSUMER_CREATED, isConnectionClosed: () => false }, messagesReporting(NO_RESPONDERS), new AbortController().signal);
+        });
+        assert.equal(restored, undefined);
+        assert.deepEqual(created, []);
+        assert.match(lines[0] ?? "", /was deleted while its stream still exists\. The adapter does not create it again/);
+    });
+
+    it("leaves a consumer that still exists alone when the client reports 'no responders'", async () => {
+        const { jsm, created } = serverWith({ streamCreated: OLD_STREAM, consumerExists: true });
+        let lost = false;
+        const restored = await restoreLostConsumer(
+            { jsm, streamName: STREAM, config, createdAt: CONSUMER_CREATED, isConnectionClosed: () => false },
+            messagesReporting(NO_RESPONDERS),
+            new AbortController().signal,
+            () => {
+                lost = true;
+            },
+        );
+        assert.equal(restored, undefined);
+        assert.equal(lost, false);
+        assert.deepEqual(created, []);
+    });
+
+    it("leaves the consumer alone when the server cannot answer whether it exists", async () => {
+        const { jsm, created } = serverWith({ streamCreated: NEWER_STREAM, consumerExists: true });
+        (jsm.consumers as { info: unknown }).info = async () => {
+            throw new Error("request timed out");
+        };
+        let lost = false;
+        const restored = await restoreLostConsumer(
+            { jsm, streamName: STREAM, config, createdAt: CONSUMER_CREATED, isConnectionClosed: () => false },
+            messagesReporting(NO_RESPONDERS),
+            new AbortController().signal,
+            () => {
+                lost = true;
+            },
+        );
+        assert.equal(restored, undefined);
+        assert.equal(lost, false);
+        assert.deepEqual(created, []);
+    });
+
     it("gives up, with a report, when the connection is closed for good while the stream stays unreachable", async () => {
         const jsm = {
             streams: {
