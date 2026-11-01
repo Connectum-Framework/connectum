@@ -47,19 +47,18 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                 }
                 finished = true;
                 signal.removeEventListener("abort", onAbort);
-                const close = (): void => {
-                    if (closed) {
-                        return;
-                    }
+                const runClose = (): void => {
                     closed = true;
                     void Promise.resolve()
                         .then(() => iterator.return?.())
                         .catch(() => {});
                 };
                 if (pending) {
-                    void pending.then(close, close);
+                    // Scheduled, not yet run: a consumer's return() meanwhile must not reach the source.
+                    closed = true;
+                    void pending.then(runClose, runClose);
                 } else {
-                    close();
+                    runClose();
                 }
             };
 
@@ -81,14 +80,24 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                     if (finished) {
                         return { done: true, value: undefined };
                     }
-                    const read = iterator.next(...args);
-                    pending = read;
+                    // The waiter and the pending marker exist before the caller's code runs, so an abort
+                    // raised from inside `source.next()` itself is not missed and the close still waits.
+                    const settled = Promise.withResolvers<void>();
+                    pending = settled.promise;
                     let release: (step: IteratorResult<T>) => void = () => {};
                     const aborted = new Promise<IteratorResult<T>>((resolve) => {
                         release = resolve;
                         waiters.add(resolve);
                     });
                     try {
+                        let read: Promise<IteratorResult<T>>;
+                        try {
+                            read = Promise.resolve(iterator.next(...args));
+                        } catch (error) {
+                            read = Promise.reject(error);
+                        }
+                        const markSettled = (): void => settled.resolve();
+                        read.then(markSettled, markSettled);
                         const step = await Promise.race([read, aborted]);
                         if (step.done) {
                             finished = true;
@@ -97,7 +106,7 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                         return step;
                     } finally {
                         waiters.delete(release);
-                        if (pending === read) {
+                        if (pending === settled.promise) {
                             pending = undefined;
                         }
                     }

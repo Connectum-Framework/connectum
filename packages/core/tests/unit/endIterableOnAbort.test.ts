@@ -130,6 +130,28 @@ describe("endIterableOnAbort", () => {
         await settle();
 
         assert.strictEqual(caller.seen.returnCalls, 1, "the abort's scheduled close and the consumer's return() finish the source once");
+        assert.strictEqual(caller.seen.returnedDuringNext, false, "the consumer's return() does not overtake the pending read");
+    });
+
+    it("ends a read when the caller's own next() aborts the signal and then stays pending", async () => {
+        const abort = new AbortController();
+        let returns = 0;
+        const source: AsyncIterable<string> = {
+            [Symbol.asyncIterator]: () => ({
+                next: () => {
+                    abort.abort();
+                    return new Promise<IteratorResult<string>>(() => {});
+                },
+                return: async () => {
+                    returns++;
+                    return { done: true, value: undefined };
+                },
+            }),
+        };
+        const reads = endIterableOnAbort(source, abort.signal)[Symbol.asyncIterator]();
+        assert.deepStrictEqual(await reads.next(), { done: true, value: undefined });
+        await settle();
+        assert.strictEqual(returns, 0, "the source read is still pending, so the close waits for it");
     });
 
     it("serves many sequential reads and still ends a parked read on abort", async () => {
