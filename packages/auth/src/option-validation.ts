@@ -230,12 +230,34 @@ export function assertGatewayOptions(options: unknown): void {
  * @throws {TypeError} When `verifyCredentials` is not a function, or `extractCredentials` is present and not a function
  */
 export function assertAuthInterceptorOptions(options: unknown): void {
-    const { verifyCredentials, extractCredentials } = (isRecord(options) ? options : {}) as { verifyCredentials?: unknown; extractCredentials?: unknown };
-    if (typeof verifyCredentials !== "function") {
-        throw new TypeError(`@connectum/auth: createAuthInterceptor verifyCredentials must be a function; got ${describeKind(verifyCredentials)}`);
+    assertCallbackOptions("createAuthInterceptor", options, ["verifyCredentials"], ["extractCredentials"]);
+}
+
+/**
+ * Check the callbacks the session authentication interceptor calls on every request.
+ *
+ * @throws {TypeError} When `verifySession` or `mapSession` is not a function, or `extractToken` is present and not a function
+ */
+export function assertSessionInterceptorOptions(options: unknown): void {
+    assertCallbackOptions("createSessionAuthInterceptor", options, ["verifySession", "mapSession"], ["extractToken"]);
+}
+
+/**
+ * Check that each required callback of `options` is a function and each optional one is a function when set.
+ * A callback that is not callable fails inside the request path, where the caller sees a fixed
+ * authentication error or `internal` and nothing that names the option.
+ */
+function assertCallbackOptions(factory: string, options: unknown, required: readonly string[], optional: readonly string[]): void {
+    const record = isRecord(options) ? options : {};
+    for (const name of required) {
+        if (typeof record[name] !== "function") {
+            throw new TypeError(`@connectum/auth: ${factory} ${name} must be a function; got ${describeKind(record[name])}`);
+        }
     }
-    if (extractCredentials !== undefined && typeof extractCredentials !== "function") {
-        throw new TypeError(`@connectum/auth: createAuthInterceptor extractCredentials must be a function when set; got ${describeKind(extractCredentials)}`);
+    for (const name of optional) {
+        if (record[name] !== undefined && typeof record[name] !== "function") {
+            throw new TypeError(`@connectum/auth: ${factory} ${name} must be a function when set; got ${describeKind(record[name])}`);
+        }
     }
 }
 

@@ -107,9 +107,10 @@ handler for the whole call, including after its first `await` or `yield`.
 - A proto method marked `internal` and without `requires` admits only an
   identity established by `createInternalAuthInterceptor`; an identity from any
   other interceptor, an end-user JWT included, is `Unauthenticated`.
-- The gateway, internal, generic and client interceptors check the options they
+- The gateway, internal, generic, session and client interceptors check the options they
   cannot work without when they are created (`trustSource`, `expectedValues`
-  entries, `internalMethods`, `verifyCredentials`, a client token or secret),
+  entries, `internalMethods`, `verifyCredentials`, `verifySession`, `mapSession`,
+  `extractToken`, a client token or secret),
   and a client token factory that returns nothing fails the call instead of
   sending `Bearer undefined`.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
