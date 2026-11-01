@@ -116,6 +116,37 @@ describe("endIterableOnAbort", () => {
         assert.strictEqual(caller.seen.returnCalls, 1, "the handler's own return() is the only one");
     });
 
+    it("finishes the caller's iterator once when the consumer's return() follows an abort with a read still pending", async () => {
+        const caller = makeCaller();
+        const abort = new AbortController();
+        const reads = endIterableOnAbort(caller.iterable, abort.signal)[Symbol.asyncIterator]();
+
+        const pending = reads.next();
+        await settle();
+        abort.abort();
+        assert.deepStrictEqual(await pending, { done: true, value: undefined });
+        await reads.return?.();
+        caller.deliver({ done: true, value: undefined });
+        await settle();
+
+        assert.strictEqual(caller.seen.returnCalls, 1, "the abort's scheduled close and the consumer's return() finish the source once");
+    });
+
+    it("serves many sequential reads and still ends a parked read on abort", async () => {
+        const caller = makeCaller();
+        const abort = new AbortController();
+        const reads = endIterableOnAbort(caller.iterable, abort.signal)[Symbol.asyncIterator]();
+
+        for (let i = 0; i < 500; i++) {
+            const read = reads.next();
+            caller.deliver({ done: false, value: `m${i}` });
+            assert.deepStrictEqual(await read, { done: false, value: `m${i}` });
+        }
+        const parked = reads.next();
+        abort.abort();
+        assert.deepStrictEqual(await parked, { done: true, value: undefined });
+    });
+
     it("does not touch the caller's iterator when the input ended before the abort", async () => {
         const caller = makeCaller();
         const abort = new AbortController();

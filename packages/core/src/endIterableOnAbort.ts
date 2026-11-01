@@ -32,10 +32,14 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
     return {
         [Symbol.asyncIterator]() {
             const iterator = source[Symbol.asyncIterator]();
-            // Resolves when the signal aborts, so a read parked in `source` can be abandoned.
-            const aborted = Promise.withResolvers<IteratorResult<T>>();
+            // One entry per read in flight: resolves it when the signal aborts, so a read parked in
+            // `source` can be abandoned. A read removes its entry when it settles, so a long call does
+            // not accumulate a handler per message.
+            const waiters = new Set<(step: IteratorResult<T>) => void>();
             let pending: Promise<unknown> | undefined;
             let finished = false;
+            // Set once `source.return()` is called or scheduled, so it is called at most once.
+            let closed = false;
 
             const finish = (): void => {
                 if (finished) {
@@ -44,6 +48,10 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                 finished = true;
                 signal.removeEventListener("abort", onAbort);
                 const close = (): void => {
+                    if (closed) {
+                        return;
+                    }
+                    closed = true;
                     void Promise.resolve()
                         .then(() => iterator.return?.())
                         .catch(() => {});
@@ -56,7 +64,9 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
             };
 
             const onAbort = (): void => {
-                aborted.resolve({ done: true, value: undefined });
+                for (const resolve of waiters) {
+                    resolve({ done: true, value: undefined });
+                }
                 finish();
             };
 
@@ -73,14 +83,20 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                     }
                     const read = iterator.next(...args);
                     pending = read;
+                    let release: (step: IteratorResult<T>) => void = () => {};
+                    const aborted = new Promise<IteratorResult<T>>((resolve) => {
+                        release = resolve;
+                        waiters.add(resolve);
+                    });
                     try {
-                        const step = await Promise.race([read, aborted.promise]);
+                        const step = await Promise.race([read, aborted]);
                         if (step.done) {
                             finished = true;
                             signal.removeEventListener("abort", onAbort);
                         }
                         return step;
                     } finally {
+                        waiters.delete(release);
                         if (pending === read) {
                             pending = undefined;
                         }
@@ -92,6 +108,11 @@ export function endIterableOnAbort<T>(source: AsyncIterable<T>, signal: AbortSig
                 result.return = (...args: [] | [unknown]) => {
                     finished = true;
                     signal.removeEventListener("abort", onAbort);
+                    if (closed) {
+                        // The abort already scheduled the close; the source is finished exactly once.
+                        return Promise.resolve({ done: true, value: args[0] } as IteratorResult<T>);
+                    }
+                    closed = true;
                     return forward.apply(iterator, args);
                 };
             }
