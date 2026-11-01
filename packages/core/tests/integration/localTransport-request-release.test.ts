@@ -114,7 +114,9 @@ for (const kind of ["http", "local"] as const) {
                         (value) => ({ value }),
                         (error: unknown) => ({ error: ConnectError.from(error) }),
                     );
-                    await sleep(100);
+                    for (let waited = 0; state.phase !== "waiting for requests" && waited < 2_000; waited += 10) {
+                        await sleep(10);
+                    }
                     assert.strictEqual(state.phase, "waiting for requests", "the handler must be parked on the request stream");
                     abort.abort();
                     const outcome = await settled;

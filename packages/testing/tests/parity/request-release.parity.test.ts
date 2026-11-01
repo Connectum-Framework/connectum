@@ -55,7 +55,10 @@ transportParityTest("parity: cancelling a client stream whose handler waits for 
                 () => -1,
                 (err: unknown) => (err instanceof ConnectError ? err.code : -2),
             );
-        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        // Wait until the handler is parked on the request stream; how long that takes depends on the machine.
+        for (let waited = 0; seen.phase !== "waiting for requests" && waited < 2_000; waited += 10) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
         const phaseBeforeAbort = seen.phase;
         abort.abort();
         const code = await call;
