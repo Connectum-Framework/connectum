@@ -49,9 +49,9 @@ function makeSource() {
 }
 
 /** Run the interceptor over a fake handler whose streamed output is `iterable`. */
-async function wrap(iterable: AsyncIterable<string>, signal: AbortSignal): Promise<AsyncIterator<string>> {
+async function wrap(iterable: AsyncIterable<string>, signal: AbortSignal, methodKind = "bidi_streaming"): Promise<AsyncIterator<string>> {
     const next = async () => ({ stream: true, message: iterable }) as unknown as StreamResponse;
-    const wrapped = await (finishStreamOnAbort(next as never) as (req: StreamRequest) => Promise<StreamResponse>)({ signal } as unknown as StreamRequest);
+    const wrapped = await (finishStreamOnAbort(next as never) as (req: StreamRequest) => Promise<StreamResponse>)({ signal, method: { methodKind } } as unknown as StreamRequest);
     return (wrapped.message as AsyncIterable<string>)[Symbol.asyncIterator]();
 }
 
@@ -84,6 +84,45 @@ describe("finishStreamOnAbort", () => {
         await settle();
 
         assert.strictEqual(source.recorder.returnCalls, 1);
+    });
+
+    // An empty successful stream would be taken for a real, empty answer: a call that cannot be
+    // served has to fail on its first read, and the handler must not be pulled at all.
+    // The handler of a client-streaming call has already run when this interceptor sees its answer, so
+    // cutting would report a failure for work that was done. It is delivered like a unary answer.
+    it("delivers the answer of a client-streaming call that was already aborted when it was opened", async () => {
+        const abort = new AbortController();
+        abort.abort(createShutdownReason());
+        const iterator = await wrap(makeFiniteSource(["answer"]), abort.signal, "client_streaming");
+        assert.deepStrictEqual(await iterator.next(), { done: false, value: "answer" });
+        assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined });
+    });
+
+    it("fails the first read of a call that was already aborted when it was opened, without pulling the handler", async () => {
+        for (const [reason, code] of [
+            [createShutdownReason(), Code.Unavailable],
+            [undefined, Code.Canceled],
+        ] as const) {
+            const next = { calls: 0 };
+            const source: AsyncIterable<string> = {
+                [Symbol.asyncIterator]: () => ({
+                    async next() {
+                        next.calls++;
+                        return { done: false, value: "item" };
+                    },
+                    async return() {
+                        return { done: true, value: undefined };
+                    },
+                }),
+            };
+            const abort = new AbortController();
+            abort.abort(reason);
+            const iterator = await wrap(source, abort.signal);
+
+            const error = await readError(iterator);
+            assert.strictEqual(error?.code, code);
+            assert.strictEqual(next.calls, 0, "the handler body must not start");
+        }
     });
 
     it("waits for a pending next() to settle before finishing, never concurrently, and finishes exactly once", async () => {

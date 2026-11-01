@@ -75,7 +75,12 @@ function cutStreamError(reason: unknown): ConnectError {
  * of reporting a normal end, so the client can tell a cut stream from a complete
  * one. A handler that ends by itself, with or without having seen the abort,
  * ends the call normally: that is its own decision. A call whose signal was
- * already aborted when it was opened is finished without that error.
+ * already aborted when it was opened is cut the same way, before the handler
+ * body starts: a call that cannot be served must not look like an empty answer
+ * (a shutdown hook reading through the in-process client would take it for a real
+ * list), so its first read fails with `unavailable` after a server stop. A
+ * client-streaming call is the exception: its handler has already run when the
+ * answer arrives here, so the answer is delivered, as for a unary call.
  *
  * Must be the interceptor closest to the handler so that other interceptors
  * observe the handler's own response stream.
@@ -139,7 +144,12 @@ export const finishStreamOnAbort: Interceptor = (next) => async (req) => {
                 };
 
                 if (req.signal.aborted) {
-                    void finish(false);
+                    if (req.method.methodKind === "client_streaming") {
+                        // Marked finished so that no later step of this iterator cuts the answer.
+                        finished = true;
+                    } else {
+                        void finish(true);
+                    }
                 } else {
                     req.signal.addEventListener("abort", onAbort, { once: true });
                 }

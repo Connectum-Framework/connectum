@@ -380,23 +380,26 @@ transportParityTest("parity: break alone aborts the handler's signal and runs it
         count: { methodKind: "server_streaming"; input: GenMessage<{ $typeName: "parity.v1.Req"; text: string }>; output: GenMessage<{ $typeName: "parity.v1.Res"; n: number }> };
     }>;
 
+    /** What the handler observed, reset by each scenario. */
+    const seen = { countBodies: 0 };
+
     const itemsWanted = 10;
     const stopAfter = 3;
     let reachedStopPoint = Promise.withResolvers<void>();
+    const counterRoutes = defineService(counter, {
+        async *count() {
+            seen.countBodies++;
+            for (let i = 0; i < itemsWanted; i++) {
+                yield { n: i };
+                if (i + 1 === stopAfter) {
+                    reachedStopPoint.resolve();
+                }
+                await new Promise<void>((resolve) => setTimeout(resolve, 40));
+            }
+        },
+    });
     transportParityTest("parity: server.stop() cutting a server stream ends it with Unavailable", {
-        services: [
-            defineService(counter, {
-                async *count() {
-                    for (let i = 0; i < itemsWanted; i++) {
-                        yield { n: i };
-                        if (i + 1 === stopAfter) {
-                            reachedStopPoint.resolve();
-                        }
-                        await new Promise<void>((resolve) => setTimeout(resolve, 40));
-                    }
-                },
-            }),
-        ],
+        services: [counterRoutes],
         scenario: async ({ transport, server, transportKind }) => {
             reachedStopPoint = Promise.withResolvers<void>();
             if (transportKind === "local") {
@@ -432,6 +435,40 @@ transportParityTest("parity: break alone aborts the handler's signal and runs it
                     Array.from({ length: received.length }, (_, i) => i),
                     `${name} transport: the items sent before the stop arrive in order`,
                 );
+            }
+            assert.strictEqual(http.error?.code, local.error?.code);
+        },
+    });
+
+    // A server stream requested once stop() has finished. The call cannot be served, so it must
+    // fail with `unavailable` on both transports, never end as an empty successful list, and the
+    // handler must not start.
+    transportParityTest("parity: a server stream opened after server.stop() fails with Unavailable and starts no handler", {
+        services: [counterRoutes],
+        scenario: async ({ transport, server, transportKind }) => {
+            seen.countBodies = 0;
+            if (transportKind === "local") {
+                await server.start();
+            }
+            await server.stop();
+            const received: number[] = [];
+            try {
+                for await (const item of createClient(counter, transport).count({})) {
+                    received.push(item.n);
+                }
+            } catch (err) {
+                const code = err instanceof ConnectError ? err.code : -1;
+                return { response: { received, handlerStarted: seen.countBodies }, error: { code, message: "<refused>" } };
+            }
+            return { response: { received, handlerStarted: seen.countBodies } };
+        },
+        compare: (http, local) => {
+            for (const [name, result] of [
+                ["HTTP", http],
+                ["local", local],
+            ] as const) {
+                assert.strictEqual(result.error?.code, Code.Unavailable, `${name} transport must refuse the call, not return an empty list`);
+                assert.deepStrictEqual(result.response, { received: [], handlerStarted: 0 }, `${name} transport must not start the handler`);
             }
             assert.strictEqual(http.error?.code, local.error?.code);
         },
