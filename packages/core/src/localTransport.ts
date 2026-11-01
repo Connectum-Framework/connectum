@@ -11,6 +11,7 @@
 import { AsyncResource } from "node:async_hooks";
 import type { Interceptor, Transport } from "@connectrpc/connect";
 import { createRouterTransport } from "@connectrpc/connect";
+import { endIterableOnAbort } from "./endIterableOnAbort.ts";
 import { finishStreamOnAbort } from "./finishStreamOnAbort.ts";
 import type { CreateServerOptions, Server } from "./types.ts";
 
@@ -96,7 +97,7 @@ const callerRequestContextInterceptor: Interceptor = (next) => (req) => {
     }
     const source = req.message;
     const scope = new AsyncResource("createLocalTransport.request");
-    const bound: AsyncIterable<unknown> = {
+    const boundToCaller: AsyncIterable<unknown> = {
         [Symbol.asyncIterator]() {
             const iterator = scope.runInAsyncScope(() => source[Symbol.asyncIterator]());
             const result: AsyncIterator<unknown> = {
@@ -113,6 +114,11 @@ const callerRequestContextInterceptor: Interceptor = (next) => (req) => {
             return result;
         },
     };
+    // The request stream ends when the call is cancelled by the caller (its signal, a deadline, leaving the
+    // response loop): over HTTP/2 the request body is closed then, and a handler waiting for the next
+    // message would otherwise stay suspended with its `finally` unrun. This signal is the caller's, not
+    // the server's shutdown signal, so `server.stop()` does not cut an upload that is still being sent.
+    const bound = endIterableOnAbort(boundToCaller, req.signal);
     return next(Object.assign(Object.create(Object.getPrototypeOf(req)), req, { message: bound }));
 };
 
@@ -156,6 +162,13 @@ function asInternals(server: Server): ServerInternals {
  * its output generator is finished, so a handler parked at `yield` runs its
  * `finally`. After a `break` the client-side interceptors see their response
  * stream end without an error; only the handler sees the call cancelled.
+ * A server-streaming or bidirectional call made once `server.stop()` has begun
+ * cannot be served: its first read fails with `unavailable` and the handler body
+ * does not start. A client-streaming or bidirectional handler waiting for the
+ * next request message is released when the caller cancels the call: its loop
+ * over the requests ends, as it does when HTTP/2 closes the request body.
+ * `server.stop()` does not do that: it does not end an in-process call, so an
+ * upload that is still being sent keeps being read.
  *
  * Request streams: the caller's request stream of a client-streaming or
  * bidirectional call is advanced in the caller's async context, below the

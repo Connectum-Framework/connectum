@@ -250,6 +250,54 @@ describe("ctx.stream — validation", () => {
     });
 });
 
+describe("ctx.stream — a handle that is never closed", () => {
+    it("releases the callee waiting for requests when the call that opened the handle is cancelled", async () => {
+        const callee = { phase: "not started", finallyRan: false };
+        const target = defineService(StreamingService, {
+            echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+            async *server() {},
+            async client(requests) {
+                callee.phase = "waiting for requests";
+                try {
+                    for await (const _item of requests) {
+                        // the handle is never closed, so the input never ends on its own
+                    }
+                    return create(CountSchema, { total: 0 });
+                } finally {
+                    callee.finallyRan = true;
+                    callee.phase = "finished";
+                }
+            },
+            async *bidi() {},
+        });
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Client")();
+            handle.send(create(ItemSchema, { value: "x", sequence: 0 }));
+            // The caller neither closes the handle nor returns: it waits for its own cancellation.
+            await new Promise<never>((_resolve, reject) => ctx.signal.addEventListener("abort", () => reject(ctx.signal.reason)));
+            return create(EchoResponseSchema, { message: "unreachable", timestamp: 0n });
+        }, target);
+
+        const abort = new AbortController();
+        const call = server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "m" }), { signal: abort.signal });
+        const outcome = call.then(
+            () => undefined,
+            (error: unknown) => ConnectError.from(error),
+        );
+        for (let waited = 0; callee.phase !== "waiting for requests" && waited < 2_000; waited += 10) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        assert.strictEqual(callee.phase, "waiting for requests", "the callee must be parked on the never-closed handle");
+
+        abort.abort();
+        assert.strictEqual((await outcome)?.code, Code.Canceled);
+        for (let waited = 0; !callee.finallyRan && waited < 2_000; waited += 10) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        assert.strictEqual(callee.finallyRan, true, "the callee's finally must run");
+    });
+});
+
 describe("ctx.stream — open items (escalated, not yet locked)", () => {
     // The default is deliver-then-error (covered above). An opt-in
     // `failFast` mode (discard partial, throw immediately) is pending a precise
