@@ -195,15 +195,16 @@ function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined 
     if ((typeof result !== "object" && typeof result !== "function") || result === null) return undefined;
     try {
         // A `then` that is a getter is left alone, unread: it can have effects of its own, and it
-        // is read again on every use, which a fixed function in its place would change.
+        // is read again on every use, which a fixed function in its place would change. The method
+        // is taken from the property itself and not by a read: a read through a proxy hands out the
+        // proxy's own wrapper, which would then run a second time under the one we put on.
         for (let holder: object | null = result; holder !== null; holder = Object.getPrototypeOf(holder)) {
             const found = Object.getOwnPropertyDescriptor(holder, "then");
             if (found === undefined) continue;
             if (found.get !== undefined || found.set !== undefined) return undefined;
-            break;
+            return typeof found.value === "function" ? (found.value as (...args: unknown[]) => unknown) : undefined;
         }
-        const then = (result as { then?: unknown }).then;
-        return typeof then === "function" ? (then as (...args: unknown[]) => unknown) : undefined;
+        return undefined;
     } catch {
         return undefined;
     }
@@ -280,6 +281,9 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
             // promise runs them, not in the span's context: the span is over by then.
             const caller = context.active();
             const handler = (callback: unknown, receiver: unknown, args: unknown[]) => context.with(caller, () => (callback as (...a: unknown[]) => unknown).apply(receiver, args));
+            // The first handler a thenable calls decides the outcome, as for a promise: a later
+            // call (a rejection after a resolution) reaches the caller's handler but not the span.
+            let decided = false;
             try {
                 const returned = context.with(scope, () =>
                     original.call(
@@ -290,6 +294,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                         // pass through: a thenable may call its handler with more than the value.
                         typeof onFulfilled === "function"
                             ? function (this: unknown, ...args: unknown[]) {
+                                  if (decided) return handler(onFulfilled, this, args);
+                                  decided = true;
                                   const value = args[0];
                                   // A native promise passed on as the value is awaited by the caller as
                                   // well, so the work lasts until that promise settles, and its failure
@@ -308,7 +314,10 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                             : onFulfilled,
                         typeof onRejected === "function"
                             ? function (this: unknown, ...args: unknown[]) {
-                                  settle({ error: args[0] });
+                                  if (!decided) {
+                                      decided = true;
+                                      settle({ error: args[0] });
+                                  }
                                   return handler(onRejected, this, args);
                               }
                             : onRejected,
@@ -332,7 +341,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                 }
                 return returned;
             } catch (error) {
-                settle({ error });
+                // A throw after a handler was called is ignored by the promise rules: it does not change the outcome.
+                if (!decided) settle({ error });
                 throw error;
             }
         };

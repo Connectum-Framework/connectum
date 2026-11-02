@@ -1063,6 +1063,36 @@ describe("thenables that are read in other ways, and several traced layers over 
                 });
             });
 
+            it("runs the span a traceAll proxy makes for then once when traced() follows the proxy first", async () => {
+        const target = { then: (resolve: (value: string) => void) => setTimeout(resolve, 3, "proxied") };
+        const proxy = traceAll(target, { prefix: "P" });
+        const work = traced(() => proxy, { name: "work" });
+
+        const observed = await observe(async () => {
+            work();
+            assert.strictEqual(await (proxy as unknown as PromiseLike<string>), "proxied");
+        });
+
+        assert.deepStrictEqual(observed.spans.map((span) => span.name).sort(), ["P.then", "work"]);
+    });
+
+    it("takes the first outcome a thenable reports: a rejection after a resolution with a pending promise does not fail the span", async () => {
+                const work = makeTraced(() => ({
+                    then(resolve: (value: unknown) => void, reject: (error: unknown) => void) {
+                        resolve(delay(15).then(() => "nested ok"));
+                        reject(new Error("too late"));
+                    },
+                }));
+
+                let value: unknown;
+                const observed = await observe(async () => {
+                    value = await (work() as PromiseLike<unknown>);
+                });
+
+                assert.strictEqual(value, "nested ok");
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
             it("keeps the then that a thenable sets for itself while it runs, so a memoized result is not computed twice", async () => {
                 class Memoizing {
                     operations = 0;
@@ -1420,5 +1450,6 @@ describe("thenables that are read in other ways, and several traced layers over 
 
         assert.strictEqual(spans.filter((span) => span.isRecording()).length, 0);
         assert.strictEqual(observed.spans.filter((span) => span.name === "work").length, 20_000);
+        assert.strictEqual(observed.spans.filter((span) => span.name === "Q.then").length, 1, "the proxy's own span for then is not run a second time under ours");
     });
 });
