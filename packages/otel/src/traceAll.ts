@@ -2,7 +2,8 @@
  * Proxy-based object wrapper for OpenTelemetry tracing
  *
  * Wraps all methods of an object in OTel spans using ES6 Proxy.
- * Does NOT mutate the original object or its prototype.
+ * Does NOT mutate the original object or its prototype (see {@link traceAll} for the
+ * one exception).
  *
  * @module traceAll
  */
@@ -20,15 +21,17 @@ const wrapped = new WeakSet<object>();
  *
  * Creates a Proxy that intercepts method calls and wraps each in a span.
  * Method wrappers are created lazily (on first access, not at Proxy creation).
- * Does NOT mutate the original object or its prototype.
+ * Does NOT mutate the original object or its prototype, with one exception: a method
+ * that returns a thenable (`return this` on a thenable target, a cached query) has the
+ * `then` of that object replaced until it settles, and put back after (see {@link traced}).
  *
  * Property reads pass through untouched: getters run with the original object as
  * `this`, so getters over `#private` fields and `Map.size` work. An own method that is
  * neither writable nor configurable (a method of a frozen object) cannot be replaced by
  * a wrapper in a proxy and is returned as it is, untraced. A span ends when a returned
  * promise or thenable settles or a returned generator is exhausted, throws or is closed;
- * a generator that is never iterated and a thenable that is never read never end their
- * span, and an unfinished span is not exported (see {@link traced}).
+ * how a thenable that is not read through `then` ends its span is described at
+ * {@link traced}.
  *
  * @param target - The object whose methods to trace
  * @param options - Tracing options

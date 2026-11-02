@@ -11,8 +11,9 @@
 
 import { types } from "node:util";
 
-import type { Context, Span } from "@opentelemetry/api";
+import type { Context, HrTime, Span } from "@opentelemetry/api";
 import { context } from "@opentelemetry/api";
+import { hrTime } from "@opentelemetry/core";
 
 import { recordFailure } from "./failure.ts";
 
@@ -44,20 +45,28 @@ function generatorTagOf(result: unknown): "Generator" | "AsyncGenerator" | undef
 interface LiveTrace {
     /** The context to run a step in, or `undefined` once the generator has ended. */
     scope(): Context | undefined;
-    /** Ends the span once, marking it failed when given a failure; later calls do nothing. */
-    finish(failure?: { error: unknown }): void;
+    /** Adds an event to the span while it is open. */
+    event(name: string): void;
+    /**
+     * Ends the span once, marking it failed when given a failure; later calls do nothing.
+     * `endTime` and `event` let a span that nobody finished be closed at the time it was
+     * started, with a mark saying why.
+     */
+    finish(failure?: { error: unknown }, endTime?: HrTime, event?: string): void;
 }
 
 function createLiveTrace(span: Span, scope: Context): LiveTrace {
     let current: { span: Span; scope: Context } | undefined = { span, scope };
     return {
         scope: () => current?.scope,
-        finish(failure) {
+        event: (name) => current?.span.addEvent(name),
+        finish(failure, endTime, event) {
             const live = current;
             current = undefined;
             if (live === undefined) return;
             if (failure) recordFailure(live.span, failure.error);
-            live.span.end();
+            if (event !== undefined) live.span.addEvent(event, endTime);
+            live.span.end(endTime);
         },
     };
 }
@@ -147,6 +156,37 @@ function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncG
 }
 
 /**
+ * What every traced layer that follows one thenable shares. The registry below holds it
+ * as its value, so it must not reach the thenable: only the spans and when they started.
+ */
+interface Followed {
+    /** The spans that end when the thenable settles, the oldest first. */
+    lives: LiveTrace[];
+    /** When the first span began to follow the thenable, the end time of a span nobody finished. */
+    started: HrTime;
+    /** Whether the thenable has been read: the first `then` call marks the end of the idle time. */
+    read: boolean;
+}
+
+/** The state of a thenable that is being followed, by the replaced `then` method it carries. */
+const followed = new WeakMap<object, Followed>();
+
+/** How many traced layers may follow one thenable; the spans past the limit end at once. */
+const MAX_FOLLOWERS = 8;
+
+/**
+ * A thenable that is collected without being read (a builder consumed through `exec()`,
+ * `stream()` or `toSQL()`, or dropped) never calls its `then`. Its spans end then, at the
+ * time they began and with an event that says so, which is what they looked like before
+ * thenables were followed: an exported span that records that the call happened. The
+ * collector decides when this runs, so the span appears late and not at all when the
+ * process ends first.
+ */
+const unread = new FinalizationRegistry<Followed>((state) => {
+    for (const live of state.lives.splice(0)) live.finish(undefined, state.started, "connectum.result.unread");
+});
+
+/**
  * The `then` of a thenable that is not a native promise, read without trusting the
  * object: a getter that throws must not break the call, and a `then` that is not a
  * function does not make an object a thenable.
@@ -161,8 +201,20 @@ function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined 
     }
 }
 
-/** The `then` methods this module has put on thenables, to tell an object that is already followed. */
-const tracedThens = new WeakSet<object>();
+/**
+ * The state of the traced layers already following a thenable, found through the `then`
+ * the thenable owns. A proxy hands out a new function on every read, so the `then` that
+ * was read says nothing about it; the own property, which a proxy forwards to its target,
+ * does.
+ */
+function followedBy(thenable: object): Followed | undefined {
+    try {
+        const own = Object.getOwnPropertyDescriptor(thenable, "then")?.value;
+        return typeof own === "function" ? followed.get(own) : undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 /**
  * Replaces `then` of a thenable with a version that ends the span when the thenable
@@ -172,25 +224,52 @@ const tracedThens = new WeakSet<object>();
  * reads it (turning it into a promise would run it at once). The original `then` runs
  * inside the span's context, so the work a lazy thenable starts there is a child of the
  * span. Callbacks are wrapped, not replaced: the caller's handlers get the same value or
- * error, and a missing handler passes the outcome on, as the Promises/A+ rules for `then`
- * require (a thenable that expects `then` without a rejection handler to stay silent
- * about a failure is not a promise in that sense).
- * Every call to `then` is served by the original method; the span ends once.
+ * error, and run in the context of the call to `then`.
+ *
+ * A rejection handler of ours goes to the original `then` only when the caller passed one.
+ * Without it, the original gets nothing in that place, as it would without tracing: a
+ * thenable that checks for a handler stays silent as before, and one that returns a
+ * native promise has the failure of that promise observed (and passed on unchanged).
+ *
+ * When the thenable settles the span ends and the object is put back as it was: the own
+ * `then` it had, or none when `then` came from its prototype.
  *
  * @returns `false` when the object does not accept the method (it is frozen or sealed)
  */
 function traceThenable(thenable: object, original: (...args: unknown[]) => unknown, live: LiveTrace): boolean {
     try {
+        const ownDescriptor = Object.getOwnPropertyDescriptor(thenable, "then");
+        const state: Followed = { lives: [live], started: hrTime(), read: false };
+
+        const settle = (failure?: { error: unknown }) => {
+            const lives = state.lives.splice(0);
+            if (lives.length === 0) return;
+            for (const l of lives) l.finish(failure);
+            unread.unregister(state);
+            try {
+                // biome-ignore lint/suspicious/noThenProperty: giving the object back the `then` it had
+                if (ownDescriptor) Object.defineProperty(thenable, "then", ownDescriptor);
+                else delete (thenable as { then?: unknown }).then;
+            } catch {
+                // Intentionally empty: an object that stopped accepting changes keeps the wrapper, which only forwards.
+            }
+        };
+
         const traced = function then(this: unknown, onFulfilled?: unknown, onRejected?: unknown, ...rest: unknown[]): unknown {
-            const scope = live.scope();
+            const scope = state.lives[0]?.scope();
             // Arguments after the two handlers (a progress callback, say) reach the original.
             if (scope === undefined) return original.call(this, onFulfilled, onRejected, ...rest);
+            if (!state.read) {
+                // The time between the call that returned the thenable and this one is idle time.
+                state.read = true;
+                for (const l of state.lives) l.event("connectum.result.read");
+            }
             // The caller's handlers run in the context of the call to `then`, as a native
             // promise runs them, not in the span's context: the span is over by then.
             const caller = context.active();
             const handler = (callback: unknown, receiver: unknown, args: unknown[]) => context.with(caller, () => (callback as (...a: unknown[]) => unknown).apply(receiver, args));
             try {
-                return context.with(scope, () =>
+                const returned = context.with(scope, () =>
                     original.call(
                         this,
                         // Receiver and every argument pass through: a thenable may call
@@ -203,26 +282,35 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                             // it would run a lazy one twice.)
                             if (types.isPromise(value))
                                 value.then(
-                                    () => live.finish(),
-                                    (error: unknown) => live.finish({ error }),
+                                    () => settle(),
+                                    (error: unknown) => settle({ error }),
                                 );
-                            else live.finish();
+                            else settle();
                             return typeof onFulfilled === "function" ? handler(onFulfilled, this, args) : args[0];
                         },
-                        function (this: unknown, ...args: unknown[]) {
-                            live.finish({ error: args[0] });
-                            if (typeof onRejected === "function") return handler(onRejected, this, args);
-                            throw args[0];
-                        },
+                        typeof onRejected === "function"
+                            ? function (this: unknown, ...args: unknown[]) {
+                                  settle({ error: args[0] });
+                                  return handler(onRejected, this, args);
+                              }
+                            : onRejected,
                         ...rest,
                     ),
                 );
+                // No handler of ours reached the original, so a failure shows only in what it returned.
+                if (typeof onRejected !== "function" && types.isPromise(returned)) {
+                    return returned.then(undefined, (error: unknown) => {
+                        settle({ error });
+                        throw error;
+                    });
+                }
+                return returned;
             } catch (error) {
-                live.finish({ error });
+                settle({ error });
                 throw error;
             }
         };
-        tracedThens.add(traced);
+
         // biome-ignore lint/suspicious/noThenProperty: making the result observable by `await` is the purpose of this method
         Object.defineProperty(thenable, "then", {
             value: traced,
@@ -230,8 +318,11 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
             configurable: true,
             // Keep the shape of the object: an own enumerable `then` stays enumerable, a
             // `then` of the prototype is shadowed by a non-enumerable one.
-            enumerable: Object.getOwnPropertyDescriptor(thenable, "then")?.enumerable ?? false,
+            enumerable: ownDescriptor?.enumerable ?? false,
         });
+        followed.set(traced, state);
+        // The held value is `state`, which reaches the spans but not the thenable.
+        unread.register(thenable, state, state);
         return true;
     } catch {
         return false;
@@ -244,7 +335,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  *
  * - A native `Promise`, of this realm or of another (a `vm` context): the span ends when
  *   it settles; a rejection marks it failed. A promise is already running, so it is
- *   followed at once, not when somebody reads it.
+ *   followed at once, not when somebody reads it. The caller receives a new promise, not
+ *   the one the function returned.
  * - A sync or async generator object (the result of calling a `function*` or
  *   `async function*`): the function body has not run yet, so the span stays open until
  *   the generator is exhausted, throws, or is closed early. Each step runs with the span
@@ -256,18 +348,23 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  * - A thenable that is not a native promise (a query builder such as Knex or a Mongoose
  *   `Query`, any object with a `then` method): the span ends when the thenable settles,
  *   which is when the caller reads it with `await` or `then()`. The caller receives the
- *   same object: `then` is replaced on the object itself, so its prototype, its chain
- *   methods and its laziness stay, and the work a lazy thenable starts in `then` runs
- *   with the span as the active span. A thenable that accepts no own `then` (it is
- *   frozen), and one that an earlier call already follows (the function returns the same
- *   cached object each time), is returned as it is and its span ends at once.
+ *   same object: `then` is replaced on the object itself until it settles, then put
+ *   back, so its prototype, its chain methods and its laziness stay, and the work a lazy
+ *   thenable starts in `then` runs with the span as the active span. The span also covers
+ *   the time between the call and the first read, and an event `connectum.result.read`
+ *   marks where that idle time ends. Traced layers that return the same thenable one from
+ *   another (`traceAll` over a repository inside `traceAll` over a service) all end with
+ *   it, up to eight; the spans past that limit end at once. A thenable that accepts no
+ *   own `then` (it is frozen) is returned as it is and its span ends at once.
  * - Anything else, including other iterables (arrays, `Map`, streams): the call is over,
  *   the span ends now.
  *
- * A generator that is never iterated, and a thenable that is never read, never end their
- * span: nothing of them has run, or nobody learns that it finished. Such a span is not
- * exported. To trace a thenable that is consumed some other way (a builder's `exec()`),
- * wrap the call in an async function.
+ * A generator that is never iterated never ends its span. A thenable that is never read
+ * through `then` (a builder consumed through `exec()`, `stream()`, `cursor()`, `clone()`
+ * or `toSQL()`, an immutable builder whose chain methods return new objects) ends its span
+ * when the garbage collector collects it, at the time the span began and with an event
+ * `connectum.result.unread`; the moment is up to the collector, and a process that ends
+ * first exports nothing.
  *
  * @param span - The span of the call, active in the current context
  * @param result - What the traced function returned
@@ -296,12 +393,21 @@ export function endSpanWithResult(span: Span, result: unknown): unknown {
     if (tag === "AsyncGenerator") return traceAsyncGenerator(result as AsyncGenerator, createLiveTrace(span, context.active()));
 
     const then = thenOf(result);
-    // A thenable that an earlier call already follows (a cached query, a shared object) is not
-    // wrapped again: every call would add a layer that stays for the life of the object, and the
-    // outcome would belong to more than one span. Its span ends now, like that of a plain result.
-    if (then !== undefined && !tracedThens.has(then) && traceThenable(result as object, then, createLiveTrace(span, context.active()))) return result;
+    if (then !== undefined) {
+        const open = followedBy(result as object);
+        if (open === undefined) {
+            if (traceThenable(result as object, then, createLiveTrace(span, context.active()))) return result;
+        } else if (open.lives.length > 0 && open.lives.length < MAX_FOLLOWERS) {
+            // Another traced layer already follows this thenable and it has not settled: this
+            // span rides along and ends with the same outcome, so every layer covers the work.
+            const live = createLiveTrace(span, context.active());
+            if (open.read) live.event("connectum.result.read");
+            open.lives.push(live);
+            return result;
+        }
+    }
 
-    // Sync result, or a thenable that accepts no own `then`: success leaves the status unset.
+    // Sync result, or a thenable that accepts no own `then`, or one followed by too many layers.
     span.end();
     return result;
 }

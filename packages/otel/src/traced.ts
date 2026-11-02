@@ -16,14 +16,31 @@ import type { TracedOptions } from "./types.ts";
  *
  * The wrapper preserves the original function's type signature.
  * Supports sync and async functions and sync and async generator functions.
- * The span ends when a returned promise settles, or when a returned generator is
- * exhausted, throws or is closed, or when a returned thenable that is not a native
- * `Promise` (a query builder, a promise of another realm) settles. The caller receives
- * the same object in the last two cases, so a builder keeps its chain methods and
- * stays lazy. A generator that is never iterated and a thenable that is never read
- * (with `await` or `then()`) never end their span, and an unfinished span is not
- * exported; to trace a builder that is consumed some other way, such as `exec()`, wrap
- * the call in an async function.
+ * The span ends when a returned promise settles (a native promise of another realm
+ * counts as a promise; the caller receives a new promise in both cases), when a
+ * returned generator is exhausted, throws or is closed, or when a returned thenable
+ * that is not a native promise (a query builder such as Knex or a Mongoose `Query`)
+ * settles. For a generator and a thenable the caller receives the same object: `then`
+ * (or `next`, `return`, `throw`) is replaced on it until it is done, then `then` is put
+ * back, so a builder keeps its chain methods and stays lazy. The span of a thenable also
+ * covers the time between the call and the first read; the event
+ * `connectum.result.read` marks where that idle time ends. Traced functions that return
+ * the same thenable one from another (up to eight layers) all end with it.
+ *
+ * Limits of following a thenable:
+ * - It is followed through `then`. A builder consumed some other way (Mongoose
+ *   `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`, `clone()`; superagent
+ *   `end(callback)`) or an immutable builder whose
+ *   chain methods return new objects never calls the `then` that was replaced. Such a
+ *   span ends when the garbage collector collects the thenable, with the start time as
+ *   its end time and the event `connectum.result.unread`. The moment is up to the
+ *   collector, and a process that exits first exports nothing. To get a span that covers
+ *   the work, `await` the builder inside the traced function (`traced(async () => await
+ *   query.exec())`).
+ * - A thenable that reports a failure only to a rejection handler it was given sees no
+ *   handler of ours when the caller gives none, so its failure does not reach the span.
+ * - A frozen or sealed thenable, and one already followed by eight layers, ends its span
+ *   at once. A generator that is never iterated never ends its span.
  *
  * @param fn - The function to wrap
  * @param options - Tracing options

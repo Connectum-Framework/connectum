@@ -98,11 +98,25 @@ warning and the default.
 - `traced()` and `traceAll()` end the span of a function when its result is
   final: a promise settles, a generator is exhausted or closed, or a thenable
   that is not a native promise (a query builder such as Knex, a Mongoose
-  `Query`) settles. The caller receives the very object the function returned.
-  A generator that is never iterated and a thenable that is never read with
-  `await` or `then()` never end their span, and an unfinished span is not
-  exported. To trace a builder that is consumed some other way, such as
-  `exec()`, wrap the call in an async function.
+  `Query`) settles. For a generator or a thenable the caller receives the very
+  object the function returned, so a builder keeps its chain methods and stays
+  lazy. The span of a thenable covers the time between the call and the first
+  read (the event `connectum.result.read` marks where it ends), and traced
+  functions that return the same thenable one from another all end with it.
+- A thenable is followed through its `then`. A builder consumed another way
+  never calls it, and an immutable builder (every chain method returns a new
+  object) hands out a different object than the one that was traced:
+  Mongoose `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`,
+  `clone()`; superagent `end(callback)`. The span of such a call ends when the
+  garbage collector collects the builder, with the start time as its end time
+  (so it is zero-length) and the event `connectum.result.unread`. The moment is
+  up to the collector, and a process that exits first exports nothing. To get a
+  span that covers the work, await the builder inside the traced function:
+  `traced(async () => await query.exec())`. A generator that is never iterated
+  never ends its span.
+- A thenable that reports a failure only to a rejection handler it was given
+  does not report it to the span when the caller gives no handler
+  (`thenable.then(onSuccess)` alone); `await` gives both handlers.
 
 ## Learn and reference
 

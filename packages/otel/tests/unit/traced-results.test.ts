@@ -17,6 +17,7 @@ process.env.OTEL_LOGS_EXPORTER = "none";
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as delay, setImmediate as nextImmediate } from "node:timers/promises";
+import { types } from "node:util";
 import { setFlagsFromString } from "node:v8";
 import { createContext, runInContext, runInNewContext } from "node:vm";
 import { context, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
@@ -639,21 +640,23 @@ describe("span lifetime of a traced thenable", () => {
                 });
             });
 
-            it("leaves the span of a thenable nobody reads open, as for a generator nobody iterates", async () => {
+            it("keeps the span of a thenable open for as long as the caller holds it unread", async () => {
                 let span: Span | undefined;
                 const work = makeTraced(() => {
                     span = activeSpan();
                     return slowThenable(1, { value: "never read" });
                 });
 
+                let held: unknown;
                 const observed = await observe(async () => {
-                    work();
+                    // Held, so the collector cannot end the span while the test looks at it.
+                    held = work();
                     await delay(20);
                 });
 
                 assert.strictEqual(span?.isRecording(), true);
                 assert.strictEqual(observed.spans.length, 0, "an unfinished span is not exported");
-                span?.end();
+                assert.ok(held);
             });
 
             it("returns a frozen thenable as it is and ends the span at once, because it accepts no own then", async () => {
@@ -697,8 +700,8 @@ describe("span lifetime of a traced thenable", () => {
                 assert.strictEqual(finished.status.message, "nested boom");
             });
 
-            it("follows a shared thenable once: later calls end their span at once and add no layer to then", async () => {
-                const shared = { then: (resolve: (value: string) => void) => resolve("shared") };
+            it("lets the calls that return one unsettled thenable ride along, up to a limit, and the rest end at once", async () => {
+                const shared = { then: (resolve: (value: string) => void) => setTimeout(resolve, 5, "shared") };
                 const spans: Span[] = [];
                 const work = makeTraced(() => {
                     spans.push(activeSpan());
@@ -707,17 +710,39 @@ describe("span lifetime of a traced thenable", () => {
 
                 const observed = await observe(async () => {
                     for (let call = 0; call < 20_000; call++) work();
-                    assert.strictEqual(spans[0]?.isRecording(), true, "the first call follows the thenable");
-                    assert.ok(
-                        spans.slice(1).every((span) => !span.isRecording()),
-                        "every later call ends its span at once",
-                    );
+                    const riding = spans.filter((span) => span.isRecording());
+                    assert.strictEqual(riding.length, 8, "eight spans follow the thenable, the others ended at once");
+                    assert.deepStrictEqual(riding, spans.slice(0, 8), "the first calls are the ones that follow");
                     // A layer per call would overflow the stack here.
-                    assert.strictEqual(await (shared as PromiseLike<string>), "shared");
+                    assert.strictEqual(await (shared as unknown as PromiseLike<string>), "shared");
+                    assert.ok(
+                        riding.every((span) => !span.isRecording()),
+                        "all riding spans end with the thenable",
+                    );
                 });
 
-                assert.strictEqual(spans[0]?.isRecording(), false);
                 assert.strictEqual(observed.spans.length, 20_000);
+            });
+
+            it("follows a cached thenable again on the next call once the earlier read has settled", async () => {
+                const cached = { then: (resolve: (value: string) => void) => setTimeout(resolve, 5, "cached") };
+                const spans: Span[] = [];
+                const work = makeTraced(() => {
+                    spans.push(activeSpan());
+                    return cached;
+                });
+
+                const observed = await observe(async () => {
+                    work();
+                    assert.strictEqual(await (cached as unknown as PromiseLike<string>), "cached");
+                    // The first call is over, so the second is not ridden along: it follows by itself.
+                    work();
+                    assert.strictEqual(spans[1]?.isRecording(), true);
+                    assert.strictEqual(await (cached as unknown as PromiseLike<string>), "cached");
+                    assert.strictEqual(spans[1]?.isRecording(), false);
+                });
+
+                assert.strictEqual(observed.spans.length, 2);
             });
 
             it("hands arguments after the two handlers to the original then", async () => {
@@ -824,22 +849,29 @@ describe("span lifetime of a traced thenable", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
-            it("follows a native Promise of another realm like any other thenable", async () => {
+            it("treats a native Promise of another realm as a promise: the span ends when it settles and a new promise is returned", async () => {
                 let span: Span | undefined;
+                let foreign: unknown;
                 const work = makeTraced(() => {
                     span = activeSpan();
-                    return runInNewContext("new Promise((resolve) => setTimeout(resolve, 30, 'foreign'))", { setTimeout });
+                    foreign = runInNewContext("new Promise((resolve) => setTimeout(resolve, 30, 'foreign'))", { setTimeout });
+                    return foreign;
                 });
 
                 let recordingAfterCall: boolean | undefined;
                 let value: unknown;
+                let returned: unknown;
                 const observed = await observe(async () => {
                     const pending = work();
+                    returned = pending;
                     recordingAfterCall = span?.isRecording();
                     value = await pending;
                 });
 
                 assert.strictEqual(value, "foreign");
+                // Unlike a thenable, a promise is not kept as the same object: the span is closed by a handler on it.
+                assert.notStrictEqual(returned, foreign);
+                assert.ok(types.isPromise(returned));
                 assert.strictEqual(recordingAfterCall, true);
                 assert.strictEqual(span?.isRecording(), false);
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
@@ -928,5 +960,348 @@ describe("retention by a kept generator", () => {
         // so one survivor is the engine's floor there; V8 must release every span.
         const allowed = bun ? 1 : 0;
         assert.ok(alive <= allowed, `${alive} of ${refs.length} spans are still reachable through the kept generators`);
+    });
+});
+
+/** Runs the collector until `done()` or the rounds are used up; a finalization callback needs a turn after the collection. */
+async function collectUntil(done: () => boolean, rounds = 200): Promise<void> {
+    const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
+    let gc: () => void;
+    if (bun) {
+        gc = () => bun.gc(true);
+    } else {
+        setFlagsFromString("--expose-gc");
+        gc = runInNewContext("gc") as () => void;
+    }
+    for (let round = 0; round < rounds && !done(); round++) {
+        gc();
+        await delay(10);
+    }
+}
+
+/** A lazy builder in the shape of Mongoose: `then` and `exec` both run the query, `then` goes through a native promise. */
+class MongooseLike {
+    readonly filters: string[] = [];
+    where(filter: string): this {
+        this.filters.push(filter);
+        return this;
+    }
+    exec(): Promise<string[]> {
+        return delay(5).then(() => [...this.filters]);
+    }
+    then(onFulfilled?: (rows: string[]) => unknown, onRejected?: (error: unknown) => unknown) {
+        return this.exec().then(onFulfilled, onRejected);
+    }
+    catch(onRejected: (error: unknown) => unknown) {
+        return this.exec().catch(onRejected);
+    }
+}
+
+/** A builder whose chain methods return a new object, so `then` of the object the function returned is never read. */
+class ImmutableBuilder {
+    readonly filters: string[];
+    constructor(filters: string[] = []) {
+        this.filters = filters;
+    }
+    where(filter: string): ImmutableBuilder {
+        return new ImmutableBuilder([...this.filters, filter]);
+    }
+    then(resolve: (rows: string[]) => void): void {
+        setTimeout(resolve, 2, [...this.filters]);
+    }
+}
+
+describe("thenables that are read in other ways, and several traced layers over one thenable", () => {
+    afterEach(async () => {
+        await shutdownProvider();
+    });
+
+    for (const [label, makeTraced] of [
+        ["traced()", <T extends (...args: never[]) => unknown>(fn: T) => traced(fn as never, { name: "work" }) as T],
+        ["traceAll()", <T extends (...args: never[]) => unknown>(fn: T) => (traceAll({ work: fn }, { prefix: "Obj" }) as { work: T }).work],
+    ] as const) {
+        describe(label, () => {
+            it("marks where the idle time ends: an event on the first read, and none from the collector afterwards", async () => {
+                const work = makeTraced(() => new MongooseLike());
+
+                const observed = await observe(async () => {
+                    const query = work() as MongooseLike;
+                    await delay(30);
+                    assert.deepStrictEqual(await query.where("a"), ["a"]);
+                    // Settled and unregistered: a collection must not end the span a second time.
+                    await collectUntil(() => false, 10);
+                });
+
+                const span = onlySpan(observed);
+                assert.deepStrictEqual(
+                    span.events.map((event) => event.name),
+                    ["connectum.result.read"],
+                );
+            });
+
+            it("puts the thenable back as it was once it has settled, and follows it again on the next call", async () => {
+                const ownThen = (resolve: (value: string) => void) => setTimeout(resolve, 2, "own");
+                const literal = { then: ownThen };
+                const prototyped = new MongooseLike();
+                let current: unknown = literal;
+                const work = makeTraced(() => current);
+
+                await observe(async () => {
+                    work();
+                    assert.notStrictEqual(Object.getOwnPropertyDescriptor(literal, "then")?.value, ownThen, "followed while pending");
+                    await (literal as unknown as PromiseLike<string>);
+                    const restored = Object.getOwnPropertyDescriptor(literal, "then");
+                    assert.strictEqual(restored?.value, ownThen);
+                    assert.strictEqual(restored?.enumerable, true);
+
+                    current = prototyped;
+                    work();
+                    assert.strictEqual(Object.hasOwn(prototyped, "then"), true, "followed while pending");
+                    await prototyped;
+                    assert.strictEqual(Object.hasOwn(prototyped, "then"), false, "the prototype method is back in charge");
+                    assert.strictEqual(prototyped.then, MongooseLike.prototype.then);
+                });
+            });
+
+            it("keeps the span of a callback-style thenable silent when the caller gives no rejection handler", async () => {
+                const uncaught: unknown[] = [];
+                const onUncaught = (error: unknown) => uncaught.push(error);
+                process.on("uncaughtException", onUncaught);
+                try {
+                    let span: Span | undefined;
+                    const work = makeTraced(() => {
+                        span = activeSpan();
+                        return {
+                            // Reports a failure only to a handler it was given, as many callback APIs do.
+                            then(_resolve: unknown, reject?: (error: unknown) => void) {
+                                setTimeout(() => {
+                                    if (typeof reject === "function") reject(new Error("db down"));
+                                }, 5);
+                            },
+                        };
+                    });
+                    let held: unknown;
+                    await observe(async () => {
+                        held = work();
+                        (held as PromiseLike<unknown>).then(() => {});
+                        await delay(40);
+                    });
+                    assert.deepStrictEqual(uncaught, [], "tracing must not turn a silent thenable into a crash");
+                    assert.strictEqual(span?.isRecording(), true, "a failure nobody reported is not seen; the collector ends the span later");
+                    assert.ok(held);
+                } finally {
+                    process.off("uncaughtException", onUncaught);
+                }
+            });
+
+            it("passes a failure on unchanged and ends the span with ERROR for a thenable that returns a native promise, with no handler of the caller", async () => {
+                const unhandled: unknown[] = [];
+                const onUnhandled = (reason: unknown) => unhandled.push(reason);
+                process.on("unhandledRejection", onUnhandled);
+                try {
+                    const work = makeTraced(() => ({
+                        then(onFulfilled?: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) {
+                            return Promise.reject(new Error("promise-backed boom")).then(onFulfilled, onRejected);
+                        },
+                    }));
+
+                    let caught: unknown;
+                    const observed = await observe(async () => {
+                        const derived = (work() as PromiseLike<unknown>).then(() => "never");
+                        await (derived as Promise<unknown>).then(undefined, (error) => {
+                            caught = error;
+                        });
+                        await delay(10);
+                    });
+
+                    assert.strictEqual((caught as Error).message, "promise-backed boom");
+                    assert.deepStrictEqual(unhandled, [], "the caller handled the rejection, so nothing is unhandled");
+                    const span = onlySpan(observed);
+                    assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+                    assert.strictEqual(span.status.message, "promise-backed boom");
+                } finally {
+                    process.off("unhandledRejection", onUnhandled);
+                }
+            });
+
+            it("covers a promise-backed builder read with await, then(f, g) and catch(f), in the form real libraries have", async () => {
+                class Failing extends MongooseLike {
+                    override exec(): Promise<string[]> {
+                        return delay(5).then(() => {
+                            throw new Error("exec boom");
+                        });
+                    }
+                    // Knex-like: catch goes through then.
+                    override catch(onRejected: (error: unknown) => unknown) {
+                        return this.then(undefined, onRejected);
+                    }
+                }
+                const ok = makeTraced(() => new MongooseLike());
+                const failing = makeTraced(() => new Failing());
+
+                const observed = await observe(async () => {
+                    assert.deepStrictEqual(await (ok() as MongooseLike).where("a"), ["a"]);
+                    await (ok() as MongooseLike).then(
+                        (rows) => assert.deepStrictEqual(rows, []),
+                        () => assert.fail("must not reject"),
+                    );
+                    await (failing() as Failing).catch((error) => assert.strictEqual((error as Error).message, "exec boom"));
+                });
+
+                assert.strictEqual(observed.spans.length, 3);
+                assert.deepStrictEqual(observed.spans.map((span) => span.status.code).sort(), [SpanStatusCode.UNSET, SpanStatusCode.UNSET, SpanStatusCode.ERROR].sort());
+            });
+
+            it("ends the span of a builder consumed through exec() when the collector takes the builder, marked as unread", { timeout: 60_000 }, async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return new MongooseLike();
+                });
+
+                const observed = await observe(async () => {
+                    // The builder is out of reach once this function has returned.
+                    const rows = await (async () => (work() as MongooseLike).where("a").exec())();
+                    assert.deepStrictEqual(rows, ["a"]);
+                    assert.strictEqual(span?.isRecording(), true, "exec() never calls then, so nothing has ended the span yet");
+                    await collectUntil(() => span?.isRecording() === false);
+                });
+
+                assert.strictEqual(span?.isRecording(), false, "the collector ended the span");
+                const finished = onlySpan(observed);
+                assert.strictEqual(finished.status.code, SpanStatusCode.UNSET);
+                assert.deepStrictEqual(
+                    finished.events.map((event) => event.name),
+                    ["connectum.result.unread"],
+                );
+            });
+
+            it("ends the span of an immutable builder through the collector: the object that was read is not the one the function returned", { timeout: 60_000 }, async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return new ImmutableBuilder();
+                });
+
+                const observed = await observe(async () => {
+                    const rows = await (async () => await (work() as ImmutableBuilder).where("a"))();
+                    assert.deepStrictEqual(rows, ["a"]);
+                    await collectUntil(() => span?.isRecording() === false);
+                });
+
+                assert.strictEqual(span?.isRecording(), false);
+                assert.deepStrictEqual(
+                    onlySpan(observed).events.map((event) => event.name),
+                    ["connectum.result.unread"],
+                );
+            });
+        });
+    }
+
+    it("lets every layer cover the work when traced functions return the thenable one from another", async () => {
+        const sampled: Record<string, boolean[]> = { outer: [], inner: [] };
+        let outerSpan: Span | undefined;
+        let innerSpan: Span | undefined;
+        const inner = traced(
+            () => {
+                innerSpan = activeSpan();
+                return {
+                    then(resolve: (value: string) => void) {
+                        setTimeout(() => {
+                            sampled.outer?.push(outerSpan?.isRecording() ?? false);
+                            sampled.inner?.push(innerSpan?.isRecording() ?? false);
+                            resolve("rows");
+                        }, 30);
+                    },
+                };
+            },
+            { name: "inner" },
+        );
+        const outer = traced(
+            () => {
+                outerSpan = activeSpan();
+                return inner();
+            },
+            { name: "outer" },
+        );
+
+        let value: unknown;
+        const observed = await observe(async () => {
+            const pending = outer();
+            assert.strictEqual(outerSpan?.isRecording(), true, "the outer span does not end when the function returns");
+            value = await pending;
+        });
+
+        assert.strictEqual(value, "rows");
+        assert.deepStrictEqual(sampled, { outer: [true], inner: [true] }, "both spans are open until the work completes");
+        assert.strictEqual(outerSpan?.isRecording(), false);
+        assert.strictEqual(innerSpan?.isRecording(), false);
+        assert.strictEqual(observed.spans.length, 2);
+    });
+
+    it("lets a traceAll layer over a service cover the work of a traceAll layer over a repository that it passes through", async () => {
+        let started = 0;
+        const repository = traceAll(
+            {
+                find: () => ({
+                    then(resolve: (value: string) => void) {
+                        started++;
+                        setTimeout(resolve, 20, "rows");
+                    },
+                }),
+            },
+            { prefix: "Repo" },
+        );
+        const service = traceAll({ users: () => repository.find() }, { prefix: "Service" });
+
+        const observed = await observe(async () => {
+            const pending = service.users() as PromiseLike<string>;
+            assert.strictEqual(started, 0, "still lazy");
+            assert.strictEqual(await pending, "rows");
+        });
+
+        assert.strictEqual(started, 1);
+        const spans = new Map(observed.spans.map((span) => [span.name, span]));
+        assert.deepStrictEqual([...spans.keys()].sort(), ["Repo.find", "Service.users"]);
+        assert.strictEqual(spans.get("Repo.find")?.parentSpanId, spans.get("Service.users")?.spanId, "the repository span is a child of the service span");
+        assert.deepStrictEqual(
+            spans.get("Service.users")?.events.map((event) => event.name),
+            ["connectum.result.read"],
+            "the outer span is a follower of the same thenable and was marked as read",
+        );
+    });
+
+    it("changes a thenable that a traceAll method returns only until it settles, and adds no layer when the proxy is returned again", async () => {
+        class Query {
+            then(resolve: (value: string) => void) {
+                setTimeout(resolve, 5, "q");
+            }
+            self() {
+                return this;
+            }
+        }
+        const target = new Query();
+        const proxy = traceAll(target, { prefix: "Q" });
+        const spans: Span[] = [];
+        const work = traced(
+            () => {
+                spans.push(activeSpan());
+                return proxy;
+            },
+            { name: "work" },
+        );
+
+        const observed = await observe(async () => {
+            const returned = proxy.self();
+            assert.strictEqual(returned, target, "a method that returns this hands out the target");
+            assert.strictEqual(Object.hasOwn(target, "then"), true, "followed while pending");
+            for (let call = 0; call < 20_000; call++) work();
+            // Every read of then on the proxy is a new function; a layer per call would overflow the stack here.
+            assert.strictEqual(await (proxy as unknown as PromiseLike<string>), "q");
+            assert.strictEqual(Object.hasOwn(target, "then"), false, "the target is as it was once it has settled");
+        });
+
+        assert.strictEqual(spans.filter((span) => span.isRecording()).length, 0);
+        assert.strictEqual(observed.spans.filter((span) => span.name === "work").length, 20_000);
     });
 });
