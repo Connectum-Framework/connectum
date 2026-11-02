@@ -108,15 +108,18 @@ warning and the default.
   object) hands out a different object than the one that was traced:
   Mongoose `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`,
   `clone()`; superagent `end(callback)`. The span of such a call ends when the
-  garbage collector collects the builder, with the start time as its end time
-  (so it is zero-length) and the event `connectum.result.unread`. The moment is
+  garbage collector collects the builder, at the moment the traced function
+  returned (so it covers only the call, as before) and with the event `connectum.result.unread`. The moment is
   up to the collector, and a process that exits first exports nothing. To get a
   span that covers the work, await the builder inside the traced function:
   `traced(async () => await query.exec())`. A generator that is never iterated
   never ends its span.
-- A thenable that reports a failure only to a rejection handler it was given
-  does not report it to the span when the caller gives no handler
-  (`thenable.then(onSuccess)` alone); `await` gives both handlers.
+- A success or failure handler that the caller leaves out (`then(onSuccess)`,
+  or `catch(onFailure)` through `then(undefined, onFailure)`) reaches the
+  thenable as missing, as without tracing, and the span follows the outcome
+  through the promise that `then` returns, which real libraries return. A
+  callback-style thenable that returns no native promise does not tell the span
+  about an outcome the caller did not ask for; `await` gives both handlers.
 
 ## Learn and reference
 

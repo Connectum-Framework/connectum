@@ -49,24 +49,26 @@ interface LiveTrace {
     event(name: string): void;
     /**
      * Ends the span once, marking it failed when given a failure; later calls do nothing.
-     * `endTime` and `event` let a span that nobody finished be closed at the time it was
-     * started, with a mark saying why.
+     * With `unread` the span is closed at the moment the traced function returned, with an
+     * event that says nobody finished it: the span of a call whose result was never read.
      */
-    finish(failure?: { error: unknown }, endTime?: HrTime, event?: string): void;
+    finish(failure?: { error: unknown }, unread?: boolean): void;
 }
 
 function createLiveTrace(span: Span, scope: Context): LiveTrace {
+    // Each span keeps its own moment: layers that follow one thenable return at different times.
+    const returnedAt: HrTime = hrTime();
     let current: { span: Span; scope: Context } | undefined = { span, scope };
     return {
         scope: () => current?.scope,
         event: (name) => current?.span.addEvent(name),
-        finish(failure, endTime, event) {
+        finish(failure, unread) {
             const live = current;
             current = undefined;
             if (live === undefined) return;
             if (failure) recordFailure(live.span, failure.error);
-            if (event !== undefined) live.span.addEvent(event, endTime);
-            live.span.end(endTime);
+            if (unread) live.span.addEvent("connectum.result.unread", returnedAt);
+            live.span.end(unread ? returnedAt : undefined);
         },
     };
 }
@@ -157,13 +159,11 @@ function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncG
 
 /**
  * What every traced layer that follows one thenable shares. The registry below holds it
- * as its value, so it must not reach the thenable: only the spans and when they started.
+ * as its value, so it must not reach the thenable: only the spans.
  */
 interface Followed {
     /** The spans that end when the thenable settles, the oldest first. */
     lives: LiveTrace[];
-    /** When the first span began to follow the thenable, the end time of a span nobody finished. */
-    started: HrTime;
     /** Whether the thenable has been read: the first `then` call marks the end of the idle time. */
     read: boolean;
 }
@@ -177,13 +177,13 @@ const MAX_FOLLOWERS = 8;
 /**
  * A thenable that is collected without being read (a builder consumed through `exec()`,
  * `stream()` or `toSQL()`, or dropped) never calls its `then`. Its spans end then, at the
- * time they began and with an event that says so, which is what they looked like before
+ * moment their function returned and with an event that says so, which is what they looked like before
  * thenables were followed: an exported span that records that the call happened. The
  * collector decides when this runs, so the span appears late and not at all when the
  * process ends first.
  */
 const unread = new FinalizationRegistry<Followed>((state) => {
-    for (const live of state.lives.splice(0)) live.finish(undefined, state.started, "connectum.result.unread");
+    for (const live of state.lives.splice(0)) live.finish(undefined, true);
 });
 
 /**
@@ -194,6 +194,14 @@ const unread = new FinalizationRegistry<Followed>((state) => {
 function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined {
     if ((typeof result !== "object" && typeof result !== "function") || result === null) return undefined;
     try {
+        // A `then` that is a getter is left alone, unread: it can have effects of its own, and it
+        // is read again on every use, which a fixed function in its place would change.
+        for (let holder: object | null = result; holder !== null; holder = Object.getPrototypeOf(holder)) {
+            const found = Object.getOwnPropertyDescriptor(holder, "then");
+            if (found === undefined) continue;
+            if (found.get !== undefined || found.set !== undefined) return undefined;
+            break;
+        }
         const then = (result as { then?: unknown }).then;
         return typeof then === "function" ? (then as (...args: unknown[]) => unknown) : undefined;
     } catch {
@@ -239,7 +247,7 @@ function followedBy(thenable: object): Followed | undefined {
 function traceThenable(thenable: object, original: (...args: unknown[]) => unknown, live: LiveTrace): boolean {
     try {
         const ownDescriptor = Object.getOwnPropertyDescriptor(thenable, "then");
-        const state: Followed = { lives: [live], started: hrTime(), read: false };
+        const state: Followed = { lives: [live], read: false };
 
         const settle = (failure?: { error: unknown }) => {
             const lives = state.lives.splice(0);
@@ -272,22 +280,28 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                 const returned = context.with(scope, () =>
                     original.call(
                         this,
-                        // Receiver and every argument pass through: a thenable may call
-                        // its handler with more than the value.
-                        function (this: unknown, ...args: unknown[]) {
-                            const value = args[0];
-                            // A native promise passed on as the value is awaited by the caller as
-                            // well, so the work lasts until that promise settles, and its failure is
-                            // the failure of the call. (A nested thenable is not read here: reading
-                            // it would run a lazy one twice.)
-                            if (types.isPromise(value))
-                                value.then(
-                                    () => settle(),
-                                    (error: unknown) => settle({ error }),
-                                );
-                            else settle();
-                            return typeof onFulfilled === "function" ? handler(onFulfilled, this, args) : args[0];
-                        },
+                        // A handler of ours reaches the original only in the place where the caller
+                        // put one. A missing handler stays missing, as without tracing, so a thenable
+                        // that looks for one stays silent as before. Receiver and every argument
+                        // pass through: a thenable may call its handler with more than the value.
+                        typeof onFulfilled === "function"
+                            ? function (this: unknown, ...args: unknown[]) {
+                                  const value = args[0];
+                                  // A native promise passed on as the value is awaited by the caller as
+                                  // well, so the work lasts until that promise settles, and its failure
+                                  // is the failure of the call. (A nested thenable is not read here:
+                                  // reading it would run a lazy one twice. Observing the promise counts
+                                  // as handling it; a thenable that hands a promise to a callback that
+                                  // ignores it is not one that follows the promise rules.)
+                                  if (types.isPromise(value))
+                                      value.then(
+                                          () => settle(),
+                                          (error: unknown) => settle({ error }),
+                                      );
+                                  else settle();
+                                  return handler(onFulfilled, this, args);
+                              }
+                            : onFulfilled,
                         typeof onRejected === "function"
                             ? function (this: unknown, ...args: unknown[]) {
                                   settle({ error: args[0] });
@@ -297,12 +311,20 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
                         ...rest,
                     ),
                 );
-                // No handler of ours reached the original, so a failure shows only in what it returned.
-                if (typeof onRejected !== "function" && types.isPromise(returned)) {
-                    return returned.then(undefined, (error: unknown) => {
-                        settle({ error });
-                        throw error;
-                    });
+                // Where no handler of ours reached the original, the outcome shows only in the
+                // promise it returned (every real library returns a native one). The span follows
+                // it and the caller gets the same outcome.
+                if ((typeof onFulfilled !== "function" || typeof onRejected !== "function") && types.isPromise(returned)) {
+                    return returned.then(
+                        (value: unknown) => {
+                            settle();
+                            return value;
+                        },
+                        (error: unknown) => {
+                            settle({ error });
+                            throw error;
+                        },
+                    );
                 }
                 return returned;
             } catch (error) {
@@ -362,7 +384,7 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  * A generator that is never iterated never ends its span. A thenable that is never read
  * through `then` (a builder consumed through `exec()`, `stream()`, `cursor()`, `clone()`
  * or `toSQL()`, an immutable builder whose chain methods return new objects) ends its span
- * when the garbage collector collects it, at the time the span began and with an event
+ * when the garbage collector collects it, at the moment its function returned and with an event
  * `connectum.result.unread`; the moment is up to the collector, and a process that ends
  * first exports nothing.
  *

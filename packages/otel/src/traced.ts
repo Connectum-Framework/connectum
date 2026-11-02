@@ -32,15 +32,20 @@ import type { TracedOptions } from "./types.ts";
  *   `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`, `clone()`; superagent
  *   `end(callback)`) or an immutable builder whose
  *   chain methods return new objects never calls the `then` that was replaced. Such a
- *   span ends when the garbage collector collects the thenable, with the start time as
- *   its end time and the event `connectum.result.unread`. The moment is up to the
+ *   span ends when the garbage collector collects the thenable, at the moment
+ *   the function returned (as the span ended before thenables were followed) and the event `connectum.result.unread`. The moment is up to the
  *   collector, and a process that exits first exports nothing. To get a span that covers
  *   the work, `await` the builder inside the traced function (`traced(async () => await
  *   query.exec())`).
- * - A thenable that reports a failure only to a rejection handler it was given sees no
- *   handler of ours when the caller gives none, so its failure does not reach the span.
- * - A frozen or sealed thenable, and one already followed by eight layers, ends its span
- *   at once. A generator that is never iterated never ends its span.
+ * - A success or failure handler that the caller leaves out (`then(f)`, `catch(f)`
+ *   through `then(undefined, f)`) is passed to the thenable as missing, as without
+ *   tracing. The outcome is then read from the promise that `then` returns, which every
+ *   real library returns. A callback-style thenable that returns no native promise tells
+ *   the span nothing about the outcome the caller did not ask for; `await` gives both
+ *   handlers.
+ * - A frozen or sealed thenable, one whose `then` is a getter (it is read again on every
+ *   use, which a fixed function would change), and one already followed by eight layers
+ *   end their span at once. A generator that is never iterated never ends its span.
  *
  * @param fn - The function to wrap
  * @param options - Tracing options

@@ -20,7 +20,7 @@ import { setTimeout as delay, setImmediate as nextImmediate } from "node:timers/
 import { types } from "node:util";
 import { setFlagsFromString } from "node:v8";
 import { createContext, runInContext, runInNewContext } from "node:vm";
-import { context, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
+import { context, DiagLogLevel, diag, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { shutdownProvider } from "../../src/provider.ts";
@@ -1063,6 +1063,25 @@ describe("thenables that are read in other ways, and several traced layers over 
                 });
             });
 
+            it("passes a handler the caller left out as missing, and follows the outcome through the promise the thenable returns", async () => {
+                const received: string[][] = [];
+                const work = makeTraced(() => ({
+                    then(onFulfilled?: (v: string) => unknown, onRejected?: (e: unknown) => unknown) {
+                        received.push([typeof onFulfilled, typeof onRejected]);
+                        return Promise.resolve("rows").then(onFulfilled, onRejected);
+                    },
+                }));
+
+                const observed = await observe(async () => {
+                    const thenable = work() as PromiseLike<string>;
+                    // The way a catch(f) reaches then, on a thenable that succeeds.
+                    assert.strictEqual(await thenable.then(undefined, () => "failed"), "rows");
+                });
+
+                assert.deepStrictEqual(received, [["undefined", "function"]]);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET, "the span ended with the success it read from the returned promise");
+            });
+
             it("keeps the span of a callback-style thenable silent when the caller gives no rejection handler", async () => {
                 const uncaught: unknown[] = [];
                 const onUncaught = (error: unknown) => uncaught.push(error);
@@ -1268,6 +1287,80 @@ describe("thenables that are read in other ways, and several traced layers over 
             spans.get("Service.users")?.events.map((event) => event.name),
             ["connectum.result.read"],
             "the outer span is a follower of the same thenable and was marked as read",
+        );
+    });
+
+    it("leaves a thenable whose then is a getter as it is: the getter keeps being read on every use", async () => {
+        let reads = 0;
+        class Snapshotting {
+            value = "first";
+            get then() {
+                reads++;
+                const snapshot = this.value;
+                return (resolve: (value: string) => void) => resolve(snapshot);
+            }
+        }
+        const builder = new Snapshotting();
+        let span: Span | undefined;
+        const work = traced(
+            () => {
+                span = activeSpan();
+                return builder;
+            },
+            { name: "work" },
+        );
+
+        const observed = await observe(async () => {
+            work();
+            assert.strictEqual(span?.isRecording(), false, "a getter is not followed, so the span ends at once");
+            assert.strictEqual(reads, 0, "the getter is not even read when the function returns");
+            builder.value = "second";
+            assert.strictEqual(await (builder as unknown as PromiseLike<string>), "second", "the state at the time of the read counts");
+        });
+
+        assert.strictEqual(observed.spans.length, 1);
+    });
+
+    it("closes each unread span at the moment its own function returned, whatever order the calls come in", { timeout: 60_000 }, async () => {
+        const spans: Span[] = [];
+
+        // The SDK reports an end time before the start time through the diagnostics channel.
+        const warnings: string[] = [];
+        const observed = await observe(async () => {
+            // The first traced call creates the provider, and that resets the diagnostics logger:
+            // make it first, set the logger after.
+            traced(() => 0, { name: "warm-up" })();
+            diag.setLogger(
+                { verbose() {}, debug() {}, info() {}, error() {}, warn: (message: string) => warnings.push(message) },
+                DiagLogLevel.WARN,
+            );
+            // The builder is reachable only through this function's locals once it has returned.
+            await (async () => {
+                const local = new MongooseLike();
+                const again = traced(
+                    () => {
+                        spans.push(activeSpan());
+                        return local;
+                    },
+                    { name: "again" },
+                );
+                again();
+                await delay(25);
+                again();
+            })();
+            await collectUntil(() => spans.every((span) => !span.isRecording()));
+            diag.disable();
+        });
+
+        assert.strictEqual(spans.length, 2);
+        assert.ok(spans.every((span) => !span.isRecording()));
+        assert.deepStrictEqual(
+            observed.spans.filter((span) => span.name === "again").map((span) => span.events.map((event) => event.name)),
+            [["connectum.result.unread"], ["connectum.result.unread"]],
+        );
+        assert.deepStrictEqual(
+            warnings.filter((message) => message.includes("Inconsistent start and end time")),
+            [],
         );
     });
 
