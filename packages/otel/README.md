@@ -95,6 +95,32 @@ warning and the default.
   Node.js `AsyncLocalStorage` context can be lost across async-generator
   boundaries. See the [observability guide](https://connectum.dev/en/guide/observability).
 
+- `traced()` and `traceAll()` end the span of a function when its result is
+  final: a promise settles, a generator is exhausted or closed, or a thenable
+  that is not a native promise (a query builder such as Knex, a Mongoose
+  `Query`) settles. For a generator or a thenable the caller receives the very
+  object the function returned, so a builder keeps its chain methods and stays
+  lazy. The span of a thenable covers the time between the call and the first
+  read (the event `connectum.result.read` marks where it ends), and traced
+  functions that return the same thenable one from another all end with it.
+- A thenable is followed through its `then`. A builder consumed another way
+  never calls it, and an immutable builder (every chain method returns a new
+  object) hands out a different object than the one that was traced:
+  Mongoose `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`,
+  `clone()`; superagent `end(callback)`. The span of such a call ends when the
+  garbage collector collects the builder, at the moment the traced function
+  returned (so it covers only the call, as before) and with the event `connectum.result.unread`. The moment is
+  up to the collector, and a process that exits first exports nothing. To get a
+  span that covers the work, await the builder inside the traced function:
+  `traced(async () => await query.exec())`. A generator that is never iterated
+  never ends its span.
+- A success or failure handler that the caller leaves out (`then(onSuccess)`,
+  or `catch(onFailure)` through `then(undefined, onFailure)`) reaches the
+  thenable as missing, as without tracing, and the span follows the outcome
+  through the promise that `then` returns, which real libraries return. A
+  callback-style thenable that returns no native promise does not tell the span
+  about an outcome the caller did not ask for; `await` gives both handlers.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/otel)
