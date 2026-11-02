@@ -146,9 +146,12 @@ function spanSortKey(s: NormalizedSpan): string {
  * call `trace.disable()` (which removes the global registration) before
  * {@link InMemorySpanCollector.dispose}.
  *
- * To collect the spans of `@connectum/otel` interceptors, two more steps are
- * needed, and without them a scenario records nothing and still passes a
- * parity comparison of two empty results:
+ * Prefer `withTelemetry`, or the `telemetry` option of
+ * `transportParityTest`, which perform the registration below in the right
+ * order and undo it afterwards. By hand, to collect the spans of
+ * `@connectum/otel` interceptors two more steps are needed, and without them a
+ * scenario records nothing and still passes a parity comparison of two empty
+ * results:
  *
  * - Run with `OTEL_TRACES_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`.
  *   With the default exporters `@connectum/otel` records into providers of
@@ -215,7 +218,7 @@ export class InMemorySpanCollector {
  *
  * Register `collector.provider` with `metrics.setGlobalMeterProvider()` and
  * call `metrics.disable()` when done, exactly as for
- * {@link InMemorySpanCollector}. The same two requirements apply to collecting
+ * {@link InMemorySpanCollector} (or let `withTelemetry` do it). The same two requirements apply to collecting
  * the metrics of `@connectum/otel` interceptors: run with
  * `OTEL_METRICS_EXPORTER=none`, and call `shutdownProvider()` from
  * `@connectum/otel` at the start of every scenario, otherwise the scenario

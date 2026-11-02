@@ -18,6 +18,7 @@
  * @module @connectum/testing/parity
  */
 
+export type { TelemetryOptions } from "./telemetry.ts";
 export {
     defaultCompare,
     type ParityScenarioContext,
