@@ -172,7 +172,9 @@ const tracedThens = new WeakSet<object>();
  * reads it (turning it into a promise would run it at once). The original `then` runs
  * inside the span's context, so the work a lazy thenable starts there is a child of the
  * span. Callbacks are wrapped, not replaced: the caller's handlers get the same value or
- * error, and a missing handler passes the outcome on as the original `then` would.
+ * error, and a missing handler passes the outcome on, as the Promises/A+ rules for `then`
+ * require (a thenable that expects `then` without a rejection handler to stay silent
+ * about a failure is not a promise in that sense).
  * Every call to `then` is served by the original method; the span ends once.
  *
  * @returns `false` when the object does not accept the method (it is frozen or sealed)
