@@ -21,6 +21,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
 import { DataPointType } from "@opentelemetry/sdk-metrics";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
+import { installTelemetry, type TelemetryOptions, validateTelemetryOptions } from "./telemetry.ts";
 
 /**
  * Identifies which transport a scenario invocation is running against.
@@ -41,13 +42,14 @@ export interface ParityScenarioContext {
     baseUrl: string | undefined;
     /**
      * Fresh span collector for this run (no cross-contamination between runs).
-     * It receives spans only after the scenario registers `spans.provider` with
-     * OpenTelemetry; see {@link InMemorySpanCollector} for the steps that
-     * `@connectum/otel` interceptors need (`shutdownProvider()` first, exporters
-     * set to `none`).
+     * It receives spans once its provider is registered with OpenTelemetry:
+     * set {@link TransportParityTestOptions.telemetry} and the driver does it,
+     * otherwise the scenario registers `spans.provider` itself (see
+     * {@link InMemorySpanCollector} for the steps `@connectum/otel`
+     * interceptors need).
      */
     spans: InMemorySpanCollector;
-    /** Fresh metric collector for this run; the same registration requirements apply. */
+    /** Fresh metric collector for this run; the same registration applies. */
     metrics: InMemoryMetricCollector;
 }
 
@@ -109,6 +111,35 @@ export interface TransportParityTestOptions {
     requestGate?: CreateServerOptions["requestGate"];
     /** Server-level per-message read limit applied identically on both servers (see `CreateServerOptions.readMaxBytes`). */
     readMaxBytes?: number;
+    /**
+     * Opt in to isolated OpenTelemetry for every run: before each run the
+     * driver resets the `@connectum/otel` provider, registers that run's
+     * `spans` and `metrics` collectors as the OpenTelemetry providers, and
+     * after the run unregisters them again, so a scenario only calls
+     * `ctx.spans.flush()` and `ctx.metrics.flush()`. Without it a scenario
+     * has to do that itself and, if it forgets the reset, every parity test
+     * after the first in a process records nothing and still passes.
+     *
+     * Pass `shutdownProvider` from `@connectum/otel`. Run with
+     * `OTEL_TRACES_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`, as
+     * described on {@link InMemorySpanCollector}.
+     *
+     * @example
+     * ```typescript
+     * import { shutdownProvider } from "@connectum/otel";
+     *
+     * transportParityTest("spans match", {
+     *   services: [routes],
+     *   interceptors: [createOtelInterceptor()],
+     *   telemetry: { shutdownProvider },
+     *   scenario: async ({ transport, spans }) => {
+     *     await createClient(GreeterService, transport).sayHello({ name: "x" });
+     *     return { spans: spans.flush() };
+     *   },
+     * });
+     * ```
+     */
+    telemetry?: TelemetryOptions;
     /**
      * The scenario under test. Invoked once per transport with a fresh
      * server, transport, and OTEL collector pair.
@@ -397,39 +428,41 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
  * ```
  */
 export function transportParityTest(name: string, opts: TransportParityTestOptions): void {
+    if (opts.telemetry !== undefined) {
+        validateTelemetryOptions(opts.telemetry);
+    }
     test(name, async () => {
         const compare = opts.compare ?? defaultCompare;
-
-        const httpHarness = await setupHttpHarness(opts);
-        let httpResult: ParityScenarioResult;
-        try {
-            httpResult = await opts.scenario({
-                transport: httpHarness.transport,
-                transportKind: "http",
-                server: httpHarness.server,
-                baseUrl: httpHarness.baseUrl,
-                spans: httpHarness.spans,
-                metrics: httpHarness.metrics,
-            });
-        } finally {
-            await httpHarness.cleanup();
-        }
-
-        const localHarness = setupLocalHarness(opts);
-        let localResult: ParityScenarioResult;
-        try {
-            localResult = await opts.scenario({
-                transport: localHarness.transport,
-                transportKind: "local",
-                server: localHarness.server,
-                baseUrl: undefined,
-                spans: localHarness.spans,
-                metrics: localHarness.metrics,
-            });
-        } finally {
-            await localHarness.cleanup();
-        }
-
+        const httpResult = await runScenario(opts, await setupHttpHarness(opts), "http");
+        const localResult = await runScenario(opts, setupLocalHarness(opts), "local");
         compare(httpResult, localResult);
     });
+}
+
+/**
+ * Run the scenario once against `harness`, with the harness's collectors
+ * registered as the OpenTelemetry providers when the test asked for it, and
+ * release everything the harness holds whether the scenario returned or threw.
+ */
+async function runScenario(opts: TransportParityTestOptions, harness: RunHarness, transportKind: TransportKind): Promise<ParityScenarioResult> {
+    let uninstallTelemetry: (() => Promise<void>) | undefined;
+    try {
+        if (opts.telemetry !== undefined) {
+            uninstallTelemetry = await installTelemetry(harness, opts.telemetry);
+        }
+        return await opts.scenario({
+            transport: harness.transport,
+            transportKind,
+            server: harness.server,
+            baseUrl: harness.baseUrl,
+            spans: harness.spans,
+            metrics: harness.metrics,
+        });
+    } finally {
+        try {
+            await uninstallTelemetry?.();
+        } finally {
+            await harness.cleanup();
+        }
+    }
 }

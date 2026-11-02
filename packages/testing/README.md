@@ -67,6 +67,37 @@ dependencies above. Run it with `pnpm exec node --import tsx --test
 tests/timeout.test.ts`. `@connectum/testing` supplies test helpers and is not
 intended as a production service dependency.
 
+## Spans and metrics of `@connectum/otel` in a test
+
+`@connectum/otel` keeps the tracer it created for the provider that was
+registered when it first recorded something, so a scenario that only registers
+its collector sees spans in the first test of a process and nothing after it.
+Let the helper do the whole sequence (reset the provider, register the
+collectors, unregister them when the scenario ends, even if it throws):
+
+```typescript
+import { createOtelInterceptor, shutdownProvider } from '@connectum/otel';
+import { transportParityTest } from '@connectum/testing/parity';
+
+// OTEL_TRACES_EXPORTER=none and OTEL_METRICS_EXPORTER=none must be set.
+transportParityTest('Greeter.sayHello emits the same span on both transports', {
+  services: [greeterRoutes],
+  interceptors: [createOtelInterceptor()],
+  telemetry: { shutdownProvider },
+  scenario: async ({ transport, spans }) => {
+    await createClient(GreeterService, transport).sayHello({ name: 'world' });
+    return { spans: spans.flush() };
+  },
+});
+```
+
+Outside the parity driver, `withTelemetry({ shutdownProvider }, async ({ spans,
+metrics }) => { ... })` does the same around any body. The registrations are process-wide, so
+scenarios that use telemetry must run one after another; an overlapping one is
+refused with an error. Without `telemetry` the parity driver changes nothing, and `shutdownProvider` is passed in so that this
+package does not depend on `@connectum/otel`. Two empty results still compare
+as equal: assert that `spans.flush()` is not empty before you return it.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/testing)
