@@ -11,6 +11,8 @@
  * @module ShutdownManager
  */
 
+import type { ServerLogger } from "./types.ts";
+
 /**
  * Shutdown hook function type
  *
@@ -65,6 +67,13 @@ function describeValue(value: unknown): string {
  * ```
  */
 export class ShutdownManager {
+    /** Where a dependency on an unregistered name is reported. */
+    private readonly _logger: ServerLogger;
+
+    constructor(logger: ServerLogger = console) {
+        this._logger = logger;
+    }
+
     /** Dependency graph: module name -> array of dependency names */
     private _dependencyTree = new Map<string, string[]>();
 
@@ -189,10 +198,17 @@ export class ShutdownManager {
      * of them have settled. It then rejects with the single failure, or with an
      * `AggregateError` of all failures in registration order (module by module,
      * handlers in the order they were added).
+     *
+     * A dependency on a name that no hook registered is not an error: hooks may
+     * be added in any order, and an unregistered dependency has nothing to wait
+     * for, so the dependent hook runs at once. It is reported once per name, as a
+     * warning through the logger, because such a name is usually a typo and the
+     * ordering the author meant is lost.
      */
     async executeAll(): Promise<void> {
         if (!this._hooks.size) return;
 
+        this._warnAboutUnregisteredDependencies();
         this._pendingPromises.clear();
         this._failures.clear();
 
@@ -204,6 +220,30 @@ export class ShutdownManager {
         }
         if (failures.length > 1) {
             throw new AggregateError(failures, `${failures.length} shutdown hooks failed`);
+        }
+    }
+
+    /**
+     * Warn once for every dependency name that has no registered hook, naming
+     * the hooks that declared it.
+     */
+    private _warnAboutUnregisteredDependencies(): void {
+        const dependentsByMissing = new Map<string, string[]>();
+        for (const [name, dependencies] of this._dependencyTree) {
+            if (!this._hooks.has(name)) continue;
+            for (const dependency of dependencies) {
+                if (this._hooks.has(dependency)) continue;
+                const dependents = dependentsByMissing.get(dependency) ?? [];
+                if (!dependents.includes(name)) dependents.push(name);
+                dependentsByMissing.set(dependency, dependents);
+            }
+        }
+        for (const [missing, dependents] of dependentsByMissing) {
+            const list = dependents.map((dependent) => `"${dependent}"`).join(", ");
+            const subject = dependents.length === 1 ? `Shutdown hook ${list} depends` : `Shutdown hooks ${list} depend`;
+            this._logger.warn(
+                `${subject} on "${missing}", but no shutdown hook is registered under that name, so there is nothing to wait for. Check the name passed to onShutdown().`,
+            );
         }
     }
 

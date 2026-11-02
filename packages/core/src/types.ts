@@ -300,6 +300,23 @@ export interface ShutdownOptions {
 }
 
 /**
+ * Destination of the messages the server writes about its own lifecycle.
+ *
+ * The global `console` satisfies this interface and is the default. Adapt a
+ * logger whose methods take a different argument order (for example Pino's
+ * `(object, message)`) with a small wrapper. Each method receives a complete
+ * message first; failures pass the error object after it.
+ */
+export interface ServerLogger {
+    /** A normal lifecycle event: the listening address, a received signal. */
+    info(message: string, ...details: unknown[]): void;
+    /** A condition that deserves attention but does not stop the server: a shutdown timeout, a transport misconfiguration, a shutdown hook that depends on a name nobody registered. */
+    warn(message: string, ...details: unknown[]): void;
+    /** A failure that has no other channel: an error thrown by a lifecycle listener, a failed graceful close. */
+    error(message: string, ...details: unknown[]): void;
+}
+
+/**
  * Server configuration options for createServer()
  */
 export interface CreateServerOptions {
@@ -326,6 +343,19 @@ export interface CreateServerOptions {
      * TLS configuration
      */
     tls?: TLSOptions;
+
+    /**
+     * Where the server writes its own lifecycle messages: the listening
+     * address, a received shutdown signal, shutdown timeouts and failures,
+     * transport warnings, and a shutdown hook that depends on a name no hook
+     * registered. Must be an object with `info`, `warn` and `error` functions;
+     * `createServer()` throws a `TypeError` naming the missing one otherwise.
+     * A logger method that throws is ignored: it cannot fail `start()` or skip
+     * a shutdown hook.
+     * Request logging stays with the logger interceptor.
+     * @default console
+     */
+    logger?: ServerLogger;
 
     /**
      * Protocol registrations (healthcheck, reflection, custom)
@@ -783,7 +813,11 @@ export interface Server extends EventEmitter {
      * @throws Error if server is already stopped
      * @throws TypeError if the arguments match none of the three forms (for
      *   example a string where the array of dependencies belongs, or a missing
-     *   hook function). A dependency on a name nobody registered is not an error.
+     *   hook function). A dependency on a name nobody registered is not an error:
+     *   hooks may be added in any order, so the name is checked when the server
+     *   stops. If no hook has registered it by then, the dependent hook runs
+     *   without waiting and one warning per missing name goes to the `logger`
+     *   option (`console` by default).
      */
     onShutdown(name: string, dependencies: string[], handler: ShutdownHook): void;
 

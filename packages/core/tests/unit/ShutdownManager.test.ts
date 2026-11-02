@@ -9,6 +9,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { setTimeout as delay, setImmediate as nextTurn } from "node:timers/promises";
 import { ShutdownManager } from "../../src/ShutdownManager.ts";
+import type { ServerLogger } from "../../src/types.ts";
 
 /** A hook that yields to the event loop before recording itself, so a hook that does not wait for its dependency would finish first. */
 function slowHook(order: string[], label: string): () => Promise<void> {
@@ -582,6 +583,80 @@ describe("ShutdownManager", () => {
 
             assert.ok(order.includes("anonymous") && order.includes("dependent"));
             assert.ok(order.indexOf("named") < order.indexOf("last"));
+        });
+    });
+
+    // ---------------------------------------------------------------
+    // Dependency on a name nobody registered
+    // ---------------------------------------------------------------
+
+    describe("dependency on an unregistered name", () => {
+        function recordingLogger(): { logger: ServerLogger; warnings: string[]; others: string[] } {
+            const warnings: string[] = [];
+            const others: string[] = [];
+            return {
+                logger: { info: (message) => others.push(message), warn: (message) => warnings.push(message), error: (message) => others.push(message) },
+                warnings,
+                others,
+            };
+        }
+
+        it("runs the hook and warns once through the logger, naming the hook and the missing dependency", async () => {
+            const { logger, warnings, others } = recordingLogger();
+            const manager = new ShutdownManager(logger);
+            const order: string[] = [];
+            manager.addHook("a", ["ghost"], () => {
+                order.push("a");
+            });
+
+            await manager.executeAll();
+
+            assert.deepStrictEqual(order, ["a"]);
+            assert.strictEqual(warnings.length, 1);
+            assert.match(warnings[0] ?? "", /^Shutdown hook "a" depends on "ghost", but no shutdown hook is registered under that name/);
+            assert.deepStrictEqual(others, []);
+        });
+
+        it("warns once per missing name when several hooks depend on it, and once for each different name", async () => {
+            const { logger, warnings } = recordingLogger();
+            const manager = new ShutdownManager(logger);
+            manager.addHook("a", ["ghost"], () => {});
+            manager.addHook("b", ["ghost", "phantom"], () => {});
+
+            await manager.executeAll();
+
+            assert.strictEqual(warnings.length, 2);
+            assert.match(warnings[0] ?? "", /^Shutdown hooks "a", "b" depend on "ghost"/);
+            assert.match(warnings[1] ?? "", /^Shutdown hook "b" depends on "phantom"/);
+        });
+
+        it("does not warn when the dependency is registered, even after the hook that names it", async () => {
+            const { logger, warnings } = recordingLogger();
+            const manager = new ShutdownManager(logger);
+            manager.addHook("api", ["db"], () => {});
+            manager.addHook("db", () => {});
+
+            await manager.executeAll();
+
+            assert.deepStrictEqual(warnings, []);
+        });
+
+        it("writes to the console when no logger is given", async () => {
+            const original = console.warn;
+            const calls: unknown[][] = [];
+            console.warn = (...args: unknown[]): void => {
+                calls.push(args);
+            };
+            try {
+                const manager = new ShutdownManager();
+                manager.addHook("a", ["ghost"], () => {});
+                await manager.executeAll();
+            } finally {
+                console.warn = original;
+            }
+
+            assert.strictEqual(calls.length, 1);
+            assert.match(String(calls[0]?.[0]), /depends on "ghost"/);
         });
     });
 });

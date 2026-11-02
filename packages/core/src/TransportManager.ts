@@ -17,7 +17,7 @@ import { createServer as createHttp2Server, createSecureServer } from "node:http
 import type { AddressInfo, Socket } from "node:net";
 import env from "env-var";
 import { explainTLSFailure, readTLSCertificates } from "./TLSConfig.ts";
-import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
+import type { NodeRequest, NodeResponse, ServerLogger, TLSOptions, TransportServer } from "./types.ts";
 
 /**
  * Transport configuration for HTTP/2 server creation
@@ -50,6 +50,13 @@ export class TransportManager {
      * that is still draining.
      */
     private _closingState: { closing: boolean } = { closing: false };
+
+    /** Where the listening address is reported. */
+    private readonly _logger: ServerLogger;
+
+    constructor(logger: ServerLogger = console) {
+        this._logger = logger;
+    }
 
     /**
      * The underlying server instance
@@ -173,7 +180,7 @@ export class TransportManager {
                     if (address && typeof address === "object") {
                         this._address = address;
                         const displayHost = address.address === "::" ? "localhost" : address.address;
-                        console.info(`Server listening ${displayHost}:${address.port}`);
+                        this._logger.info(`Server listening ${displayHost}:${address.port}`);
                     }
 
                     server.removeListener("error", reject);

@@ -8,6 +8,7 @@
 
 import type { ShutdownManager } from "./ShutdownManager.ts";
 import type { TransportManager } from "./TransportManager.ts";
+import type { ServerLogger } from "./types.ts";
 
 /**
  * Options for graceful shutdown behavior
@@ -15,6 +16,8 @@ import type { TransportManager } from "./TransportManager.ts";
 export interface GracefulShutdownOptions {
     timeout: number;
     forceCloseOnTimeout: boolean;
+    /** Where a failed close and an exceeded timeout are reported. @default console */
+    logger?: ServerLogger | undefined;
 }
 
 /**
@@ -46,14 +49,14 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
     // a repeated stop() call -- in both cases there's nothing to close
     if (!transport.server) return;
 
-    const { timeout: shutdownTimeout, forceCloseOnTimeout: forceClose } = options;
+    const { timeout: shutdownTimeout, forceCloseOnTimeout: forceClose, logger = console } = options;
 
     // Phase 2: graceful close vs timeout race
     const graceful = transport.close();
 
     // Catch rejected graceful promise to prevent unhandled rejection when timeout wins
     graceful.catch((err) => {
-        console.error("Error during graceful close:", err);
+        logger.error("Error during graceful close:", err);
     });
 
     let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -67,7 +70,7 @@ export async function performGracefulShutdown(transport: TransportManager, shutd
         const result = await Promise.race([graceful, timeout]);
 
         if (result === "timeout") {
-            console.warn(`Shutdown timeout (${shutdownTimeout}ms) exceeded`);
+            logger.warn(`Shutdown timeout (${shutdownTimeout}ms) exceeded`);
             if (forceClose) {
                 transport.destroyAllSessions();
             }

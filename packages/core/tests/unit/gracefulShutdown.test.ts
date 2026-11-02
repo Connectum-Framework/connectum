@@ -278,6 +278,42 @@ describe("performGracefulShutdown()", () => {
             assert.deepStrictEqual(unhandled, []);
         });
 
+        // The logger option replaces the console for both messages of the shutdown
+        // sequence, with the original error object passed after the message.
+        it("should report a close failure and an exceeded timeout to the given logger, not to the console", async () => {
+            const closeError = new Error("close failed late");
+            const transport = createMockTransport({ closeDelay: 100, closeError });
+            const shutdownManager = createMockShutdownManager();
+            const logged: Array<{ level: string; args: unknown[] }> = [];
+            const logger = {
+                info: (...args: unknown[]) => logged.push({ level: "info", args }),
+                warn: (...args: unknown[]) => logged.push({ level: "warn", args }),
+                error: (...args: unknown[]) => logged.push({ level: "error", args }),
+            };
+            const consoleCalls: unknown[][] = [];
+            const original = { warn: console.warn, error: console.error };
+            console.warn = (...args: unknown[]) => {
+                consoleCalls.push(args);
+            };
+            console.error = (...args: unknown[]) => {
+                consoleCalls.push(args);
+            };
+
+            try {
+                await performGracefulShutdown(transport, shutdownManager, { timeout: 20, forceCloseOnTimeout: true, logger });
+                await new Promise((resolve) => globalThis.setTimeout(resolve, 200));
+            } finally {
+                console.warn = original.warn;
+                console.error = original.error;
+            }
+
+            assert.deepStrictEqual(logged, [
+                { level: "warn", args: ["Shutdown timeout (20ms) exceeded"] },
+                { level: "error", args: ["Error during graceful close:", closeError] },
+            ]);
+            assert.deepStrictEqual(consoleCalls, []);
+        });
+
         // Hooks release the application's own resources (brokers, databases);
         // a listener that fails to close cleanly must not make shutdown skip
         // them. The close error is still reported to the caller afterwards.

@@ -91,6 +91,7 @@ export type {
     // Server API
     Server,
     ServerClientOptions,
+    ServerLogger,
     ShutdownHook,
     ShutdownOptions,
     TLSOptions,

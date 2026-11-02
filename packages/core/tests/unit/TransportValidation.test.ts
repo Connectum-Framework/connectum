@@ -199,3 +199,23 @@ describe("validateTransport with a mounted service of a mixed file", () => {
         });
     }
 });
+
+describe("validateTransport with a logger", () => {
+    for (const [name, transport, mode] of [
+        ["plaintext HTTP/1.1 in warn mode", EffectiveTransport.PLAINTEXT_H1, "warn"],
+        ["TLS that negotiates HTTP/1.1", EffectiveTransport.TLS_H1_NEGOTIABLE, "error"],
+    ] as const) {
+        it(`writes the ${name} warning to the logger and nothing to the console`, () => {
+            const logged: string[] = [];
+            const logger = { info: () => {}, warn: (message: string) => logged.push(message), error: () => {} };
+
+            const consoleCalls = captureWarnings(() => {
+                assert.strictEqual(validateTransport({ services: WITH_BIDI.services, transport, mode, logger }), null);
+            });
+
+            assert.strictEqual(logged.length, 1);
+            assert.ok(logged[0]?.includes(TRANSPORT_VALIDATION_ERROR_CODE));
+            assert.deepStrictEqual(consoleCalls, []);
+        });
+    }
+});
