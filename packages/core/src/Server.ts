@@ -21,6 +21,7 @@ import type { ServiceDefinition } from "./defineService.ts";
 import { createShutdownReason } from "./finishStreamOnAbort.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
+import { resolveLogger } from "./logger.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
 import { onProcessSignal } from "./processSignals.ts";
@@ -28,7 +29,7 @@ import { ShutdownManager } from "./ShutdownManager.ts";
 import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
-import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ServerLogger, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -49,7 +50,9 @@ class ServerImpl extends EventEmitter implements Server {
     private readonly _interceptors: Interceptor[];
     private readonly _outgoingInterceptors: Interceptor[];
     private readonly _registry: DescFile[] = [];
-    private readonly _shutdownManager = new ShutdownManager();
+    /** Destination of the library's own lifecycle messages (`console` unless the `logger` option is set). */
+    private readonly _logger: ServerLogger;
+    private readonly _shutdownManager: ShutdownManager;
     private readonly _abortController = new AbortController();
     /** Ends of this server's subscriptions to the shared process signal listeners. */
     private readonly _signalSubscriptions: Array<() => void> = [];
@@ -58,7 +61,7 @@ class ServerImpl extends EventEmitter implements Server {
     private _startSettled: Promise<void> | null = null;
     /** The stop() requested during start(): shared by every such call. */
     private _stopAfterStart: Promise<void> | null = null;
-    private readonly _transport = new TransportManager();
+    private readonly _transport: TransportManager;
     private readonly _eventBus: EventBusLike | null = null;
 
     /**
@@ -95,6 +98,9 @@ class ServerImpl extends EventEmitter implements Server {
         validateShutdownSignals(options.shutdown);
         validateListenOptions(options);
         validatePropagateHeaders(options.propagateHeaders);
+        this._logger = resolveLogger(options.logger);
+        this._shutdownManager = new ShutdownManager(this._logger);
+        this._transport = new TransportManager(this._logger);
         if (options.catalog !== undefined) assertCatalogShape(options.catalog, "createServer");
         this._options = options;
         this._routes = [];
@@ -253,6 +259,7 @@ class ServerImpl extends EventEmitter implements Server {
                 // as plaintext consistently with the actual transport selection.
                 transport: resolveEffectiveTransport({ hasTls: Boolean(this._options.tls), allowHTTP1: this._options.allowHTTP1 }),
                 mode: this._options.transportValidation ?? "error",
+                logger: this._logger,
             });
             if (validationError) {
                 throw validationError;
@@ -342,6 +349,7 @@ class ServerImpl extends EventEmitter implements Server {
                 await performGracefulShutdown(this._transport, this._shutdownManager, {
                     timeout: this._options.shutdown?.timeout ?? 30_000,
                     forceCloseOnTimeout: this._options.shutdown?.forceCloseOnTimeout ?? true,
+                    logger: this._logger,
                 });
             } catch (error) {
                 failure = { error };
@@ -677,7 +685,7 @@ class ServerImpl extends EventEmitter implements Server {
 
         for (const signal of signals) {
             const handler = () => {
-                console.info(`Received ${signal}, initiating graceful shutdown...`);
+                this._logger.info(`Received ${signal}, initiating graceful shutdown...`);
                 // stop() has already reported a failed shutdown through "error";
                 // reporting it again would duplicate the event and, without an
                 // "error" listener, turn it into an unhandled rejection.
@@ -722,14 +730,14 @@ class ServerImpl extends EventEmitter implements Server {
         const err = error instanceof Error ? error : new Error(String(error));
         if (this.listenerCount("error") === 0) {
             if (printIfUnheard) {
-                console.error("Unhandled error in a server lifecycle listener:", err);
+                this._logger.error("Unhandled error in a server lifecycle listener:", err);
             }
             return;
         }
         try {
             this.emit("error", err);
         } catch (listenerError) {
-            console.error("An 'error' listener threw:", listenerError);
+            this._logger.error("An 'error' listener threw:", listenerError);
         }
     }
 

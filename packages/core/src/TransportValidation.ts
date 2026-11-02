@@ -26,6 +26,7 @@
  */
 
 import type { DescFile, DescService } from "@bufbuild/protobuf";
+import type { ServerLogger } from "./types.ts";
 
 /**
  * Stable error code for the streaming-vs-transport startup diagnostic.
@@ -172,7 +173,14 @@ export function formatTlsHttp1WarningMessage(methods: readonly StreamingMethodIn
  * mode) / doing nothing (`mode: "off"`, an HTTP/2-only transport, or no bidi
  * methods).
  */
-export function validateTransport(options: { services: readonly DescService[]; transport: EffectiveTransport; mode: TransportValidationMode }): TransportValidationError | null {
+export function validateTransport(options: {
+    services: readonly DescService[];
+    transport: EffectiveTransport;
+    mode: TransportValidationMode;
+    /** Where the warnings are written. @default console */
+    logger?: ServerLogger | undefined;
+}): TransportValidationError | null {
+    const { logger = console } = options;
     if (options.mode === TransportValidationMode.OFF) {
         return null;
     }
@@ -190,14 +198,14 @@ export function validateTransport(options: { services: readonly DescService[]; t
     // one-time warning, never a hard error (mixed h1-unary + h2-bidi on one
     // port is a legitimate, if discouraged, configuration).
     if (options.transport === EffectiveTransport.TLS_H1_NEGOTIABLE) {
-        console.warn(formatTlsHttp1WarningMessage(methods));
+        logger.warn(formatTlsHttp1WarningMessage(methods));
         return null;
     }
 
     // Plaintext HTTP/1.1: bidi can never work.
     const message = formatTransportValidationMessage(methods);
     if (options.mode === TransportValidationMode.WARN) {
-        console.warn(message);
+        logger.warn(message);
         return null;
     }
     return new TransportValidationError(message, methods);
