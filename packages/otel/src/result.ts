@@ -9,6 +9,8 @@
  * @module result
  */
 
+import { types } from "node:util";
+
 import type { Context, Span } from "@opentelemetry/api";
 import { context } from "@opentelemetry/api";
 
@@ -179,18 +181,25 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
             value: function then(this: unknown, onFulfilled?: unknown, onRejected?: unknown): unknown {
                 const scope = live.scope();
                 if (scope === undefined) return original.call(this, onFulfilled, onRejected);
+                // The caller's handlers run in the context of the call to `then`, as a native
+                // promise runs them, not in the span's context: the span is over by then.
+                const caller = context.active();
+                const handler = (callback: unknown, receiver: unknown, args: unknown[]) =>
+                    context.with(caller, () => (callback as (...a: unknown[]) => unknown).apply(receiver, args));
                 try {
                     return context.with(scope, () =>
                         original.call(
                             this,
-                            (value: unknown) => {
+                            // Receiver and every argument pass through: a thenable may call
+                            // its handler with more than the value.
+                            function (this: unknown, ...args: unknown[]) {
                                 live.finish();
-                                return typeof onFulfilled === "function" ? onFulfilled(value) : value;
+                                return typeof onFulfilled === "function" ? handler(onFulfilled, this, args) : args[0];
                             },
-                            (error: unknown) => {
-                                live.finish({ error });
-                                if (typeof onRejected === "function") return onRejected(error);
-                                throw error;
+                            function (this: unknown, ...args: unknown[]) {
+                                live.finish({ error: args[0] });
+                                if (typeof onRejected === "function") return handler(onRejected, this, args);
+                                throw args[0];
                             },
                         ),
                     );
@@ -215,7 +224,9 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  * Ends the span of a traced function at the right moment and returns what the caller
  * must receive in place of `result`.
  *
- * - A native `Promise`: the span ends when it settles; a rejection marks it failed.
+ * - A native `Promise`, of this realm or of another (a `vm` context): the span ends when
+ *   it settles; a rejection marks it failed. A promise is already running, so it is
+ *   followed at once, not when somebody reads it.
  * - A sync or async generator object (the result of calling a `function*` or
  *   `async function*`): the function body has not run yet, so the span stays open until
  *   the generator is exhausted, throws, or is closed early. Each step runs with the span
@@ -224,9 +235,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  *   replaced on the object itself, so its prototype and any property the function
  *   added to it stay. A generator that accepts no own properties (it is frozen) is
  *   returned as it is and its span ends at once.
- * - A thenable that is not a native `Promise` of this realm (a query builder such as
- *   Knex or a Mongoose `Query`, any object with a `then` method, a native promise made
- *   in another realm such as a `vm` context): the span ends when the thenable settles,
+ * - A thenable that is not a native promise (a query builder such as Knex or a Mongoose
+ *   `Query`, any object with a `then` method): the span ends when the thenable settles,
  *   which is when the caller reads it with `await` or `then()`. The caller receives the
  *   same object: `then` is replaced on the object itself, so its prototype, its chain
  *   methods and its laziness stay, and the work a lazy thenable starts in `then` runs
@@ -245,7 +255,9 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  * @returns The value the traced wrapper returns
  */
 export function endSpanWithResult(span: Span, result: unknown): unknown {
-    if (result instanceof Promise) {
+    // `instanceof` misses a native promise made in another realm, and such a promise can
+    // be awaited by code of its own realm without ever calling a replaced `then`.
+    if (result instanceof Promise || types.isPromise(result)) {
         return result.then(
             (value) => {
                 // Success leaves the status unset; only a failure sets ERROR.

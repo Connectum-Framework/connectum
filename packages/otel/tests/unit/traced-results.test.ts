@@ -18,7 +18,7 @@ import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as delay, setImmediate as nextImmediate } from "node:timers/promises";
 import { setFlagsFromString } from "node:v8";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext, runInNewContext } from "node:vm";
 import { context, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
@@ -686,6 +686,75 @@ describe("span lifetime of a traced thenable", () => {
                     assert.strictEqual(returned, value);
                     assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
                 }
+            });
+
+            it("hands the receiver and every argument of the thenable's callback to the caller's handler", async () => {
+                const receiver = { name: "receiver" };
+                const work = makeTraced(() => ({
+                    then(resolve: (...args: unknown[]) => void) {
+                        setTimeout(() => resolve.call(receiver, "value", "metadata"), 5);
+                    },
+                }));
+
+                let seen: { self: unknown; args: unknown[] } | undefined;
+                await observe(async () => {
+                    await new Promise<void>((done) => {
+                        (work() as PromiseLike<unknown>).then(function (this: unknown, ...args: unknown[]) {
+                            seen = { self: this, args };
+                            done();
+                        });
+                    });
+                });
+
+                assert.strictEqual(seen?.self, receiver);
+                assert.deepStrictEqual(seen?.args, ["value", "metadata"]);
+            });
+
+            it("runs the caller's handler in the context of the call to then, not in the finished span's", async () => {
+                const work = makeTraced(() => ({
+                    then(resolve: (value: string) => void) {
+                        setTimeout(() => resolve("done"), 5);
+                    },
+                }));
+
+                let activeInHandler: Span | undefined = undefined;
+                let activeAtSubscription: Span | undefined = undefined;
+                await observe(async () => {
+                    await trace.getTracer("caller").startActiveSpan("subscriber", async (subscriber) => {
+                        activeAtSubscription = subscriber;
+                        await new Promise<void>((done) => {
+                            (work() as PromiseLike<unknown>).then(() => {
+                                activeInHandler = trace.getActiveSpan();
+                                done();
+                            });
+                        });
+                        subscriber.end();
+                    });
+                });
+
+                assert.ok(activeAtSubscription);
+                assert.strictEqual(activeInHandler, activeAtSubscription);
+            });
+
+            it("ends the span of a native Promise of another realm that its own realm awaits", async () => {
+                let span: Span | undefined;
+                const realm = createContext({ setTimeout });
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return runInContext("(async () => { await new Promise((r) => setTimeout(r, 20)); return 'in-realm'; })()", realm);
+                });
+                // The consumer is code of the same foreign realm: its await takes the promise
+                // directly and never calls a replaced then.
+                const consume = runInContext("(async (pending) => await pending)", realm) as (pending: unknown) => Promise<unknown>;
+
+                let value: unknown;
+                const observed = await observe(async () => {
+                    value = await consume(work());
+                });
+
+                assert.strictEqual(value, "in-realm");
+                assert.strictEqual(span?.isRecording(), false);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
             it("follows a native Promise of another realm like any other thenable", async () => {
