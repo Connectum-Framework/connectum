@@ -20,7 +20,7 @@ import { setTimeout as delay, setImmediate as nextImmediate } from "node:timers/
 import { types } from "node:util";
 import { setFlagsFromString } from "node:v8";
 import { createContext, runInContext, runInNewContext } from "node:vm";
-import { context, DiagLogLevel, diag, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
+import { context, createContextKey, DiagLogLevel, diag, type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { shutdownProvider } from "../../src/provider.ts";
@@ -1247,6 +1247,30 @@ describe("thenables that are read in other ways, and several traced layers over 
                     finished.events.map((event) => event.name),
                     ["connectum.result.unread"],
                 );
+            });
+
+            it("still lets the collector take a builder that the context of its own call reaches", { timeout: 60_000 }, async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return new MongooseLike();
+                });
+                const requestKey = createContextKey("request");
+
+                await observe(async () => {
+                    await (async () => {
+                        // The context of the call holds an object that holds the builder, as a request
+                        // object that keeps its queries would.
+                        const request: { query?: MongooseLike } = {};
+                        await context.with(context.active().setValue(requestKey, request), async () => {
+                            request.query = (work() as MongooseLike).where("a");
+                            await request.query.exec();
+                        });
+                    })();
+                    await collectUntil(() => span?.isRecording() === false);
+                });
+
+                assert.strictEqual(span?.isRecording(), false, "the registry must not keep the context, and through it the builder, alive");
             });
 
             it("ends the span of an immutable builder through the collector: the object that was read is not the one the function returned", { timeout: 60_000 }, async () => {

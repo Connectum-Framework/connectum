@@ -46,30 +46,51 @@ interface LiveTrace {
     scope(): Context | undefined;
     /** Adds an event to the span while it is open. */
     event(name: string): void;
+    /** Ends the span once, marking it failed when given a failure; later calls do nothing. */
+    finish(failure?: { error: unknown }): void;
     /**
-     * Ends the span once, marking it failed when given a failure; later calls do nothing.
-     * With `unread` the span is closed at the moment the traced function returned, with an
-     * event that says nobody finished it: the span of a call whose result was never read.
+     * Ends the span of a call whose result nobody finished, at the moment the traced function
+     * returned and with an event that says so; does nothing once the span has ended. It holds
+     * the span and nothing else, in particular not the context of the call: the garbage
+     * collector's registry keeps it, and a context can reach the very object it waits for.
      */
-    finish(failure?: { error: unknown }, unread?: boolean): void;
+    abandon: () => void;
+}
+
+/** The span a live trace still has to end; emptied at the end, so a kept trace does not hold a finished span. */
+interface OpenSpan {
+    span: Span | undefined;
+}
+
+/** Lives apart from {@link createLiveTrace} so that its closure holds only what it names. */
+function abandonSpan(open: OpenSpan, returnedAt: number): () => void {
+    return () => {
+        const span = open.span;
+        if (span === undefined) return;
+        open.span = undefined;
+        span.addEvent("connectum.result.unread", returnedAt);
+        span.end(returnedAt);
+    };
 }
 
 function createLiveTrace(span: Span, scope: Context): LiveTrace {
     // Each span keeps its own moment: layers that follow one thenable return at different times.
     // A number is the SDK's own form of a monotonic time: it converts it to the clock of the span.
     const returnedAt = performance.now();
+    const open: OpenSpan = { span };
     let current: { span: Span; scope: Context } | undefined = { span, scope };
     return {
         scope: () => current?.scope,
         event: (name) => current?.span.addEvent(name),
-        finish(failure, unread) {
+        finish(failure) {
             const live = current;
             current = undefined;
+            open.span = undefined;
             if (live === undefined) return;
             if (failure) recordFailure(live.span, failure.error);
-            if (unread) live.span.addEvent("connectum.result.unread", returnedAt);
-            live.span.end(unread ? returnedAt : undefined);
+            live.span.end();
         },
+        abandon: abandonSpan(open, returnedAt),
     };
 }
 
@@ -158,12 +179,18 @@ function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncG
 }
 
 /**
- * What every traced layer that follows one thenable shares. The registry below holds it
- * as its value, so it must not reach the thenable: only the spans.
+ * What every traced layer that follows one thenable shares. It is reachable from the
+ * thenable only (through the `then` put on it).
  */
 interface Followed {
     /** The spans that end when the thenable settles, the oldest first. */
     lives: LiveTrace[];
+    /**
+     * What the registry below holds for this thenable: the abandon function of each span. It
+     * must not reach the thenable, which is why it is a list of its own and not `lives`:
+     * a live trace holds the context of the call, and a context can hold the thenable.
+     */
+    abandoners: Array<() => void>;
     /** Whether the thenable has been read: the first `then` call marks the end of the idle time. */
     read: boolean;
 }
@@ -182,8 +209,8 @@ const MAX_FOLLOWERS = 8;
  * collector decides when this runs, so the span appears late and not at all when the
  * process ends first.
  */
-const unread = new FinalizationRegistry<Followed>((state) => {
-    for (const live of state.lives.splice(0)) live.finish(undefined, true);
+const unread = new FinalizationRegistry<Array<() => void>>((abandoners) => {
+    for (const abandon of abandoners.splice(0)) abandon();
 });
 
 /**
@@ -248,7 +275,7 @@ function followedBy(thenable: object): Followed | undefined {
 function traceThenable(thenable: object, original: (...args: unknown[]) => unknown, live: LiveTrace): boolean {
     try {
         const ownDescriptor = Object.getOwnPropertyDescriptor(thenable, "then");
-        const state: Followed = { lives: [live], read: false };
+        const state: Followed = { lives: [live], abandoners: [live.abandon], read: false };
 
         // The method put on the thenable; `settle` runs only after it has been defined.
         let installed: unknown;
@@ -256,7 +283,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
             const lives = state.lives.splice(0);
             if (lives.length === 0) return;
             for (const l of lives) l.finish(failure);
-            unread.unregister(state);
+            unread.unregister(state.abandoners);
+            state.abandoners.length = 0;
             try {
                 // A thenable that replaced its own `then` while it ran (a memoized result, say) keeps what it set.
                 if (Object.getOwnPropertyDescriptor(thenable, "then")?.value !== installed) return;
@@ -358,8 +386,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
         });
         installed = traced;
         followed.set(traced, state);
-        // The held value is `state`, which reaches the spans but not the thenable.
-        unread.register(thenable, state, state);
+        // The held value reaches the spans but neither the thenable nor the contexts of the calls.
+        unread.register(thenable, state.abandoners, state.abandoners);
         return true;
     } catch {
         return false;
@@ -440,6 +468,7 @@ export function endSpanWithResult(span: Span, result: unknown): unknown {
             const live = createLiveTrace(span, context.active());
             if (open.read) live.event("connectum.result.read");
             open.lives.push(live);
+            open.abandoners.push(live.abandon);
             return result;
         }
     }
