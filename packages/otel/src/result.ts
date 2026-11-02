@@ -11,9 +11,8 @@
 
 import { types } from "node:util";
 
-import type { Context, HrTime, Span } from "@opentelemetry/api";
+import type { Context, Span } from "@opentelemetry/api";
 import { context } from "@opentelemetry/api";
-import { hrTime } from "@opentelemetry/core";
 
 import { recordFailure } from "./failure.ts";
 
@@ -57,7 +56,8 @@ interface LiveTrace {
 
 function createLiveTrace(span: Span, scope: Context): LiveTrace {
     // Each span keeps its own moment: layers that follow one thenable return at different times.
-    const returnedAt: HrTime = hrTime();
+    // A number is the SDK's own form of a monotonic time: it converts it to the clock of the span.
+    const returnedAt = performance.now();
     let current: { span: Span; scope: Context } | undefined = { span, scope };
     return {
         scope: () => current?.scope,
@@ -249,12 +249,16 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
         const ownDescriptor = Object.getOwnPropertyDescriptor(thenable, "then");
         const state: Followed = { lives: [live], read: false };
 
+        // The method put on the thenable; `settle` runs only after it has been defined.
+        let installed: unknown;
         const settle = (failure?: { error: unknown }) => {
             const lives = state.lives.splice(0);
             if (lives.length === 0) return;
             for (const l of lives) l.finish(failure);
             unread.unregister(state);
             try {
+                // A thenable that replaced its own `then` while it ran (a memoized result, say) keeps what it set.
+                if (Object.getOwnPropertyDescriptor(thenable, "then")?.value !== installed) return;
                 // biome-ignore lint/suspicious/noThenProperty: giving the object back the `then` it had
                 if (ownDescriptor) Object.defineProperty(thenable, "then", ownDescriptor);
                 else delete (thenable as { then?: unknown }).then;
@@ -342,6 +346,7 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
             // `then` of the prototype is shadowed by a non-enumerable one.
             enumerable: ownDescriptor?.enumerable ?? false,
         });
+        installed = traced;
         followed.set(traced, state);
         // The held value is `state`, which reaches the spans but not the thenable.
         unread.register(thenable, state, state);

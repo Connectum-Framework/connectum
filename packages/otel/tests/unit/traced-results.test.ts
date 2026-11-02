@@ -1063,6 +1063,30 @@ describe("thenables that are read in other ways, and several traced layers over 
                 });
             });
 
+            it("keeps the then that a thenable sets for itself while it runs, so a memoized result is not computed twice", async () => {
+                class Memoizing {
+                    operations = 0;
+                    then(onFulfilled?: (v: string) => unknown, onRejected?: (e: unknown) => unknown) {
+                        this.operations++;
+                        const result = Promise.resolve("computed");
+                        // Later reads take the stored result instead of running the operation again.
+                        this.then = result.then.bind(result) as Memoizing["then"];
+                        return result.then(onFulfilled, onRejected);
+                    }
+                }
+                const memo = new Memoizing();
+                const work = makeTraced(() => memo);
+
+                const observed = await observe(async () => {
+                    work();
+                    assert.strictEqual(await (memo as unknown as PromiseLike<string>), "computed");
+                    assert.strictEqual(await (memo as unknown as PromiseLike<string>), "computed");
+                });
+
+                assert.strictEqual(memo.operations, 1, "the second read used the then the thenable stored");
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
             it("passes a handler the caller left out as missing, and follows the outcome through the promise the thenable returns", async () => {
                 const received: string[][] = [];
                 const work = makeTraced(() => ({
