@@ -177,7 +177,10 @@ Timeout's own deadline returns `DeadlineExceeded`. Caller cancellation preserves
 an existing caller `ConnectError`, including its code and metadata/details; other
 caller reasons become `Canceled`. The first cancellation cause wins. With
 `skipStreaming: false` the timeout and retry cover opening the streaming
-response; caller cancellation still reaches an opened stream.
+response; caller cancellation still reaches an opened stream until the reader
+is done with it (read to the end, failed, or closed early). After that the
+interceptor keeps nothing on the caller's signal, so one signal shared by every
+call of the application does not collect a listener per stream.
 
 **Timeout and circuit breaker.** In the default order the timeout is outside the
 circuit breaker, which wraps retry. An expired timeout aborts the inner chain
