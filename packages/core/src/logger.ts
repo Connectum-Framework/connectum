@@ -15,10 +15,10 @@ const LOGGER_METHODS = ["info", "warn", "error"] as const;
  * Check the `logger` option and return the logger the server writes to.
  *
  * Without the option the global `console` is used, as before the option
- * existed. The returned object is the caller's own, not a copy: its methods are
- * looked up on every call, so a logger that is reconfigured or replaced
- * method-by-method after `createServer()` (as test doubles do with `console`)
- * keeps working.
+ * existed. The methods of the caller's logger are looked up on every call, so a
+ * logger that is reconfigured or replaced method-by-method after
+ * `createServer()` (as test doubles do with `console`) keeps working. A
+ * throwing method is isolated (see {@link isolated}).
  *
  * @throws TypeError if `logger` is not an object, or lacks an `info`, `warn` or `error` function
  * @internal
@@ -36,5 +36,25 @@ export function resolveLogger(logger: ServerLogger | undefined): ServerLogger {
             throw new TypeError(`createServer: logger.${method} must be a function, got ${found === null ? "null" : typeof found}`);
         }
     }
-    return logger;
+    return isolated(logger);
+}
+
+/**
+ * Wrap the application's logger so that a method that throws cannot break the
+ * lifecycle code that reports through it: a failing `info` would otherwise
+ * escape the listen callback as an uncaught exception, and a failing `warn`
+ * during shutdown would skip every shutdown hook. A message the logger could
+ * not take has no other place to go, so the failure is dropped.
+ */
+function isolated(logger: ServerLogger): ServerLogger {
+    const guard =
+        (method: (typeof LOGGER_METHODS)[number]) =>
+        (message: string, ...details: unknown[]): void => {
+            try {
+                logger[method](message, ...details);
+            } catch {
+                // nowhere left to report a failing logger
+            }
+        };
+    return { info: guard("info"), warn: guard("warn"), error: guard("error") };
 }

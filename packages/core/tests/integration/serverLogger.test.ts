@@ -252,6 +252,36 @@ describe("createServer({ logger })", () => {
         });
     });
 
+    describe("a logger whose methods throw", () => {
+        const throwing: ServerLogger = {
+            info() {
+                throw new Error("info failed");
+            },
+            warn() {
+                throw new Error("warn failed");
+            },
+            error() {
+                throw new Error("error failed");
+            },
+        };
+
+        it("does not fail start() and does not skip the shutdown hooks that warn about a missing dependency", async () => {
+            const server = make({ logger: throwing, shutdown: { timeout: 100 } });
+            const ran: string[] = [];
+            server.onShutdown("a", ["ghost"], () => {
+                ran.push("a");
+            });
+            server.on("stopping", () => {
+                throw new Error("stopping listener failed");
+            });
+            await server.start();
+            await server.stop();
+
+            assert.deepStrictEqual(ran, ["a"]);
+            assert.strictEqual(server.state, "stopped");
+        });
+    });
+
     describe("a shutdown hook that depends on a name nobody registered", () => {
         it("still runs, and is reported once through warn with the hook and the missing name", async () => {
             const log = recorder();

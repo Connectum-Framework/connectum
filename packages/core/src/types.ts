@@ -350,6 +350,8 @@ export interface CreateServerOptions {
      * transport warnings, and a shutdown hook that depends on a name no hook
      * registered. Must be an object with `info`, `warn` and `error` functions;
      * `createServer()` throws a `TypeError` naming the missing one otherwise.
+     * A logger method that throws is ignored: it cannot fail `start()` or skip
+     * a shutdown hook.
      * Request logging stays with the logger interceptor.
      * @default console
      */
