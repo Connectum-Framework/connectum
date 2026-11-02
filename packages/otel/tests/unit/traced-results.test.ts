@@ -670,6 +670,73 @@ describe("span lifetime of a traced thenable", () => {
                 assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
 
+            it("keeps the span open while a thenable resolves with a pending promise, and fails it when that promise rejects", async () => {
+                let span: Span | undefined;
+                let recordingWhenOuterResolved: boolean | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return {
+                        then(resolve: (value: unknown) => void) {
+                            resolve(
+                                delay(20).then(() => {
+                                    recordingWhenOuterResolved = span?.isRecording();
+                                    throw new Error("nested boom");
+                                }),
+                            );
+                        },
+                    };
+                });
+
+                const observed = await observe(async () => {
+                    await assert.rejects(async () => await (work() as PromiseLike<unknown>), { message: "nested boom" });
+                });
+
+                assert.strictEqual(recordingWhenOuterResolved, true);
+                const finished = onlySpan(observed);
+                assert.strictEqual(finished.status.code, SpanStatusCode.ERROR);
+                assert.strictEqual(finished.status.message, "nested boom");
+            });
+
+            it("follows a shared thenable once: later calls end their span at once and add no layer to then", async () => {
+                const shared = { then: (resolve: (value: string) => void) => resolve("shared") };
+                const spans: Span[] = [];
+                const work = makeTraced(() => {
+                    spans.push(activeSpan());
+                    return shared;
+                });
+
+                const observed = await observe(async () => {
+                    for (let call = 0; call < 20_000; call++) work();
+                    assert.strictEqual(spans[0]?.isRecording(), true, "the first call follows the thenable");
+                    assert.ok(
+                        spans.slice(1).every((span) => !span.isRecording()),
+                        "every later call ends its span at once",
+                    );
+                    // A layer per call would overflow the stack here.
+                    assert.strictEqual(await (shared as PromiseLike<string>), "shared");
+                });
+
+                assert.strictEqual(spans[0]?.isRecording(), false);
+                assert.strictEqual(observed.spans.length, 20_000);
+            });
+
+            it("hands arguments after the two handlers to the original then", async () => {
+                let extra: unknown[] = [];
+                const work = makeTraced(() => ({
+                    then(resolve: (value: string) => void, _reject: unknown, ...rest: unknown[]) {
+                        extra = rest;
+                        resolve("done");
+                    },
+                }));
+
+                await observe(async () => {
+                    const thenable = work() as unknown as { then(...args: unknown[]): void };
+                    await new Promise<void>((done) => thenable.then(() => done(), undefined, "progress", 7));
+                });
+
+                assert.deepStrictEqual(extra, ["progress", 7]);
+            });
+
             it("treats an object whose then is not a function, or cannot be read, as a plain result", async () => {
                 const notCallable = { then: 5 };
                 const unreadable = Object.defineProperty({}, "then", {

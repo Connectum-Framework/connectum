@@ -161,6 +161,9 @@ function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined 
     }
 }
 
+/** The `then` methods this module has put on thenables, to tell an object that is already followed. */
+const tracedThens = new WeakSet<object>();
+
 /**
  * Replaces `then` of a thenable with a version that ends the span when the thenable
  * settles. The method is put on the thenable itself, not on a promise made from it: the
@@ -176,38 +179,51 @@ function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined 
  */
 function traceThenable(thenable: object, original: (...args: unknown[]) => unknown, live: LiveTrace): boolean {
     try {
+        const traced = function then(this: unknown, onFulfilled?: unknown, onRejected?: unknown, ...rest: unknown[]): unknown {
+            const scope = live.scope();
+            // Arguments after the two handlers (a progress callback, say) reach the original.
+            if (scope === undefined) return original.call(this, onFulfilled, onRejected, ...rest);
+            // The caller's handlers run in the context of the call to `then`, as a native
+            // promise runs them, not in the span's context: the span is over by then.
+            const caller = context.active();
+            const handler = (callback: unknown, receiver: unknown, args: unknown[]) => context.with(caller, () => (callback as (...a: unknown[]) => unknown).apply(receiver, args));
+            try {
+                return context.with(scope, () =>
+                    original.call(
+                        this,
+                        // Receiver and every argument pass through: a thenable may call
+                        // its handler with more than the value.
+                        function (this: unknown, ...args: unknown[]) {
+                            const value = args[0];
+                            // A native promise passed on as the value is awaited by the caller as
+                            // well, so the work lasts until that promise settles, and its failure is
+                            // the failure of the call. (A nested thenable is not read here: reading
+                            // it would run a lazy one twice.)
+                            if (types.isPromise(value))
+                                value.then(
+                                    () => live.finish(),
+                                    (error: unknown) => live.finish({ error }),
+                                );
+                            else live.finish();
+                            return typeof onFulfilled === "function" ? handler(onFulfilled, this, args) : args[0];
+                        },
+                        function (this: unknown, ...args: unknown[]) {
+                            live.finish({ error: args[0] });
+                            if (typeof onRejected === "function") return handler(onRejected, this, args);
+                            throw args[0];
+                        },
+                        ...rest,
+                    ),
+                );
+            } catch (error) {
+                live.finish({ error });
+                throw error;
+            }
+        };
+        tracedThens.add(traced);
         // biome-ignore lint/suspicious/noThenProperty: making the result observable by `await` is the purpose of this method
         Object.defineProperty(thenable, "then", {
-            value: function then(this: unknown, onFulfilled?: unknown, onRejected?: unknown): unknown {
-                const scope = live.scope();
-                if (scope === undefined) return original.call(this, onFulfilled, onRejected);
-                // The caller's handlers run in the context of the call to `then`, as a native
-                // promise runs them, not in the span's context: the span is over by then.
-                const caller = context.active();
-                const handler = (callback: unknown, receiver: unknown, args: unknown[]) =>
-                    context.with(caller, () => (callback as (...a: unknown[]) => unknown).apply(receiver, args));
-                try {
-                    return context.with(scope, () =>
-                        original.call(
-                            this,
-                            // Receiver and every argument pass through: a thenable may call
-                            // its handler with more than the value.
-                            function (this: unknown, ...args: unknown[]) {
-                                live.finish();
-                                return typeof onFulfilled === "function" ? handler(onFulfilled, this, args) : args[0];
-                            },
-                            function (this: unknown, ...args: unknown[]) {
-                                live.finish({ error: args[0] });
-                                if (typeof onRejected === "function") return handler(onRejected, this, args);
-                                throw args[0];
-                            },
-                        ),
-                    );
-                } catch (error) {
-                    live.finish({ error });
-                    throw error;
-                }
-            },
+            value: traced,
             writable: true,
             configurable: true,
             // Keep the shape of the object: an own enumerable `then` stays enumerable, a
@@ -241,7 +257,8 @@ function traceThenable(thenable: object, original: (...args: unknown[]) => unkno
  *   same object: `then` is replaced on the object itself, so its prototype, its chain
  *   methods and its laziness stay, and the work a lazy thenable starts in `then` runs
  *   with the span as the active span. A thenable that accepts no own `then` (it is
- *   frozen) is returned as it is and its span ends at once.
+ *   frozen), and one that an earlier call already follows (the function returns the same
+ *   cached object each time), is returned as it is and its span ends at once.
  * - Anything else, including other iterables (arrays, `Map`, streams): the call is over,
  *   the span ends now.
  *
@@ -277,7 +294,10 @@ export function endSpanWithResult(span: Span, result: unknown): unknown {
     if (tag === "AsyncGenerator") return traceAsyncGenerator(result as AsyncGenerator, createLiveTrace(span, context.active()));
 
     const then = thenOf(result);
-    if (then !== undefined && traceThenable(result as object, then, createLiveTrace(span, context.active()))) return result;
+    // A thenable that an earlier call already follows (a cached query, a shared object) is not
+    // wrapped again: every call would add a layer that stays for the life of the object, and the
+    // outcome would belong to more than one span. Its span ends now, like that of a plain result.
+    if (then !== undefined && !tracedThens.has(then) && traceThenable(result as object, then, createLiveTrace(span, context.active()))) return result;
 
     // Sync result, or a thenable that accepts no own `then`: success leaves the status unset.
     span.end();
