@@ -51,7 +51,12 @@ function isolated(logger: ServerLogger): ServerLogger {
         (method: (typeof LOGGER_METHODS)[number]) =>
         (message: string, ...details: unknown[]): void => {
             try {
-                logger[method](message, ...details);
+                // An async method is assignable to the `void` return type; its
+                // rejection would otherwise surface as an unhandled rejection.
+                const result: unknown = logger[method](message, ...details);
+                if (result instanceof Promise) {
+                    result.catch(() => {});
+                }
             } catch {
                 // nowhere left to report a failing logger
             }

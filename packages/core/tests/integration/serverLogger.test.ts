@@ -265,6 +265,36 @@ describe("createServer({ logger })", () => {
             },
         };
 
+        it("does not leave an unhandled rejection when the logger methods are async and reject", async () => {
+            const unhandled: unknown[] = [];
+            const onUnhandled = (reason: unknown): void => {
+                unhandled.push(reason);
+            };
+            process.on("unhandledRejection", onUnhandled);
+            try {
+                const rejecting: ServerLogger = {
+                    info: async () => {
+                        throw new Error("async info failed");
+                    },
+                    warn: async () => {
+                        throw new Error("async warn failed");
+                    },
+                    error: async () => {
+                        throw new Error("async error failed");
+                    },
+                };
+                const server = make({ logger: rejecting });
+                server.onShutdown("a", ["ghost"], () => {});
+                await server.start();
+                await server.stop();
+                await delay(50);
+            } finally {
+                process.removeListener("unhandledRejection", onUnhandled);
+            }
+
+            assert.deepStrictEqual(unhandled, []);
+        });
+
         it("does not fail start() and does not skip the shutdown hooks that warn about a missing dependency", async () => {
             const server = make({ logger: throwing, shutdown: { timeout: 100 } });
             const ran: string[] = [];
