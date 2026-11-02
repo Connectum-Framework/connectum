@@ -139,7 +139,19 @@ export function createTimeoutInterceptor(options: TimeoutOptions = {}): Intercep
                 // its own link on opening, so the caller's abort must keep reaching the
                 // handler until the reader is done with the stream.
                 keepFollowingCaller = true;
-                return { ...result, message: releaseWhenDone(result.message, stopFollowingCaller) };
+                return {
+                    ...result,
+                    message: releaseWhenDone(result.message, (failure) => {
+                        if (failure !== undefined) {
+                            // A transport tears its connection down when the signal it was
+                            // given aborts, and the caller's own signal aborts only after the
+                            // failure has travelled up to the code that owns it, by which time
+                            // this link is gone. Abort downstream first, as that abort would.
+                            relay.abort(ConnectError.from(failure.error));
+                        }
+                        stopFollowingCaller();
+                    }),
+                };
             }
             return result;
         } catch (err) {
@@ -158,13 +170,14 @@ export function createTimeoutInterceptor(options: TimeoutOptions = {}): Intercep
 /**
  * Wrap a response stream so `release` runs once the reader is done with it: the
  * stream is read to the end, fails, or is closed early (`return()` / `break`).
- * A stream that nobody iterates is never released here, and the caller's signal
- * keeps its listener until it aborts; nothing reads such a stream.
+ * `release` receives the error that ended the stream, or nothing when the stream
+ * ended otherwise. A stream that nobody iterates is never released here, and the
+ * caller's signal keeps its listener until it aborts; nothing reads such a stream.
  *
  * The iterator is wrapped by hand, not with an async generator: a generator that
  * is closed before its first step never runs its `finally`.
  */
-function releaseWhenDone<T>(source: AsyncIterable<T>, release: () => void): AsyncIterable<T> {
+function releaseWhenDone<T>(source: AsyncIterable<T>, release: (failure?: { error: unknown }) => void): AsyncIterable<T> {
     return {
         [Symbol.asyncIterator](): AsyncIterator<T> {
             const iterator = source[Symbol.asyncIterator]();
@@ -177,7 +190,7 @@ function releaseWhenDone<T>(source: AsyncIterable<T>, release: () => void): Asyn
                         }
                         return step;
                     } catch (error) {
-                        release();
+                        release({ error });
                         throw error;
                     }
                 },

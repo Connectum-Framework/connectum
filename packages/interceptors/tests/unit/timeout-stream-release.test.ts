@@ -96,6 +96,31 @@ describe("timeout interceptor: releasing a stream", () => {
         assert.strictEqual(listenersOn(caller.signal), 0);
     });
 
+    it("aborts the downstream signal when the stream fails, as the abort that follows a failed read would", async () => {
+        const caller = new AbortController();
+        const failure = new ConnectError("boom", Code.Internal);
+        const { call, seen } = openStream({
+            source: () =>
+                (async function* () {
+                    yield 1;
+                    throw failure;
+                })(),
+            signal: caller.signal,
+        });
+        const response = await call();
+        assert.ok(seen.signal);
+        assert.strictEqual(seen.signal.aborted, false);
+
+        await assert.rejects(async () => {
+            for await (const _ of response.message as AsyncIterable<unknown>);
+        });
+
+        assert.strictEqual(seen.signal.aborted, true);
+        assert.ok(seen.signal.reason instanceof ConnectError);
+        assert.strictEqual(seen.signal.reason.code, Code.Internal);
+        assert.strictEqual(caller.signal.aborted, false, "the caller's own signal is not touched");
+    });
+
     it("keeps following the caller for a stream nobody reads, until the caller's signal aborts", async () => {
         const caller = new AbortController();
         const { call } = openStream({ source: twoMessages, signal: caller.signal });
