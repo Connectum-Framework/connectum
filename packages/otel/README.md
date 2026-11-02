@@ -95,6 +95,15 @@ warning and the default.
   Node.js `AsyncLocalStorage` context can be lost across async-generator
   boundaries. See the [observability guide](https://connectum.dev/en/guide/observability).
 
+- `traced()` and `traceAll()` end the span of a function when its result is
+  final: a promise settles, a generator is exhausted or closed, or a thenable
+  that is not a native promise (a query builder such as Knex, a Mongoose
+  `Query`) settles. The caller receives the very object the function returned.
+  A generator that is never iterated and a thenable that is never read with
+  `await` or `then()` never end their span, and an unfinished span is not
+  exported. To trace a builder that is consumed some other way, such as
+  `exec()`, wrap the call in an async function.
+
 ## Learn and reference
 
 - [Package overview](https://connectum.dev/en/packages/otel)

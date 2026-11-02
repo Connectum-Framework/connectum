@@ -26,7 +26,9 @@ const wrapped = new WeakSet<object>();
  * `this`, so getters over `#private` fields and `Map.size` work. An own method that is
  * neither writable nor configurable (a method of a frozen object) cannot be replaced by
  * a wrapper in a proxy and is returned as it is, untraced. A span ends when a returned
- * promise settles or a returned generator is exhausted, throws or is closed.
+ * promise or thenable settles or a returned generator is exhausted, throws or is closed;
+ * a generator that is never iterated and a thenable that is never read never end their
+ * span, and an unfinished span is not exported (see {@link traced}).
  *
  * @param target - The object whose methods to trace
  * @param options - Tracing options

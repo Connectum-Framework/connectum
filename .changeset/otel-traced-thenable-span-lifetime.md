@@ -1,0 +1,7 @@
+---
+"@connectum/otel": minor
+---
+
+fix: `traced()` and `traceAll()` no longer end the span of a thenable that is not a native `Promise` the moment the function returns. A function that returns a query builder (Knex, a Mongoose `Query`, a Drizzle query) or any object with a `then` method used to get a span of zero duration that covered none of the work. The span now stays open until the thenable settles, a rejection marks it `ERROR` with the message, and the work that a lazy thenable starts inside its `then` runs with the span as the active span, so spans it starts are its children. The caller receives the same object the function returned: `then` is replaced on the object itself, so its prototype and chain methods (`where()`, `limit()`) stay and a lazy thenable is still not started before it is read. A native promise of another realm (made in a `vm` context) is followed the same way. A frozen thenable is returned as it is and its span ends at once.
+
+Shipped as minor because a result that is never read changes: a thenable that nobody reads with `await` or `then()` (a builder consumed through `exec()`, `stream()` or `toSQL()`, or dropped) used to export a zero-length span and now never ends its span, and an unfinished span is not exported. Wrap such a call in an async function (`traced(async () => await query.exec())`) to trace it. A generator that is never iterated behaves the same way.

@@ -17,9 +17,13 @@ import type { TracedOptions } from "./types.ts";
  * The wrapper preserves the original function's type signature.
  * Supports sync and async functions and sync and async generator functions.
  * The span ends when a returned promise settles, or when a returned generator is
- * exhausted, throws or is closed (a generator that is never iterated never ends its
- * span). A thenable that is not a native `Promise` is not awaited: the span ends when
- * the function returns.
+ * exhausted, throws or is closed, or when a returned thenable that is not a native
+ * `Promise` (a query builder, a promise of another realm) settles. The caller receives
+ * the same object in the last two cases, so a builder keeps its chain methods and
+ * stays lazy. A generator that is never iterated and a thenable that is never read
+ * (with `await` or `then()`) never end their span, and an unfinished span is not
+ * exported; to trace a builder that is consumed some other way, such as `exec()`, wrap
+ * the call in an async function.
  *
  * @param fn - The function to wrap
  * @param options - Tracing options

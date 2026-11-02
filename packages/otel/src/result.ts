@@ -145,6 +145,73 @@ function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncG
 }
 
 /**
+ * The `then` of a thenable that is not a native promise, read without trusting the
+ * object: a getter that throws must not break the call, and a `then` that is not a
+ * function does not make an object a thenable.
+ */
+function thenOf(result: unknown): ((...args: unknown[]) => unknown) | undefined {
+    if ((typeof result !== "object" && typeof result !== "function") || result === null) return undefined;
+    try {
+        const then = (result as { then?: unknown }).then;
+        return typeof then === "function" ? (then as (...args: unknown[]) => unknown) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Replaces `then` of a thenable with a version that ends the span when the thenable
+ * settles. The method is put on the thenable itself, not on a promise made from it: the
+ * caller keeps the very object the function returned, so a query builder keeps its
+ * chain methods and its prototype, and a lazy thenable is not started before the caller
+ * reads it (turning it into a promise would run it at once). The original `then` runs
+ * inside the span's context, so the work a lazy thenable starts there is a child of the
+ * span. Callbacks are wrapped, not replaced: the caller's handlers get the same value or
+ * error, and a missing handler passes the outcome on as the original `then` would.
+ * Every call to `then` is served by the original method; the span ends once.
+ *
+ * @returns `false` when the object does not accept the method (it is frozen or sealed)
+ */
+function traceThenable(thenable: object, original: (...args: unknown[]) => unknown, live: LiveTrace): boolean {
+    try {
+        // biome-ignore lint/suspicious/noThenProperty: making the result observable by `await` is the purpose of this method
+        Object.defineProperty(thenable, "then", {
+            value: function then(this: unknown, onFulfilled?: unknown, onRejected?: unknown): unknown {
+                const scope = live.scope();
+                if (scope === undefined) return original.call(this, onFulfilled, onRejected);
+                try {
+                    return context.with(scope, () =>
+                        original.call(
+                            this,
+                            (value: unknown) => {
+                                live.finish();
+                                return typeof onFulfilled === "function" ? onFulfilled(value) : value;
+                            },
+                            (error: unknown) => {
+                                live.finish({ error });
+                                if (typeof onRejected === "function") return onRejected(error);
+                                throw error;
+                            },
+                        ),
+                    );
+                } catch (error) {
+                    live.finish({ error });
+                    throw error;
+                }
+            },
+            writable: true,
+            configurable: true,
+            // Keep the shape of the object: an own enumerable `then` stays enumerable, a
+            // `then` of the prototype is shadowed by a non-enumerable one.
+            enumerable: Object.getOwnPropertyDescriptor(thenable, "then")?.enumerable ?? false,
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Ends the span of a traced function at the right moment and returns what the caller
  * must receive in place of `result`.
  *
@@ -157,10 +224,21 @@ function traceAsyncGenerator(generator: AsyncGenerator, live: LiveTrace): AsyncG
  *   replaced on the object itself, so its prototype and any property the function
  *   added to it stay. A generator that accepts no own properties (it is frozen) is
  *   returned as it is and its span ends at once.
- * - Anything else, including other iterables (arrays, `Map`, streams) and thenables
- *   that are not native promises: the call is over, the span ends now.
+ * - A thenable that is not a native `Promise` of this realm (a query builder such as
+ *   Knex or a Mongoose `Query`, any object with a `then` method, a native promise made
+ *   in another realm such as a `vm` context): the span ends when the thenable settles,
+ *   which is when the caller reads it with `await` or `then()`. The caller receives the
+ *   same object: `then` is replaced on the object itself, so its prototype, its chain
+ *   methods and its laziness stay, and the work a lazy thenable starts in `then` runs
+ *   with the span as the active span. A thenable that accepts no own `then` (it is
+ *   frozen) is returned as it is and its span ends at once.
+ * - Anything else, including other iterables (arrays, `Map`, streams): the call is over,
+ *   the span ends now.
  *
- * A generator that is never iterated never ends its span: no code of it runs.
+ * A generator that is never iterated, and a thenable that is never read, never end their
+ * span: nothing of them has run, or nobody learns that it finished. Such a span is not
+ * exported. To trace a thenable that is consumed some other way (a builder's `exec()`),
+ * wrap the call in an async function.
  *
  * @param span - The span of the call, active in the current context
  * @param result - What the traced function returned
@@ -186,7 +264,10 @@ export function endSpanWithResult(span: Span, result: unknown): unknown {
     if (tag === "Generator") return traceGenerator(result as Generator, createLiveTrace(span, context.active()));
     if (tag === "AsyncGenerator") return traceAsyncGenerator(result as AsyncGenerator, createLiveTrace(span, context.active()));
 
-    // Sync result: success leaves the status unset.
+    const then = thenOf(result);
+    if (then !== undefined && traceThenable(result as object, then, createLiveTrace(span, context.active()))) return result;
+
+    // Sync result, or a thenable that accepts no own `then`: success leaves the status unset.
     span.end();
     return result;
 }

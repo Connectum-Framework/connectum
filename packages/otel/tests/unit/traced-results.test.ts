@@ -6,7 +6,8 @@
  * the span of a `traced()` function and of a `traceAll()` method stays open while the
  * caller iterates the generator, that the generator body runs with the span active,
  * that failures and early exits end it correctly, and that results which are not
- * generators (arrays, maps, non-native thenables) are returned untouched.
+ * generators or thenables (arrays, maps) are returned untouched. A thenable that is not
+ * a native promise keeps its span open until it settles and is returned as the same object.
  */
 
 process.env.OTEL_TRACES_EXPORTER = "none";
@@ -441,7 +442,7 @@ describe("span lifetime of a traced generator", () => {
                 }
             });
 
-            it("returns a thenable that is not a native Promise as it is", async () => {
+            it("returns a thenable that is not a native Promise as the same object", async () => {
                 const thenable = { then: (resolve: (value: string) => void) => resolve("done") };
                 const work = makeTraced(() => thenable);
                 let returned: unknown;
@@ -449,6 +450,263 @@ describe("span lifetime of a traced generator", () => {
                     returned = work();
                 });
                 assert.strictEqual(returned, thenable);
+                assert.deepStrictEqual(Object.keys(thenable), ["then"], "an own enumerable then stays the only enumerable key");
+            });
+        });
+    }
+});
+
+describe("span lifetime of a traced thenable", () => {
+    afterEach(async () => {
+        await shutdownProvider();
+    });
+
+    /** A thenable that settles after `ms` and says what its `then` was given. */
+    function slowThenable(ms: number, outcome: { value: string } | { error: Error }) {
+        return {
+            then(resolve: (value: string) => void, reject: (error: unknown) => void) {
+                setTimeout(() => ("error" in outcome ? reject(outcome.error) : resolve(outcome.value)), ms);
+            },
+        };
+    }
+
+    for (const [label, makeTraced] of [
+        ["traced()", <T extends (...args: never[]) => unknown>(fn: T) => traced(fn as never, { name: "work" }) as T],
+        ["traceAll()", <T extends (...args: never[]) => unknown>(fn: T) => (traceAll({ work: fn }, { prefix: "Obj" }) as { work: T }).work],
+    ] as const) {
+        describe(label, () => {
+            it("keeps the span open until the thenable settles, then ends it without a status", async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return slowThenable(30, { value: "done" });
+                });
+
+                let recordingAfterCall: boolean | undefined;
+                let value: unknown;
+                const observed = await observe(async () => {
+                    const pending = work();
+                    recordingAfterCall = span?.isRecording();
+                    value = await pending;
+                });
+
+                assert.strictEqual(value, "done");
+                assert.strictEqual(recordingAfterCall, true, "the span is still open when the function has returned");
+                assert.strictEqual(span?.isRecording(), false, "the span ends when the thenable resolves");
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("keeps the span open while the work of the thenable is running, until the moment it completes", async () => {
+                let span: Span | undefined;
+                const recordingWhileWorking: boolean[] = [];
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return {
+                        then(resolve: (value: string) => void) {
+                            const tick = setInterval(() => recordingWhileWorking.push(span?.isRecording() ?? false), 5);
+                            setTimeout(() => {
+                                clearInterval(tick);
+                                recordingWhileWorking.push(span?.isRecording() ?? false);
+                                resolve("done");
+                            }, 40);
+                        },
+                    };
+                });
+                await observe(async () => {
+                    await work();
+                });
+                assert.ok(recordingWhileWorking.length >= 3, "the work was sampled several times");
+                assert.ok(
+                    recordingWhileWorking.every((recording) => recording),
+                    "the span is open at every sample, including the last one before the work completes",
+                );
+                assert.strictEqual(span?.isRecording(), false);
+            });
+
+            it("ends the span with ERROR and the message when the thenable rejects, and the caller still gets the rejection", async () => {
+                const work = makeTraced(() => slowThenable(5, { error: new Error("thenable boom") }));
+
+                const observed = await observe(async () => {
+                    await assert.rejects(Promise.resolve(work()), { message: "thenable boom" });
+                });
+
+                const span = onlySpan(observed);
+                assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+                assert.strictEqual(span.status.message, "thenable boom");
+            });
+
+            it("ends the span with ERROR when the then method throws, and the throw reaches the caller", async () => {
+                const work = makeTraced(() => ({
+                    then() {
+                        throw new Error("then boom");
+                    },
+                }));
+
+                const observed = await observe(async () => {
+                    await assert.rejects(async () => await (work() as PromiseLike<unknown>), { message: "then boom" });
+                });
+
+                const span = onlySpan(observed);
+                assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+                assert.strictEqual(span.status.message, "then boom");
+            });
+
+            it("returns the same object, so the methods of a builder keep working", async () => {
+                class Builder {
+                    readonly filters: string[] = [];
+                    where(filter: string): this {
+                        this.filters.push(filter);
+                        return this;
+                    }
+                    then(resolve: (rows: string[]) => void): void {
+                        setTimeout(() => resolve([...this.filters]), 5);
+                    }
+                }
+                const builder = new Builder();
+                const work = makeTraced(() => builder);
+
+                let returned: unknown;
+                let rows: string[] = [];
+                const observed = await observe(async () => {
+                    returned = work();
+                    assert.strictEqual((returned as Builder).where("a"), builder, "a chained method still returns the builder");
+                    rows = await (returned as Builder).where("b");
+                });
+
+                assert.strictEqual(returned, builder);
+                assert.ok(returned instanceof Builder);
+                assert.deepStrictEqual(rows, ["a", "b"]);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("runs the work a lazy thenable starts in then under the span of the call", async () => {
+                let started = false;
+                let parentOfWork: string | undefined;
+                const work = makeTraced(() => ({
+                    then(resolve: (value: string) => void) {
+                        started = true;
+                        parentOfWork = childParentId();
+                        resolve("rows");
+                    },
+                }));
+
+                let startedBeforeAwait: boolean | undefined;
+                const observed = await observe(async () => {
+                    const lazy = work();
+                    startedBeforeAwait = started;
+                    await lazy;
+                });
+
+                assert.strictEqual(startedBeforeAwait, false, "the function returning a thenable does not run it");
+                const outer = observed.spans.find((s) => s.name !== "child");
+                assert.ok(outer);
+                assert.strictEqual(parentOfWork, outer.spanId);
+            });
+
+            it("ends the span once and serves every reader when then is called more than once", async () => {
+                let calls = 0;
+                const work = makeTraced(() => ({
+                    then(resolve: (value: number) => void) {
+                        calls++;
+                        const answer = calls;
+                        setTimeout(() => resolve(answer), 5);
+                    },
+                }));
+
+                let first: unknown;
+                let second: unknown;
+                const observed = await observe(async () => {
+                    const thenable = work() as PromiseLike<number>;
+                    first = await thenable;
+                    second = await thenable;
+                });
+
+                assert.strictEqual(first, 1);
+                assert.strictEqual(second, 2, "the second read runs the original then again");
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("passes a missing handler through, as the original then does", async () => {
+                const work = makeTraced(() => slowThenable(5, { error: new Error("passed on") }));
+
+                await observe(async () => {
+                    const thenable = work() as PromiseLike<string>;
+                    const settled = await new Promise<{ status: string; reason?: unknown }>((done) => {
+                        thenable.then(undefined, (reason) => done({ status: "rejected", reason }));
+                    });
+                    assert.strictEqual(settled.status, "rejected");
+                    assert.strictEqual((settled.reason as Error).message, "passed on");
+                });
+            });
+
+            it("leaves the span of a thenable nobody reads open, as for a generator nobody iterates", async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return slowThenable(1, { value: "never read" });
+                });
+
+                const observed = await observe(async () => {
+                    work();
+                    await delay(20);
+                });
+
+                assert.strictEqual(span?.isRecording(), true);
+                assert.strictEqual(observed.spans.length, 0, "an unfinished span is not exported");
+                span?.end();
+            });
+
+            it("returns a frozen thenable as it is and ends the span at once, because it accepts no own then", async () => {
+                const frozen = Object.freeze({ then: (resolve: (value: string) => void) => resolve("done") });
+                const work = makeTraced(() => frozen);
+
+                let returned: unknown;
+                const observed = await observe(async () => {
+                    returned = work();
+                    assert.strictEqual(await (returned as PromiseLike<string>), "done");
+                });
+
+                assert.strictEqual(returned, frozen);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+            });
+
+            it("treats an object whose then is not a function, or cannot be read, as a plain result", async () => {
+                const notCallable = { then: 5 };
+                const unreadable = Object.defineProperty({}, "then", {
+                    get() {
+                        throw new Error("no then for you");
+                    },
+                });
+                for (const value of [notCallable, unreadable]) {
+                    const work = makeTraced(() => value);
+                    let returned: unknown;
+                    const observed = await observe(async () => {
+                        returned = work();
+                    });
+                    assert.strictEqual(returned, value);
+                    assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
+                }
+            });
+
+            it("follows a native Promise of another realm like any other thenable", async () => {
+                let span: Span | undefined;
+                const work = makeTraced(() => {
+                    span = activeSpan();
+                    return runInNewContext("new Promise((resolve) => setTimeout(resolve, 30, 'foreign'))", { setTimeout });
+                });
+
+                let recordingAfterCall: boolean | undefined;
+                let value: unknown;
+                const observed = await observe(async () => {
+                    const pending = work();
+                    recordingAfterCall = span?.isRecording();
+                    value = await pending;
+                });
+
+                assert.strictEqual(value, "foreign");
+                assert.strictEqual(recordingAfterCall, true);
+                assert.strictEqual(span?.isRecording(), false);
+                assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.UNSET);
             });
         });
     }
