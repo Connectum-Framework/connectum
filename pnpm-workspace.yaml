@@ -47,7 +47,7 @@ catalog:
   husky: ^9.1.7
   tsup: ^8.5.1
   typescript: ^5.9.3
-  zod: ^4.4.3
+  zod: ^4.6.6
 overrides:
   # Pin a single @bufbuild/protobuf across the graph. Transitive consumers
   # (@bufbuild/protovalidate) otherwise peer-resolve to an older 2.12.x, which
