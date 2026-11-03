@@ -19,16 +19,8 @@ interface Harness {
     /** Arguments of every `console.error` call made while the batch ran. */
     readonly errorLogs: unknown[][];
     heartbeats: number;
-    /** Wall-clock time of every `heartbeat()` call, in call order. */
-    readonly heartbeatTimes: number[];
     /** Most `heartbeat()` calls that were awaiting their answer at the same moment. */
     maxConcurrentHeartbeats: number;
-    /**
-     * Resolves once `heartbeat()` has been called `count` times in total. Rejects after `timeoutMs`
-     * so a timer that never fires fails the test instead of hanging it; the bound is far above the
-     * nominal time because it only has to separate "slow host" from "no heartbeat at all".
-     */
-    whenHeartbeats: (count: number, timeoutMs?: number) => Promise<void>;
     run: () => Promise<void>;
 }
 
@@ -61,32 +53,13 @@ function harness(options: {
     let isRunningCalls = 0;
     let concurrentHeartbeats = 0;
     const errorLogs: unknown[][] = [];
-    const heartbeatWaiters: { count: number; resolve: () => void }[] = [];
     const state: Harness = {
         commits,
         resolved,
         paused,
         errorLogs,
         heartbeats: 0,
-        heartbeatTimes: [],
         maxConcurrentHeartbeats: 0,
-        whenHeartbeats: (count, timeoutMs = 10_000) =>
-            new Promise<void>((resolve, reject) => {
-                if (state.heartbeats >= count) {
-                    resolve();
-                    return;
-                }
-                const timer = setTimeout(() => {
-                    reject(new Error(`expected ${count} heartbeats within ${timeoutMs} ms, saw ${state.heartbeats}`));
-                }, timeoutMs);
-                heartbeatWaiters.push({
-                    count,
-                    resolve: () => {
-                        clearTimeout(timer);
-                        resolve();
-                    },
-                });
-            }),
         run: async () => {
             const consume = createBatchConsumer({
                 handler: options.handler,
@@ -127,12 +100,7 @@ function harness(options: {
                 },
                 heartbeat: async () => {
                     state.heartbeats++;
-                    state.heartbeatTimes.push(Date.now());
                     const call = state.heartbeats;
-                    for (const waiter of heartbeatWaiters.filter((w) => w.count <= call)) {
-                        heartbeatWaiters.splice(heartbeatWaiters.indexOf(waiter), 1);
-                        waiter.resolve();
-                    }
                     concurrentHeartbeats++;
                     state.maxConcurrentHeartbeats = Math.max(state.maxConcurrentHeartbeats, concurrentHeartbeats);
                     try {
@@ -564,34 +532,79 @@ describe("createBatchConsumer heartbeat while a handler runs", () => {
     /** Heartbeat interval of 40 ms: the timer ticks every 20 ms. */
     const interval = 40;
 
-    it("heartbeats repeatedly while the handler is busy", async () => {
-        let atAck = 0;
-        let waitFailure: unknown;
-        const h = harness({
-            messages: [{ offset: "10", value: "a" }],
-            heartbeatInterval: interval,
-            handler: async (_event, ack) => {
-                // The handler stays busy until the timer has beaten five times: the count is
-                // what is asserted, not how many ticks fit into a wall-clock window, which a
-                // loaded host shrinks.
-                try {
-                    await h.whenHeartbeats(5);
-                } catch (error) {
-                    waitFailure = error;
-                }
-                atAck = h.heartbeats;
-                await ack();
-            },
+    /**
+     * Replaces the global interval timer for the duration of `body` with a recorder, so a test
+     * decides when a tick happens instead of waiting for a real clock. Wall-clock assertions are
+     * unreliable on a loaded host: the event loop stamps timers from a cached time, so after a stall
+     * several ticks fire close together and a "five beats span at least N ms" check fails at random.
+     * `node:test` mock timers are not available on every engine the suite runs on, so the globals
+     * are swapped by hand and restored in `finally`.
+     */
+    async function withManualInterval<T>(body: (timers: { readonly periods: number[]; readonly cleared: number[]; fire: (handle: number) => void }) => Promise<T>): Promise<T> {
+        const originalSet = globalThis.setInterval;
+        const originalClear = globalThis.clearInterval;
+        const callbacks: (() => void)[] = [];
+        const periods: number[] = [];
+        const cleared: number[] = [];
+        globalThis.setInterval = ((callback: () => void, ms?: number) => {
+            callbacks.push(callback);
+            periods.push(ms ?? 0);
+            return callbacks.length - 1;
+        }) as unknown as typeof setInterval;
+        globalThis.clearInterval = ((handle: number) => {
+            cleared.push(handle);
+        }) as unknown as typeof clearInterval;
+        try {
+            return await body({
+                periods,
+                cleared,
+                fire: (handle) => {
+                    // A cleared interval never fires again, exactly like a real one.
+                    if (!cleared.includes(handle)) callbacks[handle]?.();
+                },
+            });
+        } finally {
+            globalThis.setInterval = originalSet;
+            globalThis.clearInterval = originalClear;
+        }
+    }
+
+    it("heartbeats once per tick, with a tick of half the interval, while the handler is busy", async () => {
+        await withManualInterval(async (timers) => {
+            let release: () => void = () => undefined;
+            const gate = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const h = harness({
+                messages: [{ offset: "10", value: "a" }],
+                heartbeatInterval: interval,
+                handler: async (_event, ack) => {
+                    await gate;
+                    await ack();
+                },
+            });
+            const running = h.run();
+            await sleep(0);
+            // The adapter checks twice per heartbeat interval (the Kafka adapter guide: "checking
+            // twice per interval"): a faster tick would beat more often than the broker's cadence
+            // allows, a slower one would risk the session timeout.
+            assert.deepEqual(timers.periods, [interval / 2], "one timer for the one message, ticking twice per interval");
+            assert.equal(h.heartbeats, 0, "nothing beats before the first tick");
+
+            for (let tick = 1; tick <= 5; tick++) {
+                timers.fire(0);
+                await sleep(0);
+                assert.equal(h.heartbeats, tick, `tick ${tick} sends exactly one heartbeat while the handler is busy`);
+            }
+
+            release();
+            await running;
+            assert.deepEqual(timers.cleared, [0], "the timer is cleared when the handler's turn ends");
+            const afterTurn = h.heartbeats;
+            timers.fire(0);
+            await sleep(0);
+            assert.equal(h.heartbeats, afterTurn, "a tick after the turn ended sends nothing");
         });
-        await h.run();
-        assert.equal(waitFailure, undefined, "the timer kept beating while the handler was busy");
-        assert.ok(atAck >= 5, `expected at least 5 heartbeats during one handler turn, saw ${atAck}`);
-        // The adapter checks twice per heartbeat interval (the Kafka adapter guide: "checking twice per
-        // interval"), so with an interval of 40 ms the first five beats are at least four ticks of 20 ms
-        // apart. A timer ticking faster than that sends more heartbeats than the broker's cadence
-        // allows; a slow host can only stretch the gap, never shrink it.
-        const [first, , , , fifth] = h.heartbeatTimes as [number, number, number, number, number];
-        assert.ok(fifth - first >= 70, `five beats must span at least four ticks of ${interval / 2} ms, spanned ${fifth - first} ms`);
     });
 
     it("does not heartbeat from the timer when the handler is faster than a tick", async () => {
