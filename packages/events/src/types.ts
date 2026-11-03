@@ -4,7 +4,7 @@
  * @module types
  */
 
-import type { DescMessage, DescMethod, DescService, MessageShape } from "@bufbuild/protobuf";
+import type { DescMessage, DescMethod, DescService, MessageInitShape, MessageShape } from "@bufbuild/protobuf";
 
 // =============================================================================
 // ADAPTER INTERFACE
@@ -196,8 +196,12 @@ export interface EventContext {
      *
      * Handlers that publish through an injected bus instead of `ctx` keep being refused during
      * `stop()`; rewrite them to use `ctx.publish` to relay during shutdown.
+     *
+     * `data` is `MessageInitShape` of the schema: a plain object (nested messages and oneofs
+     * included) or an already built message, which is the same thing the runtime builds with
+     * `create(schema, data)` before serializing.
      */
-    publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, options?: PublishOptions): Promise<void>;
+    publish<Desc extends DescMessage>(schema: Desc, data: MessageInitShape<Desc>, options?: PublishOptions): Promise<void>;
 }
 
 /**
@@ -556,6 +560,9 @@ export interface EventBus {
     start(options?: { signal?: AbortSignal }): Promise<void>;
     /** Stop the event bus: drain subscriptions, disconnect adapter */
     stop(): Promise<void>;
-    /** Publish a typed event */
-    publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, options?: PublishOptions): Promise<void>;
+    /**
+     * Publish a typed event. `data` is `MessageInitShape` of the schema: a plain object
+     * (nested messages and oneofs included) or an already built message.
+     */
+    publish<Desc extends DescMessage>(schema: Desc, data: MessageInitShape<Desc>, options?: PublishOptions): Promise<void>;
 }
