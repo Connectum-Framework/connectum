@@ -6,7 +6,7 @@
  */
 
 import { constants as osConstants } from "node:os";
-import type { CreateServerOptions } from "./types.ts";
+import type { CreateServerOptions, ServerLogger } from "./types.ts";
 
 /**
  * Largest `readMaxBytes` Connect accepts (its internal `maxReadMaxBytes`,
@@ -165,4 +165,29 @@ export function validateListenOptions(options: Pick<CreateServerOptions, "port" 
             throw new RangeError('createServer: host must be a non-empty string (use "0.0.0.0" or "::" to listen on all interfaces)');
         }
     }
+}
+
+/**
+ * Tell the operator once that no per-message read limit is configured.
+ *
+ * Without `readMaxBytes` Connect accepts messages up to {@link MAX_READ_MAX_BYTES}
+ * bytes (about 4 GiB), and an authentication interceptor only runs after the
+ * message has been received and parsed, so one oversized request from an
+ * unauthenticated caller can exhaust memory. The default itself is deliberately
+ * left unchanged: lowering it would silently break services that accept large
+ * messages. The warning goes through the server's logger, so it is silenced the
+ * same way as every other lifecycle message: set the option, or give a logger
+ * whose `warn` drops it.
+ *
+ * @internal
+ */
+export function warnIfReadLimitUnset(options: Pick<CreateServerOptions, "readMaxBytes">, logger: ServerLogger): void {
+    if (options.readMaxBytes !== undefined) {
+        return;
+    }
+    logger.warn(
+        `createServer: readMaxBytes is not set, so incoming messages are not limited (the default is the transport's cap of ${MAX_READ_MAX_BYTES} bytes, about 4 GiB). ` +
+            "An authentication interceptor runs only after a message has been received, so one oversized request can exhaust memory. " +
+            "Set readMaxBytes to the largest message your services accept. See https://connectum.dev/en/guide/security/request-admission",
+    );
 }

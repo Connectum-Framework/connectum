@@ -22,6 +22,7 @@ import { type CreateServerOptions, createLocalTransport, createServer, type Prot
 import { DataPointType } from "@opentelemetry/sdk-metrics";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 import { installTelemetry, type TelemetryOptions, validateTelemetryOptions } from "./telemetry.ts";
+import { TRANSPORT_READ_LIMIT } from "./unboundedReadLimit.ts";
 
 /**
  * Identifies which transport a scenario invocation is running against.
@@ -326,14 +327,14 @@ interface RunHarness {
 }
 
 /**
- * The admission options both harness servers receive, containing only the
- * keys the scenario set — so a scenario without them builds exactly the
- * servers it built before these options existed.
+ * The admission options both harness servers receive: the scenario's gate when
+ * it set one, and its read limit, which defaults to the transport's own cap
+ * (see {@link TRANSPORT_READ_LIMIT}) — the limit a server without the option has.
  */
 function admissionOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
     return {
         ...(opts.requestGate !== undefined ? { requestGate: opts.requestGate } : {}),
-        ...(opts.readMaxBytes !== undefined ? { readMaxBytes: opts.readMaxBytes } : {}),
+        readMaxBytes: opts.readMaxBytes ?? TRANSPORT_READ_LIMIT,
     };
 }
 

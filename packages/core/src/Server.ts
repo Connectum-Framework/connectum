@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { validateAdmissionOptions, validateListenOptions, validateShutdownOptions, validateShutdownSignals } from "./admission.ts";
+import { validateAdmissionOptions, validateListenOptions, validateShutdownOptions, validateShutdownSignals, warnIfReadLimitUnset } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
@@ -127,6 +127,9 @@ class ServerImpl extends EventEmitter implements Server {
             resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),
         };
         this._dispatcher = new CatalogDispatcher(host);
+
+        // Last, so a construction that throws on invalid options has not warned.
+        warnIfReadLimitUnset(options, this._logger);
     }
 
     // =========================================================================
