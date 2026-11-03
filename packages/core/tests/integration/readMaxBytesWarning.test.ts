@@ -54,7 +54,7 @@ describe("createServer() without readMaxBytes", () => {
         assert.strictEqual(only?.level, "warn");
         assert.match(only?.message ?? "", /^createServer: readMaxBytes is not set, so incoming messages are not limited/);
         assert.ok(only?.message.includes("4294967295"), "the transport cap is named");
-        assert.ok(only?.message.includes("https://connectum.dev/en/guide/security/request-admission"), "the guide is named");
+        assert.match(only?.message ?? "", /https:\/\/connectum\.dev\/en\/guide\/security\/request-admission/, "the guide is named");
     });
 
     it("warns once per server, not once per start or stop", async () => {
