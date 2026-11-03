@@ -22,7 +22,7 @@ import { assertCallTimeout, assertResolvedTransport, InvalidResolverResultError,
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
-import { createInputQueue, singleInput } from "./streamBridge.ts";
+import { createInputQueue, type InputQueue, singleInput } from "./streamBridge.ts";
 
 /**
  * The server-side surface the dispatcher reads at call time. Implemented by
@@ -252,6 +252,32 @@ export function openServerStream(resolve: ResolveStream, descMethod: DescMethodS
 }
 
 /**
+ * Push side of a client-streaming or bidi handle: `send()` enqueues, `close()`
+ * ends the send half. A `send()` after `close()` cannot reach the target, so it
+ * throws instead of discarding the message without a trace.
+ *
+ * @throws ConnectError with `Code.FailedPrecondition` from `send()` once `close()` has been called
+ */
+function createSendHalf(queue: InputQueue<MessageInitShape<DescMessage>>, descMethod: DescMethodStreaming<DescMessage, DescMessage>, kind: "client-streaming" | "bidi-streaming") {
+    let closed = false;
+    return {
+        send(request: unknown): void {
+            if (closed) {
+                throw new ConnectError(
+                    `ctx.stream: send() after close() on ${kind} "${descMethod.name}": the send half is already closed, so the message would be lost.`,
+                    Code.FailedPrecondition,
+                );
+            }
+            queue.push(request as MessageInitShape<DescMessage>);
+        },
+        close(): void {
+            closed = true;
+            queue.close();
+        },
+    };
+}
+
+/**
  * The shared client-streaming tail: push N requests, `close()` resolves the
  * single response. Resolution is lazy — a resolver/transport failure surfaces
  * on `await close()` (the response IIFE), never on factory invocation.
@@ -294,10 +320,11 @@ export function openClientStream(resolve: ResolveStream, descMethod: DescMethodS
     })();
     // Avoid an unhandled rejection before the caller awaits close().
     responsePromise.catch(() => {});
+    const sendHalf = createSendHalf(queue, descMethod, "client-streaming");
     return {
-        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+        send: (request) => sendHalf.send(request),
         close: () => {
-            queue.close();
+            sendHalf.close();
             return responsePromise;
         },
     };
@@ -322,9 +349,10 @@ export function openBidiStream(resolve: ResolveStream, descMethod: DescMethodStr
             throw sanitizeCallError(error);
         }
     }
+    const sendHalf = createSendHalf(queue, descMethod, "bidi-streaming");
     return {
-        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
-        close: () => queue.close(),
+        send: (request) => sendHalf.send(request),
+        close: () => sendHalf.close(),
         responses: responses(),
     };
 }
