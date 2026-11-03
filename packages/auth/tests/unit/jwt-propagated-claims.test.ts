@@ -36,8 +36,9 @@ function claimsOf(header: string | null): Record<string, unknown> | null {
 
 describe("createJwtAuthInterceptor: propagatedClaims", () => {
     it("writes only the listed claims to x-auth-claims", async () => {
-        assert.deepStrictEqual(claimsOf(await propagatedHeader({ propagatedClaims: ["org_id"] })), { org_id: "o1" });
-        assert.deepStrictEqual(claimsOf(await propagatedHeader({ propagatedClaims: ["org_id", "email"] })), { email: "a@example.com", org_id: "o1" });
+        // The raw header is compared: sub, exp and iat must not leak through a filter that does not list them.
+        assert.strictEqual(await propagatedHeader({ propagatedClaims: ["org_id"] }), '{"org_id":"o1"}');
+        assert.deepStrictEqual(JSON.parse((await propagatedHeader({ propagatedClaims: ["org_id", "email"] })) as string), { email: "a@example.com", org_id: "o1" });
     });
 
     it("writes every claim when the option is not set", async () => {

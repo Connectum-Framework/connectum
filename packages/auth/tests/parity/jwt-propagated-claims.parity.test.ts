@@ -20,11 +20,12 @@ import { createTestJwt, TEST_JWT_SECRET } from "../../src/testing/index.ts";
 import { AuthzService, EchoRequestSchema, EchoResponseSchema } from "../fixtures/authz/pb/authz/v1/authz_pb.ts";
 
 /** Service whose handler reports the claims the next hop would read from the propagated headers. */
-function routes() {
+function routes(dropTimestamps = false) {
     return defineService(AuthzService, {
         secureEcho: (_req, ctx) => {
-            // exp and iat change with every token; the filter is what the test is about.
-            const { exp: _exp, iat: _iat, ...propagated } = parseAuthHeaders(ctx.requestHeader)?.claims ?? {};
+            // exp and iat change with every token; they are dropped only where every claim is propagated.
+            const { exp: _exp, iat: _iat, ...withoutTimestamps } = parseAuthHeaders(ctx.requestHeader)?.claims ?? {};
+            const propagated = dropTimestamps ? withoutTimestamps : (parseAuthHeaders(ctx.requestHeader)?.claims ?? {});
             return create(EchoResponseSchema, { message: JSON.stringify({ propagated }) });
         },
         publicEcho: () => create(EchoResponseSchema, { message: "public" }),
@@ -60,7 +61,7 @@ transportParityTest("parity: only the claims listed in propagatedClaims reach th
 });
 
 transportParityTest("parity: every claim reaches the next hop when propagatedClaims is not set", {
-    services: [routes()],
+    services: [routes(true)],
     interceptors: chain(undefined),
     scenario: async ({ transport }) => await call(transport),
     compare: expectPropagated({ sub: "user-1", email: "a@example.com", phone: "+10000000", org_id: "o1" }),
