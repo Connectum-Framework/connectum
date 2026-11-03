@@ -53,6 +53,11 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
   registered services and components.
   Use a dedicated manager when separate servers or components need independent
   status.
+- Servers that omit `manager` share the singleton, and each server's start
+  keeps only that server's services in it. Starting a second server in the
+  same process removes the first server's services: the first keeps running
+  but answers `NOT_FOUND` for its own services and `NOT_SERVING` overall. Pass
+  `manager: createHealthcheckManager()` to every server of such a process.
 - `update()`, `register()` and `set()` accept only the four `ServingStatus`
   values (0 to 3) and string names. Anything else throws `TypeError` or
   `RangeError` and leaves the registry unchanged.
