@@ -14,6 +14,17 @@ import type { SessionAuthInterceptorOptions } from "../../src/types.ts";
 const identity = { subject: "u", roles: [], scopes: [], claims: {}, type: "session" };
 const complete = { verifySession: async () => ({}), mapSession: async () => identity };
 
+/** Short readable name of a non-function value, used only in test titles. */
+function describeValue(value: unknown): string {
+    if (typeof value === "string") {
+        return `the string '${value}'`;
+    }
+    if (typeof value === "object" && value !== null) {
+        return "an object";
+    }
+    return String(value);
+}
+
 function create(overrides: Record<string, unknown>) {
     return createSessionAuthInterceptor({ ...complete, ...overrides } as unknown as SessionAuthInterceptorOptions);
 }
@@ -27,17 +38,17 @@ describe("createSessionAuthInterceptor: required options", () => {
 
     for (const option of ["verifySession", "mapSession"]) {
         for (const value of [undefined, null, "fn", {}, 5]) {
-            it(`refuses ${option} that is not a function (${JSON.stringify(value) ?? "undefined"})`, () => {
+            it(`refuses ${option} that is not a function (${describeValue(value)})`, () => {
                 assert.throws(
                     () => create({ [option]: value }),
-                    (err: unknown) => err instanceof TypeError && new RegExp(`createSessionAuthInterceptor ${option} must be a function; got `).test(err.message),
+                    (err: unknown) => err instanceof TypeError && err.message.startsWith(`@connectum/auth: createSessionAuthInterceptor ${option} must be a function; got `),
                 );
             });
         }
     }
 
     for (const value of [null, "authorization", {}, 5]) {
-        it(`refuses an extractToken that is not a function (${JSON.stringify(value)})`, () => {
+        it(`refuses an extractToken that is not a function (${describeValue(value)})`, () => {
             assert.throws(
                 () => create({ extractToken: value }),
                 (err: unknown) => err instanceof TypeError && /createSessionAuthInterceptor extractToken must be a function when set; got /.test(err.message),

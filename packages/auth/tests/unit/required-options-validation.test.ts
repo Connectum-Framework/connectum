@@ -16,6 +16,17 @@ import type { GatewayAuthInterceptorOptions } from "../../src/types.ts";
 
 const SECRET = "very-secret-gateway-value";
 
+/** Short readable name of a non-function value, used only in test titles. */
+function describeValue(value: unknown): string {
+    if (typeof value === "string") {
+        return `the string '${value}'`;
+    }
+    if (typeof value === "object" && value !== null) {
+        return "an object";
+    }
+    return String(value);
+}
+
 function gateway(overrides: Record<string, unknown>) {
     return createGatewayAuthInterceptor({ headerMapping: { subject: "x-user-id" }, trustSource: { header: "x-gateway-secret", expectedValues: [SECRET] }, ...overrides } as unknown as GatewayAuthInterceptorOptions);
 }
@@ -106,7 +117,7 @@ describe("createInternalAuthInterceptor: required options", () => {
 
 describe("createAuthInterceptor: required options", () => {
     for (const verifyCredentials of [undefined, null, "verify", {}]) {
-        it(`refuses verifyCredentials that is not a function (${JSON.stringify(verifyCredentials)})`, () => {
+        it(`refuses verifyCredentials that is not a function (${describeValue(verifyCredentials)})`, () => {
             assert.throws(
                 () => createAuthInterceptor({ verifyCredentials } as never),
                 (err: unknown) => err instanceof TypeError && /createAuthInterceptor verifyCredentials must be a function/.test(err.message),
@@ -115,7 +126,7 @@ describe("createAuthInterceptor: required options", () => {
     }
 
     for (const extractCredentials of [null, "authorization", {}]) {
-        it(`refuses an extractCredentials that is not a function (${JSON.stringify(extractCredentials)})`, () => {
+        it(`refuses an extractCredentials that is not a function (${describeValue(extractCredentials)})`, () => {
             assert.throws(
                 () => createAuthInterceptor({ verifyCredentials: async () => ({ subject: "u", roles: [], scopes: [], claims: {}, type: "t" }), extractCredentials } as never),
                 (err: unknown) => err instanceof TypeError && /createAuthInterceptor extractCredentials must be a function/.test(err.message),
