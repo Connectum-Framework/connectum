@@ -8,7 +8,9 @@
  */
 
 import assert from "node:assert";
+import { spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 import { createServer, defineCatalog, defineService } from "@connectum/core";
@@ -75,5 +77,16 @@ describe("test servers and the unset read limit warning", () => {
     it("control: a bare createServer() in the same process does write it, so the checks above can fail", () => {
         createServer({ services: [echoRoutes()], port: 0 });
         assert.strictEqual(readLimitWarnings().length, 1);
+    });
+});
+
+describe("transportParityTest with an invalid read limit", () => {
+    it("does not replace null with the default limit: the server's own validation still fails the test", () => {
+        const fixture = fileURLToPath(new URL("../fixtures/parity-null-read-limit.fixture.ts", import.meta.url));
+        const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+        const result = spawnSync("node", ["--experimental-strip-types", "--test", fixture], { encoding: "utf8", timeout: 60_000, env });
+        const output = `${result.stdout}\n${result.stderr}`;
+        assert.notStrictEqual(result.status, 0, `the child test run must fail, output:\n${output}`);
+        assert.match(output, /readMaxBytes must be a number of bytes, got object/);
     });
 });

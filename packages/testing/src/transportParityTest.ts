@@ -334,7 +334,7 @@ interface RunHarness {
 function admissionOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
     return {
         ...(opts.requestGate !== undefined ? { requestGate: opts.requestGate } : {}),
-        readMaxBytes: opts.readMaxBytes ?? TRANSPORT_READ_LIMIT,
+        readMaxBytes: opts.readMaxBytes === undefined ? TRANSPORT_READ_LIMIT : opts.readMaxBytes,
     };
 }
 
