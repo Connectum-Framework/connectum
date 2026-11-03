@@ -10,6 +10,7 @@
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createServer } from "@connectum/core";
 import type { CreateTestServerOptions, TestServer } from "./types.ts";
+import { TRANSPORT_READ_LIMIT } from "./unboundedReadLimit.ts";
 import { validateTestServerOptions } from "./validateTestServerOptions.ts";
 
 /** Loopback only: the server has no authentication and its client runs in the same process. */
@@ -61,6 +62,7 @@ export async function createTestServer(options: CreateTestServerOptions): Promis
         interceptors: [...(options.interceptors ?? [])],
         ...(options.shutdown?.timeout !== undefined ? { shutdown: { timeout: options.shutdown.timeout } } : {}),
         allowHTTP1: false,
+        readMaxBytes: TRANSPORT_READ_LIMIT,
     });
 
     await server.start();

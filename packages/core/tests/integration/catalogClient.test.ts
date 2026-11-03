@@ -207,6 +207,25 @@ describe("createCatalogClient — streaming (server-streaming) is a real dispatc
         assert.deepStrictEqual(received, ["BS:one", "BS:two"], "bidi must echo every pushed request back");
     });
 
+    it("refuses a bidi send() after close() and still delivers what was sent before", async () => {
+        const client = createCatalogClient({
+            catalog,
+            resolver: singleTransportResolver(makeStreamingRemote("BS")),
+        });
+        const handle = client.stream("streaming.v1.StreamingService/Bidi")();
+        handle.send(create(ItemSchema, { value: "one", sequence: 0 }));
+        handle.close();
+        assert.throws(
+            () => handle.send(create(ItemSchema, { value: "late", sequence: 1 })),
+            (err: unknown) => err instanceof ConnectError && err.code === Code.FailedPrecondition,
+        );
+        const received: string[] = [];
+        for await (const item of handle.responses) {
+            received.push(item.value);
+        }
+        assert.deepStrictEqual(received, ["BS:one"]);
+    });
+
     it("resolves the transport LAZILY: factory invocation does not throw on resolver-null; iteration does", async () => {
         // Parity with ctx.stream's documented timing: a resolver/transport
         // failure must surface on iteration/close(), never on factory call.

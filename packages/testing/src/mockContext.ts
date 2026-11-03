@@ -16,6 +16,7 @@ import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { createHandlerContext, type HandlerContext, type Interceptor } from "@connectrpc/connect";
 import { type Context, createServer, type ServiceCatalog } from "@connectum/core";
 import { type MockService, mockResolver } from "./mockResolver.ts";
+import { TRANSPORT_READ_LIMIT } from "./unboundedReadLimit.ts";
 
 /** Options for {@link createMockContext}. */
 export interface CreateMockContextOptions {
@@ -110,6 +111,7 @@ export function createMockContext(options: CreateMockContextOptions): Context {
         services: [],
         catalog: options.catalog,
         remoteResolver: mockResolver(options.mocks),
+        readMaxBytes: TRANSPORT_READ_LIMIT,
         ...(options.outgoingInterceptors ? { outgoingInterceptors: options.outgoingInterceptors } : {}),
         ...(options.propagateHeaders ? { propagateHeaders: options.propagateHeaders } : {}),
     });
