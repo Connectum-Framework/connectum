@@ -81,6 +81,24 @@ describe("createJwtAuthInterceptor: propagatedClaims", () => {
         });
     }
 
+    it("refuses a sparse array in all three factories: an empty slot is not a claim name", () => {
+        // `every` skips holes, so [ , "org_id"] used to pass the check although its first slot names nothing.
+        // biome-ignore lint/suspicious/noSparseArray: the sparse array is the input under test
+        const sparse = [, "org_id"];
+        const creators: Array<[string, () => unknown]> = [
+            ["createJwtAuthInterceptor", () => createJwtAuthInterceptor({ secret: TEST_JWT_SECRET, propagatedClaims: sparse as never })],
+            ["createAuthInterceptor", () => createAuthInterceptor({ verifyCredentials: async () => ({}) as never, propagatedClaims: sparse as never })],
+            ["createSessionAuthInterceptor", () => createSessionAuthInterceptor({ verifySession: async () => ({}), mapSession: () => ({}) as never, propagatedClaims: sparse as never })],
+        ];
+        for (const [factory, create] of creators) {
+            assert.throws(
+                create,
+                (err: unknown) => err instanceof TypeError && err.message.includes(`${factory} propagatedClaims must be an array of non-empty claim names`),
+                factory,
+            );
+        }
+    });
+
     it("accepts an omitted option and an explicit undefined", () => {
         createJwtAuthInterceptor({ secret: TEST_JWT_SECRET });
         createJwtAuthInterceptor({ secret: TEST_JWT_SECRET, propagatedClaims: undefined });

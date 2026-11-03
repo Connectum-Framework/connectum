@@ -294,7 +294,7 @@ export function assertPropagatedClaims(factory: string, value: unknown): void {
     if (value === undefined) {
         return;
     }
-    if (!Array.isArray(value) || !value.every((name) => typeof name === "string" && name.length > 0)) {
+    if (!Array.isArray(value) || ![...value].every((name) => typeof name === "string" && name.length > 0)) {
         throw new TypeError(
             `@connectum/auth: ${factory} propagatedClaims must be an array of non-empty claim names (omit the option to propagate every claim); got ${describeValue(value)}`,
         );

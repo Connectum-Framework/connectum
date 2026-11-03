@@ -196,7 +196,8 @@ export interface JwksOptions {
     /**
      * Time after a successful fetch during which a token signed with a key that is not in the cached
      * key set does NOT trigger another fetch. Such a token ends with `Unauthenticated` for this long
-     * after a key rotation, and a retired key keeps verifying from the cache. A finite number, 0 or more;
+     * after a key rotation, and a retired key can keep verifying from the cache until the next fetch. An upper
+     * bound, not a fixed period: a cache older than `cacheMaxAge` is fetched again earlier. A finite number, 0 or more;
      * `0` fetches again on every unknown key (a stream of tokens with unknown keys then turns into a
      * stream of requests to the identity provider).
      * @default 30000
@@ -204,7 +205,8 @@ export interface JwksOptions {
     readonly cooldownDuration?: number | undefined;
     /**
      * Longest time the cached key set is used before it is fetched again. A key removed from the
-     * identity provider keeps verifying until the cache expires. A number, 0 or more; `0` fetches the
+     * identity provider can keep verifying until the next fetch, at the latest until the cache expires (a
+     * fetch caused by an unknown key after the cooldown replaces the cache earlier). A number, 0 or more; `0` fetches the
      * key set for every request (the cache never serves), and `Infinity` never expires the cache (a
      * missing key still triggers a fetch once the cooldown has passed).
      * @default 600000

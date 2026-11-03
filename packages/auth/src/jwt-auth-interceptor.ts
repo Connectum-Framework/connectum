@@ -154,9 +154,11 @@ function throwMissingSubject(): never {
  * error or garbage, or does not answer within `jwks.timeoutDuration`) ends the call with
  * `Unauthenticated: Authentication failed`, the same as a bad token; nothing is logged. A token signed
  * with a key that is not in the cached key set triggers a refetch only once `jwks.cooldownDuration`
- * (30 s by default) has passed since the last successful fetch, so after a key rotation such a token is
- * rejected for up to that long, and a retired key keeps verifying until the cache (`jwks.cacheMaxAge`,
- * 10 min by default) expires.
+ * (30 s by default) has passed since the last successful fetch, and a cached key set older than
+ * `jwks.cacheMaxAge` (10 min by default) is fetched again on the next call, which can come before the
+ * cooldown ends. After a key rotation such a token is therefore rejected for up to the cooldown, and a
+ * retired key keeps verifying only until the next fetch (at the latest when the cache expires); both
+ * are upper bounds, not fixed periods.
  *
  * @param options - JWT authentication options
  * @returns ConnectRPC interceptor
