@@ -54,6 +54,7 @@ function createMockShutdownManager(): ShutdownManager & { executeAll: ReturnType
     return {
         executeAll: mock.fn(async () => {}),
         addHook: mock.fn(),
+        runningHooks: mock.fn(() => []),
     } as unknown as ShutdownManager & { executeAll: ReturnType<typeof mock.fn> };
 }
 
@@ -368,7 +369,8 @@ describe("performGracefulShutdown()", () => {
             const cleared: unknown[] = [];
             globalThis.setTimeout = ((handler: () => void, delay?: number, ...args: unknown[]) => {
                 const handle = originalSetTimeout(handler, delay, ...args);
-                if (delay === delayMs) armed.push(handle);
+                // Both the graceful-phase timer (exactly delayMs) and the hook-hang diagnostic (what is left of it) count.
+                if (delay !== undefined && delay <= delayMs && delay > delayMs - 100) armed.push(handle);
                 return handle;
             }) as typeof globalThis.setTimeout;
             globalThis.clearTimeout = ((handle?: Parameters<typeof originalClearTimeout>[0]) => {
@@ -392,8 +394,8 @@ describe("performGracefulShutdown()", () => {
 
             const { armed, cleared } = await trackTimer(7777, () => performGracefulShutdown(transport, shutdownManager, { timeout: 7777, forceCloseOnTimeout: true }));
 
-            assert.strictEqual(armed.length, 1, "exactly one graceful-phase timer is armed");
-            assert.ok(cleared.includes(armed[0]), "the armed timer must be the one that is cancelled");
+            assert.strictEqual(armed.length, 2, "the graceful-phase timer and the hook-hang diagnostic are armed");
+            assert.ok(armed.every((handle) => cleared.includes(handle)), "every armed timer must be cancelled");
         });
 
         it("should cancel the timeout timer it armed when the timeout fires", async () => {
@@ -402,8 +404,8 @@ describe("performGracefulShutdown()", () => {
 
             const { armed, cleared } = await trackTimer(50, () => performGracefulShutdown(transport, shutdownManager, { timeout: 50, forceCloseOnTimeout: true }));
 
-            assert.strictEqual(armed.length, 1);
-            assert.ok(cleared.includes(armed[0]), "the armed timer must be cancelled even after it fired");
+            assert.strictEqual(armed.length, 2);
+            assert.ok(armed.every((handle) => cleared.includes(handle)), "every armed timer must be cancelled, even after it fired");
         });
 
         it("should cancel the timeout timer it armed when transport.close() rejects", async () => {
@@ -417,8 +419,8 @@ describe("performGracefulShutdown()", () => {
                 ),
             );
 
-            assert.strictEqual(armed.length, 1);
-            assert.ok(cleared.includes(armed[0]), "a failed close must not leave the graceful-phase timer armed");
+            assert.strictEqual(armed.length, 2);
+            assert.ok(armed.every((handle) => cleared.includes(handle)), "a failed close must not leave a timer armed");
         });
     });
 
@@ -558,5 +560,82 @@ describe("performGracefulShutdown()", () => {
             assert.strictEqual(shutdownManager.executeAll.mock.calls.length, 1);
             assert.strictEqual(mockCallCount(transport.dispose), 1);
         });
+    });
+});
+
+// ---------------------------------------------------------------------
+// A hook that outlives the timeout is reported, not enforced
+// ---------------------------------------------------------------------
+
+describe("shutdown hooks that outlive shutdown.timeout", () => {
+    function capturingLogger(): { warnings: string[]; logger: NonNullable<GracefulShutdownOptions["logger"]> } {
+        const warnings: string[] = [];
+        return { warnings, logger: { info() {}, warn: (message) => warnings.push(message), error() {} } };
+    }
+    const sleep = (ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms));
+
+    it("warns once, naming the hook that is still running and the elapsed time, and still waits for it", async () => {
+        const { warnings, logger } = capturingLogger();
+        const manager = new ShutdownManager(logger);
+        let release: () => void = () => {};
+        manager.addHook("broker", () => new Promise<void>((resolve) => (release = resolve)));
+        manager.addHook("cache", ["broker"], async () => {});
+        manager.addHook("fast", async () => {});
+
+        let settled = false;
+        const shutdown = performGracefulShutdown(createMockTransport(), manager, { timeout: 80, forceCloseOnTimeout: true, logger }).then(() => {
+            settled = true;
+        });
+        await sleep(300);
+
+        assert.strictEqual(settled, false, "the timeout must not bound the hooks: stop() keeps waiting");
+        assert.strictEqual(warnings.length, 1, `exactly one warning, got ${JSON.stringify(warnings)}`);
+        const [warning] = warnings;
+        assert.match(warning ?? "", /\(80ms\) has elapsed/);
+        assert.match(warning ?? "", /still running after \d+ms: broker\./, "only the stuck hook is named, not the finished one or the one queued behind it");
+        assert.doesNotMatch(warning ?? "", /cache|fast/);
+
+        release();
+        await shutdown;
+        assert.strictEqual(settled, true);
+        assert.strictEqual(warnings.length, 1, "no second warning once the hook settles");
+    });
+
+    it("names an anonymous hook by its registration order", async () => {
+        const { warnings, logger } = capturingLogger();
+        const manager = new ShutdownManager(logger);
+        manager.addHook(async () => {});
+        let release: () => void = () => {};
+        manager.addHook(() => new Promise<void>((resolve) => (release = resolve)));
+
+        const shutdown = performGracefulShutdown(createMockTransport(), manager, { timeout: 40, forceCloseOnTimeout: true, logger });
+        await sleep(200);
+        release();
+        await shutdown;
+
+        assert.strictEqual(warnings.length, 1);
+        assert.match(warnings[0] ?? "", /: anonymous hook #1\./);
+    });
+
+    it("stays silent when the hooks finish before the timeout has elapsed", async () => {
+        const { warnings, logger } = capturingLogger();
+        const manager = new ShutdownManager(logger);
+        manager.addHook("quick", () => sleep(10));
+
+        await performGracefulShutdown(createMockTransport(), manager, { timeout: 100, forceCloseOnTimeout: true, logger });
+        await sleep(200);
+
+        assert.deepStrictEqual(warnings, []);
+    });
+
+    it("gives the hooks a fresh budget when the drain used up the timeout, so a quick hook raises no alarm", async () => {
+        const { warnings, logger } = capturingLogger();
+        const manager = new ShutdownManager(logger);
+        manager.addHook("quick", () => sleep(10));
+
+        await performGracefulShutdown(createMockTransport({ closeDelay: 300 }), manager, { timeout: 60, forceCloseOnTimeout: true, logger });
+        await sleep(200);
+
+        assert.deepStrictEqual(warnings, ["Shutdown timeout (60ms) exceeded"], "only the drain timeout is reported");
     });
 });

@@ -291,7 +291,10 @@ export interface ShutdownOptions {
      *
      * With either value `stop()` does not wait for client connections beyond
      * the timeout, but it does wait for the shutdown hooks, which the timeout
-     * does not bound. It rejects if a shutdown hook fails or the transport fails
+     * does not bound. A hook that never settles therefore keeps `stop()` pending
+     * for good; when the timeout has elapsed and hooks are still running, the
+     * server logs one warning through its `logger` naming them and the elapsed
+     * time, and keeps waiting. It rejects if a shutdown hook fails or the transport fails
      * to close before the timeout; a close failure after the timeout is only
      * logged.
      * @default true

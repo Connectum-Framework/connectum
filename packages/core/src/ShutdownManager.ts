@@ -20,6 +20,9 @@ import type { ServerLogger } from "./types.ts";
  */
 export type ShutdownHook = () => void | Promise<void>;
 
+/** Prefix of the generated module name of a hook registered without one. */
+const ANONYMOUS_PREFIX = "__anon_";
+
 /** Short, unambiguous rendering of a rejected argument for an error message. */
 function describeValue(value: unknown): string {
     if (typeof value === "string") {
@@ -86,8 +89,22 @@ export class ShutdownManager {
     /** Failures of the current `executeAll` run: module name -> its failed handlers' errors */
     private _failures = new Map<string, unknown[]>();
 
+    /** Modules whose handlers have been called in the current run and have not all settled yet */
+    private _running = new Set<string>();
+
     /** Counter for generating anonymous hook names */
     private _anonCounter = 0;
+
+    /**
+     * Names of the hooks that are executing right now: called, but not yet
+     * settled. A hook that only waits for its dependencies is not listed, so
+     * during a hang the list names the hook that is stuck, not the ones queued
+     * behind it. An anonymous hook is listed as `anonymous hook #N`, N being
+     * its registration order.
+     */
+    runningHooks(): string[] {
+        return Array.from(this._running, (name) => (name.startsWith(ANONYMOUS_PREFIX) ? `anonymous hook #${name.slice(ANONYMOUS_PREFIX.length)}` : name));
+    }
 
     /**
      * Register an anonymous shutdown hook (no dependencies)
@@ -137,7 +154,7 @@ export class ShutdownManager {
             // addHook(handler)
             handler = nameOrHandler;
             dependencies = [];
-            name = `__anon_${this._anonCounter++}`;
+            name = `${ANONYMOUS_PREFIX}${this._anonCounter++}`;
         } else if (typeof nameOrHandler !== "string") {
             throw new TypeError(`onShutdown(): the first argument must be a hook function or a module name (string), got ${describeValue(nameOrHandler)}`);
         } else if (typeof depsOrHandler === "function") {
@@ -211,6 +228,7 @@ export class ShutdownManager {
         this._warnAboutUnregisteredDependencies();
         this._pendingPromises.clear();
         this._failures.clear();
+        this._running.clear();
 
         await Promise.all(Array.from(this._hooks.keys()).map((key) => this._executeModule(key)));
 
@@ -291,7 +309,9 @@ export class ShutdownManager {
             if (moduleHandlers.length) {
                 // The handler is called synchronously, so a hook that throws
                 // before its first `await` is recorded like one that rejects.
+                this._running.add(name);
                 const outcomes = await Promise.allSettled(moduleHandlers.map((f) => new Promise<void>((resolve) => resolve(f()))));
+                this._running.delete(name);
                 const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected").map((outcome) => outcome.reason);
                 if (failures.length) {
                     this._failures.set(name, failures);
