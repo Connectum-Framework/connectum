@@ -112,6 +112,15 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * when you compose the chain yourself, put validation before the fallback, or an invalid
  * request is answered with the fallback value as if it had been served.
  *
+ * The retry and circuit breaker interceptors must stand inside this one. They act on the
+ * errors that leave the layers below them; a fallback placed inside them answers the first
+ * failure with a value, so no retry runs and the breaker never records a failure. With the
+ * fallback outside, the `handler` is asked once the retries are exhausted, or when the open
+ * breaker has refused the call, and it receives that final error. `createDefaultInterceptors`
+ * orders them so (validation, fallback, circuitBreaker, retry). When you compose the chain
+ * yourself, list the fallback before `createCircuitBreakerInterceptor` and
+ * `createRetryInterceptor`.
+ *
  * The response synthesised by the fallback interceptor carries only the protocol
  * headers it needs, on a server chain and on a client transport alike:
  * - `header` holds one field, `content-type`, equal to the request `content-type`
