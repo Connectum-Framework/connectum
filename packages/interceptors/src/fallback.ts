@@ -116,10 +116,20 @@ function responseContentType(req: UnaryRequest | StreamRequest): string | null {
  * errors that leave the layers below them; a fallback placed inside them answers the first
  * failure with a value, so no retry runs and the breaker never records a failure. With the
  * fallback outside, the `handler` is asked once the retries are exhausted, or when the open
- * breaker has refused the call, and it receives that final error. `createDefaultInterceptors`
+ * breaker has refused the call, and it receives the error that ended the call: the last failure
+ * for a code retry repeats, the first one for a code it does not. `createDefaultInterceptors`
  * orders them so (validation, fallback, circuitBreaker, retry). When you compose the chain
  * yourself, list the fallback before `createCircuitBreakerInterceptor` and
  * `createRetryInterceptor`.
+ *
+ * Consequences of that order. The error a retry raises after the caller cancelled or the deadline
+ * passed (`Canceled`, `DeadlineExceeded`) also reaches the `handler`; the client still gets the
+ * cancellation or deadline from the layer that raised it, but side effects of the `handler`
+ * (metrics, logs) run for such calls. An error thrown by the `handler` itself is not retried and
+ * is not counted by the breaker; it goes straight to the error handler. With the breaker open,
+ * a request that breaks a validation rule gets `InvalidArgument` when a fallback is enabled
+ * (validation stands outside), while without a fallback the open breaker answers it first with
+ * `Unavailable`.
  *
  * The response synthesised by the fallback interceptor carries only the protocol
  * headers it needs, on a server chain and on a client transport alike:

@@ -163,8 +163,9 @@ it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
 HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
 not in response headers.
 
-In `createDefaultInterceptors` validation stands outside the fallback (the order is
-`errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, fallback, serializer`).
+In `createDefaultInterceptors` validation stands outside the fallback. With a fallback the order is
+`errorHandler, timeout, bulkhead, validation, fallback, circuitBreaker, retry, serializer`;
+without one it is `errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, serializer`.
 A request that breaks a validation rule is rejected with `INVALID_ARGUMENT` before it
 reaches the handler, and the fallback value does not stand in for that rejection: the
 fallback is for failed dependencies, timeouts and bugs. It never replaces `Unauthenticated`
@@ -204,8 +205,9 @@ To keep timeouts from tripping the breaker, exclude `DeadlineExceeded` in
 `failurePredicate`; see the
 [circuit breaker guide](https://connectum.dev/en/guide/interceptors/built-in#circuit-breaker-placement-and-error-classification).
 
-Options and defaults are unchanged. The chain order is unchanged apart from the
-position of validation relative to the fallback, described above.
+Options and defaults are unchanged. The chain order is unchanged when no fallback is
+enabled; with a fallback, the fallback and validation stand outside the circuit breaker
+and retry, as described above.
 
 ## Learn and reference
 
