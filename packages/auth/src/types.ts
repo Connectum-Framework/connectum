@@ -187,11 +187,52 @@ export interface AuthInterceptorOptions {
 }
 
 /**
+ * Refresh and timeout settings of the remote key set behind `jwksUri`.
+ *
+ * Each value is handed to `createRemoteJWKSet` of jose; an omitted one keeps jose's own default,
+ * which is listed with it. All durations are in milliseconds.
+ */
+export interface JwksOptions {
+    /**
+     * Time after a successful fetch during which a token signed with a key that is not in the cached
+     * key set does NOT trigger another fetch. Such a token ends with `Unauthenticated` for this long
+     * after a key rotation, and a retired key can keep verifying from the cache until the next fetch. An upper
+     * bound, not a fixed period: a cache older than `cacheMaxAge` is fetched again earlier. A finite number, 0 or more;
+     * `0` fetches again on every unknown key (a stream of tokens with unknown keys then turns into a
+     * stream of requests to the identity provider).
+     * @default 30000
+     */
+    readonly cooldownDuration?: number | undefined;
+    /**
+     * Longest time the cached key set is used before it is fetched again. A key removed from the
+     * identity provider can keep verifying until the next fetch, at the latest until the cache expires (a
+     * fetch caused by an unknown key after the cooldown replaces the cache earlier). A number, 0 or more; `0` fetches the
+     * key set for every request (the cache never serves), and `Infinity` never expires the cache (a
+     * missing key still triggers a fetch once the cooldown has passed).
+     * @default 600000
+     */
+    readonly cacheMaxAge?: number | undefined;
+    /**
+     * Time after which a request for the key set is aborted. Every request that needs the fetch ends
+     * with `Unauthenticated` when it expires. A whole number from 1 to 2147483647 (the longest Node.js timer).
+     * @default 5000
+     */
+    readonly timeoutDuration?: number | undefined;
+}
+
+/**
  * JWT auth interceptor options
  */
 export interface JwtAuthInterceptorOptions {
     /** JWKS endpoint URL for remote key set */
     jwksUri?: string | undefined;
+    /**
+     * Refresh and timeout settings of the remote key set. Only valid together with `jwksUri`
+     * (setting it without one throws when the interceptor is created); an unknown name or a value
+     * out of range throws too. Omit it to keep jose's defaults: 30 s cooldown, 10 min cache age,
+     * 5 s request timeout.
+     */
+    jwks?: JwksOptions | undefined;
     /** HMAC symmetric secret (for HS256/HS384/HS512) */
     secret?: string | undefined;
     /**
@@ -285,6 +326,14 @@ export interface JwtAuthInterceptorOptions {
      * @default false
      */
     propagateHeaders?: boolean | undefined;
+    /**
+     * Filter which claims are propagated in headers, as for `createAuthInterceptor`.
+     * When set, only the listed claim names are written to `x-auth-claims` (no header when none of
+     * them is in the token); when not set, every claim of the token is. Applies only with
+     * `propagateHeaders`. A value that is not an array of non-empty strings throws when the
+     * interceptor is created.
+     */
+    propagatedClaims?: string[] | undefined;
 }
 
 /**

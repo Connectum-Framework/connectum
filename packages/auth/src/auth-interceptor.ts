@@ -15,7 +15,7 @@ import { LruCache } from "./cache.ts";
 import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
-import { assertAuthInterceptorOptions } from "./option-validation.ts";
+import { assertAuthInterceptorOptions, assertPropagatedClaims } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, AuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -93,6 +93,7 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
     const { extractCredentials = defaultExtractCredentials, verifyCredentials, skipMethods = [], propagateHeaders = false, cache: cacheOptions, propagatedClaims } = options;
 
     assertNoCatchAllSkip(skipMethods);
+    assertPropagatedClaims("createAuthInterceptor", propagatedClaims);
 
     const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 

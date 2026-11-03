@@ -280,3 +280,80 @@ export function assertClientCredential(factory: string, option: string, value: u
     }
     throw new TypeError(`@connectum/auth: ${factory} ${option} must be a non-empty string${allowFunction ? " or a function that returns one" : ""}; got ${describeKind(value)}`);
 }
+
+/**
+ * Check a `propagatedClaims` filter: absent, or an array of non-empty claim names.
+ *
+ * The filter keeps a claim when its name is in the list. A string used to be searched as text
+ * (`"org_id".includes("id")`), so a mistaken value sent more than intended; a name that is not a
+ * string never matches anything, so the claims header was dropped without a word.
+ *
+ * @throws {TypeError} When the value is present and is not an array of non-empty strings
+ */
+export function assertPropagatedClaims(factory: string, value: unknown): void {
+    if (value === undefined) {
+        return;
+    }
+    if (!Array.isArray(value) || ![...value].every((name) => typeof name === "string" && name.length > 0)) {
+        throw new TypeError(
+            `@connectum/auth: ${factory} propagatedClaims must be an array of non-empty claim names (omit the option to propagate every claim); got ${describeValue(value)}`,
+        );
+    }
+}
+
+/** Longest delay a Node.js timer keeps (2^31 - 1 ms); above it Node.js shortens the delay to 1 ms or refuses it, so the fetch would not wait or would not start. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/** Option names `createRemoteJWKSet` of jose reads and this package passes on. */
+const JWKS_OPTION_NAMES = ["cooldownDuration", "cacheMaxAge", "timeoutDuration"] as const;
+
+/**
+ * Check the `jwks` options of the JWT interceptor: absent, or an object of the three durations (in
+ * milliseconds) that are handed to jose's remote key set.
+ *
+ * A present `jwks` needs `jwksUri` (the remote key set is the only place it is read), and an unknown
+ * name is a typo that would otherwise change nothing. Ranges are those jose accepts, narrowed to the
+ * ones that can work: a timeout of 0 aborts every fetch, one above the longest Node.js timer fails it, and an infinite cooldown would never refetch
+ * for an unknown key.
+ *
+ * @throws {TypeError} When `jwks` is not an object, holds an unknown name or a non-number, or is set without `jwksUri`
+ * @throws {RangeError} When a duration is outside its range
+ */
+export function assertJwksOptions(factory: string, jwks: unknown, jwksUri: unknown): void {
+    if (jwks === undefined) {
+        return;
+    }
+    if (!isRecord(jwks)) {
+        throw new TypeError(`@connectum/auth: ${factory} jwks must be an object with ${JWKS_OPTION_NAMES.join(", ")}; got ${describeValue(jwks)}`);
+    }
+    if (!jwksUri) {
+        throw new TypeError(`@connectum/auth: ${factory} jwks only applies to a remote key set; set jwksUri or drop jwks`);
+    }
+    for (const name of Object.keys(jwks)) {
+        if (!(JWKS_OPTION_NAMES as readonly string[]).includes(name)) {
+            throw new TypeError(`@connectum/auth: ${factory} jwks.${name} is not a known option; use ${JWKS_OPTION_NAMES.join(", ")}`);
+        }
+    }
+    for (const name of JWKS_OPTION_NAMES) {
+        const value = jwks[name];
+        if (value === undefined) {
+            continue;
+        }
+        if (typeof value !== "number" || Number.isNaN(value)) {
+            throw new TypeError(`@connectum/auth: ${factory} jwks.${name} must be a number of milliseconds; got ${describeValue(value)}`);
+        }
+        if (name === "cooldownDuration" && !(Number.isFinite(value) && value >= 0)) {
+            throw new RangeError(`@connectum/auth: ${factory} jwks.cooldownDuration must be a finite number of milliseconds, 0 or more; got ${describeValue(value)}`);
+        }
+        if (name === "cacheMaxAge" && !(value >= 0)) {
+            throw new RangeError(
+                `@connectum/auth: ${factory} jwks.cacheMaxAge must be a number of milliseconds, 0 or more (Infinity keeps keys until a missing key forces a refetch); got ${describeValue(value)}`,
+            );
+        }
+        if (name === "timeoutDuration" && !(Number.isInteger(value) && value > 0 && value <= MAX_TIMEOUT_MS)) {
+            throw new RangeError(
+                `@connectum/auth: ${factory} jwks.timeoutDuration must be a whole number of milliseconds from 1 to ${MAX_TIMEOUT_MS} (a longer timer is cut to 1 ms or refused by Node.js); got ${describeValue(value)}`,
+            );
+        }
+    }
+}

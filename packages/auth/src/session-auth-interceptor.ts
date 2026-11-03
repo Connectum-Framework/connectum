@@ -15,7 +15,7 @@ import { LruCache } from "./cache.ts";
 import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
-import { assertSessionInterceptorOptions } from "./option-validation.ts";
+import { assertPropagatedClaims, assertSessionInterceptorOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, SessionAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -72,6 +72,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
     const { verifySession, mapSession, extractToken = defaultExtractToken, cache: cacheOptions, skipMethods = [], propagateHeaders = false, propagatedClaims } = options;
 
     assertNoCatchAllSkip(skipMethods);
+    assertPropagatedClaims("createSessionAuthInterceptor", propagatedClaims);
 
     const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 

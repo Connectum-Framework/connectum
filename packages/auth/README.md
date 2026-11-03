@@ -89,8 +89,27 @@ handler for the whole call, including after its first `await` or `yield`.
   and is never cached. So does a result that passes that check but cannot be
   copied for the cache or written into headers (a throwing getter, a proxy whose
   trap throws, a cyclic or `BigInt` claim, a throwing `toJSON`).
-- The generic and session interceptors accept `propagatedClaims` to limit the
-  claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
+- The JWT, generic and session interceptors accept `propagatedClaims` to limit
+  the claim keys forwarded in `x-auth-claims` headers when propagation is
+  enabled. It must be an array of non-empty strings; anything else throws when
+  the interceptor is created.
+- With `jwksUri`, a key set that cannot be fetched (the identity provider is
+  down, answers with an error or garbage, or does not answer within the
+  timeout) ends the call with `Unauthenticated: Authentication failed`, the same
+  as a bad token. The key set is fetched again on either of two triggers: it
+  is older than the cache age (10 min by default), which can come before the
+  cooldown ends, or a token names a key that is not in it and the cooldown
+  (30 s by default) has passed since the last fetch. After a key rotation a
+  token signed with the new key is rejected until one of them fires, and a
+  retired key keeps verifying only until then, so both windows are upper
+  bounds, not fixed periods. The `jwks` option shortens them:
+  `jwks: { cooldownDuration, cacheMaxAge, timeoutDuration }`, in milliseconds,
+  with jose's defaults of 30000, 600000 and 5000 when omitted (`0` for
+  `cooldownDuration` or `cacheMaxAge` sends a request to the identity provider
+  per unknown key or per call). An empty key set counts as a successful fetch
+  and is cached like any other. `jwks` without
+  `jwksUri`, an unknown name or a value out of range throws when the
+  interceptor is created.
 - `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length
   against configured algorithms: 32 for HS256, 48 for HS384, and 64 for HS512;
   when algorithms are omitted, its minimum is 32 bytes.
