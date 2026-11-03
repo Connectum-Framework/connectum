@@ -421,3 +421,53 @@ describe("stopping a server while grpcurl keeps a reflection stream open", () =>
         });
     }
 });
+
+// The order of `protocols` must not change what an external client discovers:
+// with Reflection() first, grpcurl and buf curl used to find no
+// grpc.health.v1.Health in the schema.
+describe("reflection with external clients: the order of protocols", () => {
+    const orders: Array<[string, () => ReturnType<typeof Reflection>[]]> = [
+        ["[Reflection(), Healthcheck()]", () => [Reflection(), Healthcheck()]],
+        ["[Healthcheck(), Reflection()]", () => [Healthcheck(), Reflection()]],
+    ];
+    const servers = new Map<string, { server: Server; address: string }>();
+
+    before(async () => {
+        for (const [name, make] of orders) {
+            const server = createServer({ services: [fixtureService, mountedService], port: 0, protocols: make(), interceptors: [], allowHTTP1: false });
+            await server.start();
+            assert.ok(server.address?.port);
+            servers.set(name, { server, address: `127.0.0.1:${server.address.port}` });
+        }
+    });
+
+    after(async () => {
+        for (const { server } of servers.values()) {
+            await server.stop();
+        }
+    });
+
+    for (const [name] of orders) {
+        it(`${name}: grpcurl lists and describes the mounted services and calls Health`, async () => {
+            const address = servers.get(name)?.address;
+            assert.ok(address);
+            const grpcurl = async (...args: string[]): Promise<string> => {
+                const result = await runTool("grpcurl", ["-plaintext", ...args]);
+                assert.strictEqual(result.code, 0, `grpcurl ${args.join(" ")} exited with ${result.code}: ${result.stderr}`);
+                return result.stdout;
+            };
+
+            assert.deepStrictEqual((await grpcurl(address, "list")).trim().split("\n").sort(), [...MOUNTED].sort());
+            assert.match(await grpcurl(address, "describe", "grpc.health.v1.Health"), /grpc\.health\.v1\.Health is a service:/);
+            assert.deepStrictEqual(JSON.parse(await grpcurl(address, "grpc.health.v1.Health/Check")), { status: "NOT_SERVING" });
+        });
+
+        it(`${name}: buf curl lists the methods of every mounted service`, async () => {
+            const address = servers.get(name)?.address;
+            assert.ok(address);
+            const result = await runTool("buf", ["curl", "--protocol", "grpc", "--http2-prior-knowledge", "--list-methods", `http://${address}`]);
+            assert.strictEqual(result.code, 0, `buf curl exited with ${result.code}: ${result.stderr}`);
+            assert.ok(result.stdout.includes("grpc.health.v1.Health/Check"), result.stdout);
+        });
+    }
+});

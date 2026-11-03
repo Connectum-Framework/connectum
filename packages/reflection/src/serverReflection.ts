@@ -182,16 +182,19 @@ async function* answerStream<Request, Response>(
 /**
  * Register `grpc.reflection.v1.ServerReflection` and
  * `grpc.reflection.v1alpha.ServerReflection` on `router`, both answering from
- * `pool`. Both end a stream when its call is aborted.
+ * the pool `getPool` returns. The pool is read per request, not when the
+ * services are registered: the routes are registered before the server has
+ * collected the descriptors they answer from. Both end a stream when its call
+ * is aborted.
  */
-export function registerServerReflection(router: ConnectRouter, pool: DescriptorPool): void {
+export function registerServerReflection(router: ConnectRouter, getPool: () => DescriptorPool): void {
     router.service(V1ServerReflection, {
         serverReflectionInfo: (requests, context) =>
             answerStream(requests, context.signal, (request, sent) =>
                 create(V1ResponseSchema, {
                     validHost: request.host,
                     originalRequest: request,
-                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                    messageResponse: answerReflectionQuery(getPool(), request.messageRequest, sent),
                 }),
             ),
     });
@@ -201,8 +204,14 @@ export function registerServerReflection(router: ConnectRouter, pool: Descriptor
                 create(V1alphaResponseSchema, {
                     validHost: request.host,
                     originalRequest: request,
-                    messageResponse: answerReflectionQuery(pool, request.messageRequest, sent),
+                    messageResponse: answerReflectionQuery(getPool(), request.messageRequest, sent),
                 }),
             ),
     });
 }
+
+/**
+ * The services {@link registerServerReflection} mounts. They are infrastructure,
+ * so a listing of the server's services leaves them out.
+ */
+export const REFLECTION_SERVICES = [V1ServerReflection, V1alphaServerReflection] as const;

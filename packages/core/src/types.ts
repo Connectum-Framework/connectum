@@ -59,24 +59,29 @@ export type ShutdownHook = () => void | Promise<void>;
 // =============================================================================
 
 /**
- * Context provided to {@link ProtocolRegistration.setup}
+ * Context provided to {@link ProtocolRegistration.setup} and
+ * {@link ProtocolRegistration.ready}
  *
  * Contains information about registered services that protocols
  * may need (e.g., reflection needs DescFile[], healthcheck needs service names).
+ * What it covers depends on the hook: `setup` sees the services registered
+ * before the protocol, `ready` sees all of them.
  */
 export interface ProtocolContext {
     /**
      * Service file descriptors registered before this protocol: every mounted
      * application service, then the files of the protocols that precede this
-     * one in the `protocols` array. A frozen snapshot — later registrations do
-     * not change it.
+     * one in the `protocols` array. In `ready` it is every file, protocols
+     * after this one included. A frozen snapshot — later registrations do not
+     * change it.
      */
     readonly registry: ReadonlyArray<DescFile>;
 
     /**
      * Services mounted before this protocol, in registration order: every
      * mounted application service, then the services of the protocols that
-     * precede this one in the `protocols` array. A frozen snapshot — later
+     * precede this one in the `protocols` array. In `ready` it is every
+     * service, protocols after this one included. A frozen snapshot — later
      * registrations do not change it.
      *
      * Use this, not `registry[].services`, to know which services the server
@@ -104,11 +109,11 @@ export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
  * `ctx.call`). One-time work therefore belongs in `setup`, which runs once per
  * server, while `register` runs once per router and must only add routes.
  *
- * A registration object belongs to one server. `setup` may keep per-server
- * state in it (the service list below, reflection's descriptor set), so the
- * same object passed to a second server is re-initialized by that server's
- * `setup`, and the first server's later routers serve the second server's
- * data. Call the protocol factory once per server.
+ * A registration object belongs to one server. `setup` and `ready` may keep
+ * per-server state in it (the service list below, reflection's descriptor
+ * set), so the same object passed to a second server is re-initialized by that
+ * server's hooks, and the first server's later routers serve the second
+ * server's data. Call the protocol factory once per server.
  *
  * @example
  * ```typescript
@@ -156,6 +161,22 @@ export interface ProtocolRegistration {
      * must only add routes and must not change state observable elsewhere.
      */
     register(router: ConnectRouter): void;
+
+    /**
+     * Optional. Called once per server, after the `register` of the last
+     * protocol, with the complete service set: every mounted application
+     * service and the services of every protocol, wherever it stands in the
+     * `protocols` array. Use it for what must describe the whole server
+     * independently of protocol order (Reflection builds its listing here).
+     *
+     * By then the routes of the first router are already registered, so
+     * `ready` cannot add routes: a handler registered in `register` that needs
+     * this data reads it when a request arrives. Routers built later (one per
+     * in-process transport) do not call `ready` again. Like `setup`, `ready`
+     * runs again if the initial route materialization fails and is retried.
+     * A protocol without `ready` behaves as before.
+     */
+    ready?(context: ProtocolContext): void;
 
     /** Optional HTTP handler for fallback routing (e.g., /healthz endpoint) */
     httpHandler?: HttpHandler;

@@ -56,6 +56,12 @@ buf curl --protocol grpc --http2-prior-knowledge http://localhost:5000 --list-me
 
 ## Constraints
 
+- The listing holds every mounted service, wherever `Reflection()` stands in
+  `protocols`: `[Reflection(), Healthcheck()]` and `[Healthcheck(), Reflection()]`
+  answer the same. Reflection's own two services are left out of the listing but
+  can still be described. A protocol that wraps `Reflection()` has to forward
+  `ready` as well as `setup` and `register`; a wrapper that forwards only those two
+  gets the services registered before the wrapper.
 - Enabling reflection exposes mounted service names and schemas to clients that
   can reach the server. Restrict network access where that information must
   remain private.

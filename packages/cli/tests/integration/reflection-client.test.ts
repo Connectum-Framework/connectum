@@ -64,6 +64,9 @@ function reflectionV1alphaOnly(): ProtocolRegistration {
         setup(context) {
             inner.setup?.(context);
         },
+        ready(context) {
+            inner.ready?.(context);
+        },
         register(router: ConnectRouter) {
             const onlyV1alpha = new Proxy(router, {
                 get(target, property, receiver) {
@@ -99,6 +102,9 @@ function reflectionWithoutImports(stats: { trimmed: number }): ProtocolRegistrat
         name: "reflection-without-imports",
         setup(context) {
             inner.setup?.(context);
+        },
+        ready(context) {
+            inner.ready?.(context);
         },
         register(router: ConnectRouter) {
             const trimming = new Proxy(router, {

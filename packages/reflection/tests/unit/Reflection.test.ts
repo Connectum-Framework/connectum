@@ -84,6 +84,51 @@ describe("Reflection", () => {
 
 			assert.deepStrictEqual(await listed(mount(protocol), SERVICES[0]), ["fresh.v1.Service"]);
 		});
+
+		// Routes are registered before `ready` runs, so the handlers mounted by
+		// `register` must answer from what `ready` collected, not from the
+		// snapshot `setup` saw.
+		for (const typeName of SERVICES) {
+			it(`${typeName} lists what ready saw, including services of protocols after Reflection`, async () => {
+				const protocol = Reflection();
+				protocol.setup?.(contextOf("app.v1.Service"));
+				const impls = mount(protocol);
+				protocol.ready?.(contextOf("app.v1.Service", "grpc.health.v1.Health", "late.v1.Service"));
+
+				assert.deepStrictEqual(await listed(impls, typeName), ["app.v1.Service", "grpc.health.v1.Health", "late.v1.Service"]);
+			});
+		}
+
+		// ready sees the reflection services too (they are mounted by then); they are
+		// infrastructure and stay out of the listing, as they did before ready existed.
+		it("leaves both reflection services out of the listing built in ready", async () => {
+			const protocol = Reflection();
+			protocol.setup?.(contextOf());
+			const impls = mount(protocol);
+			protocol.ready?.(contextOf(...SERVICES, "app.v1.Service"));
+
+			assert.deepStrictEqual(await listed(impls, SERVICES[0]), ["app.v1.Service"]);
+		});
+
+		it("lists what ready saw when setup and ready run again after a failed attempt", async () => {
+			const protocol = Reflection();
+			protocol.setup?.(contextOf("stale.v1.Service"));
+			protocol.ready?.(contextOf("stale.v1.Service", "stale.v1.Late"));
+			protocol.setup?.(contextOf("fresh.v1.Service"));
+			const impls = mount(protocol);
+			protocol.ready?.(contextOf("fresh.v1.Service", "fresh.v1.Late"));
+
+			assert.deepStrictEqual(await listed(impls, SERVICES[0]), ["fresh.v1.Service", "fresh.v1.Late"]);
+		});
+
+		// A wrapper that delegates setup and register but not ready (written before the hook existed)
+		// keeps the listing it always had: the services registered before it.
+		it("falls back to the setup snapshot when ready never runs", async () => {
+			const protocol = Reflection();
+			protocol.setup?.(contextOf("app.v1.Service"));
+
+			assert.deepStrictEqual(await listed(mount(protocol), SERVICES[0]), ["app.v1.Service"]);
+		});
 	});
 
 	// A server with nothing mounted before reflection still serves both protocol
