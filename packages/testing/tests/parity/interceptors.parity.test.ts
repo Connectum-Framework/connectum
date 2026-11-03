@@ -17,6 +17,7 @@ import { defineService } from "@connectum/core";
 import {
     createBulkheadInterceptor,
     createCircuitBreakerInterceptor,
+    createDefaultInterceptors,
     createLoggerInterceptor,
     createRetryInterceptor,
     createSerializerInterceptor,
@@ -519,4 +520,63 @@ transportParityTest("parity 3.3g: serializer with ignoreUnknownFields=false serv
         return { response: { message: res.message } };
     },
     compare: expectOnBoth({ message: "echo:strict" }),
+});
+
+// fallback with retry and the circuit breaker, through the shipped default chain: the fallback value is
+// served only after the retries are exhausted, and the breaker opens on failures behind the fallback.
+// The chain is built per run (a request header names it) because the breaker keeps its state for the
+// life of the interceptor.
+function perRunDefaultChain(build: () => Interceptor[]): Interceptor {
+    const chains = new Map<string, Interceptor[]>();
+    return (next) => (req) => {
+        const run = req.header.get("x-run") ?? "";
+        let chain = chains.get(run);
+        if (!chain) {
+            chain = build();
+            chains.set(run, chain);
+        }
+        let wrapped = next;
+        for (const interceptor of [...chain].reverse()) {
+            wrapped = interceptor(wrapped);
+        }
+        return wrapped(req);
+    };
+}
+const fallbackChainCalls = new Map<string, number>();
+const fallbackChainAnswers = () => create(EchoResponseSchema, { message: "FALLBACK", timestamp: 0n });
+transportParityTest("parity: fallback is served after retry is exhausted and behind an opened breaker on both transports", {
+    services: [
+        behaviourRoutes((message) => {
+            const [kind] = message.split("|") as [string];
+            fallbackChainCalls.set(kind, (fallbackChainCalls.get(kind) ?? 0) + 1);
+            throw new ConnectError("down", Code.Unavailable);
+        }),
+    ],
+    interceptors: [
+        perRunDefaultChain(() =>
+            createDefaultInterceptors({
+                errorHandler: { logErrors: false },
+                retry: { maxRetries: 1, initialDelay: 1, maxDelay: 2 },
+                circuitBreaker: { threshold: 2, halfOpenAfter: 60_000 },
+                fallback: { handler: fallbackChainAnswers },
+            }),
+        ),
+    ],
+    scenario: async ({ transport, transportKind: kind }) => {
+        const client = createClient(EchoService, transport);
+        const headers = { "x-run": kind };
+        const results = [];
+        const callsAfter = [];
+        for (let i = 0; i < 4; i++) {
+            results.push(await outcome(client, `${kind}|${i}`, headers));
+            callsAfter.push(fallbackChainCalls.get(kind));
+        }
+        return { response: { results, callsAfter } };
+    },
+    compare: expectOnBoth({
+        results: [{ message: "FALLBACK" }, { message: "FALLBACK" }, { message: "FALLBACK" }, { message: "FALLBACK" }],
+        // Each of the first two logical calls ran the first attempt and one retry before the fallback answered;
+        // two failed calls open the breaker, so the third and fourth never reach the handler.
+        callsAfter: [2, 4, 4, 4],
+    }),
 });

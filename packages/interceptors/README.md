@@ -127,6 +127,13 @@ on a server chain and on a client transport alike:
 | Header | One field, `content-type`, equal to the request `content-type`. For a Connect GET request, which sends none, it comes from the `encoding` query parameter (`json` gives `application/json`, `proto` gives `application/proto`). |
 | Trailer | `grpc-status: 0` when the request `content-type` starts with `application/grpc` (gRPC and gRPC-web); empty otherwise. |
 
+In `createDefaultInterceptors` the fallback stands outside `circuitBreaker` and `retry`
+(validation stands right outside the fallback, so a rejected request is never answered by
+the fallback value). The `handler` is asked after the retries are exhausted, or when the open
+breaker has refused the call, and receives that final error; a call that succeeds on a retry is
+served as it is. If you build the chain by hand, list the fallback before the circuit
+breaker and retry interceptors.
+
 The `handler` returns the response message of the method: a message made with
 `create(OutputSchema, { ... })`, or a plain object with that message's fields, which the
 interceptor turns into one (a field of a oneof is set as `pick: { case: "a", value }`, under
@@ -156,8 +163,9 @@ it. Connect, gRPC and gRPC-web clients accept the response over HTTP/2 and
 HTTP/1.1. Metadata the caller needs belongs in the message the `handler` returns,
 not in response headers.
 
-In `createDefaultInterceptors` validation stands outside the fallback (the order is
-`errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, fallback, serializer`).
+In `createDefaultInterceptors` validation stands outside the fallback. With a fallback the order is
+`errorHandler, timeout, bulkhead, validation, fallback, circuitBreaker, retry, serializer`;
+without one it is `errorHandler, timeout, bulkhead, circuitBreaker, retry, validation, serializer`.
 A request that breaks a validation rule is rejected with `INVALID_ARGUMENT` before it
 reaches the handler, and the fallback value does not stand in for that rejection: the
 fallback is for failed dependencies, timeouts and bugs. It never replaces `Unauthenticated`
@@ -197,8 +205,9 @@ To keep timeouts from tripping the breaker, exclude `DeadlineExceeded` in
 `failurePredicate`; see the
 [circuit breaker guide](https://connectum.dev/en/guide/interceptors/built-in#circuit-breaker-placement-and-error-classification).
 
-Options and defaults are unchanged. The chain order is unchanged apart from the
-position of validation relative to the fallback, described above.
+Options and defaults are unchanged. The chain order is unchanged when no fallback is
+enabled; with a fallback, the fallback and validation stand outside the circuit breaker
+and retry, as described above.
 
 ## Learn and reference
 
