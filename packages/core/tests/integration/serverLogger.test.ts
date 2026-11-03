@@ -61,6 +61,9 @@ function captureConsole(): { readonly calls: Recorder["calls"]; restore(): void 
     };
 }
 
+/** Any explicit limit keeps the unset-limit warning out of the lifecycle messages these cases count. */
+const QUIET_READ_LIMIT = 1024 * 1024;
+
 const echo = (): ServiceDefinition => ({ descriptor: EchoService, register: () => {} });
 const bidi = (): ServiceDefinition => ({
     descriptor: StreamingService,
@@ -89,7 +92,7 @@ describe("createServer({ logger })", () => {
     });
 
     const make = (options: Record<string, unknown> = {}): Server => {
-        const server = createServer({ services: [echo()], port: 0, host: "127.0.0.1", ...options });
+        const server = createServer({ services: [echo()], port: 0, host: "127.0.0.1", readMaxBytes: QUIET_READ_LIMIT, ...options });
         servers.push(server);
         return server;
     };
@@ -216,7 +219,7 @@ describe("createServer({ logger })", () => {
 
         it("reports a transport misconfiguration through warn when transportValidation is 'warn'", async () => {
             const log = recorder();
-            const server = createServer({ services: [bidi()], port: 0, host: "127.0.0.1", interceptors: [], transportValidation: "warn", logger: log.logger });
+            const server = createServer({ services: [bidi()], port: 0, host: "127.0.0.1", interceptors: [], transportValidation: "warn", readMaxBytes: QUIET_READ_LIMIT, logger: log.logger });
             servers.push(server);
             await server.start();
 

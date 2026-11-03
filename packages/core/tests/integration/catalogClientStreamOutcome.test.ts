@@ -313,6 +313,27 @@ for (const harness of [inMemory, wire]) {
                 }
             });
 
+            it("refuses a send() after close() instead of dropping the message, and leaves the pending call intact", async () => {
+                const probe = newProbe();
+                const res = await runCase(
+                    async function* () {
+                        yield count(1);
+                    },
+                    probe,
+                    async (open) => {
+                        const handle = open();
+                        send(handle);
+                        const closing = handle.close();
+                        assert.throws(
+                            () => send(handle),
+                            (err: unknown) => err instanceof ConnectError && err.code === Code.FailedPrecondition && /send\(\).*closed/.test(err.rawMessage),
+                        );
+                        return closing;
+                    },
+                );
+                assert.strictEqual(res.total, 1);
+            });
+
             it("does not resolve while the terminal status is still pending (late trailers)", async () => {
                 const probe = newProbe();
                 const trailers = gate();

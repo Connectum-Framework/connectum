@@ -99,6 +99,7 @@ describe("a repeated signal when the application has a listener of its own", () 
             services: [],
             port: 0,
             host: "127.0.0.1",
+            readMaxBytes: 0xffffffff,
             logger: { info() {}, warn: (message) => warnings.push(message), error() {} },
             shutdown: { autoShutdown: true, signals: [SIGNAL] },
         });

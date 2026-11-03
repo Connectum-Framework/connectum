@@ -555,7 +555,17 @@ export interface CreateServerOptions {
 
     /**
      * Server-wide per-message read limit in bytes: Connect's `readMaxBytes`.
-     * Opt-in; when unset, Connect's default (about 4 GiB) applies.
+     * Opt-in; when unset, Connect's default of 4294967295 bytes (about 4 GiB)
+     * applies, which bounds nothing in practice: an authentication interceptor
+     * runs only after a message has been received, so one oversized request
+     * from an unauthenticated caller can exhaust memory. The default is not
+     * changed, but `createServer()` writes one `warn` message through
+     * {@link CreateServerOptions.logger} when the option is unset. Setting it
+     * (to any valid value, including 4294967295) removes the warning; so does a
+     * `logger` whose `warn` drops it. A `readMaxBytes` set only in a service's
+     * own options does not silence the warning: protocols and other services
+     * stay unlimited. Choose the largest message your services legitimately
+     * accept (gRPC's own server default is 4 MiB).
      *
      * A request message larger than the limit ends the call with
      * `Code.ResourceExhausted` before the handler runs; a message exactly at
