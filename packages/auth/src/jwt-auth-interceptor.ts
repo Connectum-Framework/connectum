@@ -11,7 +11,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, type JWTPayload, type JWTVerifyOptions, type JWTVerifyResult, jwtVerify } from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
-import { assertExpectedClaim, assertMaxTokenAge, assertPropagatedClaims } from "./option-validation.ts";
+import { assertExpectedClaim, assertJwksOptions, assertMaxTokenAge, assertPropagatedClaims } from "./option-validation.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
 
 /**
@@ -51,7 +51,13 @@ function getMinHmacKeyBytes(algorithms?: string[]): number {
  */
 function buildVerifier(options: JwtAuthInterceptorOptions, verifyOptions: JWTVerifyOptions): (token: string) => Promise<JWTVerifyResult> {
     if (options.jwksUri) {
-        const jwks = createRemoteJWKSet(new URL(options.jwksUri));
+        // Only the settings the caller gave are passed on, so an omitted one keeps jose's default.
+        const { cooldownDuration, cacheMaxAge, timeoutDuration } = options.jwks ?? {};
+        const jwks = createRemoteJWKSet(new URL(options.jwksUri), {
+            ...(cooldownDuration !== undefined && { cooldownDuration }),
+            ...(cacheMaxAge !== undefined && { cacheMaxAge }),
+            ...(timeoutDuration !== undefined && { timeoutDuration }),
+        });
         return (token) => jwtVerify(token, jwks, verifyOptions);
     }
     if (options.publicKey) {
@@ -144,11 +150,21 @@ function throwMissingSubject(): never {
  * that is a non-empty string; otherwise the call ends with `Unauthenticated: JWT missing
  * subject claim`.
  *
+ * With `jwksUri`, a failure to get the key set (the identity provider is down, answers with an
+ * error or garbage, or does not answer within `jwks.timeoutDuration`) ends the call with
+ * `Unauthenticated: Authentication failed`, the same as a bad token; nothing is logged. A token signed
+ * with a key that is not in the cached key set triggers a refetch only once `jwks.cooldownDuration`
+ * (30 s by default) has passed since the last successful fetch, so after a key rotation such a token is
+ * rejected for up to that long, and a retired key keeps verifying until the cache (`jwks.cacheMaxAge`,
+ * 10 min by default) expires.
+ *
  * @param options - JWT authentication options
  * @returns ConnectRPC interceptor
  * @throws {TypeError} When `issuer` or `audience` is present and is an empty string, an array with an empty or non-string entry, or another type
  * @throws {RangeError} When `maxTokenAge` is present and is not a finite number greater than 0, or is a blank string
  * @throws {TypeError} When `propagatedClaims` is present and is not an array of non-empty strings
+ * @throws {TypeError} When `jwks` is not an object, names an option other than `cooldownDuration`, `cacheMaxAge` or `timeoutDuration`, holds a non-number, or is set without `jwksUri`
+ * @throws {RangeError} When `jwks.cooldownDuration` is not a finite number of 0 or more, `jwks.cacheMaxAge` is negative, or `jwks.timeoutDuration` is not a whole number from 1 to 2147483647
  *
  * @example JWKS-based JWT auth (Auth0, Keycloak, etc.)
  * ```typescript
@@ -177,6 +193,7 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
     const { claimsMapping = {}, skipMethods, propagateHeaders, propagatedClaims } = options;
 
     assertPropagatedClaims("createJwtAuthInterceptor", propagatedClaims);
+    assertJwksOptions("createJwtAuthInterceptor", options.jwks, options.jwksUri);
 
     // An expected issuer, audience or age that is present must be usable: an empty string or 0
     // used to be skipped as falsy, which switched the check off without saying so.

@@ -60,6 +60,7 @@ export type {
     InterceptorFactory,
     InternalAuthInterceptorOptions,
     InternalTrustSource,
+    JwksOptions,
     JwtAuthInterceptorOptions,
     MeshIdentityEntry,
     MeshIdentityTrustOptions,
