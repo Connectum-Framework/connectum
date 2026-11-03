@@ -117,16 +117,40 @@ describe("RPC-less worker health components", () => {
     it("watch stream observes component transitions", async () => {
         manager.set("process", ServingStatus.SERVING);
 
-        const transport = createGrpcTransport({ baseUrl: serverUrl });
+        // The call is held back before it reaches the server. A loaded machine can delay
+        // the stream start like this; the test must not depend on the stream being
+        // up within a fixed time, so the delay is injected on purpose.
+        const transport = createGrpcTransport({
+            baseUrl: serverUrl,
+            interceptors: [
+                (next) => async (req) => {
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return next(req);
+                },
+            ],
+        });
         const client = createClient(Health, transport);
 
         const controller = new AbortController();
         const received: ServingStatus[] = [];
+        let firstUpdate: () => void = () => {};
+        const firstUpdateSeen = new Promise<void>((resolve) => {
+            firstUpdate = resolve;
+        });
+        // A stream that never delivers the transition must fail the test, not hang it.
+        let timedOut = false;
+        const deadline = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, 5_000);
 
         const watching = (async () => {
             try {
                 for await (const update of client.watch({ service: "process" }, { signal: controller.signal })) {
                     received.push(update.status);
+                    if (received.length === 1) {
+                        firstUpdate();
+                    }
                     if (received.length >= 2) {
                         controller.abort();
                     }
@@ -136,12 +160,14 @@ describe("RPC-less worker health components", () => {
             }
         })();
 
-        // Give the stream time to deliver the initial status, then flip
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Flip only after the stream has delivered the initial status.
+        await Promise.race([firstUpdateSeen, watching]);
         manager.set("process", ServingStatus.NOT_SERVING);
 
         await watching;
+        clearTimeout(deadline);
 
+        assert.ok(!timedOut, `Watch delivered no transition within 5 s, received ${JSON.stringify(received)}`);
         assert.strictEqual(received[0], ServingStatus.SERVING, "initial status");
         assert.strictEqual(received[1], ServingStatus.NOT_SERVING, "transition observed");
     });

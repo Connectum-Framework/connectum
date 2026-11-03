@@ -45,12 +45,18 @@ describe("Health.Watch polling cadence", () => {
     it("re-reads the manager about every 200 ms while a Watch is open, not every millisecond", async () => {
         const controller = new AbortController();
         const stream = client.watch({ service: "" }, { signal: controller.signal })[Symbol.asyncIterator]();
-        await stream.next();
-        const start = manager.reads;
+        let reads: number;
+        try {
+            await stream.next();
+            const start = manager.reads;
 
-        await delay(1000);
-        const reads = manager.reads - start;
-        controller.abort();
+            await delay(1000);
+            reads = manager.reads - start;
+        } finally {
+            // The call is cancelled even when the first message never arrives, so the
+            // server's graceful stop in after() is not left waiting on an open stream.
+            controller.abort();
+        }
 
         // Five ticks are expected; a flood would be hundreds.
         assert.ok(reads >= 3 && reads <= 10, `expected about 5 reads in one second at a 200 ms interval, got ${reads}`);
