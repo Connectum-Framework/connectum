@@ -70,6 +70,15 @@ export interface HealthcheckOptions {
      * Custom HealthcheckManager instance.
      * Useful for testing or running multiple servers in one process.
      * When not provided, uses the default module-level singleton.
+     *
+     * Servers that omit it share the singleton, and each server's start
+     * re-initializes it with only that server's services. Starting a second
+     * server therefore removes the services the second server does not mount:
+     * the first keeps running but answers NOT_FOUND for its own services that
+     * are missing there. Overall health (empty service name) is computed over
+     * the one shared registry, so it also depends on the other server's
+     * statuses. Give every server of a multi-server process its own
+     * `createHealthcheckManager()`.
      */
     manager?: import("./HealthcheckManager.ts").HealthcheckManager;
 }
