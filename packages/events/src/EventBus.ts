@@ -8,7 +8,7 @@
  */
 
 import { hostname } from "node:os";
-import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { EventBusLike } from "@connectum/core";
 import { createEventContext } from "./EventContext.ts";
@@ -585,7 +585,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
             return stopPromise;
         },
 
-        async publish<Desc extends DescMessage>(schema: Desc, data: MessageShape<Desc>, publishOptions?: PublishOptions): Promise<void> {
+        async publish<Desc extends DescMessage>(schema: Desc, data: MessageInitShape<Desc>, publishOptions?: PublishOptions): Promise<void> {
             // The two causes read differently: a bus that is draining for stop() is not a bus that
             // was never started, and the remedy differs.
             if (stopping) {
@@ -602,7 +602,7 @@ export function createEventBus(options: EventBusOptions): EventBus & EventBusLik
     /** Serialize, resolve the topic and hand the event to the adapter; `track` sees the adapter's promise. */
     async function publishToAdapter<Desc extends DescMessage>(
         schema: Desc,
-        data: MessageShape<Desc>,
+        data: MessageInitShape<Desc>,
         publishOptions: PublishOptions | undefined,
         track: (publish: Promise<void>) => void,
     ): Promise<void> {
