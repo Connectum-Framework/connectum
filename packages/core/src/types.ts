@@ -274,6 +274,11 @@ export interface ShutdownOptions {
      * handlers are installed when `start()` begins, so a signal that arrives
      * while the server is still starting stops it as soon as the start has
      * finished.
+     *
+     * A signal received again while the server is stopping ends the process at
+     * once, in the middle of the shutdown hooks, after a warning in the log: it is
+     * the way out of a shutdown that hangs. If the application or another server
+     * has its own `process.on` listener for the signal, the process is not terminated (a `process.once` listener that has already run is not counted).
      * @default false
      */
     autoShutdown?: boolean;
@@ -291,7 +296,10 @@ export interface ShutdownOptions {
      *
      * With either value `stop()` does not wait for client connections beyond
      * the timeout, but it does wait for the shutdown hooks, which the timeout
-     * does not bound. It rejects if a shutdown hook fails or the transport fails
+     * does not bound. A hook that never settles therefore keeps `stop()` pending
+     * for good; when the timeout has elapsed and hooks are still running, the
+     * server logs one warning through its `logger` naming them and the elapsed
+     * time, and keeps waiting. It rejects if a shutdown hook fails or the transport fails
      * to close before the timeout; a close failure after the timeout is only
      * logged.
      * @default true
