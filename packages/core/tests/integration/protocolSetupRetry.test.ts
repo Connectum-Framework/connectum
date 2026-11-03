@@ -156,3 +156,33 @@ describe("retrying a failed initial route materialization", () => {
         }
     });
 });
+
+describe("retrying a failed route materialization: the ready hook", () => {
+    it("runs ready again with the complete service set, and only once after it succeeds", async () => {
+        let readies = 0;
+        const views: string[][] = [];
+        const readyFailingOnce: ProtocolRegistration = {
+            name: "ready-failing-once",
+            register: () => {},
+            ready: (context) => {
+                readies++;
+                views.push(context.services.map((s) => s.typeName));
+                if (readies === 1) {
+                    throw new Error("ready failed on the first attempt");
+                }
+            },
+        };
+        const tracking = trackingProtocol();
+        const server = createServer({ services: [echo], port: 0, allowHTTP1: false, protocols: [readyFailingOnce, tracking] });
+
+        assert.throws(() => server.localClient(EchoService), /ready failed on the first attempt/);
+        await server.localClient(EchoService).echo({ message: "after-retry" });
+        await server.localClient(EchoService).echo({ message: "later router" });
+
+        assert.strictEqual(readies, 2, "ready runs again for the retry, then never for later routers");
+        assert.deepStrictEqual(views, [
+            [EchoService.typeName, StreamingService.typeName],
+            [EchoService.typeName, StreamingService.typeName],
+        ]);
+    });
+});

@@ -33,7 +33,7 @@ function handlers(): Map<string, Handler> {
                 impls.set(desc.typeName, impl.serverReflectionInfo);
             },
         } as never,
-        createDescriptorPool({ files: [], services: [] }),
+        () => createDescriptorPool({ files: [], services: [] }),
     );
     return impls;
 }

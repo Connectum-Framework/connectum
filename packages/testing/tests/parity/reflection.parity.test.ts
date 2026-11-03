@@ -4,6 +4,7 @@
  *   8.1 one bidi reflection stream carrying every request kind
  *   8.2 the reflection service describes itself by symbol, and stays out of the listing
  *   8.3 an unknown name is echoed in a bounded error message
+ *   8.4 a protocol listed after Reflection is listed and described
  *
  * Reflection is a protocol registered by `@connectum/reflection`, not a user
  * service, and it keeps per-stream state (files already sent). The scenario
@@ -228,3 +229,29 @@ function response0Services(raw: ReflectionResponse[]): string[] {
 function errorOf(response: ReflectionResponse | undefined): { code: number; message: string } | null {
     return response?.messageResponse.case === "errorResponse" ? { code: response.messageResponse.value.errorCode, message: response.messageResponse.value.errorMessage } : null;
 }
+
+// 8.4
+transportParityTest("parity 8.4: a protocol listed after Reflection is listed and described", {
+    services: [fixtureService],
+    protocols: [Reflection(), Healthcheck()],
+    scenario: async ({ transport }) => {
+        const client = createClient(ServerReflection, transport);
+        const listing = await askOnce(client, { case: "listServices", value: "" });
+        const health = await askOnce(client, { case: "fileContainingSymbol", value: "grpc.health.v1.Health" });
+        return {
+            response: {
+                listed: listing.messageResponse.case === "listServicesResponse" ? listing.messageResponse.value.service.map((s) => s.name) : listing.messageResponse.case,
+                health: health.messageResponse.case === "fileDescriptorResponse" ? health.messageResponse.value.fileDescriptorProto.map((bytes) => fromBinary(FileDescriptorProtoSchema, bytes).name) : health.messageResponse.case,
+            },
+        };
+    },
+    compare: (http, local) => {
+        const expected = {
+            listed: ["fixture.v1.FixtureService", "grpc.health.v1.Health"],
+            health: ["grpc/health/v1/health.proto"],
+        };
+        assert.deepStrictEqual(http.response, expected, "HTTP transport result");
+        assert.deepStrictEqual(local.response, expected, "Local transport result");
+        defaultCompare(http, local);
+    },
+});
