@@ -278,7 +278,7 @@ export interface ShutdownOptions {
      * A signal received again while the server is stopping ends the process at
      * once, in the middle of the shutdown hooks, after a warning in the log: it is
      * the way out of a shutdown that hangs. If the application or another server
-     * has its own listener for the signal, the process is not terminated.
+     * has its own `process.on` listener for the signal, the process is not terminated (a `process.once` listener that has already run is not counted).
      * @default false
      */
     autoShutdown?: boolean;

@@ -753,6 +753,8 @@ class ServerImpl extends EventEmitter implements Server {
      * When another listener for the signal exists (the application's own, or
      * another server's), Node.js would not have applied the default action, so
      * none is applied here either; the signal has already reached that listener.
+     * A `process.once` listener that already ran for this very signal has been
+     * removed by Node.js and is no longer visible, so it is not counted.
      * Does nothing without `autoShutdown`.
      */
     private _armRepeatedSignal(): void {
