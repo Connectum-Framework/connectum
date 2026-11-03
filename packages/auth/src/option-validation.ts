@@ -280,3 +280,23 @@ export function assertClientCredential(factory: string, option: string, value: u
     }
     throw new TypeError(`@connectum/auth: ${factory} ${option} must be a non-empty string${allowFunction ? " or a function that returns one" : ""}; got ${describeKind(value)}`);
 }
+
+/**
+ * Check a `propagatedClaims` filter: absent, or an array of non-empty claim names.
+ *
+ * The filter keeps a claim when its name is in the list. A string used to be searched as text
+ * (`"org_id".includes("id")`), so a mistaken value sent more than intended; a name that is not a
+ * string never matches anything, so the claims header was dropped without a word.
+ *
+ * @throws {TypeError} When the value is present and is not an array of non-empty strings
+ */
+export function assertPropagatedClaims(factory: string, value: unknown): void {
+    if (value === undefined) {
+        return;
+    }
+    if (!Array.isArray(value) || !value.every((name) => typeof name === "string" && name.length > 0)) {
+        throw new TypeError(
+            `@connectum/auth: ${factory} propagatedClaims must be an array of non-empty claim names (omit the option to propagate every claim); got ${describeValue(value)}`,
+        );
+    }
+}

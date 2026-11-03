@@ -285,6 +285,14 @@ export interface JwtAuthInterceptorOptions {
      * @default false
      */
     propagateHeaders?: boolean | undefined;
+    /**
+     * Filter which claims are propagated in headers, as for `createAuthInterceptor`.
+     * When set, only the listed claim names are written to `x-auth-claims` (no header when none of
+     * them is in the token); when not set, every claim of the token is. Applies only with
+     * `propagateHeaders`. A value that is not an array of non-empty strings throws when the
+     * interceptor is created.
+     */
+    propagatedClaims?: string[] | undefined;
 }
 
 /**

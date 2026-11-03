@@ -11,7 +11,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, type JWTPayload, type JWTVerifyOptions, type JWTVerifyResult, jwtVerify } from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
-import { assertExpectedClaim, assertMaxTokenAge } from "./option-validation.ts";
+import { assertExpectedClaim, assertMaxTokenAge, assertPropagatedClaims } from "./option-validation.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
 
 /**
@@ -148,6 +148,7 @@ function throwMissingSubject(): never {
  * @returns ConnectRPC interceptor
  * @throws {TypeError} When `issuer` or `audience` is present and is an empty string, an array with an empty or non-string entry, or another type
  * @throws {RangeError} When `maxTokenAge` is present and is not a finite number greater than 0, or is a blank string
+ * @throws {TypeError} When `propagatedClaims` is present and is not an array of non-empty strings
  *
  * @example JWKS-based JWT auth (Auth0, Keycloak, etc.)
  * ```typescript
@@ -173,7 +174,9 @@ function throwMissingSubject(): never {
  * ```
  */
 export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): Interceptor {
-    const { claimsMapping = {}, skipMethods, propagateHeaders } = options;
+    const { claimsMapping = {}, skipMethods, propagateHeaders, propagatedClaims } = options;
+
+    assertPropagatedClaims("createJwtAuthInterceptor", propagatedClaims);
 
     // An expected issuer, audience or age that is present must be usable: an empty string or 0
     // used to be skipped as falsy, which switched the check off without saying so.
@@ -203,6 +206,7 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
     return createAuthInterceptor({
         skipMethods,
         propagateHeaders,
+        propagatedClaims,
         verifyCredentials: async (token: string): Promise<AuthContext> => {
             const { payload } = await verify(token);
 
