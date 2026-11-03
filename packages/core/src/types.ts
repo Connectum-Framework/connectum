@@ -274,6 +274,11 @@ export interface ShutdownOptions {
      * handlers are installed when `start()` begins, so a signal that arrives
      * while the server is still starting stops it as soon as the start has
      * finished.
+     *
+     * A signal received again while the server is stopping ends the process at
+     * once, in the middle of the shutdown hooks, after a warning in the log: it is
+     * the way out of a shutdown that hangs. If the application or another server
+     * has its own listener for the signal, the process is not terminated.
      * @default false
      */
     autoShutdown?: boolean;

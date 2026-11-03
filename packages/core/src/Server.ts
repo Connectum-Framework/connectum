@@ -343,7 +343,7 @@ class ServerImpl extends EventEmitter implements Server {
         this._stopPromise = (async () => {
             let failure: { readonly error: unknown } | undefined;
             try {
-                this._removeAutoShutdown();
+                this._armRepeatedSignal();
 
                 // Phases 2-4 with timeout
                 await performGracefulShutdown(this._transport, this._shutdownManager, {
@@ -354,6 +354,7 @@ class ServerImpl extends EventEmitter implements Server {
             } catch (error) {
                 failure = { error };
             }
+            this._removeAutoShutdown();
 
             this._state = ServerState.STOPPED;
             this._stopPromise = null;
@@ -692,11 +693,10 @@ class ServerImpl extends EventEmitter implements Server {
                 const duringStart = this._state === ServerState.STARTING;
                 this.stop().catch(() => {});
                 if (duringStart) {
-                    // The stop now waits for a start that may never settle. Release the
-                    // handlers so that a repeated signal gets the default action and ends
-                    // the process, exactly as a repeated signal does once a running
-                    // server has begun to stop (stop() removes the handlers then too).
-                    this._removeAutoShutdown();
+                    // The stop now waits for a start that may never settle. A repeated
+                    // signal must be able to end the process, exactly as it does once a
+                    // running server has begun to stop.
+                    this._armRepeatedSignal();
                 }
             };
 
@@ -738,6 +738,43 @@ class ServerImpl extends EventEmitter implements Server {
             this.emit("error", err);
         } catch (listenerError) {
             this._logger.error("An 'error' listener threw:", listenerError);
+        }
+    }
+
+    /**
+     * Replace the signal handlers of a stop that has begun with ones that make a
+     * repeated signal explicit.
+     *
+     * A repeated SIGTERM/SIGINT ends the process at once: it is the operator's
+     * only way out of a shutdown that hangs (a hook that never settles is not
+     * bounded by `shutdown.timeout`). The process dies as it would with no
+     * handler installed, but only after saying so in the log, because a process
+     * that disappears in the middle of its hooks looks like a crash otherwise.
+     * When another listener for the signal exists (the application's own, or
+     * another server's), Node.js would not have applied the default action, so
+     * none is applied here either; the signal has already reached that listener.
+     * Does nothing without `autoShutdown`.
+     */
+    private _armRepeatedSignal(): void {
+        const { shutdown = {} } = this._options;
+        if (!shutdown.autoShutdown) {
+            return;
+        }
+        this._removeAutoShutdown();
+        for (const signal of shutdown.signals ?? ["SIGTERM", "SIGINT"]) {
+            const handler = () => {
+                this._removeAutoShutdown();
+                if (process.listenerCount(signal) > 0) {
+                    this._logger.warn(
+                        `Received ${signal} again while the server is shutting down; other listeners handle it, so the process keeps running until the shutdown completes`,
+                    );
+                    return;
+                }
+                this._logger.warn(`Received ${signal} again while the server is shutting down; the process is terminated now, without waiting for the remaining shutdown hooks`);
+                // No listener is left, so re-sending the signal applies its default action: the process ends by this signal.
+                process.kill(process.pid, signal);
+            };
+            this._signalSubscriptions.push(onProcessSignal(signal, handler));
         }
     }
 

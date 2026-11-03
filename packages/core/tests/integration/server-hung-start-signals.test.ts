@@ -3,8 +3,8 @@
  *
  * The first termination signal during a hung start is honoured as a request to
  * stop once the start settles, which it never does here. The framework then
- * releases its signal handlers, so a repeated signal gets the default action and
- * ends the process, as a repeated signal does while a running server is stopping.
+ * switches to the repeated-signal handlers, so a second signal ends the process
+ * (after a warning), as a repeated signal does while a running server is stopping.
  * Real child process, real signals.
  */
 
