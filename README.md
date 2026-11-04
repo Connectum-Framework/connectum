@@ -3,31 +3,30 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://connectum.dev/assets/splash-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="https://connectum.dev/assets/splash.png">
-  <img alt="Connectum — Microservices Framework" src="https://connectum.dev/assets/splash.png" width="600">
+  <img alt="Connectum — Proto-first gRPC/ConnectRPC framework for TypeScript" src="https://connectum.dev/assets/splash.png" width="600">
 </picture>
 </a>
 </p>
 
 <p align="center">
-  <strong>gRPC/ConnectRPC framework for TypeScript microservices</strong>
+  <strong>Proto-first gRPC/ConnectRPC framework for TypeScript</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/Connectum-Framework/connectum/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/Connectum-Framework/connectum/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a>
-  <a href="https://connectum.dev/en/guide/runtime-compatibility"><img src="https://img.shields.io/node/v/@connectum/core" alt="Node.js version range declared by the latest published @connectum/core"></a>
+  <a href="https://www.npmjs.com/package/@connectum/core"><img src="https://img.shields.io/node/v/@connectum/core" alt="Node.js version range declared by the latest published @connectum/core"></a>
   <a href="https://nodejs.org/api/typescript.html"><img src="https://img.shields.io/badge/TypeScript-Native-blue" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 </p>
 
 <p align="center">
-  <a href="https://connectum.dev/en/guide/quickstart">Quickstart</a> &middot;
   <a href="https://connectum.dev">Documentation</a> &middot;
   <a href="https://github.com/Connectum-Framework/examples">Examples</a>
 </p>
 
 ---
 
-Connectum provides modular packages for gRPC and ConnectRPC services. Published packages contain compiled JavaScript; running an application's TypeScript source directly has separate runtime requirements. See [Runtime Compatibility](https://connectum.dev/en/guide/runtime-compatibility).
+Connectum provides modular packages for gRPC and ConnectRPC services. Published packages contain compiled JavaScript; running an application's TypeScript source directly has separate runtime requirements, described in the documentation at [connectum.dev](https://connectum.dev).
 
 > This README documents the 1.3 release line. Installing from npm resolves the latest published package versions, which may predate changes on the main branch of this repository.
 
@@ -53,7 +52,7 @@ Connectum provides modular packages for gRPC and ConnectRPC services. Published 
 
 ## Documentation
 
-**[connectum.dev](https://connectum.dev)** — [Quickstart](https://connectum.dev/en/guide/quickstart) · [Interceptors](https://connectum.dev/en/guide/interceptors) · [Health Checks](https://connectum.dev/en/guide/health-checks) · [Events](https://connectum.dev/en/guide/events) · [Observability](https://connectum.dev/en/guide/observability) · [API Testing](https://connectum.dev/en/guide/testing) · [ADR](https://connectum.dev/en/contributing/adr/)
+**[connectum.dev](https://connectum.dev)** — quickstart, guides, the online service builder, API reference and architecture decision records.
 
 ## Contributing
 
@@ -62,7 +61,7 @@ git clone https://github.com/Connectum-Framework/connectum.git && cd connectum
 pnpm install && pnpm test
 ```
 
-[Contributing Guide](CONTRIBUTING.md) · [Development Setup](https://connectum.dev/en/contributing/development-setup) · [Code of Conduct](CODE_OF_CONDUCT.md)
+[Contributing Guide](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## License
 
