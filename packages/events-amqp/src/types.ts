@@ -115,7 +115,8 @@ export interface AmqpAdapterOptions {
      *   ONLY with `recovery: false` or `failFastOnInitialSetupError: true`; under
      *   the default recovery a first-connect check failure otherwise enters the
      *   (infinite) recovery loop and is surfaced via `onSetupFailed` /
-     *   `onReconnecting` rather than rejecting `connect()`. AMQP offers no passive
+     *   `onReconnecting` (or, with no callback, a process warning) rather than
+     *   rejecting `connect()`. AMQP offers no passive
      *   introspection: argument equivalence and binding presence are NOT
      *   verifiable in this mode (a conflicting redeclare elsewhere is
      *   PRECONDITION_FAILED 406);
@@ -161,7 +162,10 @@ export interface AmqpAdapterOptions {
      * `disconnect()` cancels that wait and the pending `connect()` rejects with
      * `AmqpConnectionError` (see
      * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
-     * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
+     * deterministic startup misconfiguration). A broker refusal of the topology
+     * setup is retried too; with default options (no lifecycle callback, no
+     * fail-fast, no initial connect budget) it is reported once per distinct
+     * reply as a process warning, `CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED`. See {@link AmqpRecoveryOptions}
      * for the retry-budget scope and the delay bounds. With a finite
      * `maxRetries`, a broker still unreachable when the initial connect has
      * used its budget rejects `connect()` with a typed `AmqpConnectionError`
@@ -180,10 +184,15 @@ export interface AmqpAdapterOptions {
      * amqplib's opt-in recovery resolves `connect()` only after its setup hook
      * succeeds, and rejects only once `maxRetries` is exhausted (default
      * `Infinity`). A permanent topology error on the first connect under the
-     * default recovery therefore HANGS `connect()` forever, with no thrown error
-     * and — because the lifecycle listeners attach only after that never-returning
-     * await — no callback. When this flag is `true` (and recovery is enabled), a
-     * topology error of the initial connect rejects `connect()` with the typed
+     * default recovery therefore keeps `connect()` waiting, with no thrown error
+     * and — because the lifecycle listeners attach only after that
+     * never-returning await — no callback. With default options (no callback,
+     * no fail-fast, no initial connect budget) the adapter emits one process
+     * warning (code `CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED`) per distinct broker
+     * reply, naming the object and the reason, and keeps waiting: a service may
+     * start before another one fixes the topology. When this flag is `true`
+     * (and recovery is enabled), a topology error of the initial connect
+     * rejects `connect()` with the typed
      * `AmqpTopologyError` / `AmqpConnectionError`. Without
      * {@link AmqpRecoveryOptions.initialConnectMaxRetries} the adapter first
      * validates topology against a throwaway non-recovering connection (the

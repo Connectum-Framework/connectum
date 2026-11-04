@@ -38,6 +38,34 @@ Make handlers idempotent and complete side effects before settlement. See the
 [AMQP reliability guide](https://connectum.dev/en/guide/events/amqp-reliability)
 for recovery, routing, and settlement behavior.
 
+## When the broker refuses the topology on the first connect
+
+By default `connect()` retries without limit, so a service can start before
+another one fixes the topology. A refusal from a reachable broker (an existing
+exchange of another type, a queue declared with other arguments, an exchange
+type the broker does not know, a refused permission) is retried the same way.
+With default options (no `lifecycle` callback, no `failFastOnInitialSetupError`,
+no `recovery.initialConnectMaxRetries`) the adapter emits one process warning per
+distinct broker reply and keeps waiting:
+
+```text
+(node:1) [CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED] AmqpTopologyWarning: AmqpAdapter: the broker refused
+the topology setup of the first connect, and connect() keeps retrying: Topology declaration failed:
+Operation failed: ExchangeDeclare; 406 (PRECONDITION-FAILED) with message "PRECONDITION_FAILED -
+inequivalent arg 'type' for exchange 'orders' in vhost '/': received 'topic' but current is 'fanout'". ...
+```
+
+`connect()` resolves on its own once the conflict is removed. To make it reject
+instead, set `failFastOnInitialSetupError: true` (the first broker refusal
+rejects with `AmqpTopologyError`) or `recovery.initialConnectMaxRetries` (a
+bounded number of attempts). With `lifecycle.onLifecycle` the failure arrives as a
+`setup-failed` event and no warning is emitted. An unreachable broker is not a
+topology failure and is not warned about. A mistyped `exchangeType` never reaches
+the broker: `AmqpAdapter()` throws a `TypeError`. The same options apply when the broker is down
+at start and comes up with the conflict. With default options the adapter emits the warning.
+With a lifecycle callback, the first recovery attempts deliver `setup-failed`.
+With `failFastOnInitialSetupError`, `connect()` rejects with `AmqpTopologyError`.
+
 ## Selective routing on a headers exchange
 
 On a headers exchange the adapter cannot derive bindings from a subscription
