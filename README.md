@@ -3,13 +3,13 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://connectum.dev/assets/splash-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="https://connectum.dev/assets/splash.png">
-  <img alt="Connectum — Microservices Framework" src="https://connectum.dev/assets/splash.png" width="600">
+  <img alt="Connectum — Proto-first gRPC/ConnectRPC framework for TypeScript" src="https://connectum.dev/assets/splash.png" width="600">
 </picture>
 </a>
 </p>
 
 <p align="center">
-  <strong>gRPC and ConnectRPC framework for TypeScript</strong>
+  <strong>Proto-first gRPC/ConnectRPC framework for TypeScript</strong>
 </p>
 
 <p align="center">
