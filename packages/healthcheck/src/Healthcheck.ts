@@ -79,18 +79,34 @@ function boundedName(name: string): string {
 }
 
 /**
+ * Services that are infrastructure of the server and not part of the
+ * application: Health does not answer for them. Listed by name because this
+ * package does not depend on the reflection package.
+ */
+const UNTRACKED_SERVICES: ReadonlySet<string> = new Set([Health.typeName, "grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"]);
+
+/**
+ * Names of the mounted services Health tracks. The mounted services, not
+ * every service of their files.
+ */
+function trackedServiceNames(context: ProtocolContext): string[] {
+    return context.services.map((service) => service.typeName).filter((typeName) => !UNTRACKED_SERVICES.has(typeName));
+}
+
+/**
  * Create healthcheck protocol registration
  *
  * Returns a ProtocolRegistration directly (not `{ protocol, manager }`).
  * Pass to createServer({ protocols: [...] }).
  * Use the singleton `healthcheckManager` export to control health status.
  *
- * Health tracks every service the server mounts: the application services and
- * the services of all other protocols (the reflection services included),
- * wherever `Healthcheck()` stands in the `protocols` array. The set is
- * completed in the protocol's `ready` hook, after every protocol has
- * registered. The `grpc.health.v1.Health` service itself is never tracked, and
- * a service that is only declared in a mounted file is not tracked either.
+ * Health tracks the application services and the services of custom
+ * protocols, wherever `Healthcheck()` stands in the `protocols` array. The set
+ * is completed in the protocol's `ready` hook, after every protocol has
+ * registered. Never tracked: the `grpc.health.v1.Health` service itself, the
+ * infrastructure services `grpc.reflection.v1` and `v1alpha` (so
+ * `Reflection()` changes neither `List` nor the overall status), and a service
+ * that is only declared in a mounted file.
  * Every tracked service starts as `UNKNOWN`. A protocol that wraps
  * `Healthcheck()` and delegates to it must forward `ready` as well as `setup`
  * and `register`; without `ready` Health tracks only the services registered
@@ -173,9 +189,7 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                     `Healthcheck(): the '${Health.typeName}' service is already registered by the application or by an earlier Healthcheck(); register Healthcheck() once per server`,
                 );
             }
-            // The mounted services, not every service of their files.
-            const serviceNames = context.services.map((service) => service.typeName);
-            manager.initialize(serviceNames);
+            manager.initialize(trackedServiceNames(context));
         },
 
         // Runs after every protocol has registered, so the tracked set does not
@@ -183,9 +197,7 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
         // statuses set since `setup` are kept: initialize preserves a service
         // that is still in its input.
         ready(context: ProtocolContext): void {
-            // This protocol's own service is in the full set; it is never tracked.
-            const serviceNames = context.services.map((service) => service.typeName).filter((typeName) => typeName !== Health.typeName);
-            manager.initialize(serviceNames);
+            manager.initialize(trackedServiceNames(context));
         },
 
         register(router: ConnectRouter): void {

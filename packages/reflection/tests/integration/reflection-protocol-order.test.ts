@@ -139,16 +139,16 @@ describe("Reflection: the order of protocols does not change what is shown", () 
         });
     }
 
-    // Healthcheck also completes its tracked set in `ready`, so it tracks both reflection
-    // services (and not its own Health service) whichever protocol comes first.
-    it("Health tracks the same services in both orders", async () => {
+    // Healthcheck leaves the reflection services (infrastructure) untracked in either order:
+    // `Reflection()` changes neither the Health list nor the overall status.
+    it("Health tracks no reflection service in either order", async () => {
         const tracked = async (name: string): Promise<string[]> => {
             const { port } = at(name);
             const list = JSON.parse(await bufCurl("--data", "{}", `http://localhost:${port}/grpc.health.v1.Health/List`)) as { statuses?: Record<string, unknown> };
             return Object.keys(list.statuses ?? {}).sort();
         };
 
-        const expected = ["grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"];
+        const expected: string[] = [];
         assert.deepStrictEqual(await tracked(ORDERS[0]?.[0] ?? ""), expected);
         assert.deepStrictEqual(await tracked(ORDERS[1]?.[0] ?? ""), expected);
     });

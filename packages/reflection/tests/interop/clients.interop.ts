@@ -165,16 +165,8 @@ describe("reflection with external clients", () => {
         });
 
         it("reports the health of mounted services only", async () => {
-            // Healthcheck() is listed before Reflection() here and still tracks the reflection
-            // services: it completes its set once every protocol has registered. The service
-            // that is only declared next to a mounted one stays out, and so does Health itself.
             const listed = JSON.parse(await grpcurl(address, "grpc.health.v1.Health/List")) as { statuses: Record<string, unknown> };
-            assert.deepStrictEqual(Object.keys(listed.statuses).sort(), [
-                "fixture.v1.FixtureService",
-                "fixture.v1.MountedService",
-                "grpc.reflection.v1.ServerReflection",
-                "grpc.reflection.v1alpha.ServerReflection",
-            ]);
+            assert.deepStrictEqual(Object.keys(listed.statuses).sort(), ["fixture.v1.FixtureService", "fixture.v1.MountedService"]);
             const unmounted = await runTool("grpcurl", ["-plaintext", "-d", '{"service":"fixture.v1.UnmountedPeerService"}', address, "grpc.health.v1.Health/Check"]);
             assert.notStrictEqual(unmounted.code, 0, "Check for a service that is declared but not mounted must fail");
             assert.match(unmounted.stderr, /Code: NotFound/);

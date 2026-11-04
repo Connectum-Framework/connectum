@@ -44,7 +44,8 @@ const REFLECTION_V1 = "grpc.reflection.v1.ServerReflection";
 const REFLECTION_V1ALPHA = "grpc.reflection.v1alpha.ServerReflection";
 const FIXTURE = "fixture.v1.FixtureService";
 
-const EXPECTED_TRACKED = [EchoService.typeName, FIXTURE, REFLECTION_V1, REFLECTION_V1ALPHA].sort();
+// The reflection services are infrastructure: Reflection() must change neither List nor the overall status.
+const EXPECTED_TRACKED = [EchoService.typeName, FIXTURE].sort();
 
 const ORDERS: Array<[string, (manager: HealthcheckManager) => ProtocolRegistration[]]> = [
     ["[Reflection, Healthcheck, fixture]", (manager) => [Reflection(), Healthcheck({ manager }), fixtureProtocol()]],
@@ -81,7 +82,7 @@ describe("Healthcheck: the order of protocols does not change what is tracked", 
     };
 
     for (const [name] of ORDERS) {
-        it(`${name}: List returns every other service and not Health`, async () => {
+        it(`${name}: List returns the application and custom-protocol services, and neither Health nor reflection`, async () => {
             const listed = await at(name).client.list({});
             assert.deepStrictEqual(Object.keys(listed.statuses).sort(), EXPECTED_TRACKED);
 
@@ -90,7 +91,7 @@ describe("Healthcheck: the order of protocols does not change what is tracked", 
             assert.deepStrictEqual(Object.keys(local.statuses).sort(), EXPECTED_TRACKED, "in-process and HTTP clients must see the same tracked services");
         });
 
-        it(`${name}: Check answers for each tracked service and NOT_FOUND for Health`, async () => {
+        it(`${name}: Check answers for each tracked service and NOT_FOUND for Health and reflection`, async () => {
             const { client, manager } = at(name);
             manager.update(ServingStatus.SERVING);
 
@@ -99,7 +100,9 @@ describe("Healthcheck: the order of protocols does not change what is tracked", 
                 assert.strictEqual(response.status, HealthCheckResponse_ServingStatus.SERVING, service);
             }
             assert.strictEqual((await client.check({ service: "" })).status, HealthCheckResponse_ServingStatus.SERVING, "overall health must reach SERVING");
-            await assert.rejects(client.check({ service: Health.typeName }), (err: unknown) => err instanceof ConnectError && err.code === Code.NotFound);
+            for (const service of [Health.typeName, REFLECTION_V1, REFLECTION_V1ALPHA]) {
+                await assert.rejects(client.check({ service }), (err: unknown) => err instanceof ConnectError && err.code === Code.NotFound, service);
+            }
         });
 
         it(`${name}: a new tracked service starts as UNKNOWN`, async () => {
