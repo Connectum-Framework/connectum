@@ -49,7 +49,13 @@ describe("catalog parity fixture", () => {
             const template = readFileSync(resolve(fixtureRoot, "buf.gen.yaml"), "utf8");
             const outputs = template.match(/out: tests\/fixtures\/catalog\/pb/g) ?? [];
             assert.strictEqual(outputs.length, 2, "buf.gen.yaml must send protoc-gen-es and the catalog plugin to the checked-in directory");
-            writeFileSync(resolve(work, "buf.gen.yaml"), template.replaceAll("tests/fixtures/catalog/pb", "out"));
+            // The plugin is run from its build by path, relative to the package; the scratch directory needs the absolute path.
+            const pluginPath = "../protoc-gen-catalog/dist/index.js";
+            assert.ok(template.includes(pluginPath), "buf.gen.yaml must run the catalog plugin from its build");
+            writeFileSync(
+                resolve(work, "buf.gen.yaml"),
+                template.replaceAll("tests/fixtures/catalog/pb", "out").replace(pluginPath, resolve(packageRoot, pluginPath)),
+            );
 
             const env = { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` };
             execFileSync(resolve(binDir, "buf"), ["generate", "--template", "buf.gen.yaml"], { cwd: work, env, encoding: "utf8" });

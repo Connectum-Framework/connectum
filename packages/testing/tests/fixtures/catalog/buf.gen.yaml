@@ -13,9 +13,11 @@ plugins:
       - target=ts
       - import_extension=.ts
       - erasable_syntax=true
-  # The Connectum catalog plugin; strategy `all` writes one catalog.gen.ts that
+  # The Connectum catalog plugin, run from its build by path: the pnpm bin link
+  # does not exist on an install that runs before the plugin is built.
+  # Strategy `all` writes one catalog.gen.ts that
   # aggregates every service of the module.
-  - local: protoc-gen-connectum-catalog
+  - local: [node, ../protoc-gen-catalog/dist/index.js]
     strategy: all
     out: tests/fixtures/catalog/pb
     opt:
