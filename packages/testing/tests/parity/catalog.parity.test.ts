@@ -439,6 +439,16 @@ describe("catalog parity, calls without a route", () => {
         },
     });
 
+    transportParityTest(name("a server without a catalog answers FailedPrecondition"), {
+        services: [probeService()],
+        scenario: ({ transport }) => probeCall(transport, "orphan"),
+        compare: (http, local) => {
+            assert.strictEqual(http.error?.code, Code.FailedPrecondition);
+            assert.strictEqual(local.error?.code, Code.FailedPrecondition);
+            defaultCompare(http, local);
+        },
+    });
+
     transportParityTest(name("a remote service that is down is Unavailable"), {
         services: [relayService()],
         catalog: serviceCatalog,
