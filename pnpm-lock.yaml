@@ -756,6 +756,9 @@ importers:
       '@connectum/interceptors':
         specifier: workspace:^
         version: link:../interceptors
+      '@connectum/protoc-gen-catalog':
+        specifier: workspace:^
+        version: link:../protoc-gen-catalog
       '@connectum/reflection':
         specifier: workspace:^
         version: link:../reflection

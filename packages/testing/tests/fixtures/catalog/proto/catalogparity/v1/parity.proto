@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package catalogparity.v1;
+
+// One message for every method keeps the fixture about routing, not payloads.
+//
+// A handler answers `value` and `sequence` the way its method documents. The
+// two flags shape a call for the failure cases:
+//   fail_code: a non-zero Connect code the leaf service raises (after the
+//              messages it owes before the failure, for the streaming methods);
+//   hold:      the leaf service does not finish on its own and only stops when
+//              the call is cancelled.
+message Item {
+  string value = 1;
+  int32 sequence = 2;
+  int32 fail_code = 3;
+  bool hold = 4;
+}
+
+// Aggregate answer of the client-streaming methods.
+message Total {
+  int32 count = 1;
+  int32 sum = 2;
+}
+
+// The leaf service: it answers by itself and calls nobody.
+service TargetService {
+  // Answers value "target:<value>" with the same sequence.
+  rpc Echo(Item) returns (Item);
+
+  // Answers `sequence` items: value "<value>#<i>", sequence i, for i = 1..sequence.
+  rpc Count(Item) returns (stream Item);
+
+  // Answers the number of items received and the sum of their sequences.
+  rpc Sum(stream Item) returns (Total);
+
+  // Answers every item as value "target:<value>" with the same sequence.
+  rpc Chat(stream Item) returns (stream Item);
+}
+
+// The middle service: each method calls the same-named method of
+// TargetService through the catalog and answers what it returned, with
+// "relay:" put in front of every value.
+service RelayService {
+  rpc Echo(Item) returns (Item);
+  rpc Count(Item) returns (stream Item);
+  rpc Sum(stream Item) returns (Total);
+  rpc Chat(stream Item) returns (stream Item);
+}
+
+// The outer service: each method calls the same-named method of RelayService
+// through the catalog and answers what it returned, with "edge:" put in front
+// of every value. Chained with RelayService and TargetService on three
+// servers, it makes a call that crosses two remote hops.
+service EdgeService {
+  rpc Echo(Item) returns (Item);
+  rpc Count(Item) returns (stream Item);
+  rpc Sum(stream Item) returns (Total);
+  rpc Chat(stream Item) returns (stream Item);
+}
+
+// Calls that cannot be routed. Each method makes one catalog call that must
+// fail and lets the error out unchanged.
+service ProbeService {
+  // Calls OrphanService.Echo: a catalog service no server mounts.
+  rpc Orphan(Item) returns (Item);
+
+  // Calls a service name the catalog does not contain.
+  rpc UnknownService(Item) returns (Item);
+
+  // Calls a method name TargetService does not have.
+  rpc UnknownMethod(Item) returns (Item);
+
+  // Calls TargetService.Count, a streaming method, through the unary ctx.call.
+  rpc WrongKind(Item) returns (Item);
+}
+
+// Listed in the catalog and mounted nowhere.
+service OrphanService {
+  rpc Echo(Item) returns (Item);
+}

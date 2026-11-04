@@ -10,7 +10,8 @@
 #   - packages/testing/tests/parity/*.parity.test.ts
 #       (interceptors, validation on the shipped validation interceptor,
 #        streaming, errors, coexistence, reflection, health, request
-#        admission, resilience & cancellation)
+#        admission, resilience & cancellation, catalog-routed ctx.call /
+#        ctx.stream on a buf-generated catalog)
 #   - packages/auth/tests/parity/*.parity.test.ts
 #       (authentication & proto-declared authorization on the shipped auth
 #        interceptors, verified identity in streaming handlers). Lives in

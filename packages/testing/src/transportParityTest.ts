@@ -18,7 +18,16 @@ import assert from "node:assert";
 import { test } from "node:test";
 import { Code, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
+import {
+    type CreateServerOptions,
+    createLocalTransport,
+    createServer,
+    type ProtocolRegistration,
+    type RemoteResolver,
+    type Server,
+    type ServiceCatalog,
+    type ServiceDefinition,
+} from "@connectum/core";
 import { DataPointType } from "@opentelemetry/sdk-metrics";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
 import { installTelemetry, type TelemetryOptions, validateTelemetryOptions } from "./telemetry.ts";
@@ -108,6 +117,22 @@ export interface TransportParityTestOptions {
     clientInterceptors?: Interceptor[];
     /** Protocol extensions applied identically on both servers. */
     protocols?: ProtocolRegistration[];
+    /**
+     * Service catalog given identically to both servers (see `CreateServerOptions.catalog`),
+     * typically the `serviceCatalog` that `protoc-gen-connectum-catalog` generates.
+     * It is what lets a handler of `services` call another service with `ctx.call` /
+     * `ctx.stream`; a call to a service in `services` is dispatched in-process on both
+     * legs, a call to any other service goes through {@link remoteResolver}.
+     */
+    catalog?: ServiceCatalog;
+    /**
+     * Resolver for catalog calls whose target is not in `services`, given identically
+     * to both servers (see `CreateServerOptions.remoteResolver`). The resolver is
+     * called by both legs, so a transport it returns serves both: start the remote
+     * service once for the whole test, not once per leg, and have the scenario reset
+     * whatever state that service keeps between the two runs.
+     */
+    remoteResolver?: RemoteResolver;
     /** Server-level request gate applied identically on both servers (see `CreateServerOptions.requestGate`). */
     requestGate?: CreateServerOptions["requestGate"];
     /** Server-level per-message read limit applied identically on both servers (see `CreateServerOptions.readMaxBytes`). */
@@ -338,12 +363,25 @@ function admissionOptions(opts: TransportParityTestOptions): Pick<CreateServerOp
     };
 }
 
+/**
+ * The catalog options both harness servers receive. They are passed only when
+ * the scenario set them, so a test without a catalog builds the same servers as
+ * before.
+ */
+function catalogOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "catalog" | "remoteResolver"> {
+    return {
+        ...(opts.catalog !== undefined ? { catalog: opts.catalog } : {}),
+        ...(opts.remoteResolver !== undefined ? { remoteResolver: opts.remoteResolver } : {}),
+    };
+}
+
 async function setupHttpHarness(opts: TransportParityTestOptions): Promise<RunHarness> {
     const server = createServer({
         services: opts.services,
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
         ...admissionOptions(opts),
+        ...catalogOptions(opts),
         port: 0,
         allowHTTP1: false,
     });
@@ -383,6 +421,7 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
         ...admissionOptions(opts),
+        ...catalogOptions(opts),
         // Never bound unless a scenario calls `server.start()` itself (for
         // example to exercise `server.stop()` on in-process calls); an
         // ephemeral port keeps such scenarios from colliding.
