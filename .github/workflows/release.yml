@@ -90,8 +90,20 @@ jobs:
           # Highlights-first, deduplicated release notes. Non-fatal: a generator
           # failure must never block the already-published release — fall back to
           # empty notes (the draft is reviewed manually before publishing).
-          if ! node scripts/build-release-notes.mjs "${VERSION}" > "$NOTES_FILE"; then
+          #
+          # GitHub rejects a release description over 125000 characters (HTTP 422, which
+          # failed the 1.3.0 release job and skipped the BSR push after it). The generator
+          # drops whole sections from the end, never Highlights, to stay within 120000 bytes
+          # (bytes are never fewer than characters).
+          if ! node scripts/build-release-notes.mjs "${VERSION}" --max-bytes 120000 > "$NOTES_FILE"; then
             echo "::warning::build-release-notes.mjs failed; creating draft release with empty notes"
+            : > "$NOTES_FILE"
+          fi
+
+          # Highlights alone can still exceed the limit: the generator never cuts them. An
+          # empty draft that is edited by hand beats a failed job that skips the steps after it.
+          if [ "$(wc -m < "$NOTES_FILE")" -gt 125000 ]; then
+            echo "::warning::Release notes exceed GitHub's 125000 character limit; creating draft release with empty notes"
             : > "$NOTES_FILE"
           fi
 

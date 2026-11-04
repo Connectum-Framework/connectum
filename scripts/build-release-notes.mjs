@@ -215,7 +215,7 @@ const byteLength = (text) => Buffer.byteLength(text, "utf8");
 const omitted = (title) => [
     `## ${title}`,
     "",
-    "_Omitted: the complete notes exceed the size limit of this text. The full text is in each package's `CHANGELOG.md` on the release branch and in the draft GitHub Release._",
+    "_Omitted: the complete notes exceed the size limit of this text. The full text is in each package's `CHANGELOG.md`._",
     "",
 ];
 
