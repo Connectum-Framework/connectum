@@ -1,5 +1,0 @@
----
-"@connectum/cli": patch
----
-
-fix: `connectum proto sync` reports the failures a user meets most often as one line (`Error: ...`, exit code 1) instead of a raw error object with a stack trace. A closed port names the address and the reason (`Cannot connect to http://localhost:1: ECONNREFUSED`); an empty `--from` and one that is not a URL (`local host:5305`) are refused by name before the command connects; a missing `buf` says it is not on the PATH and links the install page; a `buf generate` that fails names its exit code after its own output; and a `--template` that is not an existing file is refused before the command connects, where it used to fail only after the descriptors were fetched. A server that answers with an error is reported with its address and the server's own message (`Reflection request to http://localhost:5000 failed: [unauthenticated] ...`). The error classes of `fetchReflectionData` and `fetchFileDescriptorSetBinary` are unchanged apart from being `CliError` (an `Error` subclass) where they were plain `Error`.
