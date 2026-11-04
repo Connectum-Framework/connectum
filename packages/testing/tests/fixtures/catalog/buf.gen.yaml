@@ -1,0 +1,23 @@
+# Regenerate with `pnpm --filter @connectum/testing fixtures:generate`
+# (run from the package directory, which is what `out` is relative to).
+# No `inputs:` here: the module in buf.yaml is the input, and the generated
+# catalog must be built from exactly the services that module declares.
+# erasable_syntax: the tests run the generated code natively (type stripping),
+# which rejects TypeScript `enum`.
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: tests/fixtures/catalog/pb
+    opt:
+      - target=ts
+      - import_extension=.ts
+      - erasable_syntax=true
+  # The Connectum catalog plugin; strategy `all` writes one catalog.gen.ts that
+  # aggregates every service of the module.
+  - local: protoc-gen-connectum-catalog
+    strategy: all
+    out: tests/fixtures/catalog/pb
+    opt:
+      - target=ts
+      - import_extension=.ts

@@ -1,0 +1,5 @@
+# Test-only module: the proto fixture of the service-catalog parity tests. It is
+# not a published contract and is never linted for style or pushed to the BSR.
+version: v2
+modules:
+  - path: proto
