@@ -14,7 +14,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import type { ProtocolRegistration, Server } from "@connectum/core";
-import { createServer, defineService } from "@connectum/core";
+import { createLocalTransport, createServer, defineService } from "@connectum/core";
 import { EchoResponseSchema, EchoService } from "../../../core/tests/fixtures/echo/v1/echo_pb.ts";
 import { Reflection } from "../../../reflection/src/Reflection.ts";
 import { MetaSchema } from "../../../reflection/tests/fixtures/fixture/v1/common_pb.ts";
@@ -84,6 +84,10 @@ describe("Healthcheck: the order of protocols does not change what is tracked", 
         it(`${name}: List returns every other service and not Health`, async () => {
             const listed = await at(name).client.list({});
             assert.deepStrictEqual(Object.keys(listed.statuses).sort(), EXPECTED_TRACKED);
+
+            // An in-process client builds its own router; it must see the same set.
+            const local = await createClient(Health, createLocalTransport(at(name).server)).list({});
+            assert.deepStrictEqual(Object.keys(local.statuses).sort(), EXPECTED_TRACKED, "in-process and HTTP clients must see the same tracked services");
         });
 
         it(`${name}: Check answers for each tracked service and NOT_FOUND for Health`, async () => {
