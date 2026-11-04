@@ -260,6 +260,33 @@ describe("Healthcheck register() and resolveServiceStatus", () => {
 		assert.strictEqual(manager.getStatus("svc.v1.DeclaredOnly"), undefined);
 	});
 
+	// `setup` sees only what was registered before the protocol; `ready` sees
+	// the whole server. After `ready` the tracked set is the full one, without
+	// the protocol's own service, and a status set in between survives.
+	it("ready() tracks the services registered after setup, never its own, and keeps statuses", () => {
+		const manager = createHealthcheckManager();
+		const protocol = Healthcheck({ manager });
+		const { router } = createMockRouter();
+
+		protocol.setup?.(createMockContext(["svc.v1.Early"]));
+		protocol.register(router);
+		manager.update(ServingStatus.SERVING, "svc.v1.Early");
+		manager.register("db", ServingStatus.NOT_SERVING);
+
+		protocol.ready?.(createMockContext(["svc.v1.Early", "grpc.health.v1.Health", "svc.v1.Late"], ["svc.v1.DeclaredOnly"]));
+
+		assert.deepStrictEqual(
+			[...manager.getAllStatuses().entries()],
+			[
+				["svc.v1.Early", { status: ServingStatus.SERVING }],
+				["db", { status: ServingStatus.NOT_SERVING }],
+				["svc.v1.Late", { status: ServingStatus.UNKNOWN }],
+			],
+		);
+		assert.strictEqual(manager.getStatus("grpc.health.v1.Health"), undefined);
+		assert.strictEqual(manager.getStatus("svc.v1.DeclaredOnly"), undefined);
+	});
+
 	// The manager passed in the options is the one the protocol reports from
 	// and initializes; the module singleton is left alone.
 	it("reports from the manager given in options and leaves the singleton untouched", () => {

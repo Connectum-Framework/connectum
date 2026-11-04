@@ -85,6 +85,17 @@ function boundedName(name: string): string {
  * Pass to createServer({ protocols: [...] }).
  * Use the singleton `healthcheckManager` export to control health status.
  *
+ * Health tracks every service the server mounts: the application services and
+ * the services of all other protocols (the reflection services included),
+ * wherever `Healthcheck()` stands in the `protocols` array. The set is
+ * completed in the protocol's `ready` hook, after every protocol has
+ * registered. The `grpc.health.v1.Health` service itself is never tracked, and
+ * a service that is only declared in a mounted file is not tracked either.
+ * Every tracked service starts as `UNKNOWN`. A protocol that wraps
+ * `Healthcheck()` and delegates to it must forward `ready` as well as `setup`
+ * and `register`; without `ready` Health tracks only the services registered
+ * before the wrapper.
+ *
  * `httpPaths`, when passed, is validated even if `httpEnabled` is false.
  * HTTP request paths are matched exactly and case-sensitively (`/healthz/`
  * does not match `/healthz`); the query string is ignored and the method is
@@ -140,12 +151,18 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const protocol: ProtocolRegistration = {
         name: "healthcheck",
 
-        // In setup, not register: a router built later sees mounted services that
+        // Not in register: a router built later sees mounted services that
         // already include this protocol's own Health service, so initializing
         // there would start tracking it as UNKNOWN and take overall health out
         // of SERVING. It would also drop any service the application tracks
         // without mounting it, because initialize keeps only the services in its
         // input (with their status) and removes the rest.
+        //
+        // `setup` sees only the services registered before this protocol, so
+        // what it tracks depends on where Healthcheck() stands in `protocols`.
+        // It is the starting point for the duplicate check and the fallback for
+        // a wrapper that does not forward `ready`; `ready` then replaces it with
+        // the complete set.
         setup(context: ProtocolContext): void {
             // `context.services` includes those of the protocols before this
             // one, so a second Healthcheck() (or an application that mounts its
@@ -158,6 +175,16 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
             }
             // The mounted services, not every service of their files.
             const serviceNames = context.services.map((service) => service.typeName);
+            manager.initialize(serviceNames);
+        },
+
+        // Runs after every protocol has registered, so the tracked set does not
+        // depend on where Healthcheck() stands in the `protocols` array. The
+        // statuses set since `setup` are kept: initialize preserves a service
+        // that is still in its input.
+        ready(context: ProtocolContext): void {
+            // This protocol's own service is in the full set; it is never tracked.
+            const serviceNames = context.services.map((service) => service.typeName).filter((typeName) => typeName !== Health.typeName);
             manager.initialize(serviceNames);
         },
 
