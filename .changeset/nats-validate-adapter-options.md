@@ -1,5 +1,0 @@
----
-"@connectum/events-nats": minor
----
-
-fix: `NatsAdapter()` validates its options when the adapter is created and throws an error that names the option, instead of replacing the value silently or failing later at the server. Rejected: `servers` that is not a non-empty string or a non-empty array of non-empty strings (`[]` used to dial the local default address), `consumerOptions.ackWait` that is not a finite number of milliseconds greater than 0 (`0` used to become the 30 s default, a negative number made the server redeliver at once), `consumerOptions.maxDeliver` other than `-1` or a positive integer (`0`, `-2` and `1.5` were accepted or refused only by the server at the first `subscribe()`), `consumerOptions.deliverPolicy` other than `"new"`, `"all"` or `"last"` (an unknown value used to behave like `"new"`), and a missing or non-object `options` or `consumerOptions`. A fractional `ackWait` is sent as whole nanoseconds. A configuration that passed one of the rejected values now fails at start-up; valid values behave as before.

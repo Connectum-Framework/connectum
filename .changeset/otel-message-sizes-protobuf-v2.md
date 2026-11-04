@@ -1,7 +1,0 @@
----
-"@connectum/otel": minor
----
-
-fix: the message-size telemetry reports real sizes with protobuf-es v2. The four size histograms (`rpc.server.request.size`, `rpc.server.response.size`, `rpc.client.request.size`, `rpc.client.response.size`) and the `rpc.message.uncompressed_size` attribute of the `rpc.message` span events (`recordMessages: true`) were `0` for every call, because the estimate called a `toBinary()` method that protobuf-es v2 messages do not have. They are now the serialized length of the message, `toBinary(schema, message).byteLength` with the schema of the method's input or output, for unary calls and for every message of a stream's events. The aggregate size histograms of a streaming call stay `0`, as documented.
-
-Dashboards and alerts that read these histograms see non-zero values from this version on (before, the sum was always `0`). `estimateMessageSize()` takes an optional second argument, the message schema; without it, a v2 message still measures `0`, and an object with a `toBinary()` method is measured with that method. It no longer remembers a size per message object, because applications reuse and mutate message objects between calls, and a remembered size would be wrong for the later calls. A message that fails to serialize measures `0` and never fails the call. Sizes are computed only when the size histograms or `recordMessages` are on, so `withoutMetrics: true` without `recordMessages` does no extra serialization.

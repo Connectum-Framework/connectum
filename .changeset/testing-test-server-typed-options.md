@@ -1,5 +1,0 @@
----
-"@connectum/testing": minor
----
-
-fix: `CreateTestServerOptions` is typed with the element types of `createServer()`: `services` is `readonly ServiceDefinition[]`, `interceptors` is `readonly Interceptor[]` and `protocols` is `readonly ProtocolRegistration[]`, where they were all `unknown[]`. A string, a number or `null` among the services (or a value of another type among the interceptors and protocols) is now a compile error, and in untyped code `createTestServer()` and `withTestServer()` reject it before anything starts with a `TypeError` that names the option and the index of the element, for example `createTestServer: services[0] must be a service definition returned by defineService() or defineLazyService(), got the string "not-a-service".`; before, a bad service failed from the middle of `createServer()` (`definition.register is not a function`), and a bad interceptor was accepted and a server started anyway. Code that passed `unknown[]` typed lists has to type them; valid values behave as before. See the migration notes for `@connectum/testing`.
