@@ -61,7 +61,9 @@ rejects with `AmqpTopologyError`) or `recovery.initialConnectMaxRetries` (a
 bounded number of attempts). With `lifecycle.onLifecycle` the failure arrives as a
 `setup-failed` event and no warning is emitted. An unreachable broker is not a
 topology failure and is not warned about. A mistyped `exchangeType` never reaches
-the broker: `AmqpAdapter()` throws a `TypeError`.
+the broker: `AmqpAdapter()` throws a `TypeError`. This also holds when the broker is down
+at start and comes up with the conflict: the first recovery attempts deliver
+`setup-failed`, and `failFastOnInitialSetupError` rejects `connect()`.
 
 ## Selective routing on a headers exchange
 

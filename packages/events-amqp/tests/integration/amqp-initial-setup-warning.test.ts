@@ -234,6 +234,119 @@ describe("AMQP initial connect: topology failure warning (testcontainers)", { sk
         });
     });
 
+    describe("the broker is down at start and comes up with a conflicting topology", () => {
+        /** A port nothing listens on yet, and a forwarder that opens it to the real broker later. */
+        async function lateBroker(): Promise<{ readonly url: string; readonly open: () => Promise<void>; readonly close: () => Promise<void> }> {
+            const holder = net.createServer();
+            await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
+            const freePort = (holder.address() as net.AddressInfo).port;
+            await new Promise<void>((resolve) => holder.close(() => resolve()));
+            const sockets = new Set<net.Socket>();
+            const forwarder = net.createServer((client) => {
+                const upstream = net.connect(port, host);
+                sockets.add(client);
+                sockets.add(upstream);
+                client.pipe(upstream);
+                upstream.pipe(client);
+                client.on("error", () => upstream.destroy());
+                upstream.on("error", () => client.destroy());
+            });
+            return {
+                url: `amqp://guest:guest@127.0.0.1:${freePort}`,
+                open: () => new Promise<void>((resolve) => forwarder.listen(freePort, "127.0.0.1", resolve)),
+                close: async () => {
+                    for (const socket of sockets) {
+                        socket.destroy();
+                    }
+                    await new Promise<void>((resolve) => forwarder.close(() => resolve()));
+                },
+            };
+        }
+
+        /** Start with the broker unreachable, hold long enough for the startup probe to give up, then open it. */
+        async function startBeforeBroker(
+            late: Awaited<ReturnType<typeof lateBroker>>,
+            exchange: string,
+            extra: Record<string, unknown>,
+        ): Promise<{ readonly adapter: ReturnType<typeof AmqpAdapter>; readonly connecting: ReturnType<typeof track> }> {
+            await admin((ch) => ch.assertExchange(exchange, "fanout"));
+            const adapter = AmqpAdapter({ url: late.url, exchange, exchangeType: "topic", ...extra });
+            const connecting = track(adapter.connect());
+            await sleep(1_000);
+            assert.equal(connecting.state(), "pending");
+            await late.open();
+            return { adapter, connecting };
+        }
+
+        it("default options: one warning for the refusal, and connect() resolves after the conflict is removed", { timeout: 60_000 }, async () => {
+            const late = await lateBroker();
+            const exchange = uniqueName("late.default");
+            const { adapter, connecting } = await startBeforeBroker(late, exchange, {});
+            try {
+                const warning = await expectOneWarningAcrossRetries();
+                assert.match(warning.message, /inequivalent arg 'type'/);
+                assert.equal(connecting.state(), "pending");
+                await admin((ch) => ch.deleteExchange(exchange));
+                await waitFor(() => connecting.state() !== "pending", 40_000);
+                assert.equal(connecting.state(), "resolved", String(connecting.error()));
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+                await late.close();
+            }
+        });
+
+        it("onLifecycle: setup-failed is delivered by the first recovery attempts, and nothing is warned", { timeout: 60_000 }, async () => {
+            const late = await lateBroker();
+            const exchange = uniqueName("late.lifecycle");
+            const events: AmqpLifecycleEvent[] = [];
+            const { adapter, connecting } = await startBeforeBroker(late, exchange, { lifecycle: { onLifecycle: (event: AmqpLifecycleEvent) => events.push(event) } });
+            try {
+                await waitFor(() => events.some((event) => event.type === "setup-failed" && event.initial));
+                await sleep(1_500);
+                assert.equal(warnings.length, 0);
+                assert.equal(connecting.state(), "pending", "the outcome of the default configuration is unchanged");
+                await admin((ch) => ch.deleteExchange(exchange));
+                await waitFor(() => connecting.state() !== "pending", 40_000);
+                assert.equal(connecting.state(), "resolved", String(connecting.error()));
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+                await late.close();
+            }
+        });
+
+        it("onSetupFailed (flat callback) is called for the refusal", { timeout: 60_000 }, async () => {
+            const late = await lateBroker();
+            const exchange = uniqueName("late.flat");
+            const failures: Error[] = [];
+            const { adapter } = await startBeforeBroker(late, exchange, { lifecycle: { onSetupFailed: (error: Error) => failures.push(error) } });
+            try {
+                await waitFor(() => failures.length > 0);
+                assert.ok(failures[0] instanceof AmqpTopologyError);
+                assert.equal(warnings.length, 0);
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+                await late.close();
+                await admin((ch) => ch.deleteExchange(exchange));
+            }
+        });
+
+        it("failFastOnInitialSetupError rejects connect() with the topology error", { timeout: 60_000 }, async () => {
+            const late = await lateBroker();
+            const exchange = uniqueName("late.failfast");
+            const { adapter, connecting } = await startBeforeBroker(late, exchange, { failFastOnInitialSetupError: true });
+            try {
+                await waitFor(() => connecting.state() !== "pending", 40_000);
+                assert.equal(connecting.state(), "rejected");
+                assert.ok(connecting.error() instanceof AmqpTopologyError, String(connecting.error()));
+                assert.equal(warnings.length, 0);
+            } finally {
+                await adapter.disconnect().catch(() => undefined);
+                await late.close();
+                await admin((ch) => ch.deleteExchange(exchange));
+            }
+        });
+    });
+
     describe("controls", () => {
         it("an unreachable broker is not warned, and connect() resolves once it answers", { timeout: 60_000 }, async () => {
             // A free port nothing listens on yet; the forwarder below opens it later.
