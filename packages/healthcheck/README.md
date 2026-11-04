@@ -49,6 +49,14 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 ## Constraints
 
 - HTTP health routes are disabled unless `httpEnabled` is set.
+- Health tracks the application services and the services of custom protocols,
+  wherever `Healthcheck()` stands in `protocols`. It completes the set in the
+  protocol `ready` hook. Never tracked: its own `grpc.health.v1.Health` and the
+  `grpc.reflection.v1` and `v1alpha` services, so `Reflection()` changes neither
+  `Health.List` nor the overall status. Every tracked service starts as
+  `UNKNOWN`. A protocol that wraps `Healthcheck()`
+  must forward `ready` as well as `setup` and `register`; otherwise Health
+  tracks only the services registered before the wrapper.
 - `healthcheckManager.update()` without a service name changes the status of all
   registered services and components.
   Use a dedicated manager when separate servers or components need independent

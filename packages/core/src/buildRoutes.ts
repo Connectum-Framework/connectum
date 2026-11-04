@@ -160,11 +160,11 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
 
         // Register protocols. On the first materialization each protocol is set
         // up right before its own registration, so it sees the application
-        // services and files plus those of the protocols before it —
-        // Healthcheck does not track itself. The snapshots keep that view fixed
-        // even though `registry` and `mountedServices` keep growing. A protocol
-        // that needs the services of the protocols after it (Reflection) reads
-        // them in `ready`, below.
+        // services and files plus those of the protocols before it. The
+        // snapshots keep that view fixed even though `registry` and
+        // `mountedServices` keep growing. A protocol that needs the services of
+        // the protocols after it (Reflection, Healthcheck) reads them in
+        // `ready`, below.
         const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
             if (settingUp) {

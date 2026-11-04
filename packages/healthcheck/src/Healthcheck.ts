@@ -79,11 +79,38 @@ function boundedName(name: string): string {
 }
 
 /**
+ * Services that are infrastructure of the server and not part of the
+ * application: Health does not answer for them. Listed by name because this
+ * package does not depend on the reflection package.
+ */
+const UNTRACKED_SERVICES: ReadonlySet<string> = new Set([Health.typeName, "grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"]);
+
+/**
+ * Names of the mounted services Health tracks. The mounted services, not
+ * every service of their files.
+ */
+function trackedServiceNames(context: ProtocolContext): string[] {
+    return context.services.map((service) => service.typeName).filter((typeName) => !UNTRACKED_SERVICES.has(typeName));
+}
+
+/**
  * Create healthcheck protocol registration
  *
  * Returns a ProtocolRegistration directly (not `{ protocol, manager }`).
  * Pass to createServer({ protocols: [...] }).
  * Use the singleton `healthcheckManager` export to control health status.
+ *
+ * Health tracks the application services and the services of custom
+ * protocols, wherever `Healthcheck()` stands in the `protocols` array. The set
+ * is completed in the protocol's `ready` hook, after every protocol has
+ * registered. Never tracked: the `grpc.health.v1.Health` service itself, the
+ * infrastructure services `grpc.reflection.v1` and `v1alpha` (so
+ * `Reflection()` changes neither `List` nor the overall status), and a service
+ * that is only declared in a mounted file.
+ * Every tracked service starts as `UNKNOWN`. A protocol that wraps
+ * `Healthcheck()` and delegates to it must forward `ready` as well as `setup`
+ * and `register`; without `ready` Health tracks only the services registered
+ * before the wrapper.
  *
  * `httpPaths`, when passed, is validated even if `httpEnabled` is false.
  * HTTP request paths are matched exactly and case-sensitively (`/healthz/`
@@ -140,12 +167,18 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
     const protocol: ProtocolRegistration = {
         name: "healthcheck",
 
-        // In setup, not register: a router built later sees mounted services that
+        // Not in register: a router built later sees mounted services that
         // already include this protocol's own Health service, so initializing
         // there would start tracking it as UNKNOWN and take overall health out
         // of SERVING. It would also drop any service the application tracks
         // without mounting it, because initialize keeps only the services in its
         // input (with their status) and removes the rest.
+        //
+        // `setup` sees only the services registered before this protocol, so
+        // what it tracks depends on where Healthcheck() stands in `protocols`.
+        // It is the starting point for the duplicate check and the fallback for
+        // a wrapper that does not forward `ready`; `ready` then replaces it with
+        // the complete set.
         setup(context: ProtocolContext): void {
             // `context.services` includes those of the protocols before this
             // one, so a second Healthcheck() (or an application that mounts its
@@ -156,9 +189,15 @@ export function Healthcheck(options: HealthcheckOptions = {}): ProtocolRegistrat
                     `Healthcheck(): the '${Health.typeName}' service is already registered by the application or by an earlier Healthcheck(); register Healthcheck() once per server`,
                 );
             }
-            // The mounted services, not every service of their files.
-            const serviceNames = context.services.map((service) => service.typeName);
-            manager.initialize(serviceNames);
+            manager.initialize(trackedServiceNames(context));
+        },
+
+        // Runs after every protocol has registered, so the tracked set does not
+        // depend on where Healthcheck() stands in the `protocols` array. The
+        // statuses set since `setup` are kept: initialize preserves a service
+        // that is still in its input.
+        ready(context: ProtocolContext): void {
+            manager.initialize(trackedServiceNames(context));
         },
 
         register(router: ConnectRouter): void {
