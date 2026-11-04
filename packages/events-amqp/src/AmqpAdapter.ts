@@ -16,6 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { EventEmitter } from "node:events";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import type amqp from "amqplib";
 import type { AmqpTopologyObject } from "./errors.ts";
@@ -714,6 +715,52 @@ export function isBrokerClosedChannel(attemptChannel: amqp.ConfirmChannel | null
     }
     const channelError = channelErrors.get(attemptChannel) as { code?: unknown } | undefined;
     return typeof channelError?.code === "number";
+}
+
+/** `code` of the process warning about a topology failure of the initial connect that nothing else reports. */
+export const INITIAL_SETUP_WARNING_CODE = "CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED";
+
+/**
+ * Report the topology failures of the initial connect that nothing else would
+ * report, and return the function that stops reporting.
+ *
+ * The default configuration retries a broker refusal without limit, because a
+ * service may start before another one fixes the topology. The initial window
+ * has no lifecycle wiring, so with no callback a conflicting exchange or queue
+ * left `connect()` waiting with no sign of why. The broker has answered, so
+ * this is not an outage, and the error text names the object and the reason.
+ * One warning per distinct text: the retry loop repeats the same reply on every
+ * attempt. Only an `AmqpTopologyError` is reported; a connection that failed or
+ * was lost during the setup is an outage and stays silent, as before.
+ *
+ * The outcome is untouched: the listener only reads the failure. `isActive`
+ * ends the reporting for an adapter that is closing.
+ * Exported (not via the package barrel) for direct cross-runtime unit testing.
+ */
+export function warnAboutInitialSetupFailures(source: Pick<EventEmitter, "on" | "off">, isActive: () => boolean, emit: (warning: string) => void): () => void {
+    const reported = new Set<string>();
+    const onConnectFailed = (err: unknown): void => {
+        if (!isActive() || !(err instanceof AmqpTopologyError) || reported.has(err.message)) {
+            return;
+        }
+        reported.add(err.message);
+        emit(
+            `AmqpAdapter: the broker refused the topology setup of the first connect, and connect() keeps retrying: ${err.message}. ` +
+                "A configuration or topology conflict does not heal by retrying. To make connect() reject, set failFastOnInitialSetupError: true " +
+                "or recovery.initialConnectMaxRetries; to observe the failure, supply lifecycle.onLifecycle and read the 'setup-failed' event.",
+        );
+    };
+    source.on("connect-failed", onConnectFailed);
+    return () => {
+        source.off("connect-failed", onConnectFailed);
+    };
+}
+
+/** Process warning of {@link warnAboutInitialSetupFailures}; `code` lets an application filter or act on it. */
+function emitInitialSetupWarning(message: string): void {
+    if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
+        process.emitWarning(message, { type: "AmqpTopologyWarning", code: INITIAL_SETUP_WARNING_CODE });
+    }
 }
 
 /** Side effects the recovery-lifecycle wiring needs from the adapter closure. */
@@ -2511,7 +2558,8 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                 // Skipped with an initial connect budget: the lifecycle wiring is
                 // then attached before amqplib's first attempt, and every attempt
                 // runs the full setup and reports its own failure.
-                if (recoveryEnabled && initialBudget === null && (options.failFastOnInitialSetupError || lifecycle?.onSetupFailed || lifecycle?.onLifecycle)) {
+                const startupObserved = Boolean(options.failFastOnInitialSetupError || lifecycle?.onSetupFailed || lifecycle?.onLifecycle);
+                if (recoveryEnabled && initialBudget === null && startupObserved) {
                     // The probe is a connection of its own that disconnect() knows nothing about: a socket that
                     // never completes the handshake, or a broker that stops answering the setup, would hold
                     // connect() forever. Everything below that waits on it ends when disconnect() aborts.
@@ -2593,11 +2641,19 @@ export function AmqpAdapter(options: AmqpAdapterOptions): EventAdapter {
                     if (reportInitialWindow) {
                         wireRecoveryCycle(cycle, isCurrent);
                     }
+                    // The unreported initial window reaches no callback, so a refusal of the
+                    // setup by a reachable broker would be retried in silence. Warn about it
+                    // unless the startup probe, fail-fast or a budget already reports it.
+                    const initialFailureObserved = reportInitialWindow || startupObserved;
+                    const stopInitialWarnings = initialFailureObserved
+                        ? null
+                        : warnAboutInitialSetupFailures(wrapper, () => !closing && !cycle.abandoned && isCurrent(), emitInitialSetupWarning);
                     try {
                         await wrapper.waitForConnect();
                     } catch (err) {
                         throw initialConnectFailure(cycle, err, initialBudget, recoveryOpts.maxRetries);
                     } finally {
+                        stopInitialWarnings?.();
                         if (pendingCycle === cycle) {
                             pendingCycle = null;
                         }
