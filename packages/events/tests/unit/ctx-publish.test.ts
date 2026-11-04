@@ -15,10 +15,7 @@ import { EventOptionsSchema } from "../../gen/connectum/events/v1/options_pb.js"
 import { createEventBus } from "../../src/EventBus.ts";
 import { createEventContext } from "../../src/EventContext.ts";
 import type { EventAdapter, EventBusObserverEvent, EventBusOptions, EventContext, EventSubscription, RawEvent, RawEventHandler } from "../../src/types.ts";
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { gate, until } from "./helpers/until.ts";
 
 const msg = () => create(EventOptionsSchema, {});
 
@@ -107,7 +104,7 @@ describe("ctx.publish while the bus is running", () => {
         });
         await bus.start();
         const handled = deliver();
-        await sleep(10);
+        await until(() => publishes.length === 1, "the publish to reach the adapter");
         publishes[0]?.resolve();
         await handled;
 
@@ -123,15 +120,19 @@ describe("ctx.publish while the bus is running", () => {
 
 describe("ctx.publish while the bus stops", () => {
     it("is admitted for a running handler, and stop() disconnects only after it settled", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, publishes, order, events } = makeBus(async (ctx) => {
-            await sleep(30); // stop() has begun when this publish is made
+            entered.open();
+            await stopBegan.opened; // stop() has begun when this publish is made
             await ctx.publish(EventOptionsSchema, msg(), { topic: "out.relay" });
         });
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         const stopping = bus.stop();
-        await sleep(60);
+        stopBegan.open();
+        await until(() => publishes.length === 1, "the relay publish to reach the adapter");
         assert.deepEqual(order, ["publish:out.relay"], "the relay publish reached the adapter while stopping");
         publishes[0]?.resolve();
         await Promise.all([stopping, handled]);
@@ -141,16 +142,20 @@ describe("ctx.publish while the bus stops", () => {
     });
 
     it("stop() also waits for an admitted publish that the handler did not await", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, publishes, order } = makeBus(async (ctx) => {
-            await sleep(30);
+            entered.open();
+            await stopBegan.opened;
             void ctx.publish(EventOptionsSchema, msg(), { topic: "out.forgotten" }).catch(() => undefined);
         });
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         const stopping = bus.stop();
+        stopBegan.open();
         await handled;
-        await sleep(40);
+        await until(() => publishes.length === 1, "the forgotten publish to reach the adapter");
         assert.deepEqual(order, ["publish:out.forgotten"], "stop() must still be holding the disconnect");
         publishes[0]?.resolve();
         await stopping;
@@ -159,13 +164,19 @@ describe("ctx.publish while the bus stops", () => {
     });
 
     it("bus.publish from outside a handler is still refused", async () => {
-        const { bus, deliver } = makeBus(async () => sleep(60));
+        const entered = gate();
+        const release = gate();
+        const { bus, deliver } = makeBus(async () => {
+            entered.open();
+            await release.opened;
+        });
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         const stopping = bus.stop();
 
         await assert.rejects(() => bus.publish(EventOptionsSchema, msg(), { topic: "out.outside" }), /EventBus is stopping/);
+        release.open();
         await Promise.all([stopping, handled]);
     });
 
@@ -186,7 +197,6 @@ describe("ctx.publish while the bus stops", () => {
         await bus.start();
         await deliver();
         const stopping = bus.stop();
-        await sleep(20);
 
         await assert.rejects(() => (kept as EventContext["publish"])(EventOptionsSchema, msg(), { topic: "out.late" }), /EventBus is stopping/);
         assert.deepEqual(events, [{ type: "rejected", reason: "not-in-flight" }]);
@@ -214,7 +224,7 @@ describe("ctx.publish while the bus stops", () => {
         await bus.start();
         await deliver();
         const stopping = bus.stop();
-        await sleep(80);
+        await until(() => lateResult !== undefined, "the late timer to fire");
 
         assert.ok(lateResult, "the timer must have fired");
         await assert.rejects(() => lateResult as Promise<void>, /EventBus is stopping/);
@@ -245,8 +255,10 @@ describe("ctx.publish while the bus stops", () => {
         });
         let late: Promise<void> | undefined;
         // Ignores the abort, so it is still `alive` when the grace ends and the bus is started again.
+        const entered = gate();
         const { bus, deliver, order, events } = makeBus(
             async (ctx) => {
+                entered.open();
                 await asleep;
                 late = ctx.publish(EventOptionsSchema, msg(), { topic: "out.abandoned" });
                 late.catch(() => undefined);
@@ -255,7 +267,7 @@ describe("ctx.publish while the bus stops", () => {
         );
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         await bus.stop();
         await bus.start();
         wake();
@@ -289,13 +301,17 @@ describe("ctx.publish while the bus stops", () => {
     });
 
     it("is refused after the drain was aborted, and reports it", async () => {
+        const entered = gate();
         const { bus, deliver, events, order } = makeBus(async (ctx) => {
-            await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
+            await new Promise<void>((resolve) => {
+                ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+                entered.open();
+            });
             await ctx.publish(EventOptionsSchema, msg(), { topic: "out.aborted" });
         });
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         await bus.stop();
         await handled.catch(() => undefined);
 
@@ -305,8 +321,11 @@ describe("ctx.publish while the bus stops", () => {
 
     it("a failed admitted publish reaches its handler and does not break stop()", async () => {
         let seen: unknown;
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, publishes, order } = makeBus(async (ctx) => {
-            await sleep(30);
+            entered.open();
+            await stopBegan.opened;
             try {
                 await ctx.publish(EventOptionsSchema, msg(), { topic: "out.fail" });
             } catch (error) {
@@ -315,9 +334,10 @@ describe("ctx.publish while the bus stops", () => {
         });
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         const stopping = bus.stop();
-        await sleep(60);
+        stopBegan.open();
+        await until(() => publishes.length === 1, "the admitted publish to reach the adapter");
         publishes[0]?.reject(new Error("broker said no"));
         await Promise.all([stopping, handled]);
 
@@ -326,19 +346,24 @@ describe("ctx.publish while the bus stops", () => {
     });
 
     it("drainAbortGrace bounds the wait for an admitted publish that never settles, and reports it", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, events, order } = makeBus(
             async (ctx) => {
-                await sleep(20);
+                entered.open();
+                await stopBegan.opened;
                 void ctx.publish(EventOptionsSchema, msg(), { topic: "out.hang" }).catch(() => undefined);
             },
             { drainAbortGrace: 120 },
         );
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
 
         const startedAt = Date.now();
-        await bus.stop();
+        const stopping = bus.stop();
+        stopBegan.open();
+        await stopping;
         await handled;
 
         assert.ok(Date.now() - startedAt < 1_500, "stop() must not wait for the hanging publish forever");
@@ -347,9 +372,12 @@ describe("ctx.publish while the bus stops", () => {
     });
 
     it("the wait for a relay publish shares the grace window of the handlers: the budget is drainTimeout plus one grace", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver } = makeBus(
             async (ctx) => {
-                await sleep(40);
+                entered.open();
+                await stopBegan.opened;
                 void ctx.publish(EventOptionsSchema, msg(), { topic: "out.hang" }).catch(() => undefined);
                 await new Promise<void>(() => undefined);
             },
@@ -357,10 +385,12 @@ describe("ctx.publish while the bus stops", () => {
         );
         await bus.start();
         void deliver();
-        await sleep(10);
+        await entered.opened;
 
         const startedAt = Date.now();
-        await bus.stop();
+        const stopping = bus.stop();
+        stopBegan.open();
+        await stopping;
         const took = Date.now() - startedAt;
 
         assert.ok(took >= 500, `stop() must wait drainTimeout plus the grace (took ${took}ms)`);
@@ -374,9 +404,12 @@ describe("ctx.publish while the bus stops", () => {
         });
         const timer = setTimeout(release, 5_000);
         try {
+            const entered = gate();
+            const stopBegan = gate();
             const { bus, deliver, events, order } = makeBus(
                 async (ctx) => {
-                    await sleep(40);
+                    entered.open();
+                    await stopBegan.opened;
                     void ctx.publish(EventOptionsSchema, msg(), { topic: "out.hang" }).catch(() => undefined);
                     await new Promise<void>(() => undefined);
                 },
@@ -385,10 +418,12 @@ describe("ctx.publish while the bus stops", () => {
             );
             await bus.start();
             void deliver();
-            await sleep(10);
+            await entered.opened;
 
             const startedAt = Date.now();
-            await bus.stop();
+            const stopping = bus.stop();
+            stopBegan.open();
+            await stopping;
 
             assert.ok(Date.now() - startedAt < 2_000, "stop() must go on to disconnect instead of waiting for the subscription close of a stuck handler");
             assert.equal(order.at(-1), "disconnect");
@@ -402,18 +437,22 @@ describe("ctx.publish while the bus stops", () => {
 
 describe("the dead-letter republish while the bus stops", () => {
     it("is awaited before disconnect and reported", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, publishes, order, events } = makeBus(
             async () => {
-                await sleep(30);
+                entered.open();
+                await stopBegan.opened;
                 throw new Error("handler failed");
             },
             { middleware: { dlq: { topic: "dead.letters" } } },
         );
         await bus.start();
         const handled = deliver();
-        await sleep(5);
+        await entered.opened;
         const stopping = bus.stop();
-        await sleep(60);
+        stopBegan.open();
+        await until(() => publishes.length === 1, "the dead-letter republish to reach the adapter");
 
         assert.deepEqual(order, ["publish:dead.letters"], "the republish started while stopping");
         publishes[0]?.resolve();
@@ -424,18 +463,23 @@ describe("the dead-letter republish while the bus stops", () => {
     });
 
     it("counts as unfinished publish work when it never settles and the grace ends", async () => {
+        const entered = gate();
+        const stopBegan = gate();
         const { bus, deliver, events } = makeBus(
             async () => {
-                await sleep(30);
+                entered.open();
+                await stopBegan.opened;
                 throw new Error("handler failed");
             },
             { middleware: { dlq: { topic: "dead.letters" } }, drainAbortGrace: 100 },
         );
         await bus.start();
         void deliver();
-        await sleep(5);
+        await entered.opened;
 
-        await bus.stop();
+        const stopping = bus.stop();
+        stopBegan.open();
+        await stopping;
 
         assert.deepEqual(events, [
             { type: "dlq-republish", topic: "dead.letters" },
@@ -452,7 +496,7 @@ describe("the dead-letter republish while the bus stops", () => {
         );
         await bus.start();
         const handled = deliver();
-        await sleep(10);
+        await until(() => publishes.length === 1, "the dead-letter republish to reach the adapter");
         publishes[0]?.resolve();
         await handled;
 
