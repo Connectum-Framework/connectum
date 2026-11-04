@@ -43,7 +43,7 @@ test("over budget, per-package changes go first and the reader is told where the
     assert.ok(cut.stdout.includes("Fixture highlight"));
     assert.ok(cut.stdout.includes("Raise the supported Node.js floor"), "repo-wide changes stay while they fit");
     assert.ok(!cut.stdout.includes("### @fixture/alpha"), "per-package entries are dropped");
-    assert.match(cut.stdout, /## Package changes\n\n_Omitted: .*CHANGELOG\.md.*draft GitHub Release\._/s);
+    assert.match(cut.stdout, /## Package changes\n\n_Omitted: .*in each package's `CHANGELOG\.md`\._/s);
     assert.equal(cut.stderr, "");
 });
 
@@ -76,4 +76,18 @@ test("a budget that is not a positive integer is rejected", () => {
         assert.equal(run.status, 2, `--max-bytes ${value}`);
         assert.match(run.stderr, /--max-bytes must be a positive integer/);
     }
+});
+
+test("the draft GitHub release step keeps its notes within the size GitHub accepts", async () => {
+    // GitHub answers HTTP 422 for a release description over 125000 characters. The 1.3.0
+    // release job failed on exactly that, after the npm publish, and the steps after it were
+    // skipped. The step has to pass a byte budget below the limit and guard the result.
+    const { readFile } = await import("node:fs/promises");
+    const workflow = await readFile(fileURLToPath(new URL("../../.github/workflows/release.yml", import.meta.url)), "utf8");
+    const step = workflow.slice(workflow.indexOf("- name: Create draft GitHub release"), workflow.indexOf("- name: Update Version Packages PR body"));
+    assert.ok(step.length > 0, "the draft release step must exist");
+    const budget = step.match(/build-release-notes\.mjs "\$\{VERSION\}" --max-bytes (\d+)/);
+    assert.ok(budget, "the step must pass --max-bytes to the generator");
+    assert.ok(Number(budget[1]) < 125000, `the budget ${budget[1]} must stay below GitHub's 125000 character limit`);
+    assert.match(step, /wc -m < "\$NOTES_FILE"\)" -gt 125000/, "the step must fall back when Highlights alone are over the limit");
 });
