@@ -10,7 +10,8 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEvent, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { Redis } from "ioredis";
-import { watchConnection } from "./lifecycle.ts";
+import { validateBrokerOptions } from "./brokerOptions.ts";
+import { dispatchLifecycle, watchConnection } from "./lifecycle.ts";
 import type { RedisReplyMapping } from "./RedisProtocol.ts";
 import { normalizeXAutoClaimReply, normalizeXPendingReply, normalizeXReadGroupReply, RedisReplyShapeError, redisReplyContext, resolveRedisOptions } from "./RedisProtocol.ts";
 import type { RedisAdapterOptions, RedisLifecycleConnection } from "./types.ts";
@@ -48,6 +49,18 @@ const PENDING_RECLAIM_INTERVAL = 5;
 const PENDING_IDLE_MS = 30_000;
 
 /**
+ * Start id of a consumer group that was re-created after Redis lost it: the beginning of the stream.
+ */
+const RECREATED_GROUP_START_ID = "0";
+
+/**
+ * Redis answers `NOGROUP` to `XREADGROUP` and `XAUTOCLAIM` when the stream or the consumer group does not exist.
+ */
+function isNoGroup(err: unknown): boolean {
+    return err instanceof Error && err.message.startsWith("NOGROUP");
+}
+
+/**
  * Create a Redis Streams adapter for the Connectum event bus.
  *
  * The adapter uses Redis Streams with consumer groups for durable,
@@ -69,6 +82,7 @@ const PENDING_IDLE_MS = 30_000;
  * ```
  */
 export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
+    validateBrokerOptions(options.brokerOptions);
     const baseRedisOptions = resolveRedisOptions(options.redisOptions);
     const replyContext = redisReplyContext(baseRedisOptions);
     type RedisClient = Redis<RedisReplyMapping>;
@@ -139,18 +153,53 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             });
         }
 
+        // ioredis applies `connectTimeout` only until the TCP connection is established, so a host that
+        // accepts it and never answers the handshake would keep this wait pending forever. The same
+        // option bounds the wait for `ready`; a non-positive value means no deadline, as it does in ioredis.
+        const timeoutMs = instance.options.connectTimeout;
+
         await new Promise<void>((resolve, reject) => {
-            const onReady = () => {
+            let deadline: ReturnType<typeof globalThis.setTimeout> | undefined;
+            const settle = () => {
+                instance.removeListener("ready", onReady);
                 instance.removeListener("error", onError);
+                globalThis.clearTimeout(deadline);
+            };
+            const onReady = () => {
+                settle();
                 resolve();
             };
             const onError = (err: Error) => {
-                instance.removeListener("ready", onReady);
+                settle();
                 reject(err);
             };
             instance.once("ready", onReady);
             instance.once("error", onError);
+            if (typeof timeoutMs === "number" && timeoutMs > 0) {
+                deadline = globalThis.setTimeout(() => {
+                    settle();
+                    reject(new Error(`RedisAdapter: connection not ready within ${timeoutMs} ms (redisOptions.connectTimeout)`));
+                }, timeoutMs);
+            }
         });
+    }
+
+    /**
+     * Create the consumer group (and the stream, if it is absent).
+     *
+     * @returns `true` when this call created the group, `false` when it already existed (`BUSYGROUP`).
+     */
+    async function ensureGroup(client: RedisClient, key: string, group: string, startId: string): Promise<boolean> {
+        try {
+            await client.xgroup("CREATE", key, group, startId, "MKSTREAM");
+            return true;
+        } catch (err: unknown) {
+            // BUSYGROUP means group already exists -- safe to ignore
+            if (!(err instanceof Error && err.message.includes("BUSYGROUP"))) {
+                throw err;
+            }
+            return false;
+        }
     }
 
     /**
@@ -296,14 +345,7 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
 
             // Ensure consumer groups exist for all streams
             for (const key of streamKeys) {
-                try {
-                    await redis.xgroup("CREATE", key, group, "$", "MKSTREAM");
-                } catch (err: unknown) {
-                    // BUSYGROUP means group already exists -- safe to ignore
-                    if (!(err instanceof Error && err.message.includes("BUSYGROUP"))) {
-                        throw err;
-                    }
-                }
+                await ensureGroup(redis, key, group, "$");
             }
 
             // Per-subscription running flag
@@ -326,6 +368,28 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
             // at that moment (EventBus.stop() unsubscribes first and drains afterwards) must still be
             // able to XACK its message. The shared connection stays open until disconnect().
             const ackRedis = redis;
+
+            /**
+             * Re-create the groups Redis no longer knows (data loss, failover to a replica without the stream).
+             *
+             * The groups start at the beginning of the stream: after a loss the stream holds the entries
+             * published since, and starting at "$" would drop the ones published before this recovery ran.
+             * Entries the group had already handled before it was lost are delivered again, which the
+             * at-least-once delivery contract allows.
+             *
+             * @returns How many groups this call created.
+             */
+            const recreateGroups = async (): Promise<number> => {
+                let created = 0;
+                for (const key of streamKeys) {
+                    if (await ensureGroup(blockingRedis, key, group, RECREATED_GROUP_START_ID)) {
+                        created += 1;
+                        console.warn(`[RedisAdapter] re-created consumer group "${group}" on stream "${key}" after NOGROUP; reading from the start of the stream`);
+                        dispatchLifecycle(options.lifecycle, { type: "group-recreated", group, stream: key, connection: { group, patterns: [...patterns] } });
+                    }
+                }
+                return created;
+            };
 
             /**
              * Process a single stream message entry through the handler.
@@ -432,6 +496,11 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                         if (err instanceof RedisReplyShapeError) {
                             throw err;
                         }
+                        if (isNoGroup(err)) {
+                            // Failure to re-create propagates to the consume loop, which logs it and retries after its delay.
+                            await recreateGroups();
+                            continue;
+                        }
                         console.warn("[RedisAdapter] XAUTOCLAIM error (non-fatal):", err);
                     }
                 }
@@ -488,6 +557,20 @@ export function RedisAdapter(options: RedisAdapterOptions = {}): EventAdapter {
                             blockingRedis.disconnect();
                             console.error("[RedisAdapter] consume loop stopped after an unsupported Redis reply:", err);
                             break;
+                        }
+                        if (isNoGroup(err)) {
+                            try {
+                                // Nothing created means the group is already back (BUSYGROUP): the next read
+                                // decides, and the delay below still guards against a loop that cannot make progress.
+                                if ((await recreateGroups()) > 0) {
+                                    continue;
+                                }
+                            } catch (recoveryError) {
+                                if (!subscriptionRunning) {
+                                    break;
+                                }
+                                console.error("[RedisAdapter] could not re-create the consumer group:", recoveryError);
+                            }
                         }
                         console.error("[RedisAdapter] consume loop error, retrying in", ERROR_RETRY_DELAY_MS, "ms:", err);
                         // Transient error -- wait before retrying

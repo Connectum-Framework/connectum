@@ -49,10 +49,40 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 ## Constraints
 
 - HTTP health routes are disabled unless `httpEnabled` is set.
+- Health tracks the application services and the services of custom protocols,
+  wherever `Healthcheck()` stands in `protocols`. It completes the set in the
+  protocol `ready` hook. Never tracked: its own `grpc.health.v1.Health` and the
+  `grpc.reflection.v1` and `v1alpha` services, so `Reflection()` changes neither
+  `Health.List` nor the overall status. Every tracked service starts as
+  `UNKNOWN`. A protocol that wraps `Healthcheck()`
+  must forward `ready` as well as `setup` and `register`; otherwise Health
+  tracks only the services registered before the wrapper.
 - `healthcheckManager.update()` without a service name changes the status of all
   registered services and components.
   Use a dedicated manager when separate servers or components need independent
   status.
+- Servers that omit `manager` share the singleton, and each server's start
+  keeps only that server's services in it. Starting a second server in the
+  same process removes the services the second server does not mount, so the
+  first keeps running but answers `NOT_FOUND` for its own services that are
+  missing there. Overall health (empty service name) is computed over the one
+  shared registry, so it also depends on the other server's statuses. Pass
+  `manager: createHealthcheckManager()` to every server of such a process.
+- `update()`, `register()` and `set()` accept only the four `ServingStatus`
+  values (0 to 3) and string names. Anything else throws `TypeError` or
+  `RangeError` and leaves the registry unchanged.
+- `Health.Watch` sends a message for every change of the watched status, in
+  order, as soon as the manager reports it (`HealthcheckManager.subscribe()`).
+  A status that goes down and back up inside one `watchInterval` is delivered
+  as two messages. The interval only paces a periodic re-check.
+- `watchInterval` must be an integer from 1 to 2147483647 milliseconds;
+  `Healthcheck()` throws otherwise.
+- `Healthcheck()` throws when `options` is `null`, `manager` is not a
+  `HealthcheckManager` or `httpEnabled` is not a boolean. Register it once per
+  server: a second `Healthcheck()` (or your own `grpc.health.v1.Health`
+  service) makes `start()` reject, because only one registration may answer.
+- `Health.Check` answers `NOT_FOUND` for an unknown service. The message repeats
+  at most the first 128 characters of the requested name.
 
 ## Learn and reference
 

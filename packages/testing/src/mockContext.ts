@@ -16,6 +16,7 @@ import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { createHandlerContext, type HandlerContext, type Interceptor } from "@connectrpc/connect";
 import { type Context, createServer, type ServiceCatalog } from "@connectum/core";
 import { type MockService, mockResolver } from "./mockResolver.ts";
+import { TRANSPORT_READ_LIMIT } from "./unboundedReadLimit.ts";
 
 /** Options for {@link createMockContext}. */
 export interface CreateMockContextOptions {
@@ -31,6 +32,20 @@ export interface CreateMockContextOptions {
     readonly timeoutMs?: number;
     /** Optional header names propagated onto outgoing calls (default none). */
     readonly propagateHeaders?: readonly string[];
+    /**
+     * The method of the handler under test, as `"<service typeName>/<method name>"`
+     * (for example `"t.v1.Hello/Say"`, the key format of `ctx.call`). It is what the
+     * handler reads as `ctx.service`, `ctx.method` and `ctx.url`. Without it the
+     * context describes the first method of the first service of the catalog, which
+     * is the right answer only for a catalog of one method.
+     */
+    readonly method?: string;
+    /**
+     * Abort signal of the inbound request: `ctx.signal` aborts when it does, and
+     * the abort cascades into the outgoing calls the handler makes. Without it
+     * `ctx.signal` never aborts.
+     */
+    readonly signal?: AbortSignal;
 }
 
 interface ServerInternals {
@@ -51,6 +66,28 @@ function firstServiceAndMethod(catalog: ServiceCatalog): { service: DescService;
     return { service, method };
 }
 
+/** Resolve `"<service typeName>/<method name>"` against the catalog. */
+function namedServiceAndMethod(catalog: ServiceCatalog, name: unknown): { service: DescService; method: DescMethod } {
+    if (typeof name !== "string") {
+        throw new TypeError(`createMockContext: options.method must be a string like "pkg.v1.Service/Method", got ${typeof name}.`);
+    }
+    const separator = name.lastIndexOf("/");
+    const typeName = name.slice(0, separator);
+    const methodName = name.slice(separator + 1);
+    if (separator <= 0 || methodName === "") {
+        throw new TypeError(`createMockContext: options.method must have the form "pkg.v1.Service/Method", got "${name}".`);
+    }
+    const service = Object.values(catalog).find((candidate) => candidate.typeName === typeName);
+    if (service === undefined) {
+        throw new TypeError(`createMockContext: options.method "${name}": service "${typeName}" is not in the catalog.`);
+    }
+    const method = service.methods.find((candidate) => candidate.name === methodName);
+    if (method === undefined) {
+        throw new TypeError(`createMockContext: options.method "${name}": method "${methodName}" is not a method of "${typeName}".`);
+    }
+    return { service, method };
+}
+
 /**
  * Create a {@link @connectum/core!Context | Context} whose `ctx.call` / `ctx.stream` resolve against the
  * given mocks. Pass it as the second argument to a handler under test.
@@ -65,12 +102,16 @@ function firstServiceAndMethod(catalog: ServiceCatalog): { service: DescService;
  * ```
  */
 export function createMockContext(options: CreateMockContextOptions): Context {
-    const { service, method } = firstServiceAndMethod(options.catalog);
+    if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
+        throw new TypeError("createMockContext: options.signal must be an AbortSignal.");
+    }
+    const { service, method } = options.method === undefined ? firstServiceAndMethod(options.catalog) : namedServiceAndMethod(options.catalog, options.method);
 
     const server = createServer({
         services: [],
         catalog: options.catalog,
         remoteResolver: mockResolver(options.mocks),
+        readMaxBytes: TRANSPORT_READ_LIMIT,
         ...(options.outgoingInterceptors ? { outgoingInterceptors: options.outgoingInterceptors } : {}),
         ...(options.propagateHeaders ? { propagateHeaders: options.propagateHeaders } : {}),
     });
@@ -83,6 +124,7 @@ export function createMockContext(options: CreateMockContextOptions): Context {
         url: `https://mock/${service.typeName}/${method.name}`,
         ...(options.requestHeader ? { requestHeader: options.requestHeader } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.signal !== undefined ? { requestSignal: options.signal } : {}),
     });
 
     return (server as unknown as ServerInternals)._makeCatalogContext(hctx);

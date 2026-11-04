@@ -15,6 +15,7 @@ import {
     isBrokerClosedChannel,
     isConnectionLostError,
     isDeterministicTopologyDrift,
+    isInvalidPublishArgument,
     normalizeInitialConnectBudget,
     normalizePublishRetryBudget,
     normalizePublishTimeout,
@@ -173,7 +174,7 @@ describe("initialConnectMaxRetries normalization", () => {
         assert.equal(normalizeInitialConnectBudget(undefined), null);
     });
 
-    it("forwards the budget to amqplib as initialMaxRetries with waitForConnect: false, and neither key when unset", () => {
+    it("always asks amqplib for waitForConnect: false, and forwards the budget as initialMaxRetries only when set", () => {
         const setup = async (): Promise<void> => undefined;
         const recovery = { initialDelay: 10, maxDelay: 20, factor: 3, jitter: 0.1, maxRetries: 7 };
 
@@ -184,13 +185,13 @@ describe("initialConnectMaxRetries normalization", () => {
             jitter: 0.1,
             maxRetries: 7,
             setup,
-            initialMaxRetries: 2,
             waitForConnect: false,
+            initialMaxRetries: 2,
         });
 
         const unset = buildRecoveryConnectOptions({ recovery, setup, initialBudget: null });
         assert.equal(Object.hasOwn(unset, "initialMaxRetries"), false);
-        assert.equal(Object.hasOwn(unset, "waitForConnect"), false, "amqplib keeps resolving connect() only after the first success");
+        assert.equal(unset.waitForConnect, false, "the adapter must hold the recovering connection before the first attempt, or disconnect() cannot cancel a waiting connect()");
     });
 
     /**
@@ -1072,6 +1073,17 @@ describe("isAutoRetriablePublishError", () => {
         assert.equal(isAutoRetriablePublishError(new AmqpSerializationError("bad encode"), { retryOnTimeout: true }), false, "deterministic: serialization");
         assert.equal(isAutoRetriablePublishError(new AmqpTopologyError("drift"), { retryOnTimeout: true }), false, "deterministic: topology");
         assert.equal(isAutoRetriablePublishError(new Error("raw"), { retryOnTimeout: true }), false, "raw errors never gate a retry");
+    });
+
+    it("an argument error is not retriable, and a closed channel is not mistaken for one", () => {
+        assert.equal(isAutoRetriablePublishError(new TypeError("Field 'routingKey' is the wrong type"), { retryOnTimeout: true }), false);
+        assert.equal(isAutoRetriablePublishError(new RangeError("timestamp out of range"), { retryOnTimeout: true }), false);
+        assert.equal(isInvalidPublishArgument(new TypeError("Field 'routingKey' is the wrong type")), true);
+        assert.equal(isInvalidPublishArgument(new RangeError("timestamp out of range")), true);
+        // amqplib's IllegalOperationError is a plain Error subclass: publishing on a closed channel stays a connection failure.
+        const illegalOperation = Object.assign(new Error("Channel closed"), { name: "IllegalOperationError" });
+        assert.equal(isInvalidPublishArgument(illegalOperation), false);
+        assert.equal(isInvalidPublishArgument(new AmqpConnectionError("recovery in progress")), false);
     });
 
 });
@@ -2086,5 +2098,59 @@ describe("normalizePublishRetryBudget", () => {
         assert.equal(normalizePublishRetryBudget(Number.NaN), 5);
         assert.equal(normalizePublishRetryBudget(undefined), 5);
         assert.equal(normalizePublishRetryBudget("3"), 5);
+    });
+});
+
+describe("handleDelivery: headers of a message from an external publisher", () => {
+    const makeMessage = (headers: Record<string, unknown> | undefined, properties: Record<string, unknown> = {}): amqp.ConsumeMessage =>
+        ({
+            content: Buffer.from("payload"),
+            fields: { deliveryTag: 1, redelivered: false, exchange: "ex", routingKey: "ext.t", consumerTag: "ctag" },
+            properties: { headers, ...properties },
+        }) as unknown as amqp.ConsumeMessage;
+
+    const channel = { ack: () => undefined, nack: () => undefined };
+
+    /** What the handler sees for a message carrying these headers/properties. */
+    async function received(headers: Record<string, unknown> | undefined, properties: Record<string, unknown> = {}) {
+        let seen: { eventId: string; metadata: ReadonlyMap<string, string> } | undefined;
+        await handleDelivery({
+            channel,
+            message: makeMessage(headers, properties),
+            queue: "q",
+            handler: async (event) => {
+                seen = { eventId: event.eventId, metadata: event.metadata };
+            },
+            decode: undefined,
+            lifecycle: undefined,
+        });
+        assert.ok(seen, "the handler ran");
+        return seen;
+    }
+
+    it("scalar header values keep their string form", async () => {
+        const { metadata } = await received({ n: 5, flag: true, text: "plain", buf: Buffer.from("zz"), big: 10n });
+        assert.deepEqual(Object.fromEntries(metadata), { n: "5", flag: "true", text: "plain", buf: "zz", big: "10" });
+    });
+
+    it("a table or an array becomes its JSON text, never '[object Object]'", async () => {
+        const { metadata } = await received({ nested: { a: 1, b: { c: [true, "x"] } }, list: [1, "a"], withBig: { n: 12n } });
+        assert.equal(metadata.get("nested"), '{"a":1,"b":{"c":[true,"x"]}}');
+        assert.equal(metadata.get("list"), '[1,"a"]');
+        assert.equal(metadata.get("withBig"), '{"n":"12"}', "a 64-bit integer inside a table is kept as its decimal text");
+    });
+
+    it("an absent or null header value is left out, as before", async () => {
+        const { metadata } = await received({ gone: null, kept: "v" });
+        assert.deepEqual(Object.fromEntries(metadata), { kept: "v" });
+    });
+
+    it("the event id is x-event-id, else the message id, else a fresh UUID per delivery (so deduplication needs one of the first two)", async () => {
+        assert.equal((await received({ "x-event-id": "evt-1" }, { messageId: "m-1" })).eventId, "evt-1");
+        assert.equal((await received({}, { messageId: "m-1" })).eventId, "m-1");
+        const first = (await received({})).eventId;
+        const second = (await received({})).eventId;
+        assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+        assert.notEqual(first, second, "a message without x-event-id and messageId gets a new id on every delivery");
     });
 });

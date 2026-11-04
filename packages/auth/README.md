@@ -70,10 +70,46 @@ handler for the whole call, including after its first `await` or `yield`.
 
 ## Security constraints
 
-- `createJwtAuthInterceptor` rejects a token without `sub` unless
-  `claimsMapping.subject` supplies the identity.
-- The generic and session interceptors accept `propagatedClaims` to limit the
-  claim keys forwarded in `x-auth-claims` headers when propagation is enabled.
+- `createJwtAuthInterceptor` rejects a token whose subject is not a non-empty
+  string (a missing, empty or non-string `sub`) unless `claimsMapping.subject`
+  supplies a non-empty string. A present `issuer` or `audience` must be a
+  non-empty string (or an array of them) and a present `maxTokenAge` a number
+  of seconds above 0 or a duration string; omit the option to skip a check.
+  Anything else throws when the interceptor is created.
+- `createGatewayAuthInterceptor` trusts a shared secret in `trustSource`. A CIDR
+  block in `expectedValues` is matched against a header the caller chooses, so
+  creating the interceptor with one throws unless `allowCallerControlledCidr: true`
+  is set. Creating it also throws, naming the option, for a header name that is
+  not a valid HTTP header name and, with `propagateHeaders` on, for a
+  `defaultType` that is empty, over 128 characters or holds a lone surrogate.
+- `verifyCredentials` and `mapSession` must return a complete `AuthContext`;
+  `null`, `undefined`, `false`, `{}` or a result with a missing or mistyped
+  field (`roles` and `scopes` must be arrays of at most 8192 strings, without
+  holes) ends the call with `Unauthenticated`, with or without `propagateHeaders`,
+  and is never cached. So does a result that passes that check but cannot be
+  copied for the cache or written into headers (a throwing getter, a proxy whose
+  trap throws, a cyclic or `BigInt` claim, a throwing `toJSON`).
+- The JWT, generic and session interceptors accept `propagatedClaims` to limit
+  the claim keys forwarded in `x-auth-claims` headers when propagation is
+  enabled. It must be an array of non-empty strings; anything else throws when
+  the interceptor is created.
+- With `jwksUri`, a key set that cannot be fetched (the identity provider is
+  down, answers with an error or garbage, or does not answer within the
+  timeout) ends the call with `Unauthenticated: Authentication failed`, the same
+  as a bad token. The key set is fetched again on either of two triggers: it
+  is older than the cache age (10 min by default), which can come before the
+  cooldown ends, or a token names a key that is not in it and the cooldown
+  (30 s by default) has passed since the last fetch. After a key rotation a
+  token signed with the new key is rejected until one of them fires, and a
+  retired key keeps verifying only until then, so both windows are upper
+  bounds, not fixed periods. The `jwks` option shortens them:
+  `jwks: { cooldownDuration, cacheMaxAge, timeoutDuration }`, in milliseconds,
+  with jose's defaults of 30000, 600000 and 5000 when omitted (`0` for
+  `cooldownDuration` or `cacheMaxAge` sends a request to the identity provider
+  per unknown key or per call). An empty key set counts as a successful fetch
+  and is cached like any other. `jwks` without
+  `jwksUri`, an unknown name or a value out of range throws when the
+  interceptor is created.
 - `createJwtAuthInterceptor` checks its HMAC secret's minimum byte length
   against configured algorithms: 32 for HS256, 48 for HS384, and 64 for HS512;
   when algorithms are omitted, its minimum is 32 bytes.
@@ -81,14 +117,46 @@ handler for the whole call, including after its first `await` or `yield`.
   interceptor throws); list `Service/*` patterns, or do not register the
   interceptor. A cache `ttl` must be finite and greater than 0 and `maxSize` an
   integer of at least 1.
+- `createAuthzInterceptor` and `createProtoAuthzInterceptor` throw when
+  `defaultPolicy` or a rule `effect` is not exactly `"allow"` or `"deny"`, and
+  the `authorize` callback allows a call only when it returns `true`. A method
+  pattern other than `"*"`, `"Service/*"` or `"Service/Method"` in
+  `skipMethods`, a rule's `methods` or `internalMethods` throws at creation: a
+  partial wildcard such as `"Service/Write*"` never matches.
+- A proto method marked `internal` and without `requires` admits only an
+  identity established by `createInternalAuthInterceptor`; an identity from any
+  other interceptor, an end-user JWT included, is `Unauthenticated`.
+- The gateway, internal, generic, session and client interceptors check the options they
+  cannot work without when they are created (`trustSource`, `expectedValues`
+  entries, `internalMethods`, `verifyCredentials`, `verifySession`, `mapSession`,
+  `extractToken`, a client token or secret),
+  and a client token factory that returns nothing fails the call instead of
+  sending `Bearer undefined`.
 - With `propagateHeaders`, a subject, type, name, or scope that contains NUL, CR,
-  LF, or a character above U+00FF (a header value is a byte string) is rejected
-  with `Unauthenticated` before it is cached. Roles and claims are written as
-  JSON with `\uXXXX` escapes for such characters and read back unchanged.
+  LF, or a lone surrogate, and a scope that is empty or contains a space (the
+  reader splits scopes on spaces and drops empty pieces), is rejected with `Unauthenticated` before it is cached.
+  Roles and claims are written as JSON with `\uXXXX` escapes for characters above
+  U+00FF and read back as the parsed JSON.
+- With the `cache` option of the generic and session interceptors, every request
+  gets its own copy of the cached identity. `roles`, `scopes`, `expiresAt` and
+  nested plain objects, arrays and dates in `claims` are copied; other values in
+  `claims` (a `Map`, a class instance) are shared. A handler that changes its
+  copy does not change what a later request with the same credential receives.
 - The generic, JWT, and session interceptors strip the standard Connectum auth
-  headers before setting verified auth
-  context. Header values for roles, scopes, and claims are bounded; oversized
-  values are omitted.
+  headers (the names in `AUTH_HEADERS`) before setting verified auth
+  context. The gateway interceptor strips them too, after it has read its own
+  mapped input, so a client-supplied value of one of those headers is not
+  forwarded to the next hop.
+- With `propagateHeaders`, text above U+00FF in a subject, type, name, or scope
+  (Cyrillic, CJK, emoji) is written as `utf-8''` plus percent-encoded UTF-8 and
+  read back by the receiver (the writer sets `x-auth-encoding: percent-utf8`,
+  and readers decode only when it is present). ASCII and Latin-1 text is written
+  as is, with two exceptions that are encoded too: a text that starts with
+  `utf-8''` (readers decode that prefix when the marker is present), and a text
+  with a space or tab at either end (`Headers.set` would otherwise remove that
+  whitespace). A subject over 512 characters, a type over 128, a name over 256,
+  or roles, scopes, or claims whose serialized value is over 8192 characters is
+  rejected with `Unauthenticated` instead of being cut or left out.
 
 For gateway and service-to-service trust boundaries, see the
 [authentication guide](https://connectum.dev/en/guide/auth) and the

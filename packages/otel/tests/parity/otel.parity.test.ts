@@ -30,8 +30,9 @@ process.env.OTEL_LOGS_EXPORTER ??= "none";
 
 import assert from "node:assert";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { create } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { createLocalTransport, createServer, defineService } from "@connectum/core";
@@ -375,7 +376,7 @@ test("parity: server-streaming emits identical rpc.message events", async () => 
 // Error span parity
 // ---------------------------------------------------------------------------
 
-test("parity: error case → span status=ERROR identical on both transports", async () => {
+test("parity: error case → span status and error attributes identical on both transports", async () => {
     const { http, local } = await runBothTransports({
         services: [echoRoutes({ throwError: true })],
         buildInterceptors: () => buildOtelInterceptors(),
@@ -385,14 +386,21 @@ test("parity: error case → span status=ERROR identical on both transports", as
         },
     });
 
-    // Both runs must record ERROR status with matching rpc.response.status_code.
+    // Oracle: the Connect RPC conventions. A client span is an error for every status code
+    // except OK; a server span only for unknown, deadline_exceeded, unimplemented, internal,
+    // unavailable and data_loss, so FAILED_PRECONDITION is an error on the client and leaves
+    // the server span status unset. Both spans carry the code name.
     for (const run of [http, local]) {
         const serverSpan = run.spans.find((s) => s.kind === SpanKind.SERVER);
         assert.ok(serverSpan, "server span missing");
-        assert.strictEqual(serverSpan.status.code, 2 /* SpanStatusCode.ERROR */, "server span must be ERROR");
+        assert.strictEqual(serverSpan.status.code, 0 /* SpanStatusCode.UNSET */, "server span: FAILED_PRECONDITION is not a server error");
         assert.strictEqual(serverSpan.attributes["rpc.response.status_code"], "FAILED_PRECONDITION", "rpc.response.status_code mismatch");
         assert.strictEqual(serverSpan.attributes["error.type"], "FAILED_PRECONDITION", "error.type mismatch");
         assert.ok(!("rpc.connect_rpc.status_code" in serverSpan.attributes), "the replaced attribute must not be emitted");
+        const clientSpan = run.spans.find((s) => s.kind === SpanKind.CLIENT);
+        assert.ok(clientSpan, "client span missing");
+        assert.strictEqual(clientSpan.status.code, 2 /* SpanStatusCode.ERROR */, "client span must be ERROR");
+        assert.strictEqual(clientSpan.attributes["rpc.response.status_code"], "FAILED_PRECONDITION");
     }
 
     // Strip `exception.stacktrace` event attributes before structural diff —
@@ -755,4 +763,180 @@ test("contract: rpc.message events are not recorded unless recordMessages is set
         ["RECEIVED", "SENT"],
         "explicit recordMessages: true records one RECEIVED and one SENT event",
     );
+});
+
+// ---------------------------------------------------------------------------
+// Message sizes with real protobuf-es v2 messages
+// ---------------------------------------------------------------------------
+
+/** Sum and count of every point of one histogram, across attribute sets. */
+function histogramOf(metrics: NormalizedMetric[], name: string): { sum: number; count: number } {
+    let sum = 0;
+    let count = 0;
+    for (const point of metrics.find((m) => m.name === name)?.points ?? []) {
+        const value = point.value as { sum: number; count: number };
+        sum += value.sum;
+        count += value.count;
+    }
+    return { sum, count };
+}
+
+/** The `rpc.message` events of the span of one kind, as [type, id, size]. */
+function messageEvents(spans: NormalizedSpan[], kind: SpanKind): Array<[unknown, unknown, unknown]> {
+    const span = spans.find((s) => s.kind === kind);
+    assert.ok(span, `span of kind ${kind} missing`);
+    return span.events
+        .filter((e) => e.name === "rpc.message")
+        .map((e): [unknown, unknown, unknown] => [e.attributes["rpc.message.type"], e.attributes["rpc.message.id"], e.attributes["rpc.message.uncompressed_size"]])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || Number(a[1]) - Number(b[1]));
+}
+
+test("parity: size histograms and rpc.message sizes of a unary call are the serialized byte length on both transports", async () => {
+    // Oracle: the protobuf wire encoding computed by the library itself from the schema
+    // (toBinary), not by the package under test. protobuf-es v2 messages have no
+    // toBinary() method, so a size read from the message object is always 0.
+    const request = create(EchoRequestSchema, { message: "x".repeat(5000) });
+    const expectedRequestSize = toBinary(EchoRequestSchema, request).byteLength;
+    const expectedResponseSize = toBinary(EchoResponseSchema, create(EchoResponseSchema, { message: `echo:${request.message}`, timestamp: 0n })).byteLength;
+    assert.ok(expectedRequestSize > 5000 && expectedResponseSize > 5000, "the fixture messages are large");
+
+    const { http, local } = await runBothTransports({
+        services: [echoRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await createClient(EchoService, fn).echo(request);
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.server.request.size"), { sum: expectedRequestSize, count: 1 }, `[${label}] rpc.server.request.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.server.response.size"), { sum: expectedResponseSize, count: 1 }, `[${label}] rpc.server.response.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.client.request.size"), { sum: expectedRequestSize, count: 1 }, `[${label}] rpc.client.request.size`);
+        assert.deepStrictEqual(histogramOf(run.metrics, "rpc.client.response.size"), { sum: expectedResponseSize, count: 1 }, `[${label}] rpc.client.response.size`);
+        assert.deepStrictEqual(messageEvents(run.spans, SpanKind.SERVER), [["RECEIVED", 1, expectedRequestSize], ["SENT", 1, expectedResponseSize]], `[${label}] server rpc.message events`);
+        assert.deepStrictEqual(messageEvents(run.spans, SpanKind.CLIENT), [["RECEIVED", 1, expectedResponseSize], ["SENT", 1, expectedRequestSize]], `[${label}] client rpc.message events`);
+    }
+});
+
+test("parity: rpc.message events of a server-streaming call carry the serialized size of every message, the aggregate size histograms stay zero", async () => {
+    const request = create(ItemSchema, { value: "s", sequence: 3 });
+    const sizeOf = (i: number) => toBinary(ItemSchema, create(ItemSchema, { value: `s:${i}`, sequence: i })).byteLength;
+    const requestSize = toBinary(ItemSchema, request).byteLength;
+
+    const { http, local } = await runBothTransports({
+        services: [streamingRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            for await (const _ of createClient(StreamingService, fn).server(request)) {
+                // Drain the stream: the spans end with it.
+            }
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        assert.deepStrictEqual(
+            messageEvents(run.spans, SpanKind.SERVER),
+            [["RECEIVED", 1, requestSize], ["SENT", 1, sizeOf(0)], ["SENT", 2, sizeOf(1)], ["SENT", 3, sizeOf(2)]],
+            `[${label}] server rpc.message events`,
+        );
+        assert.deepStrictEqual(
+            messageEvents(run.spans, SpanKind.CLIENT),
+            [["RECEIVED", 1, sizeOf(0)], ["RECEIVED", 2, sizeOf(1)], ["RECEIVED", 3, sizeOf(2)], ["SENT", 1, requestSize]],
+            `[${label}] client rpc.message events`,
+        );
+        // The metrics guide: for streaming RPCs the aggregate size measurements are recorded as zero.
+        for (const name of ["rpc.server.request.size", "rpc.server.response.size", "rpc.client.request.size", "rpc.client.response.size"]) {
+            assert.strictEqual(histogramOf(run.metrics, name).sum, 0, `[${label}] ${name} is zero for a streaming call`);
+        }
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Streaming calls last until the stream ends
+// ---------------------------------------------------------------------------
+
+const STEP_MS = 100;
+
+/** A server-streaming service whose messages are STEP_MS apart; with `failAt`, it fails with UNAVAILABLE before that message. */
+function slowStreamingRoutes(failAt?: number) {
+    return defineService(StreamingService, {
+        echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+        async *server(req) {
+            for (let i = 0; i < 4; i++) {
+                await delay(STEP_MS);
+                if (i === failAt) throw new ConnectError("backend gone", Code.Unavailable);
+                yield create(ItemSchema, { value: `${req.value}:${i}`, sequence: i });
+            }
+        },
+        async client(requests) {
+            let total = 0;
+            for await (const _ of requests) total++;
+            return { total };
+        },
+        async *bidi(requests) {
+            for await (const item of requests) yield create(ItemSchema, { value: item.value, sequence: item.sequence });
+        },
+    });
+}
+
+test("parity: the duration histograms of a streaming call cover the whole stream on both transports", async () => {
+    // Oracle: the OpenTelemetry RPC metrics conventions: reported alongside an RPC span,
+    // the duration metric SHOULD be the span duration; the span of a stream lasts until the
+    // stream ends. The stream takes 4 x 100 ms; the bound 0.3 s tells that from the time to
+    // the response head (a few ms) and survives a loaded machine.
+    const { http, local } = await runBothTransports({
+        services: [slowStreamingRoutes()],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            for await (const _ of createClient(StreamingService, fn).server(create(ItemSchema, { value: "s" }))) {
+                // Drain the stream: the calls end with it.
+            }
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        for (const name of ["rpc.server.call.duration", "rpc.client.call.duration"]) {
+            const duration = histogramOf(run.metrics, name);
+            assert.strictEqual(duration.count, 1, `[${label}] ${name}: one point per call`);
+            assert.ok(duration.sum >= 0.3, `[${label}] ${name} covers the stream, got ${duration.sum} s`);
+            const point = run.metrics.find((m) => m.name === name)?.points[0];
+            assert.ok(point && !("error.type" in point.attributes), `[${label}] ${name}: a stream that ended normally carries no error.type`);
+        }
+    }
+});
+
+test("parity: a stream that fails after it started carries error.type and rpc.response.status_code on spans and duration metrics on both transports", async () => {
+    // Oracle: the Connect RPC conventions: error.type is the status code of a failed call
+    // (UNAVAILABLE is one of the codes that are errors for a server and a client), and
+    // rpc.response.status_code is the Connect code name.
+    const { http, local } = await runBothTransports({
+        services: [slowStreamingRoutes(2)],
+        buildInterceptors: () => buildOtelInterceptors(),
+        scenario: async ({ fn }) => {
+            await assert.rejects(
+                async () => {
+                    for await (const _ of createClient(StreamingService, fn).server(create(ItemSchema, { value: "s" }))) {
+                        // Drain until the stream fails.
+                    }
+                },
+                (err: unknown) => err instanceof ConnectError && err.code === Code.Unavailable,
+            );
+        },
+    });
+
+    for (const [label, run] of [["http", http], ["local", local]] as const) {
+        for (const [kind, name] of [[SpanKind.SERVER, "rpc.server.call.duration"], [SpanKind.CLIENT, "rpc.client.call.duration"]] as const) {
+            const span = run.spans.find((s) => s.kind === kind);
+            assert.ok(span, `[${label}] span of kind ${kind} missing`);
+            assert.strictEqual(span.attributes["error.type"], "UNAVAILABLE", `[${label}] span ${kind} error.type`);
+            assert.strictEqual(span.attributes["rpc.response.status_code"], "UNAVAILABLE", `[${label}] span ${kind} rpc.response.status_code`);
+            assert.strictEqual(span.status.code, 2 /* SpanStatusCode.ERROR */, `[${label}] span ${kind} status`);
+            const duration = histogramOf(run.metrics, name);
+            assert.strictEqual(duration.count, 1, `[${label}] ${name}: one point per call`);
+            assert.ok(duration.sum >= 0.2, `[${label}] ${name} covers the stream up to the failure, got ${duration.sum} s`);
+            const point = run.metrics.find((m) => m.name === name)?.points[0];
+            assert.strictEqual(point?.attributes["error.type"], "UNAVAILABLE", `[${label}] ${name} error.type`);
+            assert.strictEqual(point?.attributes["rpc.response.status_code"], "UNAVAILABLE", `[${label}] ${name} rpc.response.status_code`);
+        }
+    }
 });

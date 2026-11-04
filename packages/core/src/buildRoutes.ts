@@ -160,10 +160,11 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
 
         // Register protocols. On the first materialization each protocol is set
         // up right before its own registration, so it sees the application
-        // services and files plus those of the protocols before it —
-        // Healthcheck does not track itself, Reflection lists the protocols
-        // registered earlier. The snapshots keep that view fixed even though
-        // `registry` and `mountedServices` keep growing.
+        // services and files plus those of the protocols before it. The
+        // snapshots keep that view fixed even though `registry` and
+        // `mountedServices` keep growing. A protocol that needs the services of
+        // the protocols after it (Reflection, Healthcheck) reads them in
+        // `ready`, below.
         const settingUp = !protocolsSetUp;
         for (const protocol of protocols) {
             if (settingUp) {
@@ -174,6 +175,19 @@ export function buildRoutes(options: BuildRoutesOptions): BuildRoutesResult {
                 protocol.setup?.(context);
             }
             protocol.register(router);
+        }
+        // Every protocol has registered by now, so the snapshot is the full
+        // service set whatever order `protocols` lists them in. `ready` is
+        // one-time work like `setup` and shares its retry rule: a failure here
+        // leaves `protocolsSetUp` false, so the next attempt starts over.
+        if (settingUp) {
+            const context: ProtocolContext = {
+                registry: Object.freeze([...registry]),
+                services: Object.freeze([...mountedServices]),
+            };
+            for (const protocol of protocols) {
+                protocol.ready?.(context);
+            }
         }
         protocolsSetUp = true;
     };

@@ -11,8 +11,8 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
 import { create, isMessage } from '@bufbuild/protobuf';
-import type { ConnectError, Interceptor } from '@connectrpc/connect';
-import { Code } from '@connectrpc/connect';
+import type { Interceptor } from '@connectrpc/connect';
+import { Code, ConnectError } from '@connectrpc/connect';
 import { assertConnectError, createMockNext, createMockNextError, createMockNextSlow, createMockRequest } from '@connectum/test-fixtures';
 import { EchoRequestSchema, EchoResponseSchema } from '../../../testing/tests/fixtures/validated/pb/validated/v1/validated_pb.ts';
 import { createDefaultInterceptors } from '../../src/defaults.ts';
@@ -163,6 +163,67 @@ describe('createDefaultInterceptors', () => {
             () => createDefaultInterceptors({ timeout: true, serializer: null as never }),
             (err: unknown) => err instanceof TypeError && err.message === 'serializer must be true, false or an options object, got null',
         );
+    });
+
+    // A mistyped key used to be ignored: the caller asked for a timeout and silently got none.
+    const knownKeys = 'errorHandler, timeout, bulkhead, circuitBreaker, retry, fallback, validation, serializer';
+    for (const [key, value] of [
+        ['timout', { duration: 10 }],
+        ['circuitbreaker', true],
+        ['retries', true],
+        ['logger', true],
+        ['methodFilter', {}],
+        ['Timeout', true],
+        ['timeout ', true],
+    ] as const) {
+        it(`should refuse the unknown key ${JSON.stringify(key)} with a TypeError that names it and lists the known keys`, () => {
+            assert.throws(
+                () => createDefaultInterceptors({ [key]: value } as never),
+                (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: unknown option ${JSON.stringify(key)}; the known options are ${knownKeys}`,
+            );
+        });
+    }
+
+    it('should refuse an unknown key even when its value is undefined, and name every unknown key', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: true, timout: undefined, retries: true } as never),
+            (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: unknown options "timout", "retries"; the known options are ${knownKeys}`,
+        );
+    });
+
+    it('should report an unknown key before it looks at the values of the known ones', () => {
+        assert.throws(
+            () => createDefaultInterceptors({ timeout: null, timout: true } as never),
+            (err: unknown) => err instanceof TypeError && err.message.startsWith('createDefaultInterceptors: unknown option "timout"'),
+        );
+    });
+
+    for (const [label, value, got] of [
+        ['null', null, 'null'],
+        ['a string', 'timeout', '"timeout"'],
+        ['an array', [], 'an array'],
+        ['a number', 5, '5'],
+    ] as const) {
+        it(`should refuse ${label} as the options argument with a TypeError that names the factory`, () => {
+            assert.throws(
+                () => createDefaultInterceptors(value as never),
+                (err: unknown) => err instanceof TypeError && err.message === `createDefaultInterceptors: options must be an object, got ${got}`,
+            );
+        });
+    }
+
+    it('should still accept every known key together', () => {
+        const interceptors = createDefaultInterceptors({
+            errorHandler: true,
+            timeout: true,
+            bulkhead: true,
+            circuitBreaker: true,
+            retry: true,
+            fallback: { handler: () => ({}) },
+            validation: true,
+            serializer: true,
+        });
+        assert.strictEqual(interceptors.length, 8);
     });
 
     it('should surface a numeric range error from an options object', () => {
@@ -362,21 +423,284 @@ describe('createDefaultInterceptors', () => {
             assertConnectError(outcome, Code.ResourceExhausted, 'Bulkhead capacity exceeded');
         });
 
-        // fallback sits inside retry: a failure is replaced by the fallback value at
-        // the first attempt, so retry never sees it. With the order reversed the
-        // handler would be retried before the fallback is used.
-        it('should put fallback inside retry', async () => {
+        // fallback sits outside retry: the handler is retried until the attempts are
+        // exhausted, and only then is the failure replaced by the fallback value. Inside
+        // retry the first failure would be replaced and no retry would ever run.
+        it('should put fallback outside retry', async () => {
+            const fallbackHandler = mock.fn(() => ({ message: 'fallback' }));
             const chain = createDefaultInterceptors({
                 retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
-                fallback: { handler: () => ({ fallback: true }) },
+                fallback: { handler: fallbackHandler },
                 validation: false,
             });
             const next = createMockNextError(Code.Unavailable, 'upstream down');
 
-            const result = await compose(chain, next)(request());
+            const result = await compose(chain, next)(validatedRequest('abc'));
 
-            assert.deepStrictEqual(result.message, { fallback: true });
-            assert.strictEqual(next.mock.calls.length, 1);
+            assert.ok(isMessage(result.message, EchoResponseSchema), 'the fallback value must be a response message');
+            assert.strictEqual((result.message as { message: string }).message, 'fallback');
+            assert.strictEqual(next.mock.calls.length, 3, 'the first attempt and two retries run before the fallback');
+            assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+            assert.strictEqual((fallbackHandler.mock.calls[0]!.arguments as unknown[])[0] instanceof Error, true);
+        });
+
+        it('should not ask the fallback when a retry succeeds', async () => {
+            const fallbackHandler = mock.fn(() => ({ message: 'fallback' }));
+            const chain = createDefaultInterceptors({
+                retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
+                fallback: { handler: fallbackHandler },
+                validation: false,
+            });
+            const served = { stream: false, message: create(EchoResponseSchema, { message: 'served' }), header: new Headers(), trailer: new Headers() };
+            let calls = 0;
+            const next = mock.fn(async () => {
+                calls++;
+                if (calls === 1) {
+                    throw new ConnectError('blip', Code.Unavailable);
+                }
+                return served;
+            });
+
+            const result = await compose(chain, next)(validatedRequest('abc'));
+
+            assert.strictEqual(result, served);
+            assert.strictEqual(next.mock.calls.length, 2);
+            assert.strictEqual(fallbackHandler.mock.calls.length, 0);
+        });
+
+        // fallback sits outside the circuit breaker: the failures reach the breaker, which
+        // opens at its threshold, and the fallback answers the refusal of the open breaker
+        // without the handler being called again.
+        it('should put fallback outside the circuit breaker, so that the breaker still opens', async () => {
+            const fallbackHandler = mock.fn(() => ({ message: 'fallback' }));
+            const chain = createDefaultInterceptors({
+                circuitBreaker: { threshold: 2, halfOpenAfter: 60_000 },
+                fallback: { handler: fallbackHandler },
+                validation: false,
+            });
+            const next = createMockNextError(Code.Unavailable, 'upstream down');
+            const handler = compose(chain, next);
+
+            for (let i = 0; i < 4; i++) {
+                const result = await handler(validatedRequest('abc'));
+                assert.strictEqual((result.message as { message: string }).message, 'fallback');
+            }
+
+            assert.strictEqual(next.mock.calls.length, 2, 'the breaker opens after two failures and the rest do not reach the handler');
+            assert.strictEqual(fallbackHandler.mock.calls.length, 4);
+            const lastError = (fallbackHandler.mock.calls[3]!.arguments as unknown[])[0];
+            assertConnectError(lastError, Code.Unavailable, 'Circuit breaker is open');
+        });
+
+        // The chain is observed from the outside, interceptor by interceptor: probes between
+        // the real interceptors record which layers a call passed.
+        describe('order of the built chain', () => {
+            function probed(chain: Interceptor[], names: string[]): { instrumented: Interceptor[]; seen: string[] } {
+                const seen: string[] = [];
+                const instrumented: Interceptor[] = [];
+                chain.forEach((interceptor, i) => {
+                    instrumented.push(interceptor);
+                    instrumented.push((next) => async (req) => {
+                        seen.push(`after-${names[i]}`);
+                        return await next(req);
+                    });
+                });
+                return { instrumented, seen };
+            }
+
+            // An invalid request stops at the validation interceptor, so the layers it passed
+            // before show where validation stands. A valid request passes every layer in any
+            // order and would prove nothing.
+            it('should keep validation behind the breaker and retry when there is no fallback', async () => {
+                const chain = createDefaultInterceptors({ retry: { maxRetries: 0 }, circuitBreaker: true, errorHandler: { logErrors: false } });
+                // errorHandler, circuitBreaker, retry, validation
+                assert.strictEqual(chain.length, 4);
+                const { instrumented, seen } = probed(chain, ['errorHandler', 'circuitBreaker', 'retry', 'validation']);
+                const next = createMockNext();
+
+                await assert.rejects(
+                    () => compose(instrumented, next)(validatedRequest('ab')),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.InvalidArgument);
+                        return true;
+                    },
+                );
+
+                assert.deepStrictEqual(seen, ['after-errorHandler', 'after-circuitBreaker', 'after-retry'], 'without a fallback the invalid request passes the breaker and retry before validation rejects it');
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+
+            it('should reject an invalid request before the fallback, the breaker and retry when a fallback is enabled', async () => {
+                const chain = createDefaultInterceptors({
+                    retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
+                    circuitBreaker: { threshold: 1, halfOpenAfter: 60_000 },
+                    fallback: { handler: () => ({ message: 'fallback' }) },
+                    errorHandler: { logErrors: false },
+                });
+                // errorHandler, validation, fallback, circuitBreaker, retry
+                assert.strictEqual(chain.length, 5);
+                const { instrumented, seen } = probed(chain, ['errorHandler', 'validation', 'fallback', 'circuitBreaker', 'retry']);
+                const next = createMockNext();
+
+                await assert.rejects(
+                    () => compose(instrumented, next)(validatedRequest('ab')),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.InvalidArgument);
+                        return true;
+                    },
+                );
+
+                assert.deepStrictEqual(seen, ['after-errorHandler'], 'an invalid request stops at validation, before everything else');
+                assert.strictEqual(next.mock.calls.length, 0);
+            });
+        });
+
+        // What the fallback now sees and what no longer reaches retry and the breaker, because
+        // the fallback stands outside them. Each case states the consequence it pins.
+        describe('consequences of the fallback standing outside retry and the breaker', () => {
+            it('should ask the fallback handler with the cancellation that retry raises after an abort', async () => {
+                const controller = new AbortController();
+                const fallbackHandler = mock.fn((_err: unknown) => ({ message: 'fallback' }));
+                const chain = createDefaultInterceptors({
+                    retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
+                    fallback: { handler: fallbackHandler },
+                    validation: false,
+                });
+                const next = mock.fn(async () => {
+                    controller.abort();
+                    throw new ConnectError('down', Code.Unavailable);
+                });
+
+                const result = await compose(chain, next)({ ...validatedRequest('abc'), signal: controller.signal });
+
+                assert.strictEqual((result.message as { message: string }).message, 'fallback');
+                assert.strictEqual(next.mock.calls.length, 1, 'retry stops after the abort');
+                assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+                assertConnectError(fallbackHandler.mock.calls[0]!.arguments[0], Code.Canceled);
+            });
+
+            it('should not retry or count in the breaker a failure of the fallback handler itself', async () => {
+                const fallbackHandler = mock.fn((_err: unknown): never => {
+                    throw new ConnectError('fallback store down', Code.Unavailable);
+                });
+                const chain = createDefaultInterceptors({
+                    retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5 },
+                    circuitBreaker: { threshold: 5, halfOpenAfter: 60_000 },
+                    fallback: { handler: fallbackHandler },
+                    errorHandler: { logErrors: false },
+                    validation: false,
+                });
+                const next = createMockNextError(Code.Unavailable, 'upstream down');
+
+                await assert.rejects(
+                    () => compose(chain, next)(validatedRequest('abc')),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unavailable, 'fallback store down');
+                        return true;
+                    },
+                );
+
+                assert.strictEqual(next.mock.calls.length, 3, 'the handler runs the first attempt and two retries, once');
+                assert.strictEqual(fallbackHandler.mock.calls.length, 1, 'the error of the fallback handler is not retried');
+            });
+
+            for (const [label, withFallback, expected] of [
+                ['with a fallback an invalid request is rejected by validation first', true, Code.InvalidArgument],
+                ['without a fallback the open breaker refuses an invalid request first', false, Code.Unavailable],
+            ] as const) {
+                it(`should show that ${label}`, async () => {
+                    const chain = createDefaultInterceptors({
+                        circuitBreaker: { threshold: 1, halfOpenAfter: 60_000 },
+                        ...(withFallback ? { fallback: { handler: () => ({ message: 'fallback' }) } } : {}),
+                        errorHandler: { logErrors: false },
+                    });
+                    const next = createMockNextError(Code.Unavailable, 'upstream down');
+                    const handler = compose(chain, next);
+                    await handler(validatedRequest('abc')).catch(() => undefined); // opens the breaker
+
+                    await assert.rejects(
+                        () => handler(validatedRequest('ab')),
+                        (err: unknown) => {
+                            assertConnectError(err, expected);
+                            return true;
+                        },
+                    );
+                });
+            }
+
+            it('should retry the opening of a stream and then answer with the fallback message when both skip no streaming', async () => {
+                const fallbackHandler = mock.fn((_err: unknown) => ({ message: 'fallback' }));
+                const chain = createDefaultInterceptors({
+                    retry: { maxRetries: 2, initialDelay: 1, maxDelay: 5, skipStreaming: false },
+                    fallback: { handler: fallbackHandler, skipStreaming: false },
+                    validation: false,
+                });
+                const next = createMockNextError(Code.Unavailable, 'upstream down');
+                const req = { ...validatedRequest('abc'), stream: true };
+
+                const result = await compose(chain, next)(req);
+
+                assert.strictEqual(next.mock.calls.length, 3, 'the opening of the stream is attempted three times');
+                assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+                assert.strictEqual(result.stream, true);
+                const messages: unknown[] = [];
+                for await (const message of result.message) {
+                    messages.push(message);
+                }
+                assert.strictEqual(messages.length, 1, 'the fallback message is the only message of the stream');
+                assert.strictEqual((messages[0] as { message: string }).message, 'fallback');
+            });
+        });
+
+        // A request that fails validation is a client error, not a failed dependency: the
+        // fallback value must not stand in for it. Validation therefore stands outside the
+        // fallback, while a failure of the handler is still answered by the fallback.
+        describe('validation together with fallback', () => {
+            const fallbackMessage = create(EchoResponseSchema, { message: 'FALLBACK' });
+
+            it('should reject an invalid request with InvalidArgument, calling neither the handler nor the fallback', async () => {
+                const fallbackHandler = mock.fn(() => fallbackMessage);
+                const next = createMockNext();
+
+                await assert.rejects(
+                    () => compose(createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: fallbackHandler } }), next)(validatedRequest('ab')),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.InvalidArgument);
+                        return true;
+                    },
+                );
+                assert.strictEqual(next.mock.calls.length, 0, 'an invalid request must not reach the handler');
+                assert.strictEqual(fallbackHandler.mock.calls.length, 0, 'the fallback must not answer a rejected request');
+            });
+
+            it('should still answer a failure of the handler with the fallback value', async () => {
+                const fallbackHandler = mock.fn(() => fallbackMessage);
+                const next = createMockNextError(Code.Unavailable, 'upstream down');
+
+                const result = await compose(createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: fallbackHandler } }), next)(validatedRequest('abc'));
+
+                assert.strictEqual(result.message, fallbackMessage);
+                assert.strictEqual(next.mock.calls.length, 1);
+                assert.strictEqual(fallbackHandler.mock.calls.length, 1);
+            });
+
+            it('should place validation before fallback and fallback before the serializer', async () => {
+                // The order is observed through behaviour: a validation error thrown below the
+                // fallback would reach the fallback handler, so it must not be called for it.
+                const seen: string[] = [];
+                const tag = (name: string): Interceptor => (next) => async (req) => {
+                    seen.push(name);
+                    return await next(req);
+                };
+                const chain = createDefaultInterceptors({ retry: { maxRetries: 0 }, fallback: { handler: () => fallbackMessage }, serializer: true });
+                // errorHandler, validation, fallback, retry, serializer
+                assert.strictEqual(chain.length, 5);
+                const instrumented = [chain[0]!, tag('after-errorHandler'), chain[1]!, tag('after-validation'), chain[2]!, tag('after-fallback'), chain[3]!, tag('after-retry'), chain[4]!];
+
+                await compose(instrumented, createMockNext())(validatedRequest('ab')).catch(() => undefined);
+
+                assert.deepStrictEqual(seen, ['after-errorHandler'], 'an invalid request stops at validation, before the fallback and retry');
+            });
         });
 
         it('should reject an invalid request with InvalidArgument before the handler by default', async () => {

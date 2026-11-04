@@ -18,10 +18,11 @@
 import type { DescMessage, DescMethod, DescMethodStreaming, DescMethodUnary, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import type { ContextValues, HandlerContext, ServiceImpl, Transport } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { assertCallTimeout, assertResolvedTransport, InvalidResolverResultError, normalizeEndpoint } from "./catalogOptions.ts";
 import type { BidiStreamHandle, CallOptions, ClientStreamHandle, ConnectumServiceImpl, Context } from "./context.ts";
 import type { RemoteResolver } from "./remoteResolver.ts";
 import type { ServiceCatalog } from "./serviceCatalog.ts";
-import { createInputQueue, singleInput } from "./streamBridge.ts";
+import { createInputQueue, type InputQueue, singleInput } from "./streamBridge.ts";
 
 /**
  * The server-side surface the dispatcher reads at call time. Implemented by
@@ -34,6 +35,8 @@ export interface CatalogDispatchHost {
     readonly catalog: ServiceCatalog | undefined;
     /** Inbound header names copied onto outgoing catalog calls (empty by default). */
     readonly propagateHeaders: readonly string[];
+    /** Whether a `remoteResolver` is configured. Without one, a non-local target cannot be routed at all. */
+    readonly hasRemoteResolver: boolean;
     /** Whether `typeName` is mounted locally on this server. */
     isLocal(typeName: string): boolean;
     /** The in-process transport carrying `outgoingInterceptors` (lazily built). */
@@ -46,12 +49,22 @@ export interface CatalogDispatchHost {
  * Clamp the caller-supplied timeout against the remaining inbound deadline.
  * A caller may shorten the deadline but never extend it.
  *
+ * A deadline that has already passed cannot be handed on: a transport reads a
+ * non-positive timeout as "no deadline", so the nested call would run without
+ * the limit it inherits. It fails with `DeadlineExceeded` instead.
+ *
+ * @throws ConnectError with `Code.InvalidArgument` for an invalid caller timeout (see {@link assertCallTimeout})
+ * @throws ConnectError with `Code.DeadlineExceeded` when the inbound deadline has passed
  * @internal
  */
 export function clampTimeout(caller: number | undefined, remaining: number | undefined): number | undefined {
-    if (caller === undefined) return remaining;
-    if (remaining === undefined) return caller;
-    return Math.min(caller, remaining);
+    const requested = assertCallTimeout(caller);
+    if (remaining !== undefined && remaining <= 0) {
+        throw new ConnectError("ctx.call: the inbound deadline has already passed.", Code.DeadlineExceeded);
+    }
+    if (requested === undefined) return remaining;
+    if (remaining === undefined) return requested;
+    return Math.min(requested, remaining);
 }
 
 /**
@@ -159,7 +172,8 @@ export function lookupCatalogMethod(catalog: ServiceCatalog | undefined, method:
  * Cache key of a resolved remote transport: one entry per `(typeName, endpoint)`
  * pair. NUL separates the parts because neither a proto type name nor a
  * sensible endpoint hint contains it. An absent endpoint and an empty one share
- * a key. The server and the standalone `CatalogClient` both key their caches
+ * a key, and callers pass both to the resolver as the same context (see
+ * {@link normalizeEndpoint}). The server and the standalone `CatalogClient` both key their caches
  * with it.
  *
  * @internal
@@ -182,17 +196,17 @@ export function remoteTransportCacheKey(typeName: string, endpoint: string | und
  * @internal
  */
 export function resolveRemoteTransportOrThrow(resolver: RemoteResolver, typeName: string, endpoint: string | undefined, caller = "ctx.call"): Transport {
-    let transport: Transport | null;
+    let answer: unknown;
     try {
-        transport = resolver(endpoint !== undefined ? { typeName, endpoint } : { typeName });
+        answer = resolver(endpoint !== undefined ? { typeName, endpoint } : { typeName });
     } catch (cause) {
         throw new ConnectError(`${caller}: the resolver threw while resolving "${typeName}".`, Code.Internal, undefined, undefined, cause);
     }
-    if (transport === null) {
+    if (answer === null) {
         const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
         throw new ConnectError(`${caller}: no route for "${typeName}"${at}: the resolver returned null.`, Code.Unavailable);
     }
-    return transport;
+    return assertResolvedTransport(answer, typeName);
 }
 
 /**
@@ -238,6 +252,32 @@ export function openServerStream(resolve: ResolveStream, descMethod: DescMethodS
 }
 
 /**
+ * Push side of a client-streaming or bidi handle: `send()` enqueues, `close()`
+ * ends the send half. A `send()` after `close()` cannot reach the target, so it
+ * throws instead of discarding the message without a trace.
+ *
+ * @throws ConnectError with `Code.FailedPrecondition` from `send()` once `close()` has been called
+ */
+function createSendHalf(queue: InputQueue<MessageInitShape<DescMessage>>, descMethod: DescMethodStreaming<DescMessage, DescMessage>, kind: "client-streaming" | "bidi-streaming") {
+    let closed = false;
+    return {
+        send(request: unknown): void {
+            if (closed) {
+                throw new ConnectError(
+                    `ctx.stream: send() after close() on ${kind} "${descMethod.name}": the send half is already closed, so the message would be lost.`,
+                    Code.FailedPrecondition,
+                );
+            }
+            queue.push(request as MessageInitShape<DescMessage>);
+        },
+        close(): void {
+            closed = true;
+            queue.close();
+        },
+    };
+}
+
+/**
  * The shared client-streaming tail: push N requests, `close()` resolves the
  * single response. Resolution is lazy — a resolver/transport failure surfaces
  * on `await close()` (the response IIFE), never on factory invocation.
@@ -257,10 +297,10 @@ export function openClientStream(resolve: ResolveStream, descMethod: DescMethodS
             const response = await transport.stream(descMethod, frame.signal, frame.timeoutMs, frame.headers, queue.iterable, frame.contextValues);
             // Drive the response stream to its terminal status instead of
             // returning at the first message: a failure (or a surplus message)
-            // that follows the response must reject, and a wrapping interceptor
-            // only finishes its span when the stream ends — the response wrapper
-            // Connect hands out has no `return()`, so abandoning the loop early
-            // would leave that span started and never ended.
+            // that follows the response must reject. Leaving the loop early
+            // would not do: the response iterator's `return()` ends the call as
+            // canceled, so the server would never be allowed to finish it and
+            // the caller would get a canceled call instead of the outcome.
             let single: unknown;
             let received = 0;
             for await (const message of response.message) {
@@ -280,10 +320,11 @@ export function openClientStream(resolve: ResolveStream, descMethod: DescMethodS
     })();
     // Avoid an unhandled rejection before the caller awaits close().
     responsePromise.catch(() => {});
+    const sendHalf = createSendHalf(queue, descMethod, "client-streaming");
     return {
-        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
+        send: (request) => sendHalf.send(request),
         close: () => {
-            queue.close();
+            sendHalf.close();
             return responsePromise;
         },
     };
@@ -308,9 +349,10 @@ export function openBidiStream(resolve: ResolveStream, descMethod: DescMethodStr
             throw sanitizeCallError(error);
         }
     }
+    const sendHalf = createSendHalf(queue, descMethod, "bidi-streaming");
     return {
-        send: (request) => queue.push(request as MessageInitShape<DescMessage>),
-        close: () => queue.close(),
+        send: (request) => sendHalf.send(request),
+        close: () => sendHalf.close(),
         responses: responses(),
     };
 }
@@ -488,14 +530,26 @@ export class CatalogDispatcher {
      *
      * @internal
      */
-    private _resolveTransport(typeName: string, endpoint: string | undefined): Transport {
+    private _resolveTransport(typeName: string, requestedEndpoint: string | undefined): Transport {
+        const endpoint = normalizeEndpoint(requestedEndpoint);
         if (this.host.isLocal(typeName)) {
             return this.host.getLocalTransport();
+        }
+        // No resolver at all is a wiring mistake, not an outage: `Unavailable`
+        // would be retried by default and could never succeed. Same code as the
+        // sibling mistake "no catalog is configured".
+        if (!this.host.hasRemoteResolver) {
+            throw new ConnectError(
+                `ctx.call: cannot reach "${typeName}": it is not mounted locally and no remoteResolver is configured. ` +
+                    `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
+                Code.FailedPrecondition,
+            );
         }
         let transport: Transport | null;
         try {
             transport = this.host.resolveRemoteTransport(typeName, endpoint);
         } catch (cause) {
+            if (cause instanceof InvalidResolverResultError) throw cause;
             throw new ConnectError(`ctx.call: the remoteResolver threw while resolving "${typeName}".`, Code.Internal, undefined, undefined, cause);
         }
         if (transport === null) {

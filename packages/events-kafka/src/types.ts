@@ -114,7 +114,10 @@ export interface KafkaAdapterOptions {
      */
     readonly clientOptions?: Readonly<Record<string, unknown>>;
 
-    /** Lifecycle callback. Without it the adapter attaches no listener to the client and behaves as before. */
+    /**
+     * Lifecycle callback. Without it the adapter reports nothing; it attaches no lifecycle listener to the
+     * client (a wildcard subscription still listens for the crash of its consumer, to recover from a deleted topic).
+     */
     readonly lifecycle?: KafkaLifecycleCallbacks;
 
     /** Producer-specific options */
@@ -129,7 +132,14 @@ export interface KafkaAdapterOptions {
         readonly sessionTimeout?: number;
         /** Whether to start consuming from the beginning of topics (default: false) */
         readonly fromBeginning?: boolean;
-        /** Whether Kafka should auto-create topics on subscribe (default: false) */
+        /**
+         * Whether the broker may create a topic that `subscribe()` names and that does not exist yet
+         * (default: false). The broker must allow it too (`auto.create.topics.enable`, on by default
+         * in Apache Kafka). The broker answers the first request for a missing topic with an error and
+         * creates the topic a moment later, so with this option `subscribe()` asks again for up to ten
+         * seconds before it gives up. Without it, `subscribe()` rejects an unknown topic at once with an
+         * error that names the topic. Wildcard patterns only match topics that exist and are not affected.
+         */
         readonly allowAutoTopicCreation?: boolean;
         /**
          * Milliseconds to wait before a message that was not committed is delivered again
@@ -199,6 +209,14 @@ export interface KafkaAdapterOptions {
          * The first check runs one interval after `subscribe()`. Subscriptions without wildcard
          * patterns never check. A number must be positive, at most 2147483647; `KafkaAdapter()`
          * throws a `RangeError` otherwise.
+         *
+         * A wildcard subscription lists the broker's topics once when it starts, also with `false`
+         * (one metadata request through an admin connection, and one more right after subscribing so that
+         * a topic created in between is not lost), so that it can tell a deleted topic
+         * from one that never existed. If a topic a wildcard had matched is deleted, the consumer
+         * crashes and the adapter replaces it with one that subscribes the topics that remain; with
+         * `false` that consumer keeps the topic list fixed and subscribes no topic created since the
+         * start. This recovery cannot be turned off.
          */
         readonly topicDiscoveryInterval?: number | false;
     };

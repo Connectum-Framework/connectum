@@ -18,8 +18,20 @@ import assert from "node:assert";
 import { test } from "node:test";
 import { Code, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { type CreateServerOptions, createLocalTransport, createServer, type ProtocolRegistration, type Server, type ServiceDefinition } from "@connectum/core";
+import {
+    type CreateServerOptions,
+    createLocalTransport,
+    createServer,
+    type ProtocolRegistration,
+    type RemoteResolver,
+    type Server,
+    type ServiceCatalog,
+    type ServiceDefinition,
+} from "@connectum/core";
+import { DataPointType } from "@opentelemetry/sdk-metrics";
 import { InMemoryMetricCollector, InMemorySpanCollector, type NormalizedMetric, type NormalizedSpan } from "./otel-collectors.ts";
+import { installTelemetry, type TelemetryOptions, validateTelemetryOptions } from "./telemetry.ts";
+import { TRANSPORT_READ_LIMIT } from "./unboundedReadLimit.ts";
 
 /**
  * Identifies which transport a scenario invocation is running against.
@@ -38,9 +50,16 @@ export interface ParityScenarioContext {
     server: Server;
     /** Base URL for the HTTP server, only defined when `transportKind === "http"`. */
     baseUrl: string | undefined;
-    /** Fresh span collector for this run (no cross-contamination between runs). */
+    /**
+     * Fresh span collector for this run (no cross-contamination between runs).
+     * It receives spans once its provider is registered with OpenTelemetry:
+     * set {@link TransportParityTestOptions.telemetry} and the driver does it,
+     * otherwise the scenario registers `spans.provider` itself (see
+     * {@link InMemorySpanCollector} for the steps `@connectum/otel`
+     * interceptors need).
+     */
     spans: InMemorySpanCollector;
-    /** Fresh metric collector for this run. */
+    /** Fresh metric collector for this run; the same registration applies. */
     metrics: InMemoryMetricCollector;
 }
 
@@ -53,20 +72,30 @@ export interface ParityScenarioContext {
 export interface ParityScenarioResult {
     /** Successful response payload (must be JSON-serializable for diff). */
     response?: unknown;
-    /** Response headers reported by the client. */
+    /**
+     * Response headers reported by the client, as the client library hands
+     * them over. Protocol headers (see {@link defaultCompare}) may stay in; the
+     * default comparison ignores them.
+     */
     responseHeaders?: Record<string, string>;
-    /** Response trailers reported by the client. */
+    /** Response trailers reported by the client; protocol trailers may stay in. */
     trailers?: Record<string, string>;
     /** Error captured during the scenario. */
     error?: {
         code: number | string;
         message: string;
         details?: unknown;
+        /** `ConnectError.metadata` as the client sees it; protocol entries may stay in. */
         metadata?: Record<string, string>;
     };
-    /** Spans observed during the scenario (already normalized — pass `await ctx.spans.flush()`). */
+    /**
+     * Spans observed during the scenario (already normalized — pass `ctx.spans.flush()`).
+     * Two empty lists compare as equal: a scenario that registered its collector
+     * wrongly records nothing on both legs and still passes, so a scenario should
+     * assert that the telemetry it compares is not empty.
+     */
     spans?: NormalizedSpan[];
-    /** Metrics observed during the scenario. */
+    /** Metrics observed during the scenario; the same caveat about empty lists applies. */
     metrics?: NormalizedMetric[];
 }
 
@@ -88,10 +117,55 @@ export interface TransportParityTestOptions {
     clientInterceptors?: Interceptor[];
     /** Protocol extensions applied identically on both servers. */
     protocols?: ProtocolRegistration[];
+    /**
+     * Service catalog given identically to both servers (see `CreateServerOptions.catalog`),
+     * typically the `serviceCatalog` that `protoc-gen-connectum-catalog` generates.
+     * It is what lets a handler of `services` call another service with `ctx.call` /
+     * `ctx.stream`; a call to a service in `services` is dispatched in-process on both
+     * legs, a call to any other service goes through {@link remoteResolver}.
+     */
+    catalog?: ServiceCatalog;
+    /**
+     * Resolver for catalog calls whose target is not in `services`, given identically
+     * to both servers (see `CreateServerOptions.remoteResolver`). The resolver is
+     * called by both legs, so a transport it returns serves both: start the remote
+     * service once for the whole test, not once per leg, and have the scenario reset
+     * whatever state that service keeps between the two runs.
+     */
+    remoteResolver?: RemoteResolver;
     /** Server-level request gate applied identically on both servers (see `CreateServerOptions.requestGate`). */
     requestGate?: CreateServerOptions["requestGate"];
     /** Server-level per-message read limit applied identically on both servers (see `CreateServerOptions.readMaxBytes`). */
     readMaxBytes?: number;
+    /**
+     * Opt in to isolated OpenTelemetry for every run: before each run the
+     * driver resets the `@connectum/otel` provider, registers that run's
+     * `spans` and `metrics` collectors as the OpenTelemetry providers, and
+     * after the run unregisters them again, so a scenario only calls
+     * `ctx.spans.flush()` and `ctx.metrics.flush()`. Without it a scenario
+     * has to do that itself and, if it forgets the reset, every parity test
+     * after the first in a process records nothing and still passes.
+     *
+     * Pass `shutdownProvider` from `@connectum/otel`. Run with
+     * `OTEL_TRACES_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`, as
+     * described on {@link InMemorySpanCollector}.
+     *
+     * @example
+     * ```typescript
+     * import { shutdownProvider } from "@connectum/otel";
+     *
+     * transportParityTest("spans match", {
+     *   services: [routes],
+     *   interceptors: [createOtelInterceptor()],
+     *   telemetry: { shutdownProvider },
+     *   scenario: async ({ transport, spans }) => {
+     *     await createClient(GreeterService, transport).sayHello({ name: "x" });
+     *     return { spans: spans.flush() };
+     *   },
+     * });
+     * ```
+     */
+    telemetry?: TelemetryOptions;
     /**
      * The scenario under test. Invoked once per transport with a fresh
      * server, transport, and OTEL collector pair.
@@ -164,36 +238,108 @@ function isResourceExhausted(code: number | string | undefined): boolean {
 }
 
 /**
+ * Header names the transports add on their own, whatever the service does: the
+ * HTTP/2 gRPC leg answers with `content-type: application/grpc+proto`,
+ * `grpc-encoding`, `grpc-status`, `grpc-message` and a `date`, the in-process
+ * leg with `content-type: application/proto` or `application/json` and a
+ * `content-length`. Which of them a client sees depends on the wire protocol,
+ * not on the service, so the default comparison leaves them out.
+ */
+const PROTOCOL_HEADER_NAMES: ReadonlySet<string> = new Set(["content-type", "content-length", "content-encoding", "accept-encoding", "date", "te"]);
+
+/** The `grpc-` and `connect-` name families are reserved by their protocols for protocol use. */
+const PROTOCOL_HEADER_PREFIXES: readonly string[] = ["grpc-", "connect-"];
+
+function isProtocolHeader(name: string): boolean {
+    const lower = name.toLowerCase();
+    return PROTOCOL_HEADER_NAMES.has(lower) || PROTOCOL_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+/** The application headers of a header, trailer or metadata map: everything except protocol headers. */
+function withoutProtocolHeaders(map: Record<string, string> | undefined): Record<string, string> {
+    return Object.fromEntries(Object.entries(map ?? {}).filter(([name]) => !isProtocolHeader(name)));
+}
+
+/**
  * Default structural diff for two scenario results.
  *
  * Error messages are compared literally, with exactly one documented
  * exception: a `readMaxBytes` rejection (`ResourceExhausted`) whose diagnostic
  * text includes the observed message size on one transport and omits it on
- * the other, for the same configured limit. The code, the limit, metadata and
- * details are still compared as-is.
+ * the other, for the same configured limit. The code, the limit and details
+ * are still compared as-is.
+ *
+ * Response headers, trailers and error metadata are compared as application
+ * data: protocol headers (`content-type`, `content-length`, `content-encoding`,
+ * `accept-encoding`, `date`, `te` and the `grpc-*` and `connect-*` families) are
+ * dropped on both sides first, because the two transports carry different ones
+ * for identical behaviour. Every other entry is compared literally. A scenario
+ * that needs to compare a protocol header passes its own `compare`.
+ *
+ * Metrics are compared by name, description, unit, type and attribute sets,
+ * and by value, with one exception: a histogram measured in a unit of time (a
+ * call duration) is reduced to its observation count, because the measured
+ * time differs from run to run. Sizes, counters and gauges are compared
+ * literally.
  */
 export function defaultCompare(http: ParityScenarioResult, local: ParityScenarioResult): void {
     assert.deepStrictEqual(local.response, http.response, "response payload mismatch between HTTP and local transports");
     if (http.error || local.error) {
         const [httpMessage, localMessage] = normalizeReadLimitMessages(http.error, local.error);
         assert.deepStrictEqual(
-            { code: local.error?.code, message: localMessage, details: local.error?.details, metadata: local.error?.metadata },
-            { code: http.error?.code, message: httpMessage, details: http.error?.details, metadata: http.error?.metadata },
+            { code: local.error?.code, message: localMessage, details: local.error?.details, metadata: errorMetadata(local.error) },
+            { code: http.error?.code, message: httpMessage, details: http.error?.details, metadata: errorMetadata(http.error) },
             "error shape mismatch between HTTP and local transports",
         );
     }
     if (http.responseHeaders || local.responseHeaders) {
-        assert.deepStrictEqual(local.responseHeaders ?? {}, http.responseHeaders ?? {}, "response headers mismatch");
+        assert.deepStrictEqual(withoutProtocolHeaders(local.responseHeaders), withoutProtocolHeaders(http.responseHeaders), "response headers mismatch");
     }
     if (http.trailers || local.trailers) {
-        assert.deepStrictEqual(local.trailers ?? {}, http.trailers ?? {}, "trailers mismatch");
+        assert.deepStrictEqual(withoutProtocolHeaders(local.trailers), withoutProtocolHeaders(http.trailers), "trailers mismatch");
     }
     if (http.spans || local.spans) {
         assert.deepStrictEqual(maskSpanIds(local.spans), maskSpanIds(http.spans), "OTEL spans mismatch (after stripping connectum.transport)");
     }
     if (http.metrics || local.metrics) {
-        assert.deepStrictEqual(local.metrics, http.metrics, "OTEL metrics mismatch (after stripping transport label)");
+        assert.deepStrictEqual(maskMeasuredDurations(local.metrics), maskMeasuredDurations(http.metrics), "OTEL metrics mismatch (after stripping transport label)");
     }
+}
+
+/** Units that measure elapsed time (UCUM, as OpenTelemetry names them). */
+const TIME_UNITS: ReadonlySet<string> = new Set(["s", "ms", "us", "ns", "min", "h", "d"]);
+
+const HISTOGRAM_TYPES: ReadonlySet<string> = new Set([String(DataPointType.HISTOGRAM), String(DataPointType.EXPONENTIAL_HISTOGRAM)]);
+
+/**
+ * Replace the recorded value of every point of a time-measuring histogram with
+ * its observation count. The sum, minimum, maximum and buckets of a duration
+ * are the wall-clock time of that run and never agree between two runs; how
+ * many observations were made, and under which attributes, does.
+ */
+function maskMeasuredDurations(metrics: NormalizedMetric[] | undefined): NormalizedMetric[] | undefined {
+    return metrics?.map((metric) => {
+        if (!HISTOGRAM_TYPES.has(metric.type) || !TIME_UNITS.has(metric.unit)) {
+            return metric;
+        }
+        return {
+            ...metric,
+            points: metric.points.map((point) => ({
+                attributes: point.attributes,
+                value: { count: (point.value as { count?: unknown } | undefined)?.count },
+            })),
+        };
+    });
+}
+
+/**
+ * The metadata of a reported error, without protocol headers. An error that
+ * reports no metadata at all stays `undefined` rather than becoming an empty
+ * map, so "no metadata reported" and "empty metadata reported" keep comparing
+ * as they did.
+ */
+function errorMetadata(error: ParityScenarioResult["error"]): Record<string, string> | undefined {
+    return error?.metadata === undefined ? undefined : withoutProtocolHeaders(error.metadata);
 }
 
 interface RunHarness {
@@ -206,14 +352,26 @@ interface RunHarness {
 }
 
 /**
- * The admission options both harness servers receive, containing only the
- * keys the scenario set — so a scenario without them builds exactly the
- * servers it built before these options existed.
+ * The admission options both harness servers receive: the scenario's gate when
+ * it set one, and its read limit, which defaults to the transport's own cap
+ * (see {@link TRANSPORT_READ_LIMIT}) — the limit a server without the option has.
  */
 function admissionOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "requestGate" | "readMaxBytes"> {
     return {
         ...(opts.requestGate !== undefined ? { requestGate: opts.requestGate } : {}),
-        ...(opts.readMaxBytes !== undefined ? { readMaxBytes: opts.readMaxBytes } : {}),
+        readMaxBytes: opts.readMaxBytes === undefined ? TRANSPORT_READ_LIMIT : opts.readMaxBytes,
+    };
+}
+
+/**
+ * The catalog options both harness servers receive. They are passed only when
+ * the scenario set them, so a test without a catalog builds the same servers as
+ * before.
+ */
+function catalogOptions(opts: TransportParityTestOptions): Pick<CreateServerOptions, "catalog" | "remoteResolver"> {
+    return {
+        ...(opts.catalog !== undefined ? { catalog: opts.catalog } : {}),
+        ...(opts.remoteResolver !== undefined ? { remoteResolver: opts.remoteResolver } : {}),
     };
 }
 
@@ -223,6 +381,7 @@ async function setupHttpHarness(opts: TransportParityTestOptions): Promise<RunHa
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
         ...admissionOptions(opts),
+        ...catalogOptions(opts),
         port: 0,
         allowHTTP1: false,
     });
@@ -262,6 +421,7 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
         interceptors: opts.interceptors ?? [],
         protocols: opts.protocols ?? [],
         ...admissionOptions(opts),
+        ...catalogOptions(opts),
         // Never bound unless a scenario calls `server.start()` itself (for
         // example to exercise `server.stop()` on in-process calls); an
         // ephemeral port keeps such scenarios from colliding.
@@ -308,39 +468,41 @@ function setupLocalHarness(opts: TransportParityTestOptions): RunHarness {
  * ```
  */
 export function transportParityTest(name: string, opts: TransportParityTestOptions): void {
+    if (opts.telemetry !== undefined) {
+        validateTelemetryOptions(opts.telemetry);
+    }
     test(name, async () => {
         const compare = opts.compare ?? defaultCompare;
-
-        const httpHarness = await setupHttpHarness(opts);
-        let httpResult: ParityScenarioResult;
-        try {
-            httpResult = await opts.scenario({
-                transport: httpHarness.transport,
-                transportKind: "http",
-                server: httpHarness.server,
-                baseUrl: httpHarness.baseUrl,
-                spans: httpHarness.spans,
-                metrics: httpHarness.metrics,
-            });
-        } finally {
-            await httpHarness.cleanup();
-        }
-
-        const localHarness = setupLocalHarness(opts);
-        let localResult: ParityScenarioResult;
-        try {
-            localResult = await opts.scenario({
-                transport: localHarness.transport,
-                transportKind: "local",
-                server: localHarness.server,
-                baseUrl: undefined,
-                spans: localHarness.spans,
-                metrics: localHarness.metrics,
-            });
-        } finally {
-            await localHarness.cleanup();
-        }
-
+        const httpResult = await runScenario(opts, await setupHttpHarness(opts), "http");
+        const localResult = await runScenario(opts, setupLocalHarness(opts), "local");
         compare(httpResult, localResult);
     });
+}
+
+/**
+ * Run the scenario once against `harness`, with the harness's collectors
+ * registered as the OpenTelemetry providers when the test asked for it, and
+ * release everything the harness holds whether the scenario returned or threw.
+ */
+async function runScenario(opts: TransportParityTestOptions, harness: RunHarness, transportKind: TransportKind): Promise<ParityScenarioResult> {
+    let uninstallTelemetry: (() => Promise<void>) | undefined;
+    try {
+        if (opts.telemetry !== undefined) {
+            uninstallTelemetry = await installTelemetry(harness, opts.telemetry);
+        }
+        return await opts.scenario({
+            transport: harness.transport,
+            transportKind,
+            server: harness.server,
+            baseUrl: harness.baseUrl,
+            spans: harness.spans,
+            metrics: harness.metrics,
+        });
+    } finally {
+        try {
+            await uninstallTelemetry?.();
+        } finally {
+            await harness.cleanup();
+        }
+    }
 }

@@ -36,6 +36,57 @@ function isConnectCode(value: unknown): value is Code {
 }
 
 /**
+ * Write one handled failure to the console.
+ *
+ * The failure is logged once, as the object: `console.error` prints an `Error` with its stack and
+ * its `cause` chain, so a separate stack line would only repeat it. A second line says what the
+ * client receives, and only when that differs from what was thrown; it carries the text, not the
+ * `ConnectError`, because that object holds the original as `cause` and would print it again.
+ */
+function logHandledError(thrown: unknown, sentToClient: string | undefined): void {
+    console.error("Interceptor caught error:", thrown);
+    if (sentToClient !== undefined) {
+        console.error("Transformed ConnectError:", sentToClient);
+    }
+}
+
+type OnErrorCallback = NonNullable<ErrorHandlerOptions["onError"]>;
+
+/**
+ * Wrap `onError` so that its failure cannot reach the caller or the process.
+ *
+ * The callback is a reporting hook that usually talks to an external sink (an error
+ * tracker, a metrics endpoint). A rejected promise it returns would otherwise be an
+ * unhandled rejection, which ends a Node process. The first failure is written to the
+ * console so it is not silent; later ones are dropped, because a sink that is down
+ * fails on every call and would flood the console on every RPC.
+ */
+function guardOnError(onError: OnErrorCallback): (info: Parameters<OnErrorCallback>[0]) => void {
+    let reported = false;
+    const report = (failure: unknown): void => {
+        if (reported) {
+            return;
+        }
+        reported = true;
+        try {
+            console.error("[@connectum/interceptors] errorHandler onError failed; further onError failures are not reported", failure);
+        } catch {
+            // The report is best effort: a console that throws must not change the outcome of the call either.
+        }
+    };
+    return (info) => {
+        try {
+            const pending: unknown = onError(info);
+            if (typeof (pending as { then?: unknown } | null | undefined)?.then === "function") {
+                Promise.resolve(pending).then(undefined, report);
+            }
+        } catch (failure) {
+            report(failure);
+        }
+    };
+}
+
+/**
  * Create error handler interceptor
  *
  * Catches rejections from awaiting next(req) and transforms them into
@@ -46,16 +97,27 @@ function isConnectCode(value: unknown): value is Code {
  * - `ConnectError`: passes through unchanged, text and details included. Its author
  *   chose to send them.
  * - `SanitizableError`: its `clientMessage` and code only; `serverDetails` stay on the server.
+ *   A `code` that is not an integer from 1 to 16 is sent as `Internal`, as for any other failure.
+ * - An `Error` named `AbortError` or `TimeoutError` (a `DOMException` from an aborted
+ *   `fetch` or `AbortSignal.timeout()` too): `Canceled`, whatever its numeric `code`. A
+ *   `SanitizableError` is recognised before this check.
  * - Anything else (`Error`, a thrown string, an object with a numeric `code`): the code is
  *   the numeric `code` when it is an integer from 1 to 16 (a Connect failure code) and
- *   `Internal` otherwise (no code, a non-number, or a number outside 1..16). The text of the failure
- *   is NOT sent: `Internal` carries the fixed text `"internal error"`, any other code carries
- *   an empty text. A message such as a connection string or a query would otherwise leak
- *   to every caller (CWE-209). Set `exposeErrorMessages: true` to send the original text.
+ *   `Internal` otherwise (no code, a non-number, or a number outside 1..16).
+ *
+ * The text of a failure in the last two groups is NOT sent: `Internal` carries the fixed text
+ * `"internal error"`, any other code (`Canceled` included) carries an empty text. A message such as a
+ * connection string or a query would otherwise leak to every caller (CWE-209). Set
+ * `exposeErrorMessages: true` to send the original text; the codes stay the same.
  *
  * The original failure always stays on the server: as `cause` of the thrown ConnectError
  * (no transport serializes `cause`), in `onError` as `info.error` with its original text,
  * and in the console log.
+ *
+ * `onError` is a reporting hook and cannot change the outcome of a call: if it throws or
+ * returns a rejected promise, the client still receives the error described above and the
+ * process sees no unhandled rejection. The first failure of the callback is written once to
+ * `console.error`; later ones are dropped.
  *
  * Place this interceptor first to normalize rejections from downstream interceptors.
  * It does not wrap response-stream iteration after next(req) returns, or errors
@@ -85,7 +147,8 @@ function isConnectCode(value: unknown): value is Code {
  * ```
  */
 export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {}): Interceptor {
-    const { logErrors = process.env.NODE_ENV !== "production", includeStackTrace = process.env.NODE_ENV !== "production", onError, exposeErrorMessages = false } = options;
+    const { logErrors = process.env.NODE_ENV !== "production", includeStackTrace = process.env.NODE_ENV !== "production", exposeErrorMessages = false } = options;
+    const notifyOnError = options.onError ? guardOnError(options.onError) : undefined;
 
     return (next) => async (req) => {
         try {
@@ -93,23 +156,22 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
         } catch (err) {
             // SanitizableError: preserve server details for logging, sanitize for client
             if (isSanitizableError(err)) {
-                if (onError) {
+                // The message is the author's; the code is held to the same rule as any other failure's.
+                // A number outside 1..16 is no failure code, and the wire layer would turn it into `Unknown`.
+                const sanitizedCode = isConnectCode(err.code) ? err.code : Code.Internal;
+                if (notifyOnError) {
                     const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
                         error: err as Error,
-                        code: err.code,
+                        code: sanitizedCode,
                         serverDetails: err.serverDetails,
                     };
                     const errStack = (err as Error).stack;
                     if (includeStackTrace && errStack) info.stack = errStack;
-                    onError(info);
+                    notifyOnError(info);
                 } else if (logErrors) {
-                    console.error("Interceptor caught error:", err);
-                    console.error("Transformed ConnectError:", err.clientMessage);
-                    if (includeStackTrace && (err as Error).stack) {
-                        console.error("Stack trace:", (err as Error).stack);
-                    }
+                    logHandledError(err, err.clientMessage);
                 }
-                throw new ConnectError(err.clientMessage, err.code);
+                throw new ConnectError(err.clientMessage, sanitizedCode);
             }
 
             // Non-sanitizable errors
@@ -123,7 +185,7 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
             const full = ConnectError.from(err, code);
             const client = exposeErrorMessages || err instanceof ConnectError ? full : new ConnectError(clientMessageFor(full.code), full.code, undefined, undefined, err);
 
-            if (onError) {
+            if (notifyOnError) {
                 // The code the client receives: `ConnectError.from` may map the error to a different
                 // code than the one picked above (an `AbortError` becomes `Canceled`).
                 const info: Parameters<NonNullable<ErrorHandlerOptions["onError"]>>[0] = {
@@ -131,13 +193,10 @@ export function createErrorHandlerInterceptor(options: ErrorHandlerOptions = {})
                     code: full.code,
                 };
                 if (includeStackTrace && full.stack) info.stack = full.stack;
-                onError(info);
+                notifyOnError(info);
             } else if (logErrors) {
-                console.error("Interceptor caught error:", err);
-                console.error("Transformed ConnectError:", client);
-                if (includeStackTrace && full.stack) {
-                    console.error("Stack trace:", full.stack);
-                }
+                // A ConnectError that leaves unchanged needs no second line: it is the same failure.
+                logHandledError(err, client === err ? undefined : client.message);
             }
 
             throw client;

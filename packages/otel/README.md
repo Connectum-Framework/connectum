@@ -12,7 +12,8 @@ pnpm add @connectum/otel
 ```
 
 The package requires Node.js `>=22.13.0`. OpenTelemetry APIs, SDKs, and
-exporters are regular dependencies. Peer dependencies are
+exporters are regular dependencies; `@opentelemetry/api` stays on `>=1.9.0 <1.10.0`,
+the range that the SDK packages used here accept. Peer dependencies are
 `@bufbuild/protobuf` `^2.16.0` and `@connectrpc/connect` `^2.2.0`; share these
 with the rest of the application. See
 [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
@@ -55,15 +56,70 @@ export function buildServer(port = 5000, autoShutdown = false): Server {
 }
 ```
 
+## Default exporter
+
+With no `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER`
+set, each signal is sent over OTLP/HTTP with a protobuf body to
+`http://localhost:4318`, as the OpenTelemetry specification requires. Nothing is
+printed. Set the variable to `console` to print a signal to standard output, or
+to `none` to switch it off. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at your
+collector.
+
+If nothing listens at the endpoint, calls are not affected and the exporter
+reports each distinct failure on standard error at most once a minute.
+`shutdownProvider()` then rejects once the exporters give up (measured: about
+8 seconds with the default settings; pass `{ timeout }` to bound it). Registered
+with `server.onShutdown()`, the rejection does not end the process.
+
+## Log batching
+
+Log records sent over OTLP (HTTP or gRPC) are queued and exported in batches, as
+spans are: a batch leaves when it is full or after `OTEL_BLRP_SCHEDULE_DELAY`
+milliseconds (1000 by default), so a record reaches the collector up to that long
+after it is emitted. `shutdownProvider()` sends the records still in the queue.
+The `console` exporter prints each record at once. Tune the queue with the
+standard variables `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE` (512),
+`OTEL_BLRP_MAX_QUEUE_SIZE` (2048), `OTEL_BLRP_SCHEDULE_DELAY` (1000) and
+`OTEL_BLRP_EXPORT_TIMEOUT` (10000). Records that arrive while the queue is full
+and a batch is being exported are dropped; an invalid value produces a process
+warning and the default.
+
 ## Limitations
 
 - Set `recordMessages: true` to add per-message events to streaming spans; the
-  option is disabled by default. The message size attribute is an estimate for
-  each individual message, not the total stream size. Events contain metadata
-  and estimated size, not serialized message payloads.
+  option is disabled by default. `rpc.message.uncompressed_size` is the
+  serialized size of each individual message, not the total stream size. Events
+  contain metadata and size, not message payloads. The aggregate size histograms
+  of a streaming call stay zero.
 - The instrumentation captures the active span when creating a stream because
   Node.js `AsyncLocalStorage` context can be lost across async-generator
   boundaries. See the [observability guide](https://connectum.dev/en/guide/observability).
+
+- `traced()` and `traceAll()` end the span of a function when its result is
+  final: a promise settles, a generator is exhausted or closed, or a thenable
+  that is not a native promise (a query builder such as Knex, a Mongoose
+  `Query`) settles. For a generator or a thenable the caller receives the very
+  object the function returned, so a builder keeps its chain methods and stays
+  lazy. The span of a thenable covers the time between the call and the first
+  read (the event `connectum.result.read` marks where it ends), and traced
+  functions that return the same thenable one from another all end with it.
+- A thenable is followed through its `then`. A builder consumed another way
+  never calls it, and an immutable builder (every chain method returns a new
+  object) hands out a different object than the one that was traced:
+  Mongoose `exec()`, `cursor()`, `clone()`; Knex `stream()`, `toSQL()`,
+  `clone()`; superagent `end(callback)`. The span of such a call ends when the
+  garbage collector collects the builder, at the moment the traced function
+  returned (so it covers only the call, as before) and with the event `connectum.result.unread`. The moment is
+  up to the collector, and a process that exits first exports nothing. To get a
+  span that covers the work, await the builder inside the traced function:
+  `traced(async () => await query.exec())`. A generator that is never iterated
+  never ends its span.
+- A success or failure handler that the caller leaves out (`then(onSuccess)`,
+  or `catch(onFailure)` through `then(undefined, onFailure)`) reaches the
+  thenable as missing, as without tracing, and the span follows the outcome
+  through the promise that `then` returns, which real libraries return. A
+  callback-style thenable that returns no native promise does not tell the span
+  about an outcome the caller did not ask for; `await` gives both handlers.
 
 ## Learn and reference
 

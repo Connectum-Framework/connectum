@@ -172,9 +172,9 @@ async function runEnd(options: { setup: AuthSetup; transport: Transport; kind: E
         }
 
         if (mode === "early-break") {
-            // Leaving the loop is not a cancellation: the handler stays parked at its last `yield` until
-            // something else ends the call, here the server shutting down.
-            await sleep(150);
+            // Leaving the loop ends the call: every handler unwinds on its own, with the server still
+            // running and nobody aborting anything.
+            await eventually(() => tags.every((tag) => (probe.cleanups.get(tag)?.count ?? 0) >= 1), 5_000);
             cleanedBeforeStop = probe.cleanups.size;
             await server.stop();
         }
@@ -228,7 +228,16 @@ export function registerEndMatrix(factories: ReadonlyArray<AuthFactoryName | "jw
                                         wrongTelemetry: result.wrongTelemetry,
                                         wrongDuringCall: result.wrongDuringCall,
                                     },
-                                    { allCleaned: true, cleanedBeforeStop: 0, foreignRejections: 0, wrongCount: 0, wrongIdentity: 0, wrongTelemetry: 0, wrongDuringCall: 0 },
+                                    // Only a call the consumer walked away from is cleaned up before the server stops.
+                                    {
+                                        allCleaned: true,
+                                        cleanedBeforeStop: mode === "early-break" ? result.calls : 0,
+                                        foreignRejections: 0,
+                                        wrongCount: 0,
+                                        wrongIdentity: 0,
+                                        wrongTelemetry: 0,
+                                        wrongDuringCall: 0,
+                                    },
                                     JSON.stringify(result),
                                 );
                                 assert.deepStrictEqual(result.callerViews, [result.expectedCallerView], "the caller's own identity must be untouched after the call");
@@ -256,7 +265,7 @@ export function registerLeftoverChecks(): void {
 
         for (const transport of ["local", "http"] as const) {
             for (const kind of ["server", "bidi"] as const) {
-                for (const { mode, pace } of MODES.filter((entry) => entry.mode !== "early-break")) {
+                for (const { mode, pace } of MODES) {
                     it(`${transport} ${kind} ${mode}: active resources return to the baseline and cleanup runs exactly once per call`, { timeout: 120_000 }, async () => {
                         const probe = createProbe();
                         const setup = createAuthSetup("generic", []);
@@ -293,7 +302,7 @@ export function registerLeftoverChecks(): void {
             }
         }
 
-        it("leaving the consumer loop early is not a cancellation: the handler stays parked until the server stops, then cleans up once under its own identity", async () => {
+        it("leaving the consumer loop early ends the call: the handler cleans up once under its own identity while the server keeps running", async () => {
             const probe = createProbe();
             const setup = createAuthSetup("generic", []);
             const server = await boot({ interceptors: [setup.interceptor], routes: buildEndlessRoutes(probe, "yield-only") });
@@ -308,15 +317,17 @@ export function registerLeftoverChecks(): void {
                     break;
                 }
             }
-            await sleep(150);
             assert.strictEqual(received, 3);
-            assert.strictEqual(probe.cleanups.size, 0, "break alone does not unwind the handler");
-            await server.stop();
-            await eventually(() => probe.cleanups.get("breaker#0")?.count === 1);
+            assert.ok(await eventually(() => probe.cleanups.get("breaker#0")?.count === 1, 5_000), "break alone unwinds the handler");
             await sleep(50);
             assert.strictEqual(probe.cleanups.get("breaker#0")?.count, 1);
             assert.strictEqual(probe.cleanups.get("breaker#0")?.seen, "breaker");
-            // The handler resumed from its last yield exactly the number of times the consumer pulled.
+            // Stopping the server afterwards finds nothing left to clean up.
+            await server.stop();
+            await sleep(50);
+            assert.strictEqual(probe.cleanups.get("breaker#0")?.count, 1);
+            // The handler resumed from its last yield exactly the number of times the consumer pulled;
+            // the cancellation finishes it from where it is parked instead of resuming it.
             assert.deepStrictEqual(
                 probe.observations.filter((o) => o.phase.startsWith("server-after-yield")).map((o) => o.phase),
                 ["server-after-yield-0", "server-after-yield-1"],

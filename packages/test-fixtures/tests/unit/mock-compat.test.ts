@@ -69,6 +69,88 @@ describe("createMockFn", () => {
     assert.deepStrictEqual(fn.mock.calls[0]?.arguments, [1]);
   });
 
+  // The same implementation wrapped by node:test and by createMockFn must behave the same for
+  // the parts of the API documented as compatible: the `this` of the call, the recorded result
+  // and error, and the snapshot semantics of `calls`.
+  it("forwards `this` to the implementation, like node:test mock.fn()", () => {
+    const impl = function (this: { v: number } | undefined) {
+      return this?.v;
+    };
+    const reference = mock.fn(impl);
+    const mine = createMockFn(impl);
+
+    const referenceOwner = { v: 7, m: reference };
+    const owner = { v: 7, m: mine };
+
+    assert.strictEqual(referenceOwner.m(), 7, "reference: node:test forwards this");
+    assert.strictEqual(owner.m(), 7);
+    assert.strictEqual(mine.mock.calls[0]?.this, owner);
+  });
+
+  it("records the result of a call, like node:test mock.fn()", () => {
+    const reference = mock.fn((a: number, b: number) => a + b);
+    const mine = createMockFn((a: number, b: number) => a + b);
+    reference(1, 2);
+    mine(1, 2);
+
+    assert.strictEqual(reference.mock.calls[0]?.result, 3, "reference");
+    assert.strictEqual(mine.mock.calls[0]?.result, 3);
+    assert.strictEqual(mine.mock.calls[0]?.error, undefined);
+  });
+
+  it("records the error a throwing implementation raised and rethrows it", () => {
+    const failure = new Error("boom");
+    const reference = mock.fn(() => {
+      throw failure;
+    });
+    assert.throws(() => reference(), failure);
+    assert.strictEqual(reference.mock.calls[0]?.error, failure, "reference");
+
+    const mine = createMockFn(() => {
+      throw failure;
+    });
+
+    assert.throws(() => mine(), failure);
+    assert.strictEqual(mine.mock.calls[0]?.error, failure);
+    assert.strictEqual(mine.mock.calls[0]?.result, undefined);
+  });
+
+  it("records the promise of an async implementation as its result and no error when it rejects", async () => {
+    const failure = new Error("late");
+    const reference = mock.fn(async () => {
+      throw failure;
+    });
+    const mine = createMockFn(async () => {
+      throw failure;
+    });
+    await assert.rejects(reference(), failure);
+    await assert.rejects(mine(), failure);
+
+    assert.ok(reference.mock.calls[0]?.result instanceof Promise, "reference");
+    assert.ok(mine.mock.calls[0]?.result instanceof Promise);
+    assert.strictEqual(mine.mock.calls[0]?.error, undefined);
+  });
+
+  // node:test on Node.js returns a copy; the Bun engine of the test runner hands out the live
+  // list, so the reference is not consulted here and the copy is the contract of the fixture.
+  it("a snapshot of calls does not grow with later calls", () => {
+    const mine = createMockFn(() => 1);
+    const snapshot = mine.mock.calls;
+    mine();
+
+    assert.strictEqual(snapshot.length, 0);
+    assert.strictEqual(mine.mock.calls.length, 1);
+  });
+
+  it("clearing a copy of calls does not reset callCount()", () => {
+    const mine = createMockFn(() => 1);
+    mine();
+    (mine.mock.calls as unknown[]).length = 0;
+
+    assert.strictEqual(mine.mock.callCount(), 1);
+    assert.strictEqual(mine.mock.calls.length, 1);
+  });
+
   it("works with multiple calls", () => {
     const fn = createMockFn((x: number) => x);
     fn(1);

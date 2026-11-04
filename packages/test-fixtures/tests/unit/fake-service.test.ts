@@ -129,6 +129,50 @@ describe("createFakeMethod", () => {
     });
   }
 
+  it("a method kind that is not one of the four throws and names the method, the value and the valid kinds", () => {
+    for (const methodKind of ["bogus", "Unary", "", null, 1]) {
+      assert.throws(
+        () => createFakeMethod(createFakeService(), "X", { methodKind: methodKind as never }),
+        (err: unknown) =>
+          err instanceof TypeError &&
+          err.message.includes('"X"') &&
+          err.message.includes(JSON.stringify(methodKind)) &&
+          ["unary", "server_streaming", "client_streaming", "bidi_streaming"].every((valid) => err.message.includes(valid)),
+        `methodKind ${JSON.stringify(methodKind)}`,
+      );
+    }
+  });
+
+  // A second registration under the same name would leave two entries in `methods` while the
+  // lookup map keeps only the later one, so the service would disagree with itself.
+  it("registering the same method name twice throws and leaves the service as it was", () => {
+    const svc = createFakeService({ typeName: "acme.v1.UserService" });
+    const first = createFakeMethod(svc, "A", { register: true });
+
+    assert.throws(
+      () => createFakeMethod(svc, "A", { register: true }),
+      (err: unknown) => err instanceof Error && err.message.includes('"A"') && err.message.includes("acme.v1.UserService"),
+    );
+    assert.deepStrictEqual(svc.methods, [first]);
+    assert.strictEqual(svc.method.a, first);
+  });
+
+  it("two names that share a localName cannot both be registered", () => {
+    const svc = createFakeService();
+    createFakeMethod(svc, "getUser", { register: true });
+
+    assert.throws(() => createFakeMethod(svc, "GetUser", { register: true }), /getUser/);
+    assert.strictEqual(svc.methods.length, 1);
+  });
+
+  it("an unregistered method of the same name does not conflict with a registered one", () => {
+    const svc = createFakeService();
+    createFakeMethod(svc, "A", { register: true });
+
+    assert.doesNotThrow(() => createFakeMethod(svc, "A"));
+    assert.strictEqual(svc.methods.length, 1);
+  });
+
   it("register: true pushes method into service.methods array", () => {
     const svc = createFakeService();
     const method = createFakeMethod(svc, "GetUser", { register: true });

@@ -11,12 +11,31 @@
  * @module ShutdownManager
  */
 
+import type { ServerLogger } from "./types.ts";
+
 /**
  * Shutdown hook function type
  *
  * A function called during graceful shutdown. May be synchronous or async.
  */
 export type ShutdownHook = () => void | Promise<void>;
+
+/** Prefix of the generated module name of a hook registered without one. */
+const ANONYMOUS_PREFIX = "__anon_";
+
+/** Short, unambiguous rendering of a rejected argument for an error message. */
+function describeValue(value: unknown): string {
+    if (typeof value === "string") {
+        return `the string ${JSON.stringify(value)}`;
+    }
+    if (value === null) {
+        return "null";
+    }
+    if (Array.isArray(value)) {
+        return "an array";
+    }
+    return value === undefined ? "undefined" : `${typeof value} ${String(value)}`;
+}
 
 /**
  * Instance-based manager for shutdown hooks with dependency ordering.
@@ -25,7 +44,8 @@ export type ShutdownHook = () => void | Promise<void>;
  * - Dependency-ordered shutdown (dependencies execute first)
  * - Multiple handlers per named module
  * - Cycle detection in dependency graph
- * - Fail-fast hook failures: `executeAll()` rejects with the first failure
+ * - Best-effort hook failures: every hook runs and is awaited whatever the
+ *   others do, and `executeAll()` then reports all failures
  *   (see {@link ShutdownManager.executeAll})
  *
  * @example
@@ -50,6 +70,13 @@ export type ShutdownHook = () => void | Promise<void>;
  * ```
  */
 export class ShutdownManager {
+    /** Where a dependency on an unregistered name is reported. */
+    private readonly _logger: ServerLogger;
+
+    constructor(logger: ServerLogger = console) {
+        this._logger = logger;
+    }
+
     /** Dependency graph: module name -> array of dependency names */
     private _dependencyTree = new Map<string, string[]>();
 
@@ -59,8 +86,25 @@ export class ShutdownManager {
     /** Pending execution promises (for deduplication during a single executeAll run) */
     private _pendingPromises = new Map<string, Promise<void>>();
 
+    /** Failures of the current `executeAll` run: module name -> its failed handlers' errors */
+    private _failures = new Map<string, unknown[]>();
+
+    /** Modules whose handlers have been called in the current run and have not all settled yet */
+    private _running = new Set<string>();
+
     /** Counter for generating anonymous hook names */
     private _anonCounter = 0;
+
+    /**
+     * Names of the hooks that are executing right now: called, but not yet
+     * settled. A hook that only waits for its dependencies is not listed, so
+     * during a hang the list names the hook that is stuck, not the ones queued
+     * behind it. An anonymous hook is listed as `anonymous hook #N`, N being
+     * its registration order.
+     */
+    runningHooks(): string[] {
+        return Array.from(this._running, (name) => (name.startsWith(ANONYMOUS_PREFIX) ? `anonymous hook #${name.slice(ANONYMOUS_PREFIX.length)}` : name));
+    }
 
     /**
      * Register an anonymous shutdown hook (no dependencies)
@@ -110,7 +154,9 @@ export class ShutdownManager {
             // addHook(handler)
             handler = nameOrHandler;
             dependencies = [];
-            name = `__anon_${this._anonCounter++}`;
+            name = `${ANONYMOUS_PREFIX}${this._anonCounter++}`;
+        } else if (typeof nameOrHandler !== "string") {
+            throw new TypeError(`onShutdown(): the first argument must be a hook function or a module name (string), got ${describeValue(nameOrHandler)}`);
         } else if (typeof depsOrHandler === "function") {
             // addHook(name, handler)
             name = nameOrHandler;
@@ -118,9 +164,24 @@ export class ShutdownManager {
             dependencies = [];
         } else {
             // addHook(name, dependencies, handler)
+            if (depsOrHandler === undefined) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): expected a hook function, or an array of dependencies and a hook function, after the module name`);
+            }
+            // A string is iterable: spread into the dependency list it would become one
+            // dependency per character and the intended order would silently be lost.
+            if (!Array.isArray(depsOrHandler)) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): dependencies must be an array of module names, got ${describeValue(depsOrHandler)}`);
+            }
+            const badIndex = depsOrHandler.findIndex((dependency) => typeof dependency !== "string");
+            if (badIndex !== -1) {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): dependencies[${badIndex}] must be a module name (string), got ${describeValue(depsOrHandler[badIndex])}`);
+            }
+            if (typeof handlerArg !== "function") {
+                throw new TypeError(`onShutdown("${nameOrHandler}"): the hook must be a function, got ${describeValue(handlerArg)}`);
+            }
             name = nameOrHandler;
-            dependencies = depsOrHandler as string[];
-            handler = handlerArg as ShutdownHook;
+            dependencies = depsOrHandler;
+            handler = handlerArg;
         }
 
         // Temporarily add dependencies to test for cycles
@@ -147,17 +208,61 @@ export class ShutdownManager {
      * Dependencies are executed before their dependents. Hooks within
      * the same module run in parallel.
      *
-     * Failure policy: the returned promise rejects with the first hook failure.
-     * Independent hooks that have already started keep running but are not
-     * awaited; hooks that depend on the failed module do not run; later
-     * failures are not reported.
+     * Failure policy: hooks release resources that each own, and one hook
+     * failing says nothing about whether the others can still succeed. Every
+     * hook therefore runs, a module whose dependency failed runs once that
+     * dependency has finished, and the returned promise settles only after all
+     * of them have settled. It then rejects with the single failure, or with an
+     * `AggregateError` of all failures in registration order (module by module,
+     * handlers in the order they were added).
+     *
+     * A dependency on a name that no hook registered is not an error: hooks may
+     * be added in any order, and an unregistered dependency has nothing to wait
+     * for, so the dependent hook runs at once. It is reported once per name, as a
+     * warning through the logger, because such a name is usually a typo and the
+     * ordering the author meant is lost.
      */
     async executeAll(): Promise<void> {
         if (!this._hooks.size) return;
 
+        this._warnAboutUnregisteredDependencies();
         this._pendingPromises.clear();
+        this._failures.clear();
+        this._running.clear();
 
         await Promise.all(Array.from(this._hooks.keys()).map((key) => this._executeModule(key)));
+
+        const failures = Array.from(this._hooks.keys()).flatMap((key) => this._failures.get(key) ?? []);
+        if (failures.length === 1) {
+            throw failures[0];
+        }
+        if (failures.length > 1) {
+            throw new AggregateError(failures, `${failures.length} shutdown hooks failed`);
+        }
+    }
+
+    /**
+     * Warn once for every dependency name that has no registered hook, naming
+     * the hooks that declared it.
+     */
+    private _warnAboutUnregisteredDependencies(): void {
+        const dependentsByMissing = new Map<string, string[]>();
+        for (const [name, dependencies] of this._dependencyTree) {
+            if (!this._hooks.has(name)) continue;
+            for (const dependency of dependencies) {
+                if (this._hooks.has(dependency)) continue;
+                const dependents = dependentsByMissing.get(dependency) ?? [];
+                if (!dependents.includes(name)) dependents.push(name);
+                dependentsByMissing.set(dependency, dependents);
+            }
+        }
+        for (const [missing, dependents] of dependentsByMissing) {
+            const list = dependents.map((dependent) => `"${dependent}"`).join(", ");
+            const subject = dependents.length === 1 ? `Shutdown hook ${list} depends` : `Shutdown hooks ${list} depend`;
+            this._logger.warn(
+                `${subject} on "${missing}", but no shutdown hook is registered under that name, so there is nothing to wait for. Check the name passed to onShutdown().`,
+            );
+        }
     }
 
     /**
@@ -180,9 +285,12 @@ export class ShutdownManager {
     /**
      * Executes a single module's shutdown hooks and its dependencies.
      *
-     * Dependencies are executed first (recursively). Results are memoized
-     * in `_pendingPromises` to avoid duplicate execution within a single
-     * `executeAll()` run.
+     * Dependencies are executed first (recursively) and awaited whether they
+     * succeeded or failed. Results are memoized in `_pendingPromises` to avoid
+     * duplicate execution within a single `executeAll()` run. The returned
+     * promise never rejects: a handler's failure is recorded in `_failures`
+     * under the module name, so that a failing module neither stops its
+     * dependents nor hides the failures of other modules.
      *
      * @param name - Module name to execute
      */
@@ -199,7 +307,15 @@ export class ShutdownManager {
 
             const moduleHandlers = this._hooks.get(name) || [];
             if (moduleHandlers.length) {
-                await Promise.all(moduleHandlers.map((f) => f()));
+                // The handler is called synchronously, so a hook that throws
+                // before its first `await` is recorded like one that rejects.
+                this._running.add(name);
+                const outcomes = await Promise.allSettled(moduleHandlers.map((f) => new Promise<void>((resolve) => resolve(f()))));
+                this._running.delete(name);
+                const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected").map((outcome) => outcome.reason);
+                if (failures.length) {
+                    this._failures.set(name, failures);
+                }
             }
         })();
 

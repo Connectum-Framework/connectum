@@ -66,7 +66,7 @@ describe("Reflection Integration", () => {
         }
     });
 
-    it("lists the services of the protocols registered before reflection", async () => {
+    it("lists the services of the other protocols (reflection itself is not listed)", async () => {
         assert.deepStrictEqual(await listServices(createGrpcTransport({ baseUrl: serverUrl })), ["grpc.health.v1.Health"]);
     });
 

@@ -219,6 +219,50 @@ describe("InMemoryMetricCollector", () => {
         }
     });
 
+    it("reports only what was recorded since the previous flush()", async () => {
+        const collector = new InMemoryMetricCollector();
+        try {
+            const hits = collector.provider.getMeter("test").createCounter("hits");
+            const valuesOf = (flushed: Awaited<ReturnType<InMemoryMetricCollector["flush"]>>) => flushed.map((m) => [m.name, m.points.map((p) => p.value)]);
+
+            hits.add(1);
+            assert.deepStrictEqual(valuesOf(await collector.flush()), [["hits", [1]]]);
+
+            hits.add(5);
+            assert.deepStrictEqual(valuesOf(await collector.flush()), [["hits", [5]]], "the second flush must not repeat the first one's export");
+
+            assert.deepStrictEqual(await collector.flush(), [], "a flush with nothing recorded in between reports nothing");
+        } finally {
+            await collector.dispose();
+        }
+    });
+
+    it("lets find() by name see the current value after a later flush()", async () => {
+        const collector = new InMemoryMetricCollector();
+        try {
+            const hits = collector.provider.getMeter("test").createCounter("hits");
+            hits.add(1);
+            await collector.flush();
+            hits.add(5);
+
+            const current = (await collector.flush()).find((m) => m.name === "hits");
+
+            assert.deepStrictEqual(current?.points, [{ attributes: {}, value: 5 }]);
+        } finally {
+            await collector.dispose();
+        }
+    });
+
+    it("rejects flush() after dispose() and still allows dispose() to be called again", async () => {
+        const collector = new InMemoryMetricCollector();
+        collector.provider.getMeter("test").createCounter("hits").add(1);
+        await collector.flush();
+        await collector.dispose();
+
+        await assert.rejects(collector.flush(), /flush\(\) called after dispose\(\)/);
+        await assert.doesNotReject(collector.dispose());
+    });
+
     it("keeps collectors isolated from each other", async () => {
         const first = new InMemoryMetricCollector();
         const second = new InMemoryMetricCollector();

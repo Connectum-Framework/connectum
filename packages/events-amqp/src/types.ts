@@ -61,6 +61,9 @@ export interface AmqpAdapterOptions {
      *   what it excludes; use `"check"` or `"skip"` for such bindings, or
      *   declare them in the topology.
      *
+     * Any other value (a different casing, a typo) makes `AmqpAdapter()` throw
+     * a `TypeError` instead of failing at `connect()` with the broker's refusal.
+     *
      * @default "topic"
      */
     readonly exchangeType?: "topic" | "direct" | "fanout" | "headers";
@@ -112,11 +115,15 @@ export interface AmqpAdapterOptions {
      *   ONLY with `recovery: false` or `failFastOnInitialSetupError: true`; under
      *   the default recovery a first-connect check failure otherwise enters the
      *   (infinite) recovery loop and is surfaced via `onSetupFailed` /
-     *   `onReconnecting` rather than rejecting `connect()`. AMQP offers no passive
+     *   `onReconnecting` (or, with no callback, a process warning) rather than
+     *   rejecting `connect()`. AMQP offers no passive
      *   introspection: argument equivalence and binding presence are NOT
      *   verifiable in this mode (a conflicting redeclare elsewhere is
      *   PRECONDITION_FAILED 406);
      * - `"skip"` — no topology operations at all; the application owns topology.
+     *
+     * Any other value (a different casing, a typo, `null`) makes `AmqpAdapter()`
+     * throw a `TypeError`; it is never read as `"assert"`.
      *
      * @default "assert"
      */
@@ -151,9 +158,14 @@ export interface AmqpAdapterOptions {
      *
      * `maxRetries` governs BOTH the initial connect and steady-state recovery
      * (counter reset on success); under the default `Infinity`, `connect()`
-     * blocks until the broker is reachable rather than failing fast (see
+     * blocks until the broker is reachable rather than failing fast;
+     * `disconnect()` cancels that wait and the pending `connect()` rejects with
+     * `AmqpConnectionError` (see
      * {@link AmqpAdapterOptions.failFastOnInitialSetupError} to fail fast on a
-     * deterministic startup misconfiguration). See {@link AmqpRecoveryOptions}
+     * deterministic startup misconfiguration). A broker refusal of the topology
+     * setup is retried too; with default options (no lifecycle callback, no
+     * fail-fast, no initial connect budget) it is reported once per distinct
+     * reply as a process warning, `CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED`. See {@link AmqpRecoveryOptions}
      * for the retry-budget scope and the delay bounds. With a finite
      * `maxRetries`, a broker still unreachable when the initial connect has
      * used its budget rejects `connect()` with a typed `AmqpConnectionError`
@@ -172,10 +184,15 @@ export interface AmqpAdapterOptions {
      * amqplib's opt-in recovery resolves `connect()` only after its setup hook
      * succeeds, and rejects only once `maxRetries` is exhausted (default
      * `Infinity`). A permanent topology error on the first connect under the
-     * default recovery therefore HANGS `connect()` forever, with no thrown error
-     * and — because the lifecycle listeners attach only after that never-returning
-     * await — no callback. When this flag is `true` (and recovery is enabled), a
-     * topology error of the initial connect rejects `connect()` with the typed
+     * default recovery therefore keeps `connect()` waiting, with no thrown error
+     * and — because the lifecycle listeners attach only after that
+     * never-returning await — no callback. With default options (no callback,
+     * no fail-fast, no initial connect budget) the adapter emits one process
+     * warning (code `CONNECTUM_AMQP_TOPOLOGY_SETUP_FAILED`) per distinct broker
+     * reply, naming the object and the reason, and keeps waiting: a service may
+     * start before another one fixes the topology. When this flag is `true`
+     * (and recovery is enabled), a topology error of the initial connect
+     * rejects `connect()` with the typed
      * `AmqpTopologyError` / `AmqpConnectionError`. Without
      * {@link AmqpRecoveryOptions.initialConnectMaxRetries} the adapter first
      * validates topology against a throwaway non-recovering connection (the
@@ -849,6 +866,13 @@ export interface AmqpQueueOptions {
      * In the default `assert` mode, ungrouped subscriptions use private,
      * non-durable, auto-delete queues. `check` and `skip` do not create them.
      *
+     * `false` for a named group queue works only on a broker that still allows a
+     * non-durable queue that is not exclusive: RabbitMQ 4.3 and later refuse it
+     * with a connection exception (`541`, deprecated feature
+     * `transient_nonexcl_queues`) unless that feature is permitted. The refusal
+     * is reported as `AmqpTopologyError` whose message and `cause` carry the
+     * broker's reply code and text.
+     *
      * @default true
      */
     readonly durable?: boolean;
@@ -880,11 +904,38 @@ export interface AmqpQueueOptions {
 export interface AmqpConsumerOptions {
     /**
      * Prefetch count (QoS) — how many unacknowledged messages
-     * a consumer can have at a time.
+     * a consumer can have at a time. An integer from 0 (no limit) to 65535;
+     * any other value makes `AmqpAdapter()` throw a `RangeError`.
      *
      * @default 10
      */
     readonly prefetch?: number;
+
+    /**
+     * Milliseconds to hold a message unacknowledged after its handler threw,
+     * before it is requeued. Opt-in: unset or `0` requeues at once, so a
+     * handler that always throws receives the same message as fast as the
+     * broker can deliver it (tens of thousands of times in a few seconds,
+     * measured against RabbitMQ 4.3), which keeps a CPU core busy and floods
+     * the logs.
+     *
+     * The held message occupies one `prefetch` slot for the whole delay, and
+     * the delay applies to every handler failure of this adapter's
+     * subscriptions, not only to a poison message. It does not apply to a
+     * message the handler already settled with `ack()` or `nack()`.
+     * `unsubscribe()` ends the wait and requeues a held message at once. When the
+     * channel closes during the wait (`disconnect()`, a lost connection) the wait
+     * ends and the broker returns the message itself.
+     * The attempt number stays 1 or 2: `redelivered` is a flag, not a counter,
+     * so a delay does not replace `retry` and `dlq` middleware for a message
+     * that can never succeed.
+     *
+     * A finite number of milliseconds from `0` to `2147483647` (the largest
+     * delay a timer honors); anything else makes `AmqpAdapter()` throw.
+     *
+     * @default 0
+     */
+    readonly redeliveryDelay?: number;
 
     /**
      * Whether the private queue of a subscription without `group` is exclusive

@@ -11,20 +11,25 @@ import type { AddressInfo } from "node:net";
 import type { DescFile, DescService } from "@bufbuild/protobuf";
 import type { Client, ConnectRouter, HandlerContext, Interceptor, Transport } from "@connectrpc/connect";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { validateAdmissionOptions, validateShutdownOptions } from "./admission.ts";
+import { validateAdmissionOptions, validateListenOptions, validateShutdownOptions, validateShutdownSignals, warnIfReadLimitUnset } from "./admission.ts";
 import { buildRoutes } from "./buildRoutes.ts";
 import { CatalogDispatcher, type CatalogDispatchHost, remoteTransportCacheKey } from "./catalogDispatcher.ts";
 import { CatalogConfigError } from "./catalogErrors.ts";
+import { assertEnabledServicesAreSupplied, assertNoDuplicateService, assertResolvedTransport, normalizeEndpoint, validatePropagateHeaders } from "./catalogOptions.ts";
 import type { Context } from "./context.ts";
 import type { ServiceDefinition } from "./defineService.ts";
+import { createShutdownReason } from "./finishStreamOnAbort.ts";
 import { performGracefulShutdown } from "./gracefulShutdown.ts";
 import { createLocalTransport } from "./localTransport.ts";
+import { resolveLogger } from "./logger.ts";
 import { withOutgoingInterceptors } from "./outgoingTransport.ts";
 import { assertPeerVersions } from "./peerVersions.ts";
+import { onProcessSignal } from "./processSignals.ts";
 import { ShutdownManager } from "./ShutdownManager.ts";
+import { assertCatalogShape } from "./serviceCatalog.ts";
 import { TransportManager } from "./TransportManager.ts";
 import { resolveEffectiveTransport, validateTransport } from "./TransportValidation.ts";
-import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ShutdownHook, TransportServer } from "./types.ts";
+import type { CreateServerOptions, EventBusLike, ProtocolRegistration, Server, ServerClientOptions, ServerLogger, ShutdownHook, TransportServer } from "./types.ts";
 import { ServerState } from "./types.ts";
 
 /**
@@ -45,11 +50,18 @@ class ServerImpl extends EventEmitter implements Server {
     private readonly _interceptors: Interceptor[];
     private readonly _outgoingInterceptors: Interceptor[];
     private readonly _registry: DescFile[] = [];
-    private readonly _shutdownManager = new ShutdownManager();
+    /** Destination of the library's own lifecycle messages (`console` unless the `logger` option is set). */
+    private readonly _logger: ServerLogger;
+    private readonly _shutdownManager: ShutdownManager;
     private readonly _abortController = new AbortController();
-    private _signalHandlers: Map<NodeJS.Signals, () => void> = new Map();
+    /** Ends of this server's subscriptions to the shared process signal listeners. */
+    private readonly _signalSubscriptions: Array<() => void> = [];
     private _stopPromise: Promise<void> | null = null;
-    private readonly _transport = new TransportManager();
+    /** Settles when start() has finished, successfully or not; set while the state is STARTING. */
+    private _startSettled: Promise<void> | null = null;
+    /** The stop() requested during start(): shared by every such call. */
+    private _stopAfterStart: Promise<void> | null = null;
+    private readonly _transport: TransportManager;
     private readonly _eventBus: EventBusLike | null = null;
 
     /**
@@ -83,8 +95,19 @@ class ServerImpl extends EventEmitter implements Server {
         super();
         validateAdmissionOptions(options);
         validateShutdownOptions(options.shutdown);
+        validateShutdownSignals(options.shutdown);
+        validateListenOptions(options);
+        validatePropagateHeaders(options.propagateHeaders);
+        this._logger = resolveLogger(options.logger);
+        this._shutdownManager = new ShutdownManager(this._logger);
+        this._transport = new TransportManager(this._logger);
+        if (options.catalog !== undefined) assertCatalogShape(options.catalog, "createServer");
         this._options = options;
-        this._routes = [...options.services];
+        this._routes = [];
+        for (const service of options.services) {
+            assertNoDuplicateService(this._routes, service, "createServer");
+            this._routes.push(service);
+        }
         this._protocols = [...(options.protocols ?? [])];
         this._interceptors = [...(options.interceptors ?? [])];
         this._outgoingInterceptors = [...(options.outgoingInterceptors ?? [])];
@@ -95,12 +118,18 @@ class ServerImpl extends EventEmitter implements Server {
         // construction-order coupling with route building.
         const host: CatalogDispatchHost = {
             catalog: options.catalog,
-            propagateHeaders: options.propagateHeaders ?? [],
+            // A frozen copy: what is forwarded must not change when the caller
+            // later edits the array it passed (credentials forwarding is opt-in).
+            propagateHeaders: Object.freeze([...(options.propagateHeaders ?? [])]),
+            hasRemoteResolver: options.remoteResolver !== undefined,
             isLocal: (typeName) => this._getRegisteredServiceTypeNames().has(typeName),
             getLocalTransport: () => this._getCatalogLocalTransport(),
             resolveRemoteTransport: (typeName, endpoint) => this._resolveRemoteTransport(typeName, endpoint),
         };
         this._dispatcher = new CatalogDispatcher(host);
+
+        // Last, so a construction that throws on invalid options has not warned.
+        warnIfReadLimitUnset(options, this._logger);
     }
 
     // =========================================================================
@@ -175,6 +204,26 @@ class ServerImpl extends EventEmitter implements Server {
 
         this._state = ServerState.STARTING;
 
+        // A stop() requested while starting waits on this and runs once the start has
+        // settled. It resolves in `finally`, after the state is final, and before the
+        // caller of start() is resumed.
+        const settled = Promise.withResolvers<void>();
+        this._startSettled = settled.promise;
+
+        // The signal handlers exist from the first moment of the start: a SIGTERM during a
+        // slow startup (a broker connect, say) is the one termination request an operator
+        // cannot repeat, and without a handler the process dies abruptly, skipping hooks
+        // and the event bus shutdown.
+        this._setupAutoShutdown();
+
+        try {
+            await this._runStart();
+        } finally {
+            settled.resolve();
+        }
+    }
+
+    private async _runStart(): Promise<void> {
         try {
             // A throwing start/ready listener is a startup failure: it takes
             // the rollback path below instead of leaving the server half-started.
@@ -213,6 +262,7 @@ class ServerImpl extends EventEmitter implements Server {
                 // as plaintext consistently with the actual transport selection.
                 transport: resolveEffectiveTransport({ hasTls: Boolean(this._options.tls), allowHTTP1: this._options.allowHTTP1 }),
                 mode: this._options.transportValidation ?? "error",
+                logger: this._logger,
             });
             if (validationError) {
                 throw validationError;
@@ -235,13 +285,12 @@ class ServerImpl extends EventEmitter implements Server {
             });
 
             this._state = ServerState.RUNNING;
-            this._setupAutoShutdown();
             this.emit("ready");
         } catch (error) {
+            this._removeAutoShutdown();
             // RUNNING means listen() completed: only a ready listener can fail
             // after that point, and the bound port must not outlive start().
             if (this._state === ServerState.RUNNING) {
-                this._removeAutoShutdown();
                 this._transport.destroyAllSessions();
                 await this._transport.close().catch(() => {});
                 this._transport.dispose();
@@ -269,6 +318,16 @@ class ServerImpl extends EventEmitter implements Server {
             return;
         }
 
+        // A termination request that arrives while start() is still in progress is honoured,
+        // not dropped: it waits for the start to settle and then stops the server. If the start
+        // fails the server is already stopped, and there is nothing left to stop. A listener of
+        // `ready` may have begun the stop by then: stop() then joins it, so this call settles with
+        // the outcome of the shutdown instead of before it.
+        if (this._state === ServerState.STARTING && this._startSettled) {
+            this._stopAfterStart ??= this._startSettled.then(() => this.stop());
+            return this._stopAfterStart;
+        }
+
         if (this._state !== ServerState.RUNNING) {
             throw new Error(`Cannot stop server: current state is "${this._state}", expected "${ServerState.RUNNING}"`);
         }
@@ -279,22 +338,26 @@ class ServerImpl extends EventEmitter implements Server {
         // listener runs even if an earlier one throws.
         this._emitIsolated("stopping");
 
-        // Phase 1: Signal shutdown to ConnectRPC handlers (streaming RPCs)
-        this._abortController.abort();
+        // Phase 1: Signal shutdown to ConnectRPC handlers (streaming RPCs). The reason
+        // lets a stream that has to be cut end with `unavailable` instead of looking
+        // like a complete response.
+        this._abortController.abort(createShutdownReason());
 
         this._stopPromise = (async () => {
             let failure: { readonly error: unknown } | undefined;
             try {
-                this._removeAutoShutdown();
+                this._armRepeatedSignal();
 
                 // Phases 2-4 with timeout
                 await performGracefulShutdown(this._transport, this._shutdownManager, {
                     timeout: this._options.shutdown?.timeout ?? 30_000,
                     forceCloseOnTimeout: this._options.shutdown?.forceCloseOnTimeout ?? true,
+                    logger: this._logger,
                 });
             } catch (error) {
                 failure = { error };
             }
+            this._removeAutoShutdown();
 
             this._state = ServerState.STOPPED;
             this._stopPromise = null;
@@ -320,8 +383,11 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add service: server is already ${this._state}. Add services before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add service: routes have already been materialized (e.g. via server.localClient()). Add services before any local-transport access.");
+            throw new Error(
+                "Cannot add service: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add services before any local-transport access.",
+            );
         }
+        assertNoDuplicateService(this._routes, service, "addService");
         this._routes.push(service);
     }
 
@@ -330,7 +396,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add interceptor: server is already ${this._state}. Add interceptors before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add interceptor: routes have already been materialized (e.g. via server.localClient()). Add interceptors before any local-transport access.");
+            throw new Error(
+                "Cannot add interceptor: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add interceptors before any local-transport access.",
+            );
         }
         this._interceptors.push(interceptor);
     }
@@ -340,7 +408,9 @@ class ServerImpl extends EventEmitter implements Server {
             throw new Error(`Cannot add protocol: server is already ${this._state}. Add protocols before calling start().`);
         }
         if (this._builtRoutes !== null) {
-            throw new Error("Cannot add protocol: routes have already been materialized (e.g. via server.localClient()). Add protocols before any local-transport access.");
+            throw new Error(
+                "Cannot add protocol: routes have already been materialized (e.g. via server.localClient(), or server.hasService() for a service only a protocol provides). Add protocols before any local-transport access.",
+            );
         }
         this._protocols.push(protocol);
     }
@@ -369,7 +439,15 @@ class ServerImpl extends EventEmitter implements Server {
 
     /**
      * Synchronous lookup: is the given proto service descriptor served locally
-     * by this `Server`? Triggers route materialization on first call.
+     * by this `Server`?
+     *
+     * A service the application defines (`services`, `addService()`, filtered by
+     * `enabledServices`) is answered from its definition, so a lookup before the
+     * routes exist runs no lazy factory and leaves `addService()`,
+     * `addInterceptor()` and `addProtocol()` available. A descriptor that no
+     * definition covers can only come from a protocol; when protocols are
+     * registered, what they mount is known only once the routes are built, so
+     * that lookup builds them (and closes those methods) on first call.
      *
      * @example
      * ```typescript
@@ -377,8 +455,21 @@ class ServerImpl extends EventEmitter implements Server {
      * ```
      */
     hasService(desc: DescService): boolean {
-        const names = this._getRegisteredServiceTypeNames();
-        return names.has(desc.typeName);
+        const { typeName } = desc;
+        if (this._builtRoutes === null) {
+            // Not built yet: the application's own definitions answer without
+            // running lazy factories or freezing addService()/addInterceptor().
+            const enabled = this._options.enabledServices;
+            if (this._routes.some((definition) => definition.descriptor.typeName === typeName && (enabled === undefined || enabled.includes(typeName)))) {
+                return true;
+            }
+            // Only protocols can still provide it, and what they mount is known
+            // only once they register on a router: with none, the answer is no.
+            if (this._protocols.length === 0) {
+                return false;
+            }
+        }
+        return this._getRegisteredServiceTypeNames().has(typeName);
     }
 
     /**
@@ -411,9 +502,10 @@ class ServerImpl extends EventEmitter implements Server {
                     `Mount it locally (createServer({ services })) or configure createServer({ remoteResolver }).`,
             );
         }
-        const transport = this._resolveRemoteTransport(service.typeName, options?.endpoint);
+        const endpoint = normalizeEndpoint(options?.endpoint);
+        const transport = this._resolveRemoteTransport(service.typeName, endpoint);
         if (!transport) {
-            const at = options?.endpoint ? ` (endpoint "${options.endpoint}")` : "";
+            const at = endpoint !== undefined ? ` (endpoint "${endpoint}")` : "";
             throw new ConnectError(`No route for service "${service.typeName}"${at}: the resolver returned null.`, Code.Unavailable);
         }
         return createClient(service, transport);
@@ -431,8 +523,13 @@ class ServerImpl extends EventEmitter implements Server {
         const cached = this._remoteTransports.get(key);
         if (cached) return cached;
         const ctx = endpoint !== undefined ? { typeName, endpoint } : { typeName };
-        const resolved = this._options.remoteResolver?.(ctx) ?? null;
-        if (resolved === null) return null;
+        const resolver = this._options.remoteResolver;
+        if (resolver === undefined) return null;
+        const answer: unknown = resolver(ctx);
+        if (answer === null) return null;
+        // Checked before anything is cached: an invalid value kept in the cache
+        // would fail every later call to this route the same way.
+        const resolved = assertResolvedTransport(answer, typeName);
         // The resolver's transport is opaque (its own interceptors are fixed at
         // construction), so the server's outgoing chain is applied around it —
         // once per call, outside the transport's own middleware. With an empty
@@ -459,24 +556,27 @@ class ServerImpl extends EventEmitter implements Server {
     }
 
     /**
-     * Validate the catalog configuration at startup. Currently the always-on
-     * shape check: every `enabledServices` entry must be a known catalog key
-     * (when a `catalog` is configured). A mismatch is a programmer error
-     * → `CatalogConfigError`.
+     * Validate the catalog configuration at startup. The always-on shape
+     * check: every `enabledServices` entry must be a known catalog key (when a
+     * `catalog` is configured) and the type name of a supplied service. A
+     * mismatch is a programmer error → `CatalogConfigError`.
      *
      * @internal
      */
     private _validateCatalogConfig(): void {
         const { catalog, enabledServices } = this._options;
-        if (!catalog || !enabledServices) return;
-        const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
-        if (missing.length > 0) {
-            const known = Object.keys(catalog);
-            throw new CatalogConfigError(
-                `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
-                    `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
-            );
+        if (!enabledServices) return;
+        if (catalog) {
+            const missing = enabledServices.filter((name) => !Object.hasOwn(catalog, name));
+            if (missing.length > 0) {
+                const known = Object.keys(catalog);
+                throw new CatalogConfigError(
+                    `enabledServices lists ${missing.length} typeName(s) absent from the catalog: ${missing.join(", ")}. ` +
+                        `Known catalog services: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+                );
+            }
         }
+        assertEnabledServicesAreSupplied(enabledServices, new Set(this._routes.map((service) => service.descriptor.typeName)));
     }
 
     /**
@@ -589,15 +689,21 @@ class ServerImpl extends EventEmitter implements Server {
 
         for (const signal of signals) {
             const handler = () => {
-                console.info(`Received ${signal}, initiating graceful shutdown...`);
+                this._logger.info(`Received ${signal}, initiating graceful shutdown...`);
                 // stop() has already reported a failed shutdown through "error";
                 // reporting it again would duplicate the event and, without an
                 // "error" listener, turn it into an unhandled rejection.
+                const duringStart = this._state === ServerState.STARTING;
                 this.stop().catch(() => {});
+                if (duringStart) {
+                    // The stop now waits for a start that may never settle. A repeated
+                    // signal must be able to end the process, exactly as it does once a
+                    // running server has begun to stop.
+                    this._armRepeatedSignal();
+                }
             };
 
-            this._signalHandlers.set(signal, handler);
-            process.on(signal, handler);
+            this._signalSubscriptions.push(onProcessSignal(signal, handler));
         }
     }
 
@@ -627,22 +733,61 @@ class ServerImpl extends EventEmitter implements Server {
         const err = error instanceof Error ? error : new Error(String(error));
         if (this.listenerCount("error") === 0) {
             if (printIfUnheard) {
-                console.error("Unhandled error in a server lifecycle listener:", err);
+                this._logger.error("Unhandled error in a server lifecycle listener:", err);
             }
             return;
         }
         try {
             this.emit("error", err);
         } catch (listenerError) {
-            console.error("An 'error' listener threw:", listenerError);
+            this._logger.error("An 'error' listener threw:", listenerError);
+        }
+    }
+
+    /**
+     * Replace the signal handlers of a stop that has begun with ones that make a
+     * repeated signal explicit.
+     *
+     * A repeated SIGTERM/SIGINT ends the process at once: it is the operator's
+     * only way out of a shutdown that hangs (a hook that never settles is not
+     * bounded by `shutdown.timeout`). The process dies as it would with no
+     * handler installed, but only after saying so in the log, because a process
+     * that disappears in the middle of its hooks looks like a crash otherwise.
+     * When another listener for the signal exists (the application's own, or
+     * another server's), Node.js would not have applied the default action, so
+     * none is applied here either; the signal has already reached that listener.
+     * A `process.once` listener that already ran for this very signal has been
+     * removed by Node.js and is no longer visible, so it is not counted.
+     * Does nothing without `autoShutdown`.
+     */
+    private _armRepeatedSignal(): void {
+        const { shutdown = {} } = this._options;
+        if (!shutdown.autoShutdown) {
+            return;
+        }
+        this._removeAutoShutdown();
+        for (const signal of shutdown.signals ?? ["SIGTERM", "SIGINT"]) {
+            const handler = () => {
+                this._removeAutoShutdown();
+                if (process.listenerCount(signal) > 0) {
+                    this._logger.warn(
+                        `Received ${signal} again while the server is shutting down; other listeners handle it, so the process keeps running until the shutdown completes`,
+                    );
+                    return;
+                }
+                this._logger.warn(`Received ${signal} again while the server is shutting down; the process is terminated now, without waiting for the remaining shutdown hooks`);
+                // No listener is left, so re-sending the signal applies its default action: the process ends by this signal.
+                process.kill(process.pid, signal);
+            };
+            this._signalSubscriptions.push(onProcessSignal(signal, handler));
         }
     }
 
     private _removeAutoShutdown(): void {
-        for (const [signal, handler] of this._signalHandlers) {
-            process.removeListener(signal, handler);
+        for (const unsubscribe of this._signalSubscriptions) {
+            unsubscribe();
         }
-        this._signalHandlers.clear();
+        this._signalSubscriptions.length = 0;
     }
 }
 

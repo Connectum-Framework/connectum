@@ -68,6 +68,7 @@ import type { AmqpTopologyObject } from "./errors.ts";
 import { AmqpConnectionError, AmqpTopologyError } from "./errors.ts";
 import type { AmqpConsumerLossCause, AmqpLifecycleCallbacks } from "./types.ts";
 import { AmqpTopologyMode } from "./types.ts";
+import { validateExchangeType, validateTopologyMode } from "./validateOptions.ts";
 
 /** Options for {@link FakeAmqpAdapter}. */
 export interface FakeAmqpAdapterOptions {
@@ -281,6 +282,10 @@ interface ParkedSubscribe {
  * ```
  */
 export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpAdapterInstance {
+    // The same checks as the real adapter: a test that passes `"CHECK"` or `"TOPIC"` here
+    // must not pass against the double and then throw in production.
+    validateExchangeType(options.exchangeType);
+    validateTopologyMode(options.topologyMode);
     const lifecycle = options.lifecycle;
     const exchangeType = options.exchangeType ?? "topic";
     const topologyMode = options.topologyMode ?? AmqpTopologyMode.ASSERT;
@@ -297,6 +302,12 @@ export function FakeAmqpAdapter(options: FakeAmqpAdapterOptions = {}): FakeAmqpA
     function reachesQueue(patterns: readonly string[], eventType: string): boolean {
         if (exchangeType === "fanout" || exchangeType === "headers") {
             return true;
+        }
+        // RabbitMQ reads the empty routing key as zero words on a topic exchange, so the
+        // single-word `*` and the one-or-more `>` (bound as `*.#`) do not match it; only
+        // a binding of exactly "" does. The shared matcher counts "" as one empty word.
+        if (exchangeType === "topic" && eventType === "") {
+            return patterns.includes("");
         }
         return patterns.some((pattern) => matchPattern(pattern, eventType));
     }

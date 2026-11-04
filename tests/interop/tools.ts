@@ -107,6 +107,8 @@ export interface RunningTool {
     messages(count: number, timeoutMs: number): Promise<unknown[]>;
     /** Resolve when the tool exits. */
     done: Promise<ToolResult>;
+    /** Close the tool's stdin; a no-op when it was already closed. */
+    closeStdin(): void;
 }
 
 /**
@@ -114,10 +116,21 @@ export interface RunningTool {
  * it runs. A Health `Watch` needs this: the container takes about a second to
  * start, so the test must see the first message before it changes a status,
  * or the client may connect after the change and never observe it.
+ *
+ * The tool's stdin is closed at once, unless `stdin` is given: that text is
+ * written and stdin then stays open until `closeStdin()`, as a person leaves a
+ * terminal open after typing a request. A client reading its requests from
+ * stdin keeps its call open for as long as that lasts.
  */
-export function startTool(tool: Tool, args: readonly string[]): RunningTool {
+export function startTool(tool: Tool, args: readonly string[], options: { stdin?: string } = {}): RunningTool {
     const child = spawn("docker", dockerRunArgs(tool, args), { stdio: ["pipe", "pipe", "pipe"] });
-    child.stdin.end();
+    // The container may exit before the test closes stdin; the write error that follows is not a test failure.
+    child.stdin.on("error", () => {});
+    if (options.stdin === undefined) {
+        child.stdin.end();
+    } else {
+        child.stdin.write(options.stdin);
+    }
     let stdout = "";
     let stderr = "";
     const waiters = new Set<() => void>();
@@ -141,6 +154,9 @@ export function startTool(tool: Tool, args: readonly string[]): RunningTool {
     });
     return {
         done,
+        closeStdin() {
+            child.stdin.end();
+        },
         messages(count, timeoutMs) {
             return new Promise((resolve, reject) => {
                 const check = (): boolean => {

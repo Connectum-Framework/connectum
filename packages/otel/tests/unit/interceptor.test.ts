@@ -349,17 +349,99 @@ describe("createOtelInterceptor", () => {
 			const span = onlySpan(observed);
 			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
-			// A failure is the only case that sets a span status: ERROR with the error message.
-			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
-			assert.strictEqual(span.status.message, "[not_found] not found");
+			// NOT_FOUND is not one of the codes the Connect RPC conventions treat as a server
+			// error (see "span status by code" below): the span status stays unset.
+			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
 			assert.strictEqual(observed.durationPoints.length, 1);
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "NOT_FOUND");
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "NOT_FOUND");
 		});
 
+		// Oracle: the OpenTelemetry Connect RPC conventions (semantic-conventions
+		// docs/rpc/connect-rpc.md, server span, note on `rpc.response.status_code`): the codes
+		// that SHOULD be considered errors for a server are unknown, deadline_exceeded,
+		// unimplemented, internal, unavailable and data_loss; any other code leaves the span
+		// status unset. The numbers are the Connect protocol's error codes, spelled out here.
+		const ALL_ERROR_CODES: ReadonlyArray<readonly [number, string, boolean]> = [
+			[1, "CANCELED", false],
+			[2, "UNKNOWN", true],
+			[3, "INVALID_ARGUMENT", false],
+			[4, "DEADLINE_EXCEEDED", true],
+			[5, "NOT_FOUND", false],
+			[6, "ALREADY_EXISTS", false],
+			[7, "PERMISSION_DENIED", false],
+			[8, "RESOURCE_EXHAUSTED", false],
+			[9, "FAILED_PRECONDITION", false],
+			[10, "ABORTED", false],
+			[11, "OUT_OF_RANGE", false],
+			[12, "UNIMPLEMENTED", true],
+			[13, "INTERNAL", true],
+			[14, "UNAVAILABLE", true],
+			[15, "DATA_LOSS", true],
+			[16, "UNAUTHENTICATED", false],
+		];
+
+		for (const [code, name, isServerError] of ALL_ERROR_CODES) {
+			it(`should ${isServerError ? "mark the server span ERROR" : "leave the server span status unset"} for ${name}, and still report the code`, async () => {
+				const next: any = async (_req: unknown) => { throw new ConnectError("failed", code); };
+				const handler = createOtelInterceptor()(next);
+
+				const observed = await observe(async () => {
+					await assert.rejects(() => handler(greeterRequest()));
+				});
+
+				const span = onlySpan(observed);
+				assert.strictEqual(span.status.code, isServerError ? SpanStatusCode.ERROR : SpanStatusCode.UNSET);
+				assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], name);
+				assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], name);
+			});
+		}
+
+		it("should mark the server span ERROR for an error that is not a ConnectError, which the server turns into unknown", async () => {
+			const next: any = async (_req: unknown) => { throw new TypeError("bug in the handler"); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			assert.strictEqual(onlySpan(observed).status.code, SpanStatusCode.ERROR);
+		});
+
+		// Oracle: the exception event conventions: exception.type is the type or class name of
+		// the exception. The OpenTelemetry SDK reads a numeric `code` property of the
+		// exception before its `name`, which gave "5" for a ConnectError with Code.NotFound.
+		it("should record the class name of a ConnectError, not its numeric code, as exception.type", async () => {
+			const next: any = async (_req: unknown) => { throw new ConnectError("no such user", Code.NotFound); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			const [event] = onlySpan(observed).events.filter((e) => e.name === "exception");
+			assert.ok(event, "the failure is recorded as an exception event");
+			assert.strictEqual(event.attributes[semconv.ATTR_EXCEPTION_TYPE], "ConnectError");
+			assert.strictEqual(event.attributes[semconv.ATTR_EXCEPTION_MESSAGE], "[not_found] no such user");
+			assert.strictEqual(typeof event.attributes[semconv.ATTR_EXCEPTION_STACKTRACE], "string");
+		});
+
+		it("should record the empty-named class of an anonymous error with a non-empty error.type", async () => {
+			const Anonymous = (() => class extends Error {})();
+			const next: any = async (_req: unknown) => { throw new Anonymous("x"); };
+			const handler = createOtelInterceptor()(next);
+
+			const observed = await observe(async () => {
+				await assert.rejects(() => handler(greeterRequest()));
+			});
+
+			assert.strictEqual(onlySpan(observed).attributes[semconv.ATTR_ERROR_TYPE], "Error");
+			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_ERROR_TYPE], "Error");
+		});
+
 		// The Connect spelling of code 1 has one L (as the Connect protocol, Connect-ES and
 		// otelconnect-go write it); the gRPC spelling with two Ls is never produced.
-		it("should report a canceled call as CANCELED with one L and an ERROR span status", async () => {
+		it("should report a canceled call as CANCELED with one L", async () => {
 			const next: any = async (_req: unknown) => { throw new ConnectError("stopped", Code.Canceled); };
 			const handler = createOtelInterceptor()(next);
 
@@ -371,7 +453,8 @@ describe("createOtelInterceptor", () => {
 			assert.strictEqual(span.attributes[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
 			assert.strictEqual(span.attributes[semconv.ATTR_ERROR_TYPE], "CANCELED");
 			assert.strictEqual(observed.durationPoints[0]?.[semconv.ATTR_RPC_RESPONSE_STATUS_CODE], "CANCELED");
-			assert.strictEqual(span.status.code, SpanStatusCode.ERROR);
+			// A canceled call is not a server error (see "span status by code" above).
+			assert.strictEqual(span.status.code, SpanStatusCode.UNSET);
 		});
 
 		// One test per code so a failure names the code. Names are the Connect protocol's

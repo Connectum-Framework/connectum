@@ -175,6 +175,26 @@ describe("ctx.stream — client-streaming", () => {
         const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
         assert.strictEqual(res.message, "3");
     });
+
+    it("refuses a send() after close() with FailedPrecondition; the aggregate counts only what was sent before", async () => {
+        let lateSend: unknown;
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Client")();
+            handle.send(create(ItemSchema, { value: "a", sequence: 0 }));
+            const closing = handle.close();
+            try {
+                handle.send(create(ItemSchema, { value: "LATE", sequence: 1 }));
+            } catch (err) {
+                lateSend = err;
+            }
+            const count = await closing;
+            return create(EchoResponseSchema, { message: String(count.total), timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(res.message, "1");
+        assert.ok(lateSend instanceof ConnectError && lateSend.code === Code.FailedPrecondition, `expected FailedPrecondition, got: ${String(lateSend)}`);
+        assert.match((lateSend as ConnectError).rawMessage, /send\(\) after close\(\).*"Client"/);
+    });
 });
 
 describe("ctx.stream — bidi-streaming", () => {
@@ -190,6 +210,92 @@ describe("ctx.stream — bidi-streaming", () => {
         });
         const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
         assert.strictEqual(res.message, "echo-a,echo-b");
+    });
+
+    it("refuses a send() after close() with FailedPrecondition; the late message never reaches the target", async () => {
+        const received: string[] = [];
+        let lateSend: unknown;
+        const target = defineService(StreamingService, {
+            echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+            async *server() {},
+            async client() {
+                return create(CountSchema, { total: 0 });
+            },
+            async *bidi(requests) {
+                for await (const item of requests) {
+                    received.push(item.value);
+                    yield create(ItemSchema, { value: `echo-${item.value}`, sequence: item.sequence });
+                }
+            },
+        });
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Bidi")();
+            handle.send(create(ItemSchema, { value: "a", sequence: 0 }));
+            handle.close();
+            try {
+                handle.send(create(ItemSchema, { value: "LATE", sequence: 1 }));
+            } catch (err) {
+                lateSend = err;
+            }
+            const out: string[] = [];
+            for await (const item of handle.responses) out.push(item.value);
+            return create(EchoResponseSchema, { message: out.join(","), timestamp: 0n });
+        }, target);
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(res.message, "echo-a");
+        assert.deepStrictEqual(received, ["a"]);
+        assert.ok(lateSend instanceof ConnectError, `expected a ConnectError, got: ${String(lateSend)}`);
+        assert.strictEqual(lateSend.code, Code.FailedPrecondition);
+        assert.match(lateSend.rawMessage, /send\(\) after close\(\).*"Bidi"/);
+    });
+
+    it("close() twice stays harmless: only send() after close() is refused", async () => {
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Bidi")();
+            handle.send(create(ItemSchema, { value: "a", sequence: 0 }));
+            handle.close();
+            handle.close();
+            const out: string[] = [];
+            for await (const item of handle.responses) out.push(item.value);
+            return create(EchoResponseSchema, { message: out.join(","), timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(res.message, "echo-a");
+    });
+
+    it("hands each response to exactly one of two concurrent loops over responses (single-use iterator)", async () => {
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Bidi")();
+            for (const value of ["1", "2", "3"]) handle.send(create(ItemSchema, { value, sequence: 0 }));
+            handle.close();
+            const drain = async (): Promise<string[]> => {
+                const out: string[] = [];
+                for await (const item of handle.responses) out.push(item.value);
+                return out;
+            };
+            const [first, second] = await Promise.all([drain(), drain()]);
+            return create(EchoResponseSchema, { message: [...first, ...second].sort().join(","), timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(res.message, "echo-1,echo-2,echo-3", "every response arrives once across the loops, none is duplicated");
+    });
+
+    it("a second loop that starts after the first has finished or stopped early receives nothing", async () => {
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Bidi")();
+            for (const value of ["1", "2", "3"]) handle.send(create(ItemSchema, { value, sequence: 0 }));
+            handle.close();
+            const first: string[] = [];
+            for await (const item of handle.responses) {
+                first.push(item.value);
+                if (first.length === 1) break;
+            }
+            const second: string[] = [];
+            for await (const item of handle.responses) second.push(item.value);
+            return create(EchoResponseSchema, { message: `${first.join(",")}|${second.join(",")}`, timestamp: 0n });
+        });
+        const res = await server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "x" }));
+        assert.strictEqual(res.message, "echo-1|", "leaving the first loop ends the single iterator for good");
     });
 });
 
@@ -247,6 +353,54 @@ describe("ctx.stream — validation", () => {
         assert.strictEqual(observedCallsAtFactoryTime, 0, "resolver must NOT run when the stream factory is invoked");
         assert.strictEqual(resolverCalls, 1, "resolver must run exactly once, on iteration");
         assert.ok(captured instanceof ConnectError && captured.code === Code.Unavailable, `expected Unavailable on iteration, got: ${String(captured)}`);
+    });
+});
+
+describe("ctx.stream — a handle that is never closed", () => {
+    it("releases the callee waiting for requests when the call that opened the handle is cancelled", async () => {
+        const callee = { phase: "not started", finallyRan: false };
+        const target = defineService(StreamingService, {
+            echo: (req) => create(ItemSchema, { value: req.value, sequence: req.sequence }),
+            async *server() {},
+            async client(requests) {
+                callee.phase = "waiting for requests";
+                try {
+                    for await (const _item of requests) {
+                        // the handle is never closed, so the input never ends on its own
+                    }
+                    return create(CountSchema, { total: 0 });
+                } finally {
+                    callee.finallyRan = true;
+                    callee.phase = "finished";
+                }
+            },
+            async *bidi() {},
+        });
+        const server = makeServer(async (_req, ctx) => {
+            const handle = ctx.stream("streaming.v1.StreamingService/Client")();
+            handle.send(create(ItemSchema, { value: "x", sequence: 0 }));
+            // The caller neither closes the handle nor returns: it waits for its own cancellation.
+            await new Promise<never>((_resolve, reject) => ctx.signal.addEventListener("abort", () => reject(ctx.signal.reason)));
+            return create(EchoResponseSchema, { message: "unreachable", timestamp: 0n });
+        }, target);
+
+        const abort = new AbortController();
+        const call = server.localClient(EchoService).secureEcho(create(EchoRequestSchema, { message: "m" }), { signal: abort.signal });
+        const outcome = call.then(
+            () => undefined,
+            (error: unknown) => ConnectError.from(error),
+        );
+        for (let waited = 0; callee.phase !== "waiting for requests" && waited < 2_000; waited += 10) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        assert.strictEqual(callee.phase, "waiting for requests", "the callee must be parked on the never-closed handle");
+
+        abort.abort();
+        assert.strictEqual((await outcome)?.code, Code.Canceled);
+        for (let waited = 0; !callee.finallyRan && waited < 2_000; waited += 10) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        assert.strictEqual(callee.finallyRan, true, "the callee's finally must run");
     });
 });
 

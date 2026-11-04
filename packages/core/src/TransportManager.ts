@@ -16,8 +16,8 @@ import type { Http2SecureServer, Http2Server, SecureServerOptions, ServerHttp2Se
 import { createServer as createHttp2Server, createSecureServer } from "node:http2";
 import type { AddressInfo, Socket } from "node:net";
 import env from "env-var";
-import { readTLSCertificates } from "./TLSConfig.ts";
-import type { NodeRequest, NodeResponse, TLSOptions, TransportServer } from "./types.ts";
+import { explainTLSFailure, readTLSCertificates } from "./TLSConfig.ts";
+import type { NodeRequest, NodeResponse, ServerLogger, TLSOptions, TransportServer } from "./types.ts";
 
 /**
  * Transport configuration for HTTP/2 server creation
@@ -50,6 +50,13 @@ export class TransportManager {
      * that is still draining.
      */
     private _closingState: { closing: boolean } = { closing: false };
+
+    /** Where the listening address is reported. */
+    private readonly _logger: ServerLogger;
+
+    constructor(logger: ServerLogger = console) {
+        this._logger = logger;
+    }
 
     /**
      * The underlying server instance
@@ -91,17 +98,22 @@ export class TransportManager {
         if (tlsCerts) {
             // Mode 1: TLS + ALPN — both HTTP/1.1 and HTTP/2
             this._isHttp2 = true;
-            this._server = createSecureServer(
-                {
-                    enableTrace: false,
-                    handshakeTimeout,
-                    ...http2Options,
-                    key: tlsCerts.key,
-                    cert: tlsCerts.cert,
-                    allowHTTP1,
-                },
-                handler,
-            );
+            try {
+                this._server = createSecureServer(
+                    {
+                        enableTrace: false,
+                        handshakeTimeout,
+                        ...http2Options,
+                        key: tlsCerts.key,
+                        cert: tlsCerts.cert,
+                        allowHTTP1,
+                    },
+                    handler,
+                );
+            } catch (error) {
+                // The server did not accept the key or certificate; say which file and setting.
+                throw explainTLSFailure(tls ?? {}, error, { passphrase: http2Options?.passphrase, ciphers: http2Options?.ciphers });
+            }
         } else if (allowHTTP1) {
             // Mode 2: Plaintext HTTP/1.1 (default without TLS)
             this._isHttp2 = false;
@@ -168,7 +180,7 @@ export class TransportManager {
                     if (address && typeof address === "object") {
                         this._address = address;
                         const displayHost = address.address === "::" ? "localhost" : address.address;
-                        console.info(`Server listening ${displayHost}:${address.port}`);
+                        this._logger.info(`Server listening ${displayHost}:${address.port}`);
                     }
 
                     server.removeListener("error", reject);

@@ -12,8 +12,8 @@ pnpm add @connectum/core
 ```
 
 The package requires Node.js `>=22.13.0`. Peer dependencies are
-`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.2.0`, and
-`@connectrpc/connect-node` `^2.2.0`. Keep `connect` and `connect-node` on
+`@bufbuild/protobuf` `^2.16.0`, `@connectrpc/connect` `^2.3.0`, and
+`@connectrpc/connect-node` `^2.3.0`. Keep `connect` and `connect-node` on
 compatible versions and share the same protobuf and Connect copies across
 Connectum packages. Package managers handle peer installation differently;
 see [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
@@ -56,6 +56,13 @@ Install protocol and interceptor packages separately when needed. For example,
 - The runtime checks the loaded peer versions when `createServer()` is called. The
   check cannot read package metadata when the package is bundled into the
   application. See [peer dependency guidance](https://connectum.dev/en/migration/peer-dependencies).
+- The messages the server writes about its own lifecycle (the listening address,
+  a received shutdown signal, shutdown timeouts and failures, transport
+  warnings, a shutdown hook that depends on a name nobody registered) go to
+  `console` by default. Pass `logger: { info, warn, error }` to `createServer()`
+  to route them to your own logger; each method takes the message first and an
+  error object after it. Request logging is a separate concern, handled by the
+  logger interceptor.
 - Use [request admission](https://connectum.dev/en/guide/security/request-admission)
   when a server must reject requests before reading their bodies.
 

@@ -8,18 +8,24 @@
  * kept the handler parked); in-process nothing pumps once the client stops
  * reading. In both cases the handler's `signal` aborts while its `finally`
  * (open cursors, subscriptions, handles) would never run. These tests observe
- * the handler side of every cancellation path on both transports. Leaving a
- * `for await` loop with `break` is not a cancellation on either transport and
- * must not abort the handler's signal.
+ * the handler side of every cancellation path on both transports.
+ *
+ * Leaving a `for await` loop with `break` is itself a cancellation on both
+ * transports (`@connectrpc/connect` 2.3.0 and later): the response iterator's
+ * `return()` ends the call, so the call's signal aborts and the handler's
+ * `finally` runs without any further abort or `server.stop()`. The client-side
+ * interceptors see their response stream end without an error, because the
+ * caller chose to stop; only the server side sees the call as cancelled.
  */
 
 import assert from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { create } from "@bufbuild/protobuf";
-import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { defineService } from "../../src/defineService.ts";
+import { createLocalTransport } from "../../src/localTransport.ts";
 import { createServer } from "../../src/Server.ts";
 import { CountSchema, ItemSchema, StreamingService } from "../fixtures/streaming/v1/streaming_pb.ts";
 
@@ -97,16 +103,58 @@ afterEach(async () => {
     }
 });
 
-async function start(kind: Kind, pace: Pace) {
+async function start(kind: Kind, pace: Pace, interceptors: Interceptor[] = []) {
     const { routes, probe } = makeRoutes(pace);
     const server = createServer({ services: [routes], port: 0, allowHTTP1: false, shutdown: { timeout: 1_000 } });
     started.push(server);
     await server.start();
     const client =
         kind === "http"
-            ? createClient(StreamingService, createGrpcTransport({ baseUrl: `http://localhost:${server.address?.port}` }))
-            : server.localClient(StreamingService);
+            ? createClient(StreamingService, createGrpcTransport({ baseUrl: `http://localhost:${server.address?.port}`, interceptors }))
+            : createClient(StreamingService, createLocalTransport(server, { interceptors }));
     return { server, client, probe };
+}
+
+/** Polls until `condition` holds or `ms` pass; returns the last evaluation. */
+async function until(condition: () => boolean, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    while (!condition() && Date.now() < deadline) {
+        await sleep(10);
+    }
+    return condition();
+}
+
+/** How a client-side interceptor saw the response stream of one call end. */
+interface ClientView {
+    signalAbortedAtEnd?: boolean;
+    /** `"completed"` for a stream that ended without an error, otherwise the error's code. */
+    ending?: "completed" | Code;
+    finalized: boolean;
+}
+
+/** Wraps the response stream the way a tracing or logging interceptor does, to record how it ends. */
+function observeClientSide(view: ClientView): Interceptor {
+    return (next) => async (req) => {
+        const res = await next(req);
+        if (!res.stream) {
+            return res;
+        }
+        return {
+            ...res,
+            message: (async function* () {
+                try {
+                    yield* res.message;
+                    view.ending = "completed";
+                } catch (error) {
+                    view.ending = ConnectError.from(error).code;
+                    throw error;
+                } finally {
+                    view.signalAbortedAtEnd = req.signal.aborted;
+                    view.finalized = true;
+                }
+            })(),
+        };
+    };
 }
 
 function open(client: Awaited<ReturnType<typeof start>>["client"], method: Method, signal: AbortSignal) {
@@ -194,22 +242,98 @@ for (const kind of ["http", "local"] as const) {
                 assert.strictEqual(probe.finallyRuns(), 1);
                 await server.stop();
             });
+
+            it("break alone aborts the handler's signal and runs its finally once", async () => {
+                const { server, client, probe } = await start(kind, "yield-only");
+                let seen = 0;
+                // The caller's own signal is never aborted: the loop exit is the only thing ending the call.
+                for await (const _item of open(client, method, new AbortController().signal)) {
+                    if (++seen === 2) {
+                        break;
+                    }
+                }
+                assert.ok(await settlesWithin(probe.finallyRan, 2_000), "the handler's finally must run after break");
+                assert.strictEqual(probe.signalAborted(), true);
+                await sleep(300);
+                assert.strictEqual(probe.finallyRuns(), 1);
+                await server.stop();
+            });
+
+            it("calling return() on the response iterator twice ends the call once", async () => {
+                const { server, client, probe } = await start(kind, "yield-only");
+                const iterator = open(client, method, new AbortController().signal)[Symbol.asyncIterator]();
+                await iterator.next();
+                await iterator.next();
+
+                const first = await iterator.return?.();
+                const second = await iterator.return?.();
+
+                assert.deepStrictEqual(first, { done: true, value: undefined });
+                assert.deepStrictEqual(second, { done: true, value: undefined });
+                assert.ok(await settlesWithin(probe.finallyRan, 2_000), "the handler's finally must run after return()");
+                assert.strictEqual(probe.signalAborted(), true);
+                // A finished iterator stays finished instead of reopening the call.
+                assert.deepStrictEqual(await iterator.next(), { done: true, value: undefined });
+                await sleep(300);
+                assert.strictEqual(probe.finallyRuns(), 1);
+                await server.stop();
+            });
+
+            it("a client interceptor sees the stream end without an error after break, with the call's signal aborted", async () => {
+                const view: ClientView = { finalized: false };
+                const { server, client, probe } = await start(kind, "yield-only", [observeClientSide(view)]);
+                let seen = 0;
+                for await (const _item of open(client, method, new AbortController().signal)) {
+                    if (++seen === 2) {
+                        break;
+                    }
+                }
+                assert.ok(await until(() => view.finalized, 2_000), "the interceptor's wrapper must be finalized");
+                // The caller chose to stop, so the client side completes normally; only the server sees a cancellation.
+                assert.strictEqual(view.ending, "completed");
+                assert.strictEqual(view.signalAbortedAtEnd, true);
+                assert.ok(await settlesWithin(probe.finallyRan, 2_000), "the handler's finally must run");
+                await server.stop();
+            });
+
+            it("a client interceptor sees Canceled when the caller aborts the call's signal", async () => {
+                const view: ClientView = { finalized: false };
+                const { server, client, probe } = await start(kind, "yield-only", [observeClientSide(view)]);
+                const abort = new AbortController();
+                let seen = 0;
+                await assert.rejects(
+                    (async () => {
+                        for await (const _item of open(client, method, abort.signal)) {
+                            if (++seen === 2) {
+                                abort.abort();
+                            }
+                        }
+                    })(),
+                    (error: unknown) => ConnectError.from(error).code === Code.Canceled,
+                );
+                assert.ok(await until(() => view.finalized, 2_000), "the interceptor's wrapper must be finalized");
+                assert.strictEqual(view.ending, Code.Canceled);
+                assert.ok(await settlesWithin(probe.finallyRan, 2_000), "the handler's finally must run");
+                await server.stop();
+            });
+
+            it("breaking out of many calls mid-stream leaves none of them running", async () => {
+                const { server, client, probe } = await start(kind, "yield-only");
+                const calls = 8;
+                for (let call = 0; call < calls; call++) {
+                    let seen = 0;
+                    for await (const _item of open(client, method, new AbortController().signal)) {
+                        if (++seen === 2) {
+                            break;
+                        }
+                    }
+                }
+                // Every call's handler finishes without server.stop() or any abort from the caller.
+                assert.ok(await until(() => probe.finallyRuns() === calls, 5_000), `all ${calls} handlers must finish, ${probe.finallyRuns()} did`);
+                await sleep(300);
+                assert.strictEqual(probe.finallyRuns(), calls);
+                await server.stop();
+            });
         });
     }
-
-    describe(`leaving a stream loop over ${kind}`, () => {
-        it("break alone does not abort the handler's signal", async () => {
-            const { server, client, probe } = await start(kind, "yield-only");
-            let seen = 0;
-            for await (const _item of open(client, "server", new AbortController().signal)) {
-                if (++seen === 2) {
-                    break;
-                }
-            }
-            await sleep(300);
-            assert.strictEqual(probe.signalAborted(), false);
-            assert.strictEqual(probe.finallyRuns(), 0);
-            await server.stop();
-        });
-    });
 }

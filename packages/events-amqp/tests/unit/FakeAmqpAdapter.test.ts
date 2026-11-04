@@ -704,6 +704,21 @@ describe("FakeAmqpAdapter delivery follows the configured exchange type", () => 
         assert.deepEqual(await received("topic", ["user.>"], KEYS), ["user.created"]);
     });
 
+    it("topic: an empty event type reaches only a subscription to the empty key, as on RabbitMQ", async () => {
+        // RabbitMQ reads the empty routing key as zero words: a single-word `*` and the one-or-more `>`
+        // (bound as `*.#`) do not match it, while a binding of exactly "" does.
+        assert.deepEqual(await received("topic", ["*"], ["", "a"]), ["a"]);
+        assert.deepEqual(await received("topic", [">"], ["", "a"]), ["a"]);
+        assert.deepEqual(await received("topic", ["user.*"], [""]), []);
+        assert.deepEqual(await received("topic", [""], ["", "a"]), [""]);
+    });
+
+    it("fanout, headers and direct do not special-case an empty event type", async () => {
+        assert.deepEqual(await received("fanout", ["*"], [""]), [""]);
+        assert.deepEqual(await received("headers", [">"], [""]), [""]);
+        assert.deepEqual(await received("direct", [""], ["", "a"]), [""]);
+    });
+
     it("fanout still delivers once per distinct group and to every group-less subscription", async () => {
         const fake = FakeAmqpAdapter({ exchangeType: "fanout" });
         await fake.connect();
@@ -717,5 +732,41 @@ describe("FakeAmqpAdapter delivery follows the configured exchange type", () => 
         assert.equal(result.delivered, 2);
         assert.equal(a + b, 1);
         assert.equal(free, 1);
+    });
+});
+
+describe("FakeAmqpAdapter option validation parity", () => {
+    const badOptions: ReadonlyArray<{ readonly name: string; readonly options: Record<string, unknown> }> = [
+        { name: 'topologyMode "CHECK"', options: { topologyMode: "CHECK" } },
+        { name: "topologyMode null", options: { topologyMode: null } },
+        { name: 'exchangeType "TOPIC"', options: { exchangeType: "TOPIC" } },
+        { name: "exchangeType 3", options: { exchangeType: 3 } },
+    ];
+
+    for (const { name, options } of badOptions) {
+        it(`${name}: the fake throws the same error as the real adapter`, () => {
+            const thrown = (make: () => unknown): Error => {
+                try {
+                    make();
+                } catch (error) {
+                    return error as Error;
+                }
+                throw new assert.AssertionError({ message: "expected the factory to throw" });
+            };
+            const real = thrown(() => AmqpAdapter({ url: "amqp://127.0.0.1:1", ...options } as never));
+            const fake = thrown(() => FakeAmqpAdapter(options as never));
+            assert.ok(fake instanceof TypeError);
+            assert.equal(fake.constructor, real.constructor);
+            assert.equal(fake.message, real.message);
+        });
+    }
+
+    it("accepts every valid exchange type and topology mode, as the real adapter does", () => {
+        for (const exchangeType of ["topic", "direct", "fanout", "headers"] as const) {
+            assert.doesNotThrow(() => FakeAmqpAdapter({ exchangeType }));
+        }
+        for (const topologyMode of ["assert", "check", "skip"] as const) {
+            assert.doesNotThrow(() => FakeAmqpAdapter({ topologyMode }));
+        }
     });
 });

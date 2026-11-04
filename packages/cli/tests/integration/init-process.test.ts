@@ -119,6 +119,26 @@ describe("init process: refused input", () => {
         });
     }
 
+    // A mistyped flag used to be dropped silently: `--evnts nats` scaffolded a project without events.
+    it("refuses a flag it does not define, as one line naming the flag and the valid ones, without a stack", async () => {
+        const cwd = sandbox();
+        const run = await runCli(["init", "typo", "--yes", "--evnts", "nats"], cwd);
+
+        assertRefused(run, cwd);
+        assert.match(run.output, /^Error: connectum init: unknown option --evnts\. Valid options: /m, run.output);
+        assert.ok(run.output.includes("--events"), `the valid options must include --events:\n${run.output}`);
+        assert.ok(!/\n\s+at /.test(run.output), `a stack trace must not be printed:\n${run.output}`);
+    });
+
+    it("refuses --node-exec together with --runtime bun, naming both flags", async () => {
+        const cwd = sandbox();
+        const run = await runCli(["init", "bunp", "--yes", "--runtime", "bun", "--node-exec", "tsx"], cwd);
+
+        assertRefused(run, cwd);
+        assert.ok(run.output.includes("--node-exec tsx"), run.output);
+        assert.ok(run.output.includes("--runtime bun"), run.output);
+    });
+
     it("refuses --resilience fallback with the hint about adding the handler by hand", async () => {
         const cwd = sandbox();
         const run = await runCli(["init", "demo", "--resilience", "retry,fallback", "--yes"], cwd);

@@ -18,6 +18,10 @@
     "dist",
     "src"
   ],
+  "homepage": "https://connectum.dev/en/packages/protoc-gen-catalog",
+  "bugs": {
+    "url": "https://github.com/Connectum-Framework/connectum/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Connectum-Framework/connectum.git",

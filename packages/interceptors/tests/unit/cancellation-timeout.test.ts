@@ -101,6 +101,30 @@ describe("timeout cancellation contract", () => {
         });
     }
 
+    for (const [label, reason] of [
+        ["an Error", new Error("caller stopped")],
+        ["a string", "caller stopped"],
+        ["a ConnectError", new ConnectError("caller stopped", Code.Canceled)],
+    ] as const) {
+        it(`hands downstream work the caller's own abort reason when it is ${label}`, async () => {
+            const parent = new AbortController();
+            const entered = Promise.withResolvers<void>();
+            let signal: AbortSignal | undefined;
+            const call = createTimeoutInterceptor({ duration: 1_000 })(
+                unary(async (req) => {
+                    signal = req.signal;
+                    entered.resolve();
+                    await delay(10_000, undefined, { signal: req.signal });
+                    return response(req);
+                }),
+            )(request(parent.signal));
+            await entered.promise;
+            parent.abort(reason);
+            await assert.rejects(call);
+            assert.equal(signal?.reason, reason, "the abort reason downstream is the caller's, not a mapped copy");
+        });
+    }
+
     it("preserves a caller ConnectError, including identity, metadata and details", async () => {
         const parent = new AbortController();
         const reason = new ConnectError("upstream deadline", Code.DeadlineExceeded, { "x-reason": "upstream" }, [{ desc: StringValueSchema, value: { value: "upstream" } }]);

@@ -209,9 +209,97 @@ describe("buildRoutes()", () => {
             assert.strictEqual(register.mock.callCount(), 3, "register must run for the HTTP adapter and both extra routers");
         });
 
-        // Healthcheck must not track its own Health service and Reflection must
-        // list the protocols registered before it: each protocol sees the files
-        // registered ahead of it, fixed at that moment.
+        // `ready` is the one place where a protocol sees the whole server, so it
+        // must follow every register of every protocol, or it would see a
+        // partial set again.
+        it("calls ready once, after the register of the last protocol and the setup of all", () => {
+            const order: string[] = [];
+            const protocol = (name: string): ProtocolRegistration => ({
+                name,
+                setup: () => {
+                    order.push(`${name}:setup`);
+                },
+                register: () => {
+                    order.push(`${name}:register`);
+                },
+                ready: () => {
+                    order.push(`${name}:ready`);
+                },
+            });
+
+            buildRoutes(createOptions({ protocols: [protocol("a"), protocol("b")] }));
+
+            assert.deepStrictEqual(order, ["a:setup", "a:register", "b:setup", "b:register", "a:ready", "b:ready"]);
+        });
+
+        it("does not call ready again for the routers built after the first", () => {
+            const ready = mock.fn((_context: ProtocolContext) => {});
+            const protocol: ProtocolRegistration = { name: "once", register: () => {}, ready };
+
+            const result = buildRoutes(createOptions({ protocols: [protocol] }));
+            result.routes(createConnectRouter());
+            result.routes(createConnectRouter());
+
+            assert.strictEqual(ready.mock.callCount(), 1);
+        });
+
+        // A protocol without the hook is the protocol of every earlier version:
+        // nothing may call, require or default it.
+        it("builds the same routes and setup views for a protocol with and without ready", () => {
+            const build = (withReady: boolean) => {
+                const setupViews: string[][] = [];
+                const protocol: ProtocolRegistration = {
+                    name: "p",
+                    setup: (context) => {
+                        setupViews.push(context.services.map((s) => s.typeName));
+                    },
+                    register: (router) => {
+                        router.service(MountedService, {});
+                    },
+                    ...(withReady ? { ready: () => {} } : {}),
+                };
+                const result = buildRoutes(createOptions({ services: [mountOnly(EchoService)], protocols: [protocol] }));
+                return { setupViews, registered: [...result.registeredServiceTypeNames], files: result.registry.map((f) => f.name), user: result.userServices.map((s) => s.typeName) };
+            };
+
+            const without = build(false);
+            assert.deepStrictEqual(without.registered, [EchoService.typeName, MountedService.typeName]);
+            assert.deepStrictEqual(without.setupViews, [[EchoService.typeName]]);
+            assert.deepStrictEqual(build(true), without);
+        });
+
+        // The full snapshot is what makes the order of `protocols` irrelevant:
+        // the first protocol learns about the services of the last one.
+        it("gives ready every service and file, whatever the order of the protocols", () => {
+            const seen: Array<{ name: string; services: string[]; files: string[]; frozen: boolean }> = [];
+            const mounting = (name: string, service: typeof EchoService | typeof MountedService): ProtocolRegistration => ({
+                name,
+                register: (router) => {
+                    router.service(service, {});
+                },
+                ready: (context) => {
+                    seen.push({ name, services: context.services.map((s) => s.typeName), files: context.registry.map((f) => f.name), frozen: Object.isFrozen(context.services) && Object.isFrozen(context.registry) });
+                },
+            });
+            const userService = mountOnly(UnmountedPeerService);
+
+            buildRoutes(createOptions({ services: [userService], protocols: [mounting("first", EchoService), mounting("second", MountedService)] }));
+
+            const everything = [UnmountedPeerService.typeName, EchoService.typeName, MountedService.typeName];
+            assert.deepStrictEqual(
+                seen.map((s) => s.name),
+                ["first", "second"],
+            );
+            for (const view of seen) {
+                assert.deepStrictEqual(view.services, everything, `${view.name} must see every mounted service`);
+                assert.ok(view.files.includes(EchoService.file.name) && view.files.includes(MountedService.file.name), `${view.name} must see every file`);
+                assert.ok(view.frozen, "the snapshot must be immutable");
+            }
+        });
+
+        // Healthcheck must not track its own Health service: in `setup` each
+        // protocol sees the files registered ahead of it, fixed at that moment.
+        // (`ready` is the hook that sees the whole server.)
         it("gives setup a frozen snapshot of the files registered before the protocol", () => {
             const seen: Array<ReadonlyArray<DescFile>> = [];
             const first: ProtocolRegistration = {

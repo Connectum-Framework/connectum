@@ -281,3 +281,123 @@ transportParityTest("parity: exposeErrorMessages sends the original text identic
         defaultCompare(http, local);
     },
 });
+
+// A reporting hook that fails (a metrics sink that is down) must not change what the client
+// receives: the handler's own ConnectError arrives with its text and metadata on both transports.
+for (const [label, onError] of [
+    [
+        "throws",
+        () => {
+            throw new Error("metrics sink down");
+        },
+    ],
+    ["rejects", () => Promise.reject(new Error("async sink down"))],
+] as const) {
+    transportParityTest(`parity: an onError that ${label} leaves the handler's ConnectError untouched on both transports`, {
+        services: [notFoundRoutes()],
+        interceptors: [createErrorHandlerInterceptor({ logErrors: false, onError })],
+        scenario: async ({ transport }) => {
+            const client = createClient(EchoService, transport);
+            try {
+                await client.echo(create(EchoRequestSchema, { message: "x" }));
+                throw new Error("expected handler to throw ConnectError(NotFound), but call succeeded");
+            } catch (err) {
+                return { error: describeError(err) };
+            }
+        },
+        compare: (http, local) => {
+            expectErrorOnBothTransports(Code.NotFound)(http, local);
+            for (const [name, result] of [
+                ["HTTP", http],
+                ["local", local],
+            ] as const) {
+                assert.strictEqual(result.error?.message, "missing record", `${name} transport must deliver the handler's message`);
+                assert.strictEqual(result.error?.metadata?.["x-error-tag"], "user-42", `${name} transport must deliver the handler's metadata header`);
+            }
+        },
+    });
+}
+
+// A SanitizableError whose `code` is not a failure code (1..16) reaches both transports as
+// `internal` with its clientMessage; the server details stay on the server.
+transportParityTest("parity: a SanitizableError with an invalid code maps to internal with its clientMessage on both transports", {
+    services: [
+        defineService(EchoService, {
+            echo: () => {
+                throw Object.assign(new Error("secret-detail-4c1d"), { clientMessage: "safe text", serverDetails: { table: "users" }, code: 99 });
+            },
+            secureEcho: () => {
+                throw new Error("should not be reached");
+            },
+            rateLimitedEcho: () => {
+                throw new Error("should not be reached");
+            },
+        }),
+    ],
+    interceptors: [createErrorHandlerInterceptor({ logErrors: false })],
+    scenario: async ({ transport }) => {
+        const client = createClient(EchoService, transport);
+        try {
+            await client.echo(create(EchoRequestSchema, { message: "x" }));
+            return { response: { unreachable: true } };
+        } catch (err) {
+            return { error: describeError(err) };
+        }
+    },
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.Internal)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "safe text", `${name} transport must deliver the clientMessage`);
+            assert.ok(!JSON.stringify(result.error).includes("secret-detail-4c1d"), `${name} transport must not disclose the original text`);
+        }
+    },
+});
+
+// The documented fallback example returns a plain object. It must be served as the response of the
+// output type on both transports, and a value that is not a response must reach neither client as a
+// serialization text.
+function fallbackFailingRoutes() {
+    const fail = () => {
+        throw new ConnectError("dependency down", Code.Unavailable);
+    };
+    return defineService(EchoService, { echo: fail, secureEcho: fail, rateLimitedEcho: fail });
+}
+
+transportParityTest("parity: a plain object returned by the fallback handler is served as the response on both transports", {
+    services: [fallbackFailingRoutes()],
+    interceptors: createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: () => ({ message: "fallback-plain" }) } }),
+    scenario: async ({ transport }) => {
+        const res = await createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "x" }));
+        return { response: { message: res.message } };
+    },
+    compare: (http, local) => {
+        assert.deepStrictEqual(http.response, { message: "fallback-plain" }, "HTTP transport must deliver the fallback message");
+        assert.deepStrictEqual(local.response, { message: "fallback-plain" }, "Local transport must deliver the fallback message");
+        defaultCompare(http, local);
+    },
+});
+
+transportParityTest("parity: a fallback handler that returns no message fails with internal error and no serialization text on both transports", {
+    services: [fallbackFailingRoutes()],
+    interceptors: createDefaultInterceptors({ errorHandler: { logErrors: false }, fallback: { handler: () => undefined } }),
+    scenario: async ({ transport }) => {
+        try {
+            await createClient(EchoService, transport).echo(create(EchoRequestSchema, { message: "x" }));
+            return { response: { unreachable: true } };
+        } catch (err) {
+            return { error: describeError(err) };
+        }
+    },
+    compare: (http, local) => {
+        expectErrorOnBothTransports(Code.Internal)(http, local);
+        for (const [name, result] of [
+            ["HTTP", http],
+            ["local", local],
+        ] as const) {
+            assert.strictEqual(result.error?.message, "internal error", `${name} transport must deliver the generic text`);
+        }
+    },
+});

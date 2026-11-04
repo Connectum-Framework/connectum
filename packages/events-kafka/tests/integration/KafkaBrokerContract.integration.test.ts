@@ -130,10 +130,14 @@ describe("Kafka adapter documented broker behaviour", { skip: KAFKA_TEST_URL ===
         const adapter = newAdapter();
         await adapter.connect();
         try {
-            // The client may refuse the subscription of an unknown topic; what matters is that the broker did not create it.
-            const subscription = await adapter.subscribe([topic], async () => undefined, { group: uniqueName("group") }).catch(() => undefined);
+            // The subscription of an unknown topic is refused, with the topic and the option named, and the broker creates nothing.
+            await assert.rejects(adapter.subscribe([topic], async () => undefined, { group: uniqueName("group") }), (err: unknown) => {
+                assert.ok(err instanceof Error);
+                assert.ok(err.message.includes(topic), err.message);
+                assert.match(err.message, /allowAutoTopicCreation/);
+                return true;
+            });
             await sleep(3_000);
-            await subscription?.unsubscribe();
         } finally {
             await adapter.disconnect();
         }
@@ -147,9 +151,10 @@ describe("Kafka adapter documented broker behaviour", { skip: KAFKA_TEST_URL ===
         const adapter = newAdapter({ allowAutoTopicCreation: true });
         await adapter.connect();
         try {
-            const subscription = await adapter.subscribe([topic], async () => undefined, { group: uniqueName("group") }).catch(() => undefined);
+            // The subscription itself must succeed: the broker creates the topic, it is not enough that the topic appears while subscribe() fails.
+            const subscription = await adapter.subscribe([topic], async () => undefined, { group: uniqueName("group") });
             await waitFor(async () => (await admin.listTopics()).includes(topic), `topic ${topic} created by the broker`);
-            await subscription?.unsubscribe();
+            await subscription.unsubscribe();
         } finally {
             await adapter.disconnect();
         }

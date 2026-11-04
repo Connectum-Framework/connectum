@@ -1,0 +1,51 @@
+# The quickstart service on Bun. Bun transpiles TypeScript itself, so as with the Node
+# variant there is no build step.
+#
+# Bun is used here as both the runtime and the package manager, which is the common
+# pairing but not a requirement: `bun install` lays out an ordinary `node_modules`, and a
+# project installed with npm runs under Bun unchanged.
+#
+# `gen/` is not committed, and `buf` is a devDependency, so code generation happens in
+# its own stage with the full dependency tree; the runtime image gets production
+# dependencies plus the generated code, and never needs buf.
+
+# ── build: full dependencies, then generate the proto code ──────────────────
+FROM oven/bun:1-slim AS build
+WORKDIR /app
+COPY package.json ./
+# No lockfile is committed for this example: deps resolve from the caret (^) ranges in
+# package.json, so the image tracks the latest compatible @connectum/* rather than being
+# bit-reproducible. That is deliberate for a quickstart -- a production service should
+# commit a lockfile and install with `--frozen-lockfile` (the other examples, hris and
+# car-sharing included, model this).
+RUN bun install
+COPY buf.yaml buf.gen.yaml ./
+COPY proto/ ./proto/
+RUN bunx buf generate
+
+# ── deps: production dependencies only ──────────────────────────────────────
+FROM oven/bun:1-slim AS deps
+WORKDIR /app
+COPY package.json ./
+RUN bun install --production
+
+# ── runtime ─────────────────────────────────────────────────────────────────
+FROM oven/bun:1-slim AS runtime
+# curl, not wget: this service serves plaintext h2c (`allowHTTP1: false`), and wget
+# speaks HTTP/1.1 only. Against an h2c listener `wget --spider` gets an empty status
+# line yet still exits 0, so it would report a dead or NOT_SERVING service as healthy.
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/gen ./gen
+COPY package.json ./
+COPY src/ ./src/
+ENV NODE_ENV=production PORT=5000
+EXPOSE 5000
+# `-f` fails on a non-2xx status, which is what makes this a health check rather than a
+# port check: /healthz answers 200 for SERVING and 503 for NOT_SERVING and UNKNOWN.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+    CMD curl -fsS --http2-prior-knowledge http://localhost:${PORT:-5000}/healthz || exit 1
+# Run as the built-in non-root `bun` user.
+USER bun
+CMD ["bun", "run", "src/index.ts"]

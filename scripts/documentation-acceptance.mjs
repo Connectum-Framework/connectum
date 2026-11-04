@@ -78,7 +78,7 @@ try {
     manifest.private = true;
     manifest.dependencies = {
         ...base.dependencies,
-        "@connectrpc/connect-node": "^2.2.0",
+        "@connectrpc/connect-node": "^2.3.0",
         "@connectrpc/validate": "^0.2.0",
         "@bufbuild/protovalidate": "^1.3.0",
         jose: "^6.0.0",

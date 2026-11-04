@@ -85,14 +85,17 @@ jobs:
           # buf push reads the token from env; the buf-action `setup_only` login
           # does not reliably persist auth into this run step.
           BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+          # Free-text dispatch input: passed through the environment so the shell
+          # never parses it as code.
+          LABEL: ${{ inputs.label }}
         run: |
           buf push .bsr \
-            --label "${{ inputs.label }}" \
+            --label "$LABEL" \
             --source-control-url "https://github.com/Connectum-Framework/connectum/commit/${{ github.sha }}"
 
           echo "### Published to BSR" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module:** \`buf.build/connectum-framework/connectum\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Label:** \`${{ inputs.label }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Label:** \`${LABEL}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dry run summary

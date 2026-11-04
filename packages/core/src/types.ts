@@ -21,7 +21,22 @@ import type { ServiceCatalog } from "./serviceCatalog.ts";
 /** Incoming request — HTTP/1.1 or HTTP/2 */
 export type NodeRequest = IncomingMessage | Http2ServerRequest;
 
-/** Server response — HTTP/1.1 or HTTP/2 */
+/**
+ * Server response — HTTP/1.1 or HTTP/2.
+ *
+ * Only the members both classes declare identically can be called on the union:
+ * `statusCode`, `setHeader()` and `end()`. `writeHead()` and `write()` are declared with
+ * incompatible overload sets on `ServerResponse` and `Http2ServerResponse`, so
+ * `res.writeHead(200, headers)` and `res.write(chunk)` do not compile (TS2349). Set the
+ * status and headers first, then end the response with the whole body:
+ *
+ * @example
+ * ```ts
+ * res.statusCode = 200;
+ * res.setHeader("content-type", "application/json");
+ * res.end(JSON.stringify({ status: "ok" }));
+ * ```
+ */
 export type NodeResponse = ServerResponse | Http2ServerResponse;
 
 /** Underlying transport server — HTTP/1.1, HTTP/2 plaintext, or HTTP/2 TLS */
@@ -44,24 +59,29 @@ export type ShutdownHook = () => void | Promise<void>;
 // =============================================================================
 
 /**
- * Context provided to {@link ProtocolRegistration.setup}
+ * Context provided to {@link ProtocolRegistration.setup} and
+ * {@link ProtocolRegistration.ready}
  *
  * Contains information about registered services that protocols
  * may need (e.g., reflection needs DescFile[], healthcheck needs service names).
+ * What it covers depends on the hook: `setup` sees the services registered
+ * before the protocol, `ready` sees all of them.
  */
 export interface ProtocolContext {
     /**
      * Service file descriptors registered before this protocol: every mounted
      * application service, then the files of the protocols that precede this
-     * one in the `protocols` array. A frozen snapshot — later registrations do
-     * not change it.
+     * one in the `protocols` array. In `ready` it is every file, protocols
+     * after this one included. A frozen snapshot — later registrations do not
+     * change it.
      */
     readonly registry: ReadonlyArray<DescFile>;
 
     /**
      * Services mounted before this protocol, in registration order: every
      * mounted application service, then the services of the protocols that
-     * precede this one in the `protocols` array. A frozen snapshot — later
+     * precede this one in the `protocols` array. In `ready` it is every
+     * service, protocols after this one included. A frozen snapshot — later
      * registrations do not change it.
      *
      * Use this, not `registry[].services`, to know which services the server
@@ -89,11 +109,11 @@ export type HttpHandler = (req: NodeRequest, res: NodeResponse) => boolean;
  * `ctx.call`). One-time work therefore belongs in `setup`, which runs once per
  * server, while `register` runs once per router and must only add routes.
  *
- * A registration object belongs to one server. `setup` may keep per-server
- * state in it (the service list below, reflection's descriptor set), so the
- * same object passed to a second server is re-initialized by that server's
- * `setup`, and the first server's later routers serve the second server's
- * data. Call the protocol factory once per server.
+ * A registration object belongs to one server. `setup` and `ready` may keep
+ * per-server state in it (the service list below, reflection's descriptor
+ * set), so the same object passed to a second server is re-initialized by that
+ * server's hooks, and the first server's later routers serve the second
+ * server's data. Call the protocol factory once per server.
  *
  * @example
  * ```typescript
@@ -142,6 +162,22 @@ export interface ProtocolRegistration {
      */
     register(router: ConnectRouter): void;
 
+    /**
+     * Optional. Called once per server, after the `register` of the last
+     * protocol, with the complete service set: every mounted application
+     * service and the services of every protocol, wherever it stands in the
+     * `protocols` array. Use it for what must describe the whole server
+     * independently of protocol order (Reflection builds its listing here).
+     *
+     * By then the routes of the first router are already registered, so
+     * `ready` cannot add routes: a handler registered in `register` that needs
+     * this data reads it when a request arrives. Routers built later (one per
+     * in-process transport) do not call `ready` again. Like `setup`, `ready`
+     * runs again if the initial route materialization fails and is retried.
+     * A protocol without `ready` behaves as before.
+     */
+    ready?(context: ProtocolContext): void;
+
     /** Optional HTTP handler for fallback routing (e.g., /healthz endpoint) */
     httpHandler?: HttpHandler;
 }
@@ -151,6 +187,8 @@ export interface ProtocolRegistration {
  * Supply both explicit key and certificate paths or use a directory pair.
  * A single explicit path is a configuration error: it is rejected before any
  * file is read instead of being replaced by the directory files.
+ * A file that cannot be read or parsed fails startup with an error that names the
+ * file and the setting its path came from.
  */
 export interface TLSOptions {
     /**
@@ -245,13 +283,23 @@ export interface ShutdownOptions {
     timeout?: number;
 
     /**
-     * Signals to listen for graceful shutdown
+     * Signals to listen for graceful shutdown: a non-empty array of signal names the
+     * platform knows (`SIGKILL` and `SIGSTOP` cannot be handled). `createServer()`
+     * throws for anything else, also while `autoShutdown` is off.
      * @default ["SIGTERM", "SIGINT"]
      */
     signals?: NodeJS.Signals[];
 
     /**
-     * Enable automatic graceful shutdown on signals
+     * Enable automatic graceful shutdown on signals. Must be a boolean. The
+     * handlers are installed when `start()` begins, so a signal that arrives
+     * while the server is still starting stops it as soon as the start has
+     * finished.
+     *
+     * A signal received again while the server is stopping ends the process at
+     * once, in the middle of the shutdown hooks, after a warning in the log: it is
+     * the way out of a shutdown that hangs. If the application or another server
+     * has its own `process.on` listener for the signal, the process is not terminated (a `process.once` listener that has already run is not counted).
      * @default false
      */
     autoShutdown?: boolean;
@@ -269,12 +317,32 @@ export interface ShutdownOptions {
      *
      * With either value `stop()` does not wait for client connections beyond
      * the timeout, but it does wait for the shutdown hooks, which the timeout
-     * does not bound. It rejects if a shutdown hook fails or the transport fails
+     * does not bound. A hook that never settles therefore keeps `stop()` pending
+     * for good; when the timeout has elapsed and hooks are still running, the
+     * server logs one warning through its `logger` naming them and the elapsed
+     * time, and keeps waiting. It rejects if a shutdown hook fails or the transport fails
      * to close before the timeout; a close failure after the timeout is only
      * logged.
      * @default true
      */
     forceCloseOnTimeout?: boolean;
+}
+
+/**
+ * Destination of the messages the server writes about its own lifecycle.
+ *
+ * The global `console` satisfies this interface and is the default. Adapt a
+ * logger whose methods take a different argument order (for example Pino's
+ * `(object, message)`) with a small wrapper. Each method receives a complete
+ * message first; failures pass the error object after it.
+ */
+export interface ServerLogger {
+    /** A normal lifecycle event: the listening address, a received signal. */
+    info(message: string, ...details: unknown[]): void;
+    /** A condition that deserves attention but does not stop the server: a shutdown timeout, a transport misconfiguration, a shutdown hook that depends on a name nobody registered. */
+    warn(message: string, ...details: unknown[]): void;
+    /** A failure that has no other channel: an error thrown by a lifecycle listener, a failed graceful close. */
+    error(message: string, ...details: unknown[]): void;
 }
 
 /**
@@ -287,13 +355,15 @@ export interface CreateServerOptions {
     services: readonly ServiceDefinition[];
 
     /**
-     * Server port
+     * Server port: an integer from 0 to 65535 (`0` lets the system pick a free port).
+     * `createServer()` throws for any other value, a numeric string included.
      * @default 5000
      */
     port?: number;
 
     /**
-     * Server host to bind
+     * Server host to bind: a non-empty string. `createServer()` throws for an empty
+     * or non-string value instead of binding every interface.
      * @default "0.0.0.0"
      */
     host?: string;
@@ -302,6 +372,19 @@ export interface CreateServerOptions {
      * TLS configuration
      */
     tls?: TLSOptions;
+
+    /**
+     * Where the server writes its own lifecycle messages: the listening
+     * address, a received shutdown signal, shutdown timeouts and failures,
+     * transport warnings, and a shutdown hook that depends on a name no hook
+     * registered. Must be an object with `info`, `warn` and `error` functions;
+     * `createServer()` throws a `TypeError` naming the missing one otherwise.
+     * A logger method that throws is ignored: it cannot fail `start()` or skip
+     * a shutdown hook.
+     * Request logging stays with the logger interceptor.
+     * @default console
+     */
+    logger?: ServerLogger;
 
     /**
      * Protocol registrations (healthcheck, reflection, custom)
@@ -432,8 +515,12 @@ export interface CreateServerOptions {
      * The gate receives the call's `HandlerContext` after the request headers
      * are available and **before any request message is received,
      * decompressed, or parsed**. Return to admit the call; throw a
-     * `ConnectError` to end it without reading the body. It is the cheap place
-     * to reject, for example, a request without credentials.
+     * `ConnectError` to end it without parsing the body (on a kept-alive HTTP/1
+     * connection `@connectrpc/connect-node` 2.3.0+ then discards up to 256 KiB of
+     * the unread remainder; the connection stays reusable only if that drain
+     * consumes the whole body, otherwise connect-node answers with
+     * `Connection: close` and closes the socket). It is the cheap place to
+     * reject, for example, a request without credentials.
      *
      * Contract:
      * - **Both transports, no exemption.** The gate runs identically for HTTP
@@ -489,7 +576,17 @@ export interface CreateServerOptions {
 
     /**
      * Server-wide per-message read limit in bytes: Connect's `readMaxBytes`.
-     * Opt-in; when unset, Connect's default (about 4 GiB) applies.
+     * Opt-in; when unset, Connect's default of 4294967295 bytes (about 4 GiB)
+     * applies, which bounds nothing in practice: an authentication interceptor
+     * runs only after a message has been received, so one oversized request
+     * from an unauthenticated caller can exhaust memory. The default is not
+     * changed, but `createServer()` writes one `warn` message through
+     * {@link CreateServerOptions.logger} when the option is unset. Setting it
+     * (to any valid value, including 4294967295) removes the warning; so does a
+     * `logger` whose `warn` drops it. A `readMaxBytes` set only in a service's
+     * own options does not silence the warning: protocols and other services
+     * stay unlimited. Choose the largest message your services legitimately
+     * accept (gRPC's own server default is 4 MiB).
      *
      * A request message larger than the limit ends the call with
      * `Code.ResourceExhausted` before the handler runs; a message exactly at
@@ -524,6 +621,10 @@ export interface CreateServerOptions {
      * (typically the generated `serviceCatalog`). Drives startup validation and
      * remote routing. Optional — a process that hosts everything locally and
      * makes no cross-service calls needs no catalog.
+     *
+     * A hand-built map is checked like {@link defineCatalog} output:
+     * `createServer()` throws `CatalogConfigError` when a key differs from its
+     * descriptor's `typeName`.
      */
     catalog?: ServiceCatalog;
 
@@ -534,6 +635,12 @@ export interface CreateServerOptions {
      * provided service locally, whether the property is omitted or set to
      * `undefined`, so `enabledServicesFromEnv(process.env.X)` can be passed as is.
      * An empty list mounts none of them.
+     *
+     * Every entry must be the `typeName` of a service in `services` (or added
+     * with `addService()`), with or without a `catalog`; with a catalog it must
+     * also be a catalog key. `start()` rejects with `CatalogConfigError` naming
+     * the unknown entries, so a misspelled name cannot leave a running server
+     * with nothing mounted.
      */
     enabledServices?: readonly string[] | undefined;
 
@@ -575,6 +682,13 @@ export interface CreateServerOptions {
      *
      * Use {@link defaultPropagateHeaders} (W3C trace-context headers) as a base
      * and add your own, e.g. `[...defaultPropagateHeaders, "x-tenant-id"]`.
+     *
+     * Every entry must be a valid HTTP header name: a non-empty token such as
+     * `"x-request-id"`, not a pseudo-header like `":authority"`. `createServer()`
+     * throws a `TypeError` naming `propagateHeaders` and the entry otherwise.
+     *
+     * The list is copied when the server is created: changing the array you
+     * passed afterwards does not change what is forwarded.
      */
     propagateHeaders?: readonly string[];
 }
@@ -617,8 +731,12 @@ export interface Server extends EventEmitter {
      * in-progress shutdown and settle with its outcome; a call after the server
      * has stopped resolves immediately without doing anything or emitting events.
      *
-     * @throws Error if the server is not RUNNING, STOPPING or STOPPED (it was
-     * never started, or is still starting)
+     * A call made while `start()` is still in progress is honoured: it waits for
+     * the start to settle and then stops the server (`start()` resolves first, and
+     * the server is already stopping when its caller resumes). If the start fails,
+     * the server is already stopped and the call resolves.
+     *
+     * @throws Error if the server was never started (state CREATED)
      */
     stop(): Promise<void>;
 
@@ -732,6 +850,13 @@ export interface Server extends EventEmitter {
      * @param dependencies - Module names that must shut down first
      * @param handler - Shutdown hook function
      * @throws Error if server is already stopped
+     * @throws TypeError if the arguments match none of the three forms (for
+     *   example a string where the array of dependencies belongs, or a missing
+     *   hook function). A dependency on a name nobody registered is not an error:
+     *   hooks may be added in any order, so the name is checked when the server
+     *   stops. If no hook has registered it by then, the dependent hook runs
+     *   without waiting and one warning per missing name goes to the `logger`
+     *   option (`console` by default).
      */
     onShutdown(name: string, dependencies: string[], handler: ShutdownHook): void;
 
@@ -740,6 +865,12 @@ export interface Server extends EventEmitter {
      *
      * Use this to signal streaming RPCs and long-running operations
      * that the server is shutting down.
+     *
+     * A server stream whose handler is still sending when the signal aborts is
+     * ended by the framework: the client receives the messages already sent and
+     * then an `unavailable` error, never a normal end of stream that would pass
+     * for a complete response. A handler that returns by itself after seeing the
+     * signal ends the call normally; that is its own decision.
      */
     readonly shutdownSignal: AbortSignal;
 
@@ -789,9 +920,12 @@ export interface Server extends EventEmitter {
      * / `addProtocol` will throw.
      *
      * Cancellation: a streaming call is cancelled by the `AbortSignal` passed
-     * in the call options, by its deadline, or by `server.stop()`; the
-     * handler's `finally` then runs. Leaving a `for await` loop with `break`
-     * is not a cancellation.
+     * in the call options, by its deadline, by `server.stop()`, or by the
+     * caller leaving its `for await` loop early with `break` (the response
+     * iterator's `return()`; requires `@connectrpc/connect` 2.3.0 or later);
+     * the handler's `finally` then runs. A `break` ends the call for the
+     * client-side interceptors without an error, while the handler sees its
+     * `signal` aborted.
      *
      * @example
      * ```typescript
@@ -806,11 +940,16 @@ export interface Server extends EventEmitter {
 
     /**
      * Synchronous registry lookup: returns whether the given proto service
-     * descriptor is served locally by this `Server`. Triggers route
-     * materialization on first call.
+     * descriptor is served locally by this `Server`.
      *
-     * Source of truth is the same `ConnectRouter.service(desc, impl)` chain
-     * used to build the HTTP handler — no separate registration step.
+     * A service the application defines (`services`, `addService()`, filtered
+     * by `enabledServices`) is answered from its definition without building
+     * routes: no lazy factory runs and `addService()`, `addInterceptor()` and
+     * `addProtocol()` stay available. A descriptor only a protocol could
+     * provide (when protocols are registered) is answered from the built
+     * routes, which this call then builds and freezes the configuration.
+     * The answer is the same either way: routes are the same
+     * `ConnectRouter.service(desc, impl)` chain used to build the HTTP handler.
      *
      * @example
      * ```typescript
@@ -859,6 +998,7 @@ export interface ServerClientOptions {
      * Opaque endpoint hint forwarded to the configured `remoteResolver` when the
      * requested service is not mounted locally (polymorphic deployments — one
      * proto served at several endpoints). Ignored for locally-mounted services.
+     * An empty string counts as no endpoint.
      */
     endpoint?: string;
 }

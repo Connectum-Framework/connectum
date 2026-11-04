@@ -59,6 +59,11 @@ export const AUTH_HEADERS = {
     NAME: "x-auth-name",
     /** Credential type (jwt, api-key, mtls, etc.) */
     TYPE: "x-auth-type",
+    /**
+     * Set to `percent-utf8` when the sender encoded a text (subject, name, type or scope) as
+     * `utf-8''` plus percent-encoded UTF-8. Readers decode `utf-8''` texts only when it is present.
+     */
+    ENCODING: "x-auth-encoding",
 } as const;
 
 /**
@@ -83,7 +88,7 @@ export interface AuthzRule {
     readonly name: string;
     /** Method patterns to match (e.g., "admin.v1.AdminService/*", "user.v1.UserService/DeleteUser") */
     readonly methods: ReadonlyArray<string>;
-    /** Effect when rule matches */
+    /** Effect when rule matches. Exactly `"allow"` or `"deny"`; any other value makes the factory throw. */
     readonly effect: AuthzEffect;
     /**
      * Required roles/scopes for this rule.
@@ -137,7 +142,9 @@ export interface AuthInterceptorOptions {
      *
      * Error contract: a thrown `ConnectError` reaches the client unchanged (its code and
      * message are sent verbatim, so keep the text public); any other thrown value becomes
-     * `Unauthenticated: Authentication failed` and its text is not sent.
+     * `Unauthenticated: Authentication failed` and its text is not sent. A returned value that is
+     * not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or mistyped `subject`,
+     * `type`, `roles`, `scopes` or `claims`) is treated the same way and is never cached.
      *
      * @param credentials - Extracted credential string
      * @returns AuthContext for valid credentials
@@ -146,7 +153,8 @@ export interface AuthInterceptorOptions {
 
     /**
      * Methods to skip authentication for.
-     * Patterns: "Service/Method" or "Service/*". The catch-all `"*"` is refused: creating the
+     * Patterns: "Service/Method" or "Service/*"; any other pattern, a partial wildcard included, throws
+     * when the interceptor is created. The catch-all `"*"` is refused: creating the
      * interceptor throws, because it would switch authentication off for every method
      * (to disable the interceptor, do not register it).
      * @default [] (health and reflection methods are NOT auto-skipped)
@@ -162,6 +170,11 @@ export interface AuthInterceptorOptions {
     /**
      * LRU cache for credentials verification results.
      * Caches AuthContext by credential string to reduce verification overhead.
+     *
+     * The cache stores a private copy of the identity, and every request served from it receives its
+     * own copy (including `roles`, `scopes` and `claims`, nested plain objects and arrays too), so a
+     * handler that changes its `AuthContext` does not change what a later request with the same
+     * credential receives. Each hit costs one pass over the identity, proportional to its size.
      */
     cache?: CacheOptions | undefined;
 
@@ -174,11 +187,52 @@ export interface AuthInterceptorOptions {
 }
 
 /**
+ * Refresh and timeout settings of the remote key set behind `jwksUri`.
+ *
+ * Each value is handed to `createRemoteJWKSet` of jose; an omitted one keeps jose's own default,
+ * which is listed with it. All durations are in milliseconds.
+ */
+export interface JwksOptions {
+    /**
+     * Time after a successful fetch during which a token signed with a key that is not in the cached
+     * key set does NOT trigger another fetch. Such a token ends with `Unauthenticated` for this long
+     * after a key rotation, and a retired key can keep verifying from the cache until the next fetch. An upper
+     * bound, not a fixed period: a cache older than `cacheMaxAge` is fetched again earlier. A finite number, 0 or more;
+     * `0` fetches again on every unknown key (a stream of tokens with unknown keys then turns into a
+     * stream of requests to the identity provider).
+     * @default 30000
+     */
+    readonly cooldownDuration?: number | undefined;
+    /**
+     * Longest time the cached key set is used before it is fetched again. A key removed from the
+     * identity provider can keep verifying until the next fetch, at the latest until the cache expires (a
+     * fetch caused by an unknown key after the cooldown replaces the cache earlier). A number, 0 or more; `0` fetches the
+     * key set for every request (the cache never serves), and `Infinity` never expires the cache (a
+     * missing key still triggers a fetch once the cooldown has passed).
+     * @default 600000
+     */
+    readonly cacheMaxAge?: number | undefined;
+    /**
+     * Time after which a request for the key set is aborted. Every request that needs the fetch ends
+     * with `Unauthenticated` when it expires. A whole number from 1 to 2147483647 (the longest Node.js timer).
+     * @default 5000
+     */
+    readonly timeoutDuration?: number | undefined;
+}
+
+/**
  * JWT auth interceptor options
  */
 export interface JwtAuthInterceptorOptions {
     /** JWKS endpoint URL for remote key set */
     jwksUri?: string | undefined;
+    /**
+     * Refresh and timeout settings of the remote key set. Only valid together with `jwksUri`
+     * (setting it without one throws when the interceptor is created); an unknown name or a value
+     * out of range throws too. Omit it to keep jose's defaults: 30 s cooldown, 10 min cache age,
+     * 5 s request timeout.
+     */
+    jwks?: JwksOptions | undefined;
     /** HMAC symmetric secret (for HS256/HS384/HS512) */
     secret?: string | undefined;
     /**
@@ -217,9 +271,15 @@ export interface JwtAuthInterceptorOptions {
      * @see {@link https://github.com/panva/jose/blob/main/docs/types/types.CryptoKey.md | jose CryptoKey documentation}
      */
     publicKey?: CryptoKey | undefined;
-    /** Expected issuer(s) */
+    /**
+     * Expected issuer(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     issuer?: string | string[] | undefined;
-    /** Expected audience(s) */
+    /**
+     * Expected audience(s). Omit the option to skip the check. A present value must be a non-empty
+     * string or an array of non-empty strings; an empty string throws when the interceptor is created.
+     */
     audience?: string | string[] | undefined;
     /** Allowed algorithms */
     algorithms?: string[] | undefined;
@@ -238,7 +298,9 @@ export interface JwtAuthInterceptorOptions {
     /**
      * Maximum token age.
      * Passed to jose jwtVerify options.
-     * Number (seconds) or string (e.g., "2h", "7d").
+     * Number (seconds) or string (e.g., "2h", "7d"). Omit the option to skip the check; `0`, a
+     * negative or non-finite number, a blank string, a text jose cannot read ("1month") and a text
+     * jose reads as zero or negative ("0s", "-1h", "1h ago") throw when the interceptor is created.
      */
     maxTokenAge?: number | string | undefined;
     /**
@@ -258,9 +320,20 @@ export interface JwtAuthInterceptorOptions {
      * Propagate auth context as headers for downstream services.
      * A subject, type, name or scope containing NUL, CR or LF is rejected with
      * `Unauthenticated` (and never cached) while this is on.
+     * Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver.
+     * An identity that does not fit its header (subject over 512 characters, type over 128, name over
+     * 256, serialized roles, scopes or claims over 8192) is rejected too, instead of being cut or left out.
      * @default false
      */
     propagateHeaders?: boolean | undefined;
+    /**
+     * Filter which claims are propagated in headers, as for `createAuthInterceptor`.
+     * When set, only the listed claim names are written to `x-auth-claims` (no header when none of
+     * them is in the token); when not set, every claim of the token is. Applies only with
+     * `propagateHeaders`. A value that is not an array of non-empty strings throws when the
+     * interceptor is created.
+     */
+    propagatedClaims?: string[] | undefined;
 }
 
 /**
@@ -268,7 +341,8 @@ export interface JwtAuthInterceptorOptions {
  */
 export interface AuthzInterceptorOptions {
     /**
-     * Default policy when no rule matches.
+     * Default policy when no rule matches. Exactly `"allow"` or `"deny"`; any other value
+     * (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;
@@ -286,7 +360,7 @@ export interface AuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 
@@ -333,10 +407,27 @@ export interface GatewayAuthInterceptorOptions {
     readonly headerMapping: GatewayHeaderMapping;
     /** Trust verification: check that request came from a trusted gateway */
     readonly trustSource: {
-        /** Header set by the gateway to prove trust */
+        /** Header set by the gateway to prove trust. A non-empty string; anything else throws when the interceptor is created. */
         readonly header: string;
-        /** Accepted values for the trust header */
+        /**
+         * Accepted values for the trust header: shared secrets compared exactly, and, only with
+         * `allowCallerControlledCidr`, IPv4 CIDR blocks such as `10.0.0.0/8`. Every entry must be
+         * a non-empty string, so an unset environment variable (`[process.env.GATEWAY_SECRET]`
+         * gives `[undefined]`) throws when the interceptor is created instead of failing every request.
+         */
         readonly expectedValues: string[];
+        /**
+         * Allow IPv4 CIDR blocks in `expectedValues`. Off by default: with a CIDR block present and
+         * this option unset, creating the interceptor throws.
+         *
+         * A block is matched against the value of the trust header, and a caller that reaches the
+         * service directly chooses that value itself, so `10.0.0.0/8` admits anyone who sends
+         * `10.9.9.9`. Enable it only when a trusted upstream overwrites the header on every request
+         * and no client can reach the service without passing through it. Trust based on the peer
+         * address of the connection belongs in the mTLS or mesh-identity trust helpers.
+         * @default false
+         */
+        readonly allowCallerControlledCidr?: boolean | undefined;
     };
     /** Headers to strip from the request after extraction (prevent spoofing) */
     readonly stripHeaders?: string[] | undefined;
@@ -344,12 +435,14 @@ export interface GatewayAuthInterceptorOptions {
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**
      * Credential type used when the gateway sends no type header.
-     * A value containing NUL, CR or LF throws when the interceptor is created.
+     * A value containing NUL, CR or LF throws when the interceptor is created. With `propagateHeaders`
+     * on, an empty value, a value longer than 128 characters and a value with a lone surrogate throw
+     * too, because the value is written into `x-auth-type`; with it off they are accepted.
      * @default "gateway"
      */
     readonly defaultType?: string | undefined;
@@ -368,7 +461,8 @@ export interface GatewayAuthInterceptorOptions {
  * call composes with the existing `requires {roles,scopes}` authz model.
  *
  * @param req - The request (read-only access to headers).
- * @returns AuthContext for a trusted internal caller, or null to reject.
+ * @returns AuthContext for a trusted internal caller, or null to reject. A result that is not an
+ *   `AuthContext` (a truthy `true`, `{}`, a sparse `roles` list) is rejected like `null`.
  */
 export type InternalTrustSource = (req: { header: Headers }) => AuthContext | null | Promise<AuthContext | null>;
 
@@ -391,7 +485,8 @@ export interface InternalAuthInterceptorOptions {
      * trust marker only on these methods; all other methods pass through
      * unchanged (no-op).
      *
-     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`.
+     * Patterns: `"Service/Method"`, `"Service/*"`, or `"*"`. Any other pattern, a partial
+     * wildcard included, throws when the interceptor is created.
      */
     readonly internalMethods: readonly string[];
 }
@@ -545,6 +640,10 @@ export interface SessionAuthInterceptorOptions {
     /**
      * Map raw session data to AuthContext.
      *
+     * A result that is not an `AuthContext` (`null`, `undefined`, `false`, `{}`, a missing or
+     * mistyped `subject`, `type`, `roles`, `scopes` or `claims`) ends the call with
+     * `Unauthenticated: Session mapping failed`; it is never cached.
+     *
      * @param session - Raw session data from verifySession
      * @returns Normalized auth context
      */
@@ -552,15 +651,20 @@ export interface SessionAuthInterceptorOptions {
     /**
      * Custom token extraction.
      * Default: extracts Bearer token from Authorization header.
+     * `verifySession`, `mapSession` and a set `extractToken` must be functions; creating the
+     * interceptor throws a `TypeError` naming the option otherwise.
      */
     readonly extractToken?: ((req: { header: Headers }) => string | null | Promise<string | null>) | undefined;
-    /** LRU cache for session verification results */
+    /**
+     * LRU cache for session verification results. Every request receives its own copy of the stored
+     * identity, as described for `AuthInterceptorOptions.cache`.
+     */
     readonly cache?: CacheOptions | undefined;
     /** Methods to skip authentication for. The catch-all `"*"` is refused (creation throws). */
     readonly skipMethods?: string[] | undefined;
     /**
      * Propagate auth context as headers for downstream services.
-     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on.
+     * An identity containing NUL, CR or LF is rejected with `Unauthenticated` (and never cached) while this is on. Text above U+00FF is written as `utf-8''` plus percent-encoded UTF-8 (with `x-auth-encoding: percent-utf8`) and read back by the receiver. An identity that does not fit its header (subject over 512 characters, type over 128, name over 256, serialized roles, scopes or claims over 8192) is rejected too, never cut or left out.
      */
     readonly propagateHeaders?: boolean | undefined;
     /**
@@ -583,6 +687,10 @@ export interface ClientBearerInterceptorOptions {
      * When a string is provided, the same token is sent with every request.
      * When a function is provided, it is called before each request to
      * support token refresh flows.
+     *
+     * A static token must be a non-empty string (anything else throws when the interceptor is
+     * created). A factory that resolves to anything but a non-empty string fails that call with
+     * `Code.Unauthenticated` before a request is sent; the header is never `Bearer undefined`.
      */
     readonly token: string | (() => Promise<string>);
 }
@@ -593,11 +701,23 @@ export interface ClientBearerInterceptorOptions {
  * @see {@link createClientGatewayInterceptor}
  */
 export interface ClientGatewayInterceptorOptions {
-    /** Shared secret for gateway trust verification */
+    /**
+     * Shared secret for gateway trust verification. Creating the interceptor throws if it is empty,
+     * contains NUL, CR, LF or a character above U+00FF, or starts or ends with a space or tab (the
+     * platform removes that whitespace from a header value, so the secret would never match).
+     */
     readonly secret: string;
-    /** Authenticated subject identifier (e.g., service name) */
+    /**
+     * Authenticated subject identifier (e.g., service name). Creating the interceptor throws if it
+     * is empty, over 512 characters, or contains NUL, CR, LF or a lone surrogate (the header writer decides).
+     */
     readonly subject: string;
-    /** Optional roles to propagate (JSON-encoded in header) */
+    /**
+     * Optional roles to propagate (JSON-encoded in header). Creating the interceptor throws if this
+     * is not an array of at most 8192 strings without holes whose JSON form fits the roles header
+     * (measured as the header writer measures it, with every character above U+00FF written as six characters).
+     * The roles are checked again on each call, so a change made after creation is refused with `InvalidArgument`.
+     */
     readonly roles?: string[] | undefined;
 }
 
@@ -609,7 +729,8 @@ export interface ClientGatewayInterceptorOptions {
  */
 export interface ProtoAuthzInterceptorOptions {
     /**
-     * Default policy when no proto option and no rule match.
+     * Default policy when no proto option and no rule match. Exactly `"allow"` or `"deny"`;
+     * any other value (`"Deny"`, `""`, `null`) makes the factory throw instead of being read as allow.
      * @default "deny"
      */
     defaultPolicy?: AuthzEffect | undefined;
@@ -624,7 +745,7 @@ export interface ProtoAuthzInterceptorOptions {
      *
      * @param context - Authenticated user context
      * @param req - Request info (service and method names)
-     * @returns true if authorized, false otherwise
+     * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
 }

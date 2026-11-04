@@ -19,7 +19,7 @@ const MOCK_REQUEST_DEFAULTS = { service: "test.v1.TestService", method: "TestMet
 async function admits(expectedValues: string[], headerValue: string): Promise<boolean> {
     const interceptor = createGatewayAuthInterceptor({
         headerMapping: { subject: "x-user-id" },
-        trustSource: { header: "x-forwarded-for", expectedValues },
+        trustSource: { header: "x-forwarded-for", expectedValues, allowCallerControlledCidr: true },
     });
     const headers = new Headers();
     headers.set("x-forwarded-for", headerValue);

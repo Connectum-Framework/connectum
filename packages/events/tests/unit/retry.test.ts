@@ -109,12 +109,12 @@ describe("retryMiddleware", () => {
 
         let calls = 0;
         const startTime = Date.now();
-        await assert.rejects(() =>
-            mw(makeRawEvent(), makeCtx(ac.signal), async () => {
-                calls++;
-                throw new Error("fail");
-            }),
-        );
+        // A stop that interrupts the pause ends the middleware without an error: the event is
+        // returned to the broker (see stop-during-retry.test.ts), not reported as failed.
+        await mw(makeRawEvent(), makeCtx(ac.signal), async () => {
+            calls++;
+            throw new Error("fail");
+        });
 
         const elapsed = Date.now() - startTime;
         // Should abort quickly, NOT wait 5000ms for retry delay

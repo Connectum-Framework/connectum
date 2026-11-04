@@ -10,6 +10,7 @@
 
 import assert from "node:assert";
 import { beforeEach, describe, it, mock } from "node:test";
+import { CliError } from "../../src/utils/cliError.ts";
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (must be registered BEFORE importing the module under test)
@@ -47,11 +48,14 @@ mock.module("node:child_process", {
 const mockMkdtempSync = mock.fn((_prefix: string) => "/fake-tmp/connectum-proto-sync-XXXXXX");
 const mockRmSync = mock.fn((_path: string, _options?: any) => undefined);
 const mockWriteFileSync = mock.fn((_path: string, _data: any) => undefined);
+// A template path is checked before connecting; by default it names an existing file.
+const mockStatSync = mock.fn((_path: string): { isFile(): boolean } => ({ isFile: () => true }));
 
 mock.module("node:fs", {
 	namedExports: {
 		mkdtempSync: mockMkdtempSync,
 		rmSync: mockRmSync,
+		statSync: mockStatSync,
 		writeFileSync: mockWriteFileSync,
 	},
 });
@@ -96,6 +100,7 @@ describe("proto-sync unit tests", () => {
 		mockMkdtempSync.mock.resetCalls();
 		mockRmSync.mock.resetCalls();
 		mockWriteFileSync.mock.resetCalls();
+		mockStatSync.mock.resetCalls();
 	});
 
 	// -----------------------------------------------------------------------
@@ -161,6 +166,35 @@ describe("proto-sync unit tests", () => {
 				assert.strictEqual(mockWriteFileSync.mock.calls.length, 0, "nothing may be written");
 				assert.deepStrictEqual(logs, [], "nothing may be printed");
 			});
+		}
+
+		// An address the URL parser rejects used to reach the client and fail there as `TypeError: Invalid URL`
+		// after the banner; it is now refused by name before anything is printed or connected.
+		for (const [from, message] of [
+			["", "--from must not be empty. Use host:port, http://... or https://..."],
+			["   ", "--from must not be empty. Use host:port, http://... or https://..."],
+			["local host:5305", '--from "local host:5305" is not a valid server address. Use host:port, http://... or https://...'],
+			["http://", '--from "http://" is not a valid server address. Use host:port, http://... or https://...'],
+			["localhost:99999", '--from "localhost:99999" is not a valid server address. Use host:port, http://... or https://...'],
+		] as const) {
+			for (const dryRun of [true, false]) {
+				it(`refuses the address ${JSON.stringify(from)} by name, before connecting (dryRun: ${dryRun})`, async () => {
+					const logs: string[] = [];
+					const originalLog = console.log;
+					console.log = (...args: unknown[]) => {
+						logs.push(args.map(String).join(" "));
+					};
+					try {
+						await assert.rejects(executeProtoSync({ from, out: "./gen", dryRun }), (err: unknown) => err instanceof CliError && err.message === message);
+					} finally {
+						console.log = originalLog;
+					}
+
+					assert.strictEqual(mockFetchReflectionData.mock.calls.length, 0);
+					assert.strictEqual(mockFetchFileDescriptorSetBinary.mock.calls.length, 0);
+					assert.deepStrictEqual(logs, [], "nothing may be printed");
+				});
+			}
 		}
 
 		it("passes an upper-case scheme on as typed: not refused, not prefixed", async () => {
@@ -557,11 +591,11 @@ describe("proto-sync unit tests", () => {
 			);
 		});
 
-		it("should propagate buf CLI ENOENT error when buf is not installed", async () => {
+		it("should say that buf is not on the PATH when it is not installed, keeping the spawn error as the cause", async () => {
+			const spawnError = new Error("spawnSync buf ENOENT") as NodeJS.ErrnoException;
+			spawnError.code = "ENOENT";
 			mockExecFileSync.mock.mockImplementationOnce(() => {
-				const error = new Error("spawnSync buf ENOENT") as NodeJS.ErrnoException;
-				error.code = "ENOENT";
-				throw error;
+				throw spawnError;
 			});
 
 			await assert.rejects(
@@ -574,17 +608,16 @@ describe("proto-sync unit tests", () => {
 					});
 				},
 				(err: unknown) => {
-					assert.ok(err instanceof Error);
-					assert.ok(
-						err.message.includes("ENOENT"),
-						`Expected ENOENT in message, got: ${err.message}`,
-					);
+					assert.ok(err instanceof CliError);
+					assert.match(err.message, /^buf was not found on the PATH\./);
+					assert.match(err.message, /^.*\bhttps:\/\/buf\.build\/docs\/installation\b.*$/m, err.message);
+					assert.strictEqual(err.cause, spawnError);
 					return true;
 				},
 			);
 		});
 
-		it("should propagate non-zero exit code from buf generate", async () => {
+		it("should name the exit code of a failing buf generate, which has printed its own diagnostic", async () => {
 			mockExecFileSync.mock.mockImplementationOnce(() => {
 				const error = new Error("Command failed: buf generate") as any;
 				error.status = 1;
@@ -601,8 +634,57 @@ describe("proto-sync unit tests", () => {
 						});
 					});
 				},
-				{ message: /Command failed/ },
+				(err: unknown) => {
+					assert.ok(err instanceof CliError);
+					assert.strictEqual(err.message, "buf generate failed with exit code 1; see its output above.");
+					return true;
+				},
 			);
+		});
+
+		it("should name the signal when buf generate is killed", async () => {
+			mockExecFileSync.mock.mockImplementationOnce(() => {
+				const error = new Error("Command failed: buf generate") as any;
+				error.status = null;
+				error.signal = "SIGKILL";
+				throw error;
+			});
+
+			await assert.rejects(
+				executeProtoSync({ from: "http://localhost:5000", out: "./gen" }),
+				{ message: "buf generate was terminated by SIGKILL." },
+			);
+		});
+
+		it("should refuse a template that is not an existing file before connecting", async () => {
+			mockStatSync.mock.mockImplementationOnce(() => {
+				throw Object.assign(new Error("ENOENT: no such file or directory, stat 'nonexist.yaml'"), { code: "ENOENT" });
+			});
+
+			await assert.rejects(
+				executeProtoSync({ from: "http://localhost:5000", out: "./gen", template: "nonexist.yaml" }),
+				{ message: '--template "nonexist.yaml" is not an existing file.' },
+			);
+			assert.strictEqual(mockFetchFileDescriptorSetBinary.mock.calls.length, 0, "the descriptors must not be fetched");
+			assert.strictEqual(mockMkdtempSync.mock.calls.length, 0, "no temporary directory may be created");
+		});
+
+		it("should refuse a template that is a directory", async () => {
+			mockStatSync.mock.mockImplementationOnce(() => ({ isFile: () => false }));
+
+			await assert.rejects(
+				executeProtoSync({ from: "http://localhost:5000", out: "./gen", template: "some-dir" }),
+				{ message: '--template "some-dir" is not an existing file.' },
+			);
+			assert.strictEqual(mockFetchFileDescriptorSetBinary.mock.calls.length, 0);
+		});
+
+		it("should not look at the template in a dry run, which never uses it", async () => {
+			await captureConsoleLog(async () => {
+				await executeProtoSync({ from: "http://localhost:5000", out: "./gen", template: "nonexist.yaml", dryRun: true });
+			});
+			assert.strictEqual(mockFetchReflectionData.mock.calls.length, 1);
+			assert.strictEqual(mockStatSync.mock.calls.length, 0);
 		});
 	});
 
@@ -779,8 +861,8 @@ describe("normalizeServerUrl", () => {
 		assert.strictEqual(normalizeServerUrl("1ftp://h"), "http://1ftp://h");
 	});
 
-	it("gives an empty address the prefix like any other, leaving the refusal to the transport", () => {
-		assert.strictEqual(normalizeServerUrl(""), "http://");
+	it("refuses an empty address by name instead of turning it into the unusable `http://`", () => {
+		assert.throws(() => normalizeServerUrl(""), { message: "--from must not be empty. Use host:port, http://... or https://..." });
 	});
 
 	it("handles a long hostile input in linear time", () => {

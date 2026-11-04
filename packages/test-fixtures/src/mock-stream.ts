@@ -6,6 +6,7 @@
 
 import { setTimeout } from "node:timers/promises";
 import type { MockStreamOptions } from "./types.ts";
+import { assertTimerDelay } from "./validate.ts";
 
 /**
  * Create an {@link AsyncIterable} that yields `items` sequentially.
@@ -20,6 +21,9 @@ import type { MockStreamOptions } from "./types.ts";
  * @param items - Array of items to yield in order.
  * @param options - Optional stream behavior configuration.
  * @returns An async iterable that yields each item from `items`.
+ * @throws TypeError when `options.delayMs` is not a number.
+ * @throws RangeError when `options.delayMs` is negative, `NaN`, infinite or larger than
+ *   2147483647: the timer would turn it into 1 ms.
  *
  * @example
  * ```ts
@@ -34,6 +38,9 @@ import type { MockStreamOptions } from "./types.ts";
  */
 export function createMockStream<T>(items: T[], options?: MockStreamOptions): AsyncIterable<T> {
     const delayMs = options?.delayMs;
+    if (delayMs !== undefined) {
+        assertTimerDelay(delayMs, "createMockStream: options.delayMs");
+    }
 
     return {
         async *[Symbol.asyncIterator]() {

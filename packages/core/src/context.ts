@@ -49,6 +49,11 @@ export type CallOptions = {
      * Timeout in milliseconds. When omitted, the remaining inbound deadline
      * (`ctx.timeoutMs()`) is injected. A caller may **shorten** the deadline,
      * never extend it (the effective value is `min(timeoutMs, remaining)`).
+     * Must be a finite number greater than 0: any other value rejects the call
+     * with `Code.InvalidArgument` instead of lifting the inherited deadline. If
+     * the inbound deadline has already passed, the call fails with
+     * `Code.DeadlineExceeded`. A standalone `createCatalogClient` has no
+     * inbound deadline and passes a valid value on as is.
      */
     timeoutMs?: number;
     /**
@@ -65,7 +70,9 @@ export type CallOptions = {
     /**
      * Opaque endpoint hint forwarded to the configured `remoteResolver` for
      * services reachable at several endpoints. Ignored for locally-mounted
-     * services.
+     * services. An empty string counts as no endpoint: the resolver receives
+     * the same context, and shares the same cached transport, as for a call
+     * without the option.
      */
     endpoint?: string;
 };
@@ -75,7 +82,13 @@ export type CallOptions = {
  * `close()` to receive the single aggregated response.
  */
 export interface ClientStreamHandle<Req, Res> {
-    /** Enqueue one request message. */
+    /**
+     * Enqueue one request message.
+     *
+     * @throws ConnectError with `Code.FailedPrecondition` when called after
+     * {@link ClientStreamHandle.close}: the request stream is already ended, so
+     * the message could not be delivered and is refused instead of lost.
+     */
     send(request: Req): void;
     /**
      * End the request stream and resolve with the server's single response.
@@ -95,11 +108,26 @@ export interface ClientStreamHandle<Req, Res> {
  * response half keeps yielding until the server completes.
  */
 export interface BidiStreamHandle<Req, Res> {
-    /** Enqueue one request message. */
+    /**
+     * Enqueue one request message.
+     *
+     * @throws ConnectError with `Code.FailedPrecondition` when called after
+     * {@link BidiStreamHandle.close}: the send half is already ended, so the
+     * message could not be delivered and is refused instead of lost.
+     */
     send(request: Req): void;
-    /** End the request (send) half; the response half is unaffected. */
+    /** End the request (send) half; the response half is unaffected. Calling it again has no effect. */
     close(): void;
-    /** The server's response messages, in order. */
+    /**
+     * The server's response messages, in order.
+     *
+     * The iterable is **single-use**: every iteration reads the same underlying
+     * stream. Two loops running over `responses` at the same time split the
+     * messages between them, and each message reaches exactly one of them. Once
+     * a loop has finished, or has left early with `break`, the stream is over:
+     * a loop started afterwards receives nothing. Iterate it once, in one
+     * place, and fan the messages out yourself if several consumers need them.
+     */
     readonly responses: AsyncIterable<Res>;
 }
 

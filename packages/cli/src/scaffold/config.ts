@@ -60,8 +60,8 @@ const RESILIENCE_HINTS: Readonly<Record<string, string>> = {
  * @param input - raw flags / prompt answers
  * @param cwd - directory a relative or `.` project path is resolved against
  * @throws Error if the project path is missing, its last segment is not a valid new npm
- *   package name, an enum value is invalid, or `--no-sample` is combined with an option that
- *   needs the sample service.
+ *   package name, an enum value is invalid, `--no-sample` is combined with an option that
+ *   needs the sample service, or `--node-exec` is given with the `bun` runtime.
  */
 export function resolveConfig(input: RawInput, cwd: string = process.cwd()): ScaffoldConfig {
     const typedPath = (input.name ?? "").trim();
@@ -74,6 +74,13 @@ export function resolveConfig(input: RawInput, cwd: string = process.cwd()): Sca
     const runtime = oneOf(input.runtime, RUNTIMES, "runtime", "node");
     const packageManager = oneOf(input.packageManager, PACKAGE_MANAGERS, "package-manager", "pnpm");
     const nodeExec = oneOf(input.nodeExec, NODE_EXECS, "node-exec", "raw");
+    // Bun runs `.ts` itself, so the execution model has nothing to select. Accepting the flag would
+    // produce a project that ignores it and says nothing, as if `--node-exec tsx` had been honoured.
+    if (runtime === "bun" && input.nodeExec !== undefined) {
+        throw new Error(
+            `connectum init: --node-exec ${input.nodeExec} cannot be combined with --runtime bun: Bun runs TypeScript directly, so the option only applies to the Node.js runtime. Leave --node-exec out, or use --runtime node.`,
+        );
+    }
 
     // `--events` passed with no value is an explicit opt-in that names no adapter — fail
     // loudly instead of silently disabling the module. (The wizard resolves this case by

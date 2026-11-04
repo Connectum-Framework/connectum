@@ -9,8 +9,29 @@
 
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest, UnaryResponse } from "@connectrpc/connect";
 import type { MethodFilterMap } from "./types.ts";
+import { requireFunctionArray, requireOptionsObject } from "./validate.ts";
 
 type AnyRpcFn = (req: UnaryRequest | StreamRequest) => Promise<UnaryResponse | StreamResponse>;
+
+function invalidPattern(pattern: string): Error {
+    return new Error(
+        `Invalid method filter pattern: ${JSON.stringify(pattern)}. Expected "*", "Service/*", or "Service/Method", where Service and Method are not empty and contain no "*", "/" or whitespace.`,
+    );
+}
+
+/**
+ * A service or method name in a key must be non-empty and free of `*`, `/` and
+ * whitespace. A call's key is `typeName/methodName`, so a key with a wildcard
+ * inside a name, an extra slash or a stray space is one no call ever produces.
+ * Case is not checked: that needs the registered services, which this
+ * interceptor does not see.
+ */
+function requireNamePart(options: { pattern: string; part: string | undefined }): void {
+    const { pattern, part } = options;
+    if (part === undefined || !/^[^\s*/]+$/.test(part)) {
+        throw invalidPattern(pattern);
+    }
+}
 
 /**
  * Parse and validate method filter patterns at creation time.
@@ -32,7 +53,11 @@ function parsePatterns(methods: MethodFilterMap): {
     const serviceMap = new Map<string, Interceptor[]>();
     const exactMap = new Map<string, Interceptor[]>();
 
+    requireOptionsObject({ caller: "createMethodFilterInterceptor", name: "methods", value: methods });
+
     for (const [pattern, interceptors] of Object.entries(methods)) {
+        requireFunctionArray({ caller: "createMethodFilterInterceptor", subject: `the interceptors of ${JSON.stringify(pattern)}`, value: interceptors });
+
         if (pattern === "*") {
             globalInterceptors.push(...interceptors);
         } else if (pattern.endsWith("/*")) {
@@ -40,6 +65,7 @@ function parsePatterns(methods: MethodFilterMap): {
             if (serviceName.length === 0) {
                 throw new Error(`Invalid method filter pattern: "${pattern}". Service name before "/*" must not be empty.`);
             }
+            requireNamePart({ pattern, part: serviceName });
             const existing = serviceMap.get(serviceName);
             if (existing) {
                 existing.push(...interceptors);
@@ -47,6 +73,14 @@ function parsePatterns(methods: MethodFilterMap): {
                 serviceMap.set(serviceName, [...interceptors]);
             }
         } else if (pattern.includes("/")) {
+            // Exactly one slash with a name on each side: any other shape is a key
+            // that no call can ever produce (a call is `typeName/methodName`).
+            const [serviceName, methodName, ...rest] = pattern.split("/");
+            requireNamePart({ pattern, part: serviceName });
+            requireNamePart({ pattern, part: methodName });
+            if (rest.length > 0) {
+                throw invalidPattern(pattern);
+            }
             const existing = exactMap.get(pattern);
             if (existing) {
                 existing.push(...interceptors);
@@ -54,7 +88,7 @@ function parsePatterns(methods: MethodFilterMap): {
                 exactMap.set(pattern, [...interceptors]);
             }
         } else {
-            throw new Error(`Invalid method filter pattern: "${pattern}". Expected "*", "Service/*", or "Service/Method".`);
+            throw invalidPattern(pattern);
         }
     }
 
@@ -94,6 +128,17 @@ function composeInterceptors(interceptors: Interceptor[], next: AnyRpcFn): AnyRp
  * 3. Exact match `"Service/Method"` (executed last)
  *
  * Within each pattern, interceptors execute in array order.
+ *
+ * A key is one of the three forms above, where `Service` is the protobuf
+ * fully-qualified service name and `Method` the method name, each non-empty and
+ * free of `*`, `/` and whitespace. Any other key (`/Unary`, `Svc/`, `Svc/Un*`,
+ * `a/b/*`, a wildcard as the service name, a key with a space) can never match a call, so it throws
+ * an `Error` at creation. Each value must be an array of functions and the map
+ * an object, otherwise a `TypeError` is thrown; a `null` or `undefined` entry is
+ * not skipped. Names are compared exactly, case included: a key such as
+ * `acme.v1.svc/unary` is well formed but matches nothing if the service is
+ * `acme.v1.Svc`, and the interceptor cannot tell, because it does not see the
+ * registered services.
  *
  * @param methods - Method pattern to interceptors mapping
  * @returns ConnectRPC interceptor

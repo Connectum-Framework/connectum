@@ -29,6 +29,10 @@
     "gen",
     "proto"
   ],
+  "homepage": "https://connectum.dev/en/packages/auth",
+  "bugs": {
+    "url": "https://github.com/Connectum-Framework/connectum/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Connectum-Framework/connectum.git",
@@ -75,7 +79,7 @@
     "access": "public"
   },
   "dependencies": {
-    "jose": "^6.2.13"
+    "jose": "^6.2.14"
   },
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.16.0",

@@ -48,18 +48,26 @@ for (let code = Code.Canceled; code <= Code.Unauthenticated; code++) {
 
 const scenarios: Record<string, number> = { ...outOfRange, ...valid };
 
+/** Request prefix that makes the handler throw a SanitizableError (clientMessage, serverDetails, code) instead of a plain error. */
+const SANITIZABLE = "sanitizable:";
+const CLIENT_MESSAGE = "safe text for the client";
+
+/** Echo service whose handler throws a plain or sanitizable error carrying the code the request message names. */
 function routes() {
     return defineService(EchoService, {
         echo: (req) => {
-            const code = scenarios[req.message];
+            const sanitizable = req.message.startsWith(SANITIZABLE);
+            const code = scenarios[sanitizable ? req.message.slice(SANITIZABLE.length) : req.message];
             if (code === undefined) throw new ConnectError(`unknown scenario ${req.message}`, Code.InvalidArgument);
-            throw Object.assign(new Error(`rule rejected ${SECRET}`), { code });
+            const failure = new Error(`rule rejected ${SECRET}`);
+            throw sanitizable ? Object.assign(failure, { clientMessage: CLIENT_MESSAGE, serverDetails: { secret: SECRET }, code }) : Object.assign(failure, { code });
         },
         secureEcho: () => ({ message: "unused" }),
         rateLimitedEcho: () => ({ message: "unused" }),
     });
 }
 
+/** The error a call with the scenario message fails with, as the client sees it. */
 async function failureOf(client: Client<typeof EchoService>, scenario: string): Promise<ConnectError> {
     try {
         await client.echo(create(EchoRequestSchema, { message: scenario }));
@@ -111,6 +119,25 @@ describe("numeric code of a thrown value as seen by the client", () => {
                 const err = await failureOf(clients[transport]!, name);
                 assert.strictEqual(err.code, code);
                 assert.strictEqual(err.rawMessage, code === Code.Internal ? "internal error" : "");
+            });
+        }
+
+        // A SanitizableError chooses its client text, but a number that is not a failure code is
+        // as unusable for it as for any other failure: the wire layer would answer `unknown`.
+        for (const [name, code] of Object.entries(outOfRange)) {
+            it(`${transport}: a SanitizableError with code ${String(code)} (${name}) reaches the client as internal with its clientMessage`, async () => {
+                const err = await failureOf(clients[transport]!, `${SANITIZABLE}${name}`);
+                assert.strictEqual(err.code, Code.Internal, `observed code ${String(err.code)} text ${JSON.stringify(err.rawMessage)}`);
+                assert.strictEqual(err.rawMessage, CLIENT_MESSAGE);
+                assert.ok(!JSON.stringify([err.rawMessage, err.metadata, err.details]).includes(SECRET), "server details must not reach the client");
+            });
+        }
+
+        for (const [name, code] of Object.entries(valid)) {
+            it(`${transport}: a SanitizableError with code ${String(code)} (${name}) reaches the client with that code and its clientMessage`, async () => {
+                const err = await failureOf(clients[transport]!, `${SANITIZABLE}${name}`);
+                assert.strictEqual(err.code, code);
+                assert.strictEqual(err.rawMessage, CLIENT_MESSAGE);
             });
         }
     }

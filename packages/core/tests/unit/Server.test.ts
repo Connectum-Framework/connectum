@@ -21,10 +21,14 @@ import { EchoRequestSchema, EchoResponseSchema, EchoService } from "../fixtures/
 // These lifecycle/state unit tests never invoke an RPC, so the service must
 // register NOTHING (mirrors the previous `(router) => {}` no-op route). The
 // descriptor is required by `ServiceDefinition` but unused: `register` is a
-// no-op, so `EchoService` is never mounted and `hasService`/registry stay empty.
+// no-op, so nothing is ever mounted and `hasService`/registry stay empty. Each
+// mock carries its own type name, because a server rejects two definitions of
+// one service and these tests hold several mocks at once.
+let mockServiceCount = 0;
 const createMockService = (): ServiceDefinition => {
+    mockServiceCount += 1;
     return {
-        descriptor: EchoService,
+        descriptor: { ...EchoService, typeName: `mock.v1.Service${mockServiceCount}` },
         register: () => {
             // Mock service registration - no actual service needed for unit tests
         },
@@ -964,6 +968,26 @@ describe("createServer", () => {
 
                 await server.stop();
                 assert.strictEqual(lateHook.mock.calls.length, 0);
+            });
+
+            // Arguments that match none of the three documented forms fail at the call, with
+            // an error that names onShutdown: a mistake in the ordering would otherwise show
+            // up only during a real shutdown, as "dependencies is not iterable" or as a
+            // dependency string silently split into single characters.
+            it("should reject arguments that match none of the documented forms, naming onShutdown", async () => {
+                const server = createServer({ services: [createMockService()], port: 0 });
+                const untyped = server.onShutdown.bind(server) as (...args: unknown[]) => void;
+                const ran: string[] = [];
+
+                assert.throws(() => untyped(), { name: "TypeError", message: /^onShutdown\(\)/ });
+                assert.throws(() => untyped(null), { name: "TypeError", message: /^onShutdown\(\)/ });
+                assert.throws(() => untyped("x"), { name: "TypeError", message: /^onShutdown\("x"\)/ });
+                assert.throws(() => untyped("x", 5), { name: "TypeError", message: /^onShutdown\("x"\).*array/ });
+                assert.throws(() => untyped("x", "db", () => ran.push("x")), { name: "TypeError", message: /^onShutdown\("x"\).*array of module names/ });
+
+                await server.start();
+                await server.stop();
+                assert.deepStrictEqual(ran, [], "a rejected registration leaves no hook behind");
             });
         });
 

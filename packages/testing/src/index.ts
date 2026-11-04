@@ -44,6 +44,7 @@ export {
     TRANSPORT_METRIC_ATTRIBUTE,
     TRANSPORT_SPAN_ATTRIBUTE,
 } from "./otel-collectors.ts";
+export { type Telemetry, type TelemetryOptions, withTelemetry } from "./telemetry.ts";
 // Phase 3 (P2): Test server
 export { createTestServer, withTestServer } from "./test-server.ts";
 // NOTE: `transportParityTest` and `defaultCompare` are intentionally NOT
@@ -62,6 +63,7 @@ export type {
     MockDescMethodOptions,
     MockNextOptions,
     MockRequestOptions,
+    MockScalarType,
     MockStreamOptions,
     TestServer,
 } from "./types.ts";

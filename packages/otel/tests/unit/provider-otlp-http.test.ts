@@ -272,18 +272,27 @@ describe("provider: OTLP/HTTP exporters", () => {
 		}
 	}
 
-	it("rejects a malformed base endpoint at construction instead of silently exporting elsewhere", () => {
+	// Creating the provider happens inside the first instrumented call. Throwing for a bad endpoint
+	// there failed that call and every later one, so the endpoint is reported with a process warning
+	// and ignored; the exporter then uses its own default address.
+	it("reports a malformed base endpoint with a warning at construction instead of throwing", async () => {
 		setOnly("traces");
 		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "not a url";
+		const warnings: Array<Error & { code?: string }> = [];
+		const onWarning = (warning: Error & { code?: string }) => {
+			warnings.push(warning);
+		};
+		process.on("warning", onWarning);
+		try {
+			assert.doesNotThrow(() => getProvider());
+			await new Promise((resolve) => setImmediate(resolve));
+		} finally {
+			process.off("warning", onWarning);
+		}
 
-		// The failure itself is the requirement; the wording belongs to the exporter
-		// library, so only the offending value that must be reported is matched.
-		assert.throws(
-			() => getProvider(),
-			(error: unknown) => error instanceof Error && error.message.includes("not a url"),
-		);
-
-		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318";
-		assert.doesNotThrow(() => getProvider(), "a failed construction leaves no half-built provider behind");
+		const about = warnings.filter((warning) => warning.message.includes("OTEL_EXPORTER_OTLP_ENDPOINT"));
+		assert.strictEqual(about.length, 1);
+		assert.strictEqual(about[0]?.code, "CONNECTUM_OTEL_INVALID_ENV");
+		assert.ok(about[0]?.message.includes('"not a url"'));
 	});
 });

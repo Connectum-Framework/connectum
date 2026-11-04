@@ -133,3 +133,15 @@ describe("proto sync process exit code", () => {
         assert.match(run.output, /default: 10000\)/);
     });
 });
+
+describe("proto sync process: unknown flags", () => {
+    // `--dryrun` used to be dropped, so the command ran the real sync instead of the dry run.
+    it("refuses a flag it does not define before connecting, naming it", async () => {
+        const run = await runCli(["proto", "sync", "--from", "127.0.0.1:1", "--out", "unused-out", "--dryrun"], 30_000);
+
+        assert.equal(run.killed, false, run.output);
+        assert.ok(run.code !== null && run.code !== 0, `expected a non-zero exit code, got ${run.code}\n${run.output}`);
+        assert.match(run.output, /^Error: connectum proto sync: unknown option --dryrun\. Valid options: .*--dry-run/m, run.output);
+        assert.ok(!run.output.includes("Connecting to"), `the flag must be refused before any connection:\n${run.output}`);
+    });
+});

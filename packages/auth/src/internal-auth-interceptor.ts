@@ -22,7 +22,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
+import { isAuthContext } from "./auth-context-check.ts";
+import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
+import { assertHeaderName } from "./option-checks.ts";
+import { assertExpectedClaim, assertMaxTokenAge, assertMethodPatterns } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
     AuthContext,
@@ -44,6 +48,10 @@ import type {
  *
  * MUST run BEFORE `createProtoAuthzInterceptor`: the internal interceptor
  * populates the `AuthContext` that proto-authz's `internal` rule consumes.
+ * An `internal` method without `requires` is open only to an identity established
+ * here: with this interceptor missing from the chain, or not covering the method in
+ * `internalMethods`, an identity from any other interceptor (an end-user JWT) is
+ * rejected as `Unauthenticated`.
  *
  * Each trust-source factory strips its own trust header after extraction on the
  * internal path (accept and reject), to prevent a spoofed marker from being
@@ -56,6 +64,8 @@ import type {
  *
  * @param options - Internal auth configuration.
  * @returns ConnectRPC interceptor.
+ * @throws {Error} When `trustSource` is not a function
+ * @throws {TypeError} When `internalMethods` is not an array, or holds a pattern other than `"*"`, `"Service/*"` or `"Service/Method"`
  *
  * @example Mesh deployment (production default)
  * ```typescript
@@ -92,6 +102,7 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
     if (typeof trustSource !== "function") {
         throw new Error("@connectum/auth: createInternalAuthInterceptor requires a trustSource function");
     }
+    assertMethodPatterns("createInternalAuthInterceptor internalMethods", internalMethods);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
@@ -112,10 +123,13 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             authContext = null;
         }
 
-        if (!authContext) {
+        // A custom trust source may return any truthy value; only an AuthContext is an identity.
+        if (!authContext || !isAuthContext(authContext)) {
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 
+        // Proto authorization admits an `internal` method only for an identity recorded here.
+        markInternalContext(authContext);
         return await runWithAuthContext(authContext, () => next(req));
     };
 }
@@ -143,6 +157,7 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
  */
 export function meshIdentityTrust(options: MeshIdentityTrustOptions): InternalTrustSource {
     const { allowlist, header = "x-forwarded-client-principal", type = "mesh" } = options;
+    assertHeaderName("meshIdentityTrust header", header);
 
     if (allowlist.length === 0) {
         throw new Error("@connectum/auth: meshIdentityTrust requires a non-empty allowlist");
@@ -269,6 +284,7 @@ function stripBearer(value: string): string {
  */
 export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrustSource {
     const { issuers, header = "x-internal-token", type = "service" } = options;
+    assertHeaderName("signedTokenTrust header", header);
 
     const issuerKeys = Object.keys(issuers);
     if (issuerKeys.length === 0) {
@@ -280,6 +296,9 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
     for (const iss of issuerKeys) {
         const cfg = issuers[iss];
         if (!cfg) continue;
+        // The same rules as the JWT interceptor: an expectation that is present must be usable.
+        assertExpectedClaim(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, "audience", cfg.audience);
+        assertMaxTokenAge(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, cfg.maxTokenAge);
         keysets.set(iss, createRemoteJWKSet(new URL(cfg.jwksUri)));
     }
 
@@ -398,6 +417,7 @@ function constantTimeEqual(a: string, b: string): boolean {
  */
 export function sharedSecretTrust(options: SharedSecretTrustOptions): InternalTrustSource {
     const { secret, header = "x-internal-secret", subject = "internal", roles, scopes, type = "internal" } = options;
+    assertHeaderName("sharedSecretTrust header", header);
 
     if (!secret) {
         throw new Error("@connectum/auth: sharedSecretTrust requires a non-empty secret");

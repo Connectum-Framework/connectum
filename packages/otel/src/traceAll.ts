@@ -2,12 +2,14 @@
  * Proxy-based object wrapper for OpenTelemetry tracing
  *
  * Wraps all methods of an object in OTel spans using ES6 Proxy.
- * Does NOT mutate the original object or its prototype.
+ * Does NOT mutate the original object or its prototype (see {@link traceAll} for the
+ * one exception).
  *
  * @module traceAll
  */
 
 import { recordArgsAttribute, recordFailure } from "./failure.ts";
+import { endSpanWithResult } from "./result.ts";
 import { getTracer } from "./tracer.ts";
 import type { TraceAllOptions } from "./types.ts";
 
@@ -19,7 +21,17 @@ const wrapped = new WeakSet<object>();
  *
  * Creates a Proxy that intercepts method calls and wraps each in a span.
  * Method wrappers are created lazily (on first access, not at Proxy creation).
- * Does NOT mutate the original object or its prototype.
+ * Does NOT mutate the original object or its prototype, with one exception: a method
+ * that returns a thenable (`return this` on a thenable target, a cached query) has the
+ * `then` of that object replaced until it settles, and put back after (see {@link traced}).
+ *
+ * Property reads pass through untouched: getters run with the original object as
+ * `this`, so getters over `#private` fields and `Map.size` work. An own method that is
+ * neither writable nor configurable (a method of a frozen object) cannot be replaced by
+ * a wrapper in a proxy and is returned as it is, untraced. A span ends when a returned
+ * promise or thenable settles or a returned generator is exhausted, throws or is closed;
+ * how a thenable that is not read through `then` ends its span is described at
+ * {@link traced}.
  *
  * @param target - The object whose methods to trace
  * @param options - Tracing options
@@ -43,11 +55,20 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
     const excludeSet = exclude ? new Set(exclude) : undefined;
 
     const proxy = new Proxy(target, {
-        get(obj, prop, receiver) {
-            const value = Reflect.get(obj, prop, receiver);
+        get(obj, prop) {
+            // The target is the receiver: a getter that reads a `#private` field or an
+            // internal slot (`Map.prototype.size`, `Set.prototype.size`) throws a TypeError
+            // when `this` is the proxy, so the proxy must not be what a getter sees.
+            const value = Reflect.get(obj, prop, obj);
 
             // Only wrap functions
             if (typeof value !== "function") return value;
+
+            // A proxy must report the real value of an own property that is neither writable
+            // nor configurable (a method of a frozen object): returning a wrapper for it
+            // makes every read throw a TypeError. Such a method stays untraced.
+            const descriptor = Reflect.getOwnPropertyDescriptor(obj, prop);
+            if (descriptor !== undefined && descriptor.configurable === false && descriptor.writable === false) return value;
 
             // Skip constructor
             if (prop === "constructor") return value;
@@ -87,27 +108,9 @@ export function traceAll<T extends object>(target: T, options?: TraceAllOptions)
                             });
                         }
 
-                        const result = value.apply(this === proxy ? obj : this, args);
-
-                        // Handle async results
-                        if (result instanceof Promise) {
-                            return result.then(
-                                (val) => {
-                                    // Success leaves the status unset; only a failure sets ERROR.
-                                    span.end();
-                                    return val;
-                                },
-                                (error) => {
-                                    recordFailure(span, error);
-                                    span.end();
-                                    throw error;
-                                },
-                            );
-                        }
-
-                        // Sync result: success leaves the status unset.
-                        span.end();
-                        return result;
+                        // The span ends when the result is final: a promise settles, a generator is
+                        // exhausted or closed, anything else is final at once.
+                        return endSpanWithResult(span, value.apply(this === proxy ? obj : this, args));
                     } catch (error) {
                         recordFailure(span, error);
                         span.end();

@@ -62,7 +62,7 @@ export interface ScaffoldConfig {
     runtime: Runtime;
     /** Package manager. */
     packageManager: PackageManager;
-    /** Node execution model (ignored when `runtime` is `bun`). */
+    /** Node execution model (`raw` when `runtime` is `bun`, where the choice does not exist). */
     nodeExec: NodeExec;
     /** Emit the runnable sample service (`true`) or config-only (`false`). */
     sample: boolean;

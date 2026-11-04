@@ -31,12 +31,18 @@ const UNSAFE: Array<[string, Partial<AuthContext>]> = [
     ["a name with CR", { name: "Al\rice" }],
     ["a scope with LF", { scopes: ["read", "wri\nte"] }],
     ["a scope with NUL", { scopes: ["re\0ad"] }],
-    // Not representable in a header (a byte string): the platform would otherwise surface it as an internal error.
-    ["a Cyrillic subject", { subject: "Иван" }],
-    ["a name above U+00FF", { name: "名前" }],
-    ["a scope above U+00FF", { scopes: ["чтение"] }],
+    ["a scope with a space", { scopes: ["reports read admin"] }],
+    // A lone surrogate has no UTF-8 form, so it cannot be written even with the lossless encoding.
+    ["a subject with a lone surrogate", { subject: "a\uD800b" }],
+    ["a name with a lone surrogate", { name: "a\uDC00" }],
+    ["a scope with a lone surrogate", { scopes: ["re\uD800ad"] }],
+    ["a subject over 512 characters", { subject: "u".repeat(513) }],
+    ["a name over 256 characters", { name: "n".repeat(257) }],
+    ["roles over 8192 characters", { roles: Array.from({ length: 1000 }, (_, i) => `role-${i}-xxxxxxxx`) }],
+    ["claims over 8192 characters", { claims: { blob: "x".repeat(9000) } }],
 ];
 
+/** Request headers carrying `token` as a Bearer credential. */
 function headersWith(token: string): Headers {
     return new Headers({ authorization: `Bearer ${token}` });
 }
@@ -221,7 +227,8 @@ describe("header propagation safety", () => {
             return { interceptor, counter };
         }
 
-        async function echo(client: ReturnType<typeof clientFor>, token: string) {
+        /** One unary Echo call that presents `token` as a Bearer credential. */
+async function echo(client: ReturnType<typeof clientFor>, token: string) {
             return await client.echo({ value: "ping", sequence: 7 }, { headers: { authorization: `Bearer ${token}` } });
         }
 

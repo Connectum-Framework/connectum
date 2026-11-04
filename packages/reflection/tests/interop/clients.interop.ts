@@ -27,7 +27,7 @@ import { create } from "@bufbuild/protobuf";
 import { createServer, defineService, type Server } from "@connectum/core";
 import { Healthcheck } from "@connectum/healthcheck";
 import { readFileDescriptor } from "../../../../tests/interop/descriptors.ts";
-import { PROTO_DIR, parseJsonStream, runTool, type ToolResult } from "../../../../tests/interop/tools.ts";
+import { PROTO_DIR, parseJsonStream, runTool, startTool, type ToolResult } from "../../../../tests/interop/tools.ts";
 import { Reflection } from "../../src/Reflection.ts";
 import { Level, MetaSchema } from "../fixtures/fixture/v1/common_pb.ts";
 import { MountedService } from "../fixtures/fixture/v1/multi_pb.ts";
@@ -141,6 +141,21 @@ describe("reflection with external clients", () => {
             it(`describes ${symbol} as ${kind}`, async () => {
                 const output = await grpcurl(address, "describe", symbol);
                 assert.strictEqual(output.split("\n")[0], `${printedAs} is ${kind}:`);
+            });
+        }
+
+        // grpcurl asks for the symbol, so a server that lists a service must also be able to
+        // resolve it; the reflection services are not listed but are mounted.
+        for (const version of ["v1", "v1alpha"] as const) {
+            it(`describes the reflection service grpc.reflection.${version}.ServerReflection it is talking to`, async () => {
+                const output = await grpcurl(address, "describe", `grpc.reflection.${version}.ServerReflection`);
+                assert.match(output, new RegExp(`grpc\\.reflection\\.${version}\\.ServerReflection is a service:`));
+                assert.match(
+                    output,
+                    new RegExp(
+                        `rpc ServerReflectionInfo \\( stream \\.grpc\\.reflection\\.${version}\\.ServerReflectionRequest \\) returns \\( stream \\.grpc\\.reflection\\.${version}\\.ServerReflectionResponse \\)`,
+                    ),
+                );
             });
         }
 
@@ -266,6 +281,9 @@ describe("reflection with external clients", () => {
                     ["fixture.v1.audit", "fixture/v1/options.proto"],
                     ["fixture.v1.UnmountedPeerService", "fixture/v1/multi.proto"],
                     ["fixture.v1.UnmountedPeerService.Chat", "fixture/v1/multi.proto"],
+                    [`grpc.reflection.${version}.ServerReflection`, `grpc/reflection/${version}/reflection.proto`],
+                    [`grpc.reflection.${version}.ServerReflection.ServerReflectionInfo`, `grpc/reflection/${version}/reflection.proto`],
+                    [`grpc.reflection.${version}.ServerReflectionRequest`, `grpc/reflection/${version}/reflection.proto`],
                 ];
                 const responses = await exchange([...expected.map(([symbol]) => ({ fileContainingSymbol: symbol })), { fileContainingSymbol: "no.such.Symbol" }]);
                 for (const [index, [symbol, file]] of expected.entries()) {
@@ -274,6 +292,14 @@ describe("reflection with external clients", () => {
                 const unknown = responses.at(-1);
                 assert.strictEqual(unknown?.errorResponse?.errorCode, 5);
                 assert.match(unknown?.errorResponse?.errorMessage ?? "", /no\.such\.Symbol/);
+            });
+
+            it("repeats a long name in original_request but only a bounded prefix in error_message", async () => {
+                const name = "n".repeat(10_000);
+                const [response] = await exchange([{ fileByFilename: name }]);
+                assert.deepStrictEqual(response?.originalRequest, { fileByFilename: name }, "original_request carries the whole request");
+                assert.strictEqual(response?.errorResponse?.errorCode, 5);
+                assert.strictEqual(response?.errorResponse?.errorMessage, `file not found: "${"n".repeat(128)}…"`);
             });
 
             it("answers extension queries", async () => {
@@ -335,4 +361,113 @@ describe("reflection with external clients", () => {
         assert.strictEqual(v1?.length, requests.length);
         assert.deepStrictEqual(v1alpha, v1);
     });
+});
+
+// grpcurl reading its requests from a terminal that stays open is what an
+// interactive session looks like to the server: one answered request, then a
+// stream that stays open without a client message to wake it.
+describe("stopping a server while grpcurl keeps a reflection stream open", () => {
+    for (const version of ["v1", "v1alpha"] as const) {
+        it(`ends the ${version} stream with the shutdown instead of waiting for shutdown.timeout`, async () => {
+            const server = createServer({
+                services: [],
+                port: 0,
+                protocols: [Reflection()],
+                interceptors: [],
+                allowHTTP1: false,
+                shutdown: { timeout: 20_000 },
+            });
+            await server.start();
+            assert.ok(server.address?.port);
+            const grpcurlSession = startTool(
+                "grpcurl",
+                [
+                    "-plaintext",
+                    "-import-path",
+                    PROTO_DIR,
+                    "-proto",
+                    `grpc/reflection/${version}/reflection.proto`,
+                    "-d",
+                    "@",
+                    `127.0.0.1:${server.address.port}`,
+                    `grpc.reflection.${version}.ServerReflection/ServerReflectionInfo`,
+                ],
+                { stdin: `${JSON.stringify({ listServices: "" })}\n` },
+            );
+            try {
+                // The answer proves the stream is established and the server is now idle on it.
+                await grpcurlSession.messages(1, 30_000);
+
+                const startedAt = Date.now();
+                await server.stop();
+                const stopMs = Date.now() - startedAt;
+                assert.ok(stopMs < 5_000, `stop() took ${stopMs} ms with a grpcurl reflection session open; shutdown.timeout is 20000 ms`);
+
+                // grpcurl itself does not exit until its stdin ends, however the call ended, so
+                // the client's view is read once the terminal is closed: one answer, and a
+                // status that is not an error.
+                grpcurlSession.closeStdin();
+                const result = await grpcurlSession.done;
+                assert.strictEqual(result.code, 0, `grpcurl exited with ${result.code}: ${result.stderr}`);
+                assert.strictEqual(result.stderr, "", "the stream must end without an error status");
+                assert.strictEqual(parseJsonStream(result.stdout).length, 1, "exactly the one answer");
+            } finally {
+                grpcurlSession.closeStdin();
+                await grpcurlSession.done;
+                if (server.isRunning) {
+                    await server.stop();
+                }
+            }
+        });
+    }
+});
+
+// The order of `protocols` must not change what an external client discovers:
+// with Reflection() first, grpcurl and buf curl used to find no
+// grpc.health.v1.Health in the schema.
+describe("reflection with external clients: the order of protocols", () => {
+    const orders: Array<[string, () => ReturnType<typeof Reflection>[]]> = [
+        ["[Reflection(), Healthcheck()]", () => [Reflection(), Healthcheck()]],
+        ["[Healthcheck(), Reflection()]", () => [Healthcheck(), Reflection()]],
+    ];
+    const servers = new Map<string, { server: Server; address: string }>();
+
+    before(async () => {
+        for (const [name, make] of orders) {
+            const server = createServer({ services: [fixtureService, mountedService], port: 0, protocols: make(), interceptors: [], allowHTTP1: false });
+            await server.start();
+            assert.ok(server.address?.port);
+            servers.set(name, { server, address: `127.0.0.1:${server.address.port}` });
+        }
+    });
+
+    after(async () => {
+        for (const { server } of servers.values()) {
+            await server.stop();
+        }
+    });
+
+    for (const [name] of orders) {
+        it(`${name}: grpcurl lists and describes the mounted services and calls Health`, async () => {
+            const address = servers.get(name)?.address;
+            assert.ok(address);
+            const grpcurl = async (...args: string[]): Promise<string> => {
+                const result = await runTool("grpcurl", ["-plaintext", ...args]);
+                assert.strictEqual(result.code, 0, `grpcurl ${args.join(" ")} exited with ${result.code}: ${result.stderr}`);
+                return result.stdout;
+            };
+
+            assert.deepStrictEqual((await grpcurl(address, "list")).trim().split("\n").sort(), [...MOUNTED].sort());
+            assert.match(await grpcurl(address, "describe", "grpc.health.v1.Health"), /grpc\.health\.v1\.Health is a service:/);
+            assert.deepStrictEqual(JSON.parse(await grpcurl(address, "grpc.health.v1.Health/Check")), { status: "NOT_SERVING" });
+        });
+
+        it(`${name}: buf curl lists the methods of every mounted service`, async () => {
+            const address = servers.get(name)?.address;
+            assert.ok(address);
+            const result = await runTool("buf", ["curl", "--protocol", "grpc", "--http2-prior-knowledge", "--list-methods", `http://${address}`]);
+            assert.strictEqual(result.code, 0, `buf curl exited with ${result.code}: ${result.stderr}`);
+            assert.ok(result.stdout.includes("grpc.health.v1.Health/Check"), result.stdout);
+        });
+    }
 });

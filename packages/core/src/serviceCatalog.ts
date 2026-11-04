@@ -59,12 +59,36 @@ export interface ConnectumStreamMap {}
  * ```
  */
 export function defineCatalog<const T extends Record<string, DescService>>(record: T): Readonly<T> {
-    for (const [key, descriptor] of Object.entries(record)) {
-        if (key !== descriptor.typeName) {
-            throw new CatalogConfigError(`defineCatalog: key "${key}" must match descriptor.typeName "${descriptor.typeName}".`);
+    assertCatalogShape(record, "defineCatalog");
+    return Object.freeze({ ...record });
+}
+
+/**
+ * Check that `catalog` is an object whose every key equals its descriptor's
+ * `typeName`. {@link defineCatalog} runs it, and so do the entry points that
+ * accept a catalog built by hand (`createServer`, `createCatalogClient`): a
+ * mis-keyed entry would never be found by its canonical type name, and
+ * `enabledServices` matching the wrong key would mount nothing.
+ *
+ * @param caller - the function that received the catalog, to prefix the message
+ * @throws CatalogConfigError for a catalog that is not an object, an entry that is not a service descriptor, or a key that differs from its `typeName`
+ * @internal
+ */
+export function assertCatalogShape(catalog: unknown, caller: string): void {
+    if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
+        throw new CatalogConfigError(
+            `${caller}: catalog must be an object mapping each service typeName to its descriptor, got ${catalog === null ? "null" : Array.isArray(catalog) ? "an array" : typeof catalog}.`,
+        );
+    }
+    for (const [key, descriptor] of Object.entries(catalog)) {
+        const typeName = (descriptor as { typeName?: unknown } | null | undefined)?.typeName;
+        if (typeof typeName !== "string") {
+            throw new CatalogConfigError(`${caller}: catalog entry "${key}" is not a service descriptor (it has no typeName).`);
+        }
+        if (key !== typeName) {
+            throw new CatalogConfigError(`${caller}: key "${key}" must match descriptor.typeName "${typeName}".`);
         }
     }
-    return Object.freeze({ ...record });
 }
 
 /**

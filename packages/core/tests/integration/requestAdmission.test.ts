@@ -163,15 +163,23 @@ describe("requestGate — server default on both transports", () => {
     });
 });
 
-describe("requestGate — the request body of a rejected call is never read", () => {
+describe("requestGate — the request body of a rejected call is not parsed and is read only up to the transport's drain limit", () => {
     /**
      * Drives the real HTTP handler built by buildRoutes from a plain node:http
-     * server whose request objects count every attempt to iterate the body.
-     * connect-node reads the body only through `request[Symbol.asyncIterator]`,
-     * so zero iterations proves the body was not touched at all.
+     * server whose request objects count the bytes read through
+     * `request.iterator()`, the only way connect-node reads a body. The handler
+     * never parses a rejected call's message, but on a kept-alive HTTP/1
+     * connection connect-node discards up to 256 KiB of the unread remainder
+     * after answering, so the connection stays usable. The count therefore
+     * separates "read and discarded within the limit" from "read in full".
      */
+    // Four times connect-node's 256 KiB drain limit: an admitted call reads all of it,
+    // a rejected one must not.
+    const requestBody = JSON.stringify({ message: "x".repeat(1024 * 1024) });
+    const drainLimitBytes = 256 * 1024;
+
     async function serveInstrumented(requestGate: CreateServerOptions["requestGate"]) {
-        const bodyReads = { count: 0 };
+        const bodyReads = { bytes: 0 };
         const calls = { count: 0 };
         // Identity wrapper: the echo handlers never use ctx.call.
         const registerContext: RegisterContext = {
@@ -186,10 +194,16 @@ describe("requestGate — the request body of a rejected call is never read", ()
             ...(requestGate !== undefined ? { requestGate } : {}),
         });
         const http = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
-            const original = req[Symbol.asyncIterator].bind(req);
-            req[Symbol.asyncIterator] = () => {
-                bodyReads.count++;
-                return original();
+            const original = req.iterator.bind(req);
+            req.iterator = (options) => {
+                const inner = original(options);
+                return (async function* (): AsyncGenerator<Uint8Array, undefined> {
+                    for await (const chunk of inner) {
+                        bodyReads.bytes += (chunk as Uint8Array).byteLength;
+                        yield chunk as Uint8Array;
+                    }
+                    return undefined;
+                })();
             };
             handler(req as NodeRequest, res as NodeResponse);
         });
@@ -199,7 +213,7 @@ describe("requestGate — the request body of a rejected call is never read", ()
             fetch(`http://127.0.0.1:${port}/echo.v1.EchoService/Echo`, {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ message: "body" }),
+                body: requestBody,
             });
         const close = () => new Promise<void>((resolve) => http.close(() => resolve()));
         return { bodyReads, calls, post, close };
@@ -211,20 +225,27 @@ describe("requestGate — the request body of a rejected call is never read", ()
             const res = await h.post();
             assert.strictEqual(res.status, 200);
             await res.text();
-            assert.ok(h.bodyReads.count > 0, "an admitted call must read its body");
+            assert.ok(h.bodyReads.bytes >= requestBody.length, `an admitted call must read its whole body (read ${h.bodyReads.bytes} of ${requestBody.length} bytes)`);
             assert.strictEqual(h.calls.count, 1);
         } finally {
             await h.close();
         }
     });
 
-    it("never iterates the body when the gate rejects the call", async () => {
+    it("does not read the whole body when the gate rejects the call", async () => {
         const h = await serveInstrumented(rejectAll);
         try {
             const res = await h.post();
             const body = (await res.json()) as { code: string; message: string };
             assert.deepStrictEqual(body, { code: "unauthenticated", message: "unauthenticated" });
-            assert.strictEqual(h.bodyReads.count, 0, "a rejected call must not touch the request body");
+            // The transport discards at most its drain limit (it stops after the chunk
+            // that crosses it), so a chunk of slack is allowed; the whole body is not read.
+            // Bun's node:http hands the body over in much larger chunks, so only Node.js
+            // has a tight bound; the drain still stops short of the whole body there.
+            if (process.versions.bun === undefined) {
+                assert.ok(h.bodyReads.bytes <= drainLimitBytes + 64 * 1024, `a rejected call must not read more than the drain limit (read ${h.bodyReads.bytes} bytes)`);
+            }
+            assert.ok(h.bodyReads.bytes < requestBody.length, "a rejected call must not read its whole body");
             assert.strictEqual(h.calls.count, 0);
         } finally {
             await h.close();

@@ -67,6 +67,6 @@ describe("createServer — peer version check on the loaded copies", { skip }, (
         assert.ok(thrown, "createServer() must refuse a too-old connect");
         assert.strictEqual(thrown.name, "PeerDependencyVersionError");
         assert.match(thrown.message, /@connectrpc\/connect: loaded 2\.1\.2/);
-        assert.match(thrown.message, /requires \^2\.2\.0/);
+        assert.match(thrown.message, /requires \^2\.3\.0/);
     });
 });

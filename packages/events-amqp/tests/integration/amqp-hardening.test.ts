@@ -69,7 +69,7 @@ interface GatedProxy {
  * finishes after a newer connect() took over" a fixed order of events instead
  * of a timing race.
  */
-async function startGatedProxy(target: { host: string; port: number }): Promise<GatedProxy> {
+async function startGatedProxy(target: { host: string; port: number }, holdOn: { readonly classId: number; readonly methodId: number } = { classId: AMQP_CHANNEL_CLASS, methodId: AMQP_CHANNEL_OPEN_METHOD }): Promise<GatedProxy> {
     let held = false;
     let released = false;
     let resolveSetupStarted: () => void = () => undefined;
@@ -106,7 +106,7 @@ async function startGatedProxy(target: { host: string; port: number }): Promise<
                     return;
                 }
                 const isMethod = clientBytes[0] === AMQP_METHOD_FRAME && size >= 4;
-                if (isMethod && clientBytes.readUInt16BE(7) === AMQP_CHANNEL_CLASS && clientBytes.readUInt16BE(9) === AMQP_CHANNEL_OPEN_METHOD && !released) {
+                if (isMethod && clientBytes.readUInt16BE(7) === holdOn.classId && clientBytes.readUInt16BE(9) === holdOn.methodId && !released) {
                     held = true;
                     resolveSetupStarted();
                 }
@@ -341,9 +341,10 @@ for (const image of IMAGES) {
         }
 
         for (const mode of [
-            { label: "recovery: false", recovery: false as const, lifecycle: false },
-            { label: "recovery", recovery: true as const, lifecycle: false },
-            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true },
+            { label: "recovery: false", recovery: false as const, lifecycle: false, cancelled: /AmqpConnectionError: Adapter closed while connect\(\) was in progress/ },
+            // The recovering connection is held from the start, so disconnect() closes it and the connect() reports the initial phase.
+            { label: "recovery", recovery: true as const, lifecycle: false, cancelled: /AmqpConnectionError: Adapter closed during the initial connect phase/ },
+            { label: "recovery with lifecycle (startup probe)", recovery: true as const, lifecycle: true, cancelled: /AmqpConnectionError: Adapter closed while connect\(\) was in progress/ },
         ]) {
             it(`a superseded connect() whose setup finishes late does not take over the publish channel (${mode.label})`, async () => {
                 const name = `hardening-late-setup-${Math.random().toString(36).slice(2, 8)}`;
@@ -361,17 +362,84 @@ for (const image of IMAGES) {
                     );
                     await proxy.setupStarted;
                     await adapter.disconnect();
+                    // disconnect() ends the wait: the first connect() settles although its setup has not finished.
+                    const early = await Promise.race([first, sleep(5_000).then(() => "still pending")]);
+                    assert.match(early, mode.cancelled, "the superseded connect() must not report success, and must not wait for the broker");
                     await adapter.connect({ serviceName: name });
 
-                    // The first connect() resumes only now, with its setup finishing after the second one is live.
+                    // What the first connect() left on the wire finishes only now, after the second one is live.
                     proxy.release();
                     const firstOutcome = await first;
 
-                    assert.match(firstOutcome, /AmqpConnectionError: Adapter closed while connect\(\) was in progress/, "the superseded connect() must not report success");
+                    assert.match(firstOutcome, mode.cancelled, "the superseded connect() must not report success");
                     await adapter.publish("hardening.late-setup.evt", new Uint8Array([1]));
                 } finally {
                     await adapter.disconnect();
                     await proxy.close();
+                }
+            });
+        }
+
+        // The setup has created its publish channel and waits for the first declaration: disconnect() meets a channel
+        // that exists on a connection whose socket it has to destroy, and closing that channel gracefully would wait
+        // for a broker reply that never comes.
+        for (const mode of [
+            { label: "recovery: false", extra: { recovery: false as const } },
+            { label: "recovery", extra: {} },
+            { label: "recovery with lifecycle (startup probe)", extra: { lifecycle: { onLifecycle: () => undefined } } },
+        ]) {
+            it(`disconnect() returns while the setup of a pending connect() waits for the broker after its publish channel exists (${mode.label})`, async () => {
+                const name = `hardening-stalled-declare-${Math.random().toString(36).slice(2, 8)}`;
+                const EXCHANGE_CLASS = 40;
+                const EXCHANGE_DECLARE_METHOD = 10;
+                const proxy = await startGatedProxy({ host: container.getHost(), port: container.getMappedPort(5672) }, { classId: EXCHANGE_CLASS, methodId: EXCHANGE_DECLARE_METHOD });
+                const adapter = AmqpAdapter({ url: `amqp://guest:guest@127.0.0.1:${proxy.port}`, exchange: "hardening.stalled-declare", ...mode.extra });
+                try {
+                    const first = adapter.connect({ serviceName: name }).then(
+                        () => "resolved",
+                        (err: unknown) => describeError(err),
+                    );
+                    await proxy.setupStarted;
+                    const closed = await Promise.race([adapter.disconnect().then(() => "disconnected"), sleep(8_000).then(() => "disconnect() still pending")]);
+                    assert.equal(closed, "disconnected");
+                    const outcome = await Promise.race([first, sleep(8_000).then(() => "connect() still pending")]);
+                    assert.match(outcome, /AmqpConnectionError: Adapter closed/);
+                } finally {
+                    proxy.release();
+                    await adapter.disconnect().catch(() => undefined);
+                    await proxy.close();
+                }
+            });
+        }
+
+        // The first `connected` callback calls disconnect() while connect() has not returned yet: the connection is already
+        // handed over, so it is closed gracefully and its socket must not be destroyed under that close.
+        for (const mode of [
+            { label: "recovery: false", extra: { recovery: false as const } },
+            { label: "recovery", extra: {} },
+        ]) {
+            it(`disconnect() from the first connected callback returns (${mode.label})`, async () => {
+                const holder: { adapter?: ReturnType<typeof AmqpAdapter>; done?: Promise<void> | undefined } = {};
+                const adapter = AmqpAdapter({
+                    url,
+                    exchange: "hardening.connected-disconnect",
+                    ...mode.extra,
+                    lifecycle: {
+                        onLifecycle: (event: AmqpLifecycleEvent) => {
+                            if (event.type === "connected" && holder.done === undefined) {
+                                holder.done = holder.adapter?.disconnect();
+                            }
+                        },
+                    },
+                });
+                holder.adapter = adapter;
+                try {
+                    await adapter.connect({ serviceName: `hardening-connected-${Math.random().toString(36).slice(2, 8)}` });
+                    assert.ok(holder.done !== undefined, "the connected callback ran");
+                    const outcome = await Promise.race([holder.done.then(() => "disconnected"), sleep(8_000).then(() => "disconnect() still pending")]);
+                    assert.equal(outcome, "disconnected");
+                } finally {
+                    await adapter.disconnect().catch(() => undefined);
                 }
             });
         }

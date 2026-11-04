@@ -286,5 +286,23 @@ describe("provider: OTLP/gRPC exporters", () => {
 			assert.strictEqual(records.length, 1);
 			assert.strictEqual(child(child(records[0] as Buffer, 5), 1).toString("utf8"), "grpc-probe-log");
 		});
+
+		it(`sends a burst of 100 log records to the gRPC logs service as one batch for ${label}`, async () => {
+			selectOnly("logs", how);
+
+			for (let i = 0; i < 100; i++) {
+				getProvider().logger.emit({ body: `grpc-burst-${i}` });
+			}
+			await shutdownProvider();
+
+			const received = collector.calls.flatMap((call) =>
+				children(call.message, 1).flatMap((resourceLogs) => children(resourceLogs, 2).flatMap((scopeLogs) => children(scopeLogs, 2))),
+			);
+			assert.deepStrictEqual(
+				received.map((record) => child(child(record, 5), 1).toString("utf8")).sort(),
+				Array.from({ length: 100 }, (_, i) => `grpc-burst-${i}`).sort(),
+			);
+			assert.strictEqual(collector.calls.length, 1, "the records travel in one request, not one request per record");
+		});
 	}
 });

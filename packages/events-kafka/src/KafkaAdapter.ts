@@ -10,12 +10,15 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, EventAdapter, EventSubscription, PublishOptions, RawEventHandler, RawSubscribeOptions } from "@connectum/events";
 import { assertPublishTopic, assertSubscriptionPatterns } from "@connectum/events";
-import type { Admin, Consumer, IHeaders, Producer } from "kafkajs";
+import type { Admin, IHeaders, Producer } from "kafkajs";
 import { Kafka } from "kafkajs";
+import { explainConnectionError, explainInvalidTopic } from "./brokerErrors.ts";
 import { assertKafkaOptions, buildClientConfig, compressionOf } from "./clientConfig.ts";
 import { createBatchConsumer, defaultHeartbeatIntervalMs } from "./consumeBatch.ts";
 import { dispatchLifecycle, trackConsumer } from "./lifecycle.ts";
+import { subscribeToTopics } from "./subscribeTopics.ts";
 import { startTopicDiscovery } from "./topicDiscovery.ts";
+import { createTopicRecovery } from "./topicRecovery.ts";
 import type { KafkaAdapterOptions } from "./types.ts";
 
 /**
@@ -23,6 +26,11 @@ import type { KafkaAdapterOptions } from "./types.ts";
  * Without a pause a permanently failing handler is retried at network speed, thousands of times a second.
  */
 const defaultRedeliveryDelayMs = 1_000;
+
+/** What the adapter keeps of a live subscription to close it on `disconnect()`; its consumer may be replaced after a topic deletion. */
+interface ConsumerHandle {
+    readonly disconnect: () => Promise<void>;
+}
 
 /**
  * How often a wildcard subscription checks the broker for new matching topics when
@@ -129,7 +137,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
     let kafka: Kafka;
 
     let producer: Producer | null = null;
-    const consumers: Consumer[] = [];
+    const consumers = new Set<ConsumerHandle>();
     let connected = false;
 
     /** Admin client used to list topics for wildcard discovery; opened on first use. */
@@ -144,6 +152,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             await candidate.connect();
         } catch (err) {
             await candidate.disconnect().catch(() => undefined);
+            explainConnectionError(err);
             throw err;
         }
         admin = candidate;
@@ -161,27 +170,43 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
         return adminConnecting;
     };
 
+    /** The connect() attempt under way, shared by every overlapping call. */
+    let connecting: Promise<void> | null = null;
+
+    const openProducer = async (context: AdapterContext | undefined): Promise<void> => {
+        kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
+        const p = kafka.producer();
+        try {
+            await p.connect();
+        } catch (err) {
+            await p.disconnect().catch(() => undefined);
+            explainConnectionError(err);
+            throw err;
+        }
+        producer = p;
+        connected = true;
+        dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+    };
+
     return {
         name: "kafka",
 
-        async connect(context?: AdapterContext): Promise<void> {
+        connect(context?: AdapterContext): Promise<void> {
             if (connected) {
-                return;
+                return Promise.resolve();
             }
-            kafka = new Kafka(buildClientConfig(options, options.clientId ?? context?.serviceName ?? "connectum"));
-            const p = kafka.producer();
-            try {
-                await p.connect();
-            } catch (err) {
-                await p.disconnect().catch(() => undefined);
-                throw err;
-            }
-            producer = p;
-            connected = true;
-            dispatchLifecycle(options.lifecycle, { type: "connected", reconnected: false });
+            // Overlapping calls share one attempt: each would otherwise create its own producer, and the
+            // one assigned last would replace the others, which nothing could ever disconnect again.
+            // A failed attempt is not remembered, so the next call starts a new one.
+            connecting ??= openProducer(context).finally(() => {
+                connecting = null;
+            });
+            return connecting;
         },
 
         async disconnect(): Promise<void> {
+            // A disconnect that arrives while connect() is under way ends the connection that attempt makes.
+            await connecting?.catch(() => undefined);
             if (!connected) {
                 return;
             }
@@ -191,13 +216,13 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
             discoveryStops.clear();
 
             // Disconnect all consumers (continue on individual failures)
-            const results = await Promise.allSettled(consumers.map((c) => c.disconnect()));
+            const results = await Promise.allSettled([...consumers].map((c) => c.disconnect()));
             for (const r of results) {
                 if (r.status === "rejected") {
                     console.error("[KafkaAdapter] consumer disconnect error:", r.reason);
                 }
             }
-            consumers.length = 0;
+            consumers.clear();
 
             if (admin !== null) {
                 await admin.disconnect().catch((err: unknown) => {
@@ -237,17 +262,22 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const compression = compressionOf(options);
 
-            await producer.send({
-                topic: eventType,
-                messages: [
-                    {
-                        key: publishOptions?.key ?? null,
-                        value: Buffer.from(payload),
-                        headers,
-                    },
-                ],
-                ...(compression !== undefined && { compression }),
-            });
+            try {
+                await producer.send({
+                    topic: eventType,
+                    messages: [
+                        {
+                            key: publishOptions?.key ?? null,
+                            value: Buffer.from(payload),
+                            headers,
+                        },
+                    ],
+                    ...(compression !== undefined && { compression }),
+                });
+            } catch (err) {
+                explainConnectionError(err);
+                throw explainInvalidTopic(eventType, err);
+            }
         },
 
         async subscribe(patterns: string[], handler: RawEventHandler, subOptions?: RawSubscribeOptions): Promise<EventSubscription> {
@@ -265,21 +295,12 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
 
             const groupId = subOptions?.group ?? `connectum-${randomUUID()}`;
             const sessionTimeout = options.consumerOptions?.sessionTimeout;
-            const consumer = kafka.consumer({
-                groupId,
-                allowAutoTopicCreation: options.consumerOptions?.allowAutoTopicCreation ?? false,
-                heartbeatInterval: defaultHeartbeatIntervalMs,
-                ...(sessionTimeout !== undefined && { sessionTimeout }),
-            });
-
-            // Attached before the consumer runs, so a crash of the first run is not missed. Without the option no listener exists.
-            if (options.lifecycle?.onLifecycle !== undefined) {
-                const tracker = trackConsumer(options.lifecycle);
-                consumer.on(consumer.events.CRASH, (event) => tracker.onCrash(event.payload));
-                consumer.on(consumer.events.GROUP_JOIN, (event) => tracker.onGroupJoin(event.payload));
-            }
-
-            await consumer.connect();
+            const allowAutoTopicCreation = options.consumerOptions?.allowAutoTopicCreation ?? false;
+            const wildcards = topics.filter((topic): topic is RegExp => topic instanceof RegExp);
+            const literals = topics.filter((topic): topic is string => typeof topic === "string");
+            const fromBeginning = options.consumerOptions?.fromBeginning ?? false;
+            // One tracker for the subscription, not one per consumer: a consumer replaced after a crash must continue the same loss and recovery.
+            const tracker = options.lifecycle?.onLifecycle !== undefined ? trackConsumer(options.lifecycle) : undefined;
 
             /** Pending partition resumes of this subscription, cleared on unsubscribe. */
             const resumeTimers = new Set<NodeJS.Timeout>();
@@ -292,34 +313,103 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                 eachBatch: createBatchConsumer({ handler, commitStrategy, heartbeatInterval: defaultHeartbeatIntervalMs, redeliveryDelay, resumeTimers }),
             } as const;
 
+            // The topics on the broker when the subscription starts: the ones KafkaJS expands the
+            // wildcards to; anything listed later that matches is new. Listing first means a topic
+            // created in between is seen again at the first check, which costs one needless restart
+            // and loses nothing. A failed listing fails the subscription: continuing with an empty
+            // list would make every existing topic look new at the first check, and the restart
+            // would read their whole history from the beginning although `fromBeginning` is off.
+            // KafkaJS expands the wildcards with the same metadata request, so a broker that
+            // cannot answer this one fails the subscribe below anyway. The list is also what tells a
+            // topic that was deleted from one that never existed, so it is taken whether or not topic
+            // discovery runs.
+            const known = new Set<string>();
+            /**
+             * A `restartOnFailure` the application passed in `clientOptions.retry`. A consumer inherits it from the client; the
+             * recovery's own answer replaces it on a wildcard subscription, so it is asked for every crash the recovery leaves alone.
+             */
+            const userRestartPolicy = (options.clientOptions?.retry as { restartOnFailure?: (error: Error) => Promise<boolean> } | undefined)?.restartOnFailure;
+            /** The same list, frozen at the start: tells a topic the consumer began with from one found later. */
+            const started = new Set<string>();
+
+            const recovery = createTopicRecovery({
+                createConsumer: ({ onCrash, restartOnFailure }) => {
+                    const consumer = kafka.consumer({
+                        groupId,
+                        allowAutoTopicCreation,
+                        heartbeatInterval: defaultHeartbeatIntervalMs,
+                        ...(sessionTimeout !== undefined && { sessionTimeout }),
+                        // Only a wildcard subscription can be replaced. 5 is the client's own default for a consumer's retries, which giving `retry` would otherwise replace.
+                        ...(wildcards.length > 0 && {
+                            retry: {
+                                retries: 5,
+                                restartOnFailure:
+                                    userRestartPolicy === undefined ? restartOnFailure : async (error: Error) => (await restartOnFailure(error)) && userRestartPolicy(error),
+                            },
+                        }),
+                    });
+                    // Attached before the consumer runs, so a crash of the first run is not missed. Without a lifecycle callback and without wildcards no listener exists.
+                    if (tracker !== undefined || wildcards.length > 0) {
+                        consumer.on(consumer.events.CRASH, (event) => {
+                            // A crash the recovery takes over is reported as one the subscription will recover from.
+                            const reported = onCrash(event.payload);
+                            tracker?.onCrash(reported);
+                        });
+                    }
+                    if (tracker !== undefined) {
+                        consumer.on(consumer.events.GROUP_JOIN, (event) => tracker.onGroupJoin(event.payload));
+                    }
+                    return consumer;
+                },
+                literals,
+                wildcards,
+                known,
+                started,
+                fromBeginning,
+                discover: topicDiscoveryInterval !== undefined,
+                runConfig,
+                resumeTimers,
+                listTopics: async () => (await getAdmin()).listTopics(),
+                subscribe: (consumer, names, beginning) => subscribeToTopics({ consumer, topics: names, fromBeginning: beginning, allowAutoTopicCreation }),
+            });
+
+            const consumer = recovery.spawn();
+            try {
+                await consumer.connect();
+            } catch (err) {
+                explainConnectionError(err);
+                throw err;
+            }
+
             /** Stops this subscription's topic discovery, if it has any. */
             let stopDiscovery: (() => Promise<void>) | undefined;
 
             try {
-                const wildcards = topics.filter((topic): topic is RegExp => topic instanceof RegExp);
-                const fromBeginning = options.consumerOptions?.fromBeginning ?? false;
-
-                // The topics that exist when the subscription starts are the ones KafkaJS expands the
-                // wildcards to; anything listed later that matches is new. Listing first means a topic
-                // created in between is seen again at the first check, which costs one needless restart
-                // and loses nothing. A failed listing fails the subscription: continuing with an empty
-                // list would make every existing topic look new at the first check, and the restart
-                // would read their whole history from the beginning although `fromBeginning` is off.
-                // KafkaJS expands the wildcards with the same metadata request, so a broker that
-                // cannot answer this one fails the subscribe below anyway.
-                const known = new Set<string>();
-                if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
+                if (wildcards.length > 0) {
                     for (const name of await (await getAdmin()).listTopics()) {
                         known.add(name);
+                        started.add(name);
                     }
                 }
 
-                await consumer.subscribe({ topics, fromBeginning });
+                await subscribeToTopics({ consumer, topics, fromBeginning, allowAutoTopicCreation });
+                if (wildcards.length > 0 && topicDiscoveryInterval === undefined) {
+                    // Without discovery nothing else would learn of a topic that was created between the listing above and
+                    // the metadata request inside subscribe(): the consumer is subscribed to it, but the listing lacks it,
+                    // and a recovery would then leave it out. With discovery the first check handles it.
+                    for (const name of await (await getAdmin()).listTopics()) {
+                        if (!known.has(name) && wildcards.some((wildcard) => wildcard.test(name))) {
+                            known.add(name);
+                            started.add(name);
+                        }
+                    }
+                }
                 await consumer.run(runConfig);
 
                 if (topicDiscoveryInterval !== undefined && wildcards.length > 0) {
                     stopDiscovery = startTopicDiscovery({
-                        consumer,
+                        consumer: recovery.current,
+                        serialize: recovery.serialize,
                         wildcards,
                         known,
                         runConfig,
@@ -330,18 +420,16 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                     discoveryStops.add(stopDiscovery);
                 }
             } catch (err) {
-                await consumer.disconnect().catch(() => undefined);
+                await recovery.close().catch(() => undefined);
                 throw err;
             }
 
-            consumers.push(consumer);
+            const handle: ConsumerHandle = { disconnect: () => recovery.close() };
+            consumers.add(handle);
 
             return {
                 async unsubscribe(): Promise<void> {
-                    const idx = consumers.indexOf(consumer);
-                    if (idx !== -1) {
-                        consumers.splice(idx, 1);
-                    }
+                    consumers.delete(handle);
                     if (stopDiscovery !== undefined) {
                         discoveryStops.delete(stopDiscovery);
                         await stopDiscovery();
@@ -350,7 +438,7 @@ export function KafkaAdapter(options: KafkaAdapterOptions): EventAdapter {
                         clearTimeout(timer);
                     }
                     resumeTimers.clear();
-                    await consumer.disconnect();
+                    await recovery.close();
                 },
             };
         },

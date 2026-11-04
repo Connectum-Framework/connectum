@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { runInNewContext } from "node:vm";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError } from "../../src/assertions.ts";
 
@@ -139,6 +140,70 @@ describe("assertConnectError", () => {
         for (let attempt = 0; attempt < 2; attempt++) {
             assert.throws(() => assertConnectError(error, Code.Internal, pattern), assert.AssertionError);
         }
+    });
+
+    // Two installed copies of @connectrpc/connect define two ConnectError classes with the same
+    // name; `instanceof` fails across them and the old message read "Expected ConnectError but
+    // got ConnectError", which tells the reader nothing.
+    describe("an error from another copy of @connectrpc/connect", () => {
+        class ConnectError extends Error {
+            code: number;
+            constructor(message: string, code: number) {
+                super(message);
+                this.name = "ConnectError";
+                this.code = code;
+            }
+        }
+
+        it("fails and says that two copies of the package are probably installed", () => {
+            assert.throws(
+                () => assertConnectError(new ConnectError("x", Code.NotFound), Code.NotFound),
+                (err: unknown) =>
+                    err instanceof assert.AssertionError &&
+                    err.message.includes("another copy of @connectrpc/connect") &&
+                    err.message.includes("two copies") &&
+                    !/Expected ConnectError but got ConnectError$/.test(err.message),
+            );
+        });
+
+        it("recognises the foreign class by constructor name when the name property was changed", () => {
+            const foreign = new ConnectError("x", Code.NotFound);
+            foreign.name = "Error";
+
+            assert.throws(() => assertConnectError(foreign, Code.NotFound), /two copies/);
+        });
+
+        it("does not blame duplicate copies for an ordinary Error, a plain object or a primitive", () => {
+            for (const value of [new Error("x"), { name: "Other", code: Code.NotFound }, "text", 5, null, undefined]) {
+                assert.throws(
+                    () => assertConnectError(value, Code.NotFound),
+                    (err: unknown) => err instanceof assert.AssertionError && err.message.startsWith("Expected ConnectError but got ") && !err.message.includes("two copies"),
+                    String(value),
+                );
+            }
+        });
+    });
+
+    // A pattern that is neither a string nor a RegExp used to skip the message check, so the
+    // assertion passed whatever the message said.
+    it("a messagePattern of another kind throws a TypeError instead of passing unchecked", () => {
+        const error = new ConnectError("boom", Code.Internal);
+
+        for (const pattern of [5, {}, null, ["boom"], true]) {
+            assert.throws(
+                () => assertConnectError(error, Code.Internal, pattern as never),
+                (err: unknown) => err instanceof TypeError && err.message.includes("messagePattern"),
+                String(pattern),
+            );
+        }
+    });
+
+    it("a RegExp from another realm is matched", () => {
+        const foreign = runInNewContext("/boom/");
+        assert.ok(!(foreign instanceof RegExp), "reference: the pattern is not an instance of this realm's RegExp");
+
+        assertConnectError(new ConnectError("boom", Code.Internal), Code.Internal, foreign);
+        assert.throws(() => assertConnectError(new ConnectError("calm", Code.Internal), Code.Internal, foreign), assert.AssertionError);
     });
 
     it("narrows type after assertion — error.code is accessible without cast", () => {

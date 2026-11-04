@@ -7,7 +7,9 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { parseAuthHeaders, setAuthHeaders } from "../../src/headers.ts";
+import { Code } from "@connectrpc/connect";
+import { assertConnectError } from "@connectum/testing";
+import { HeaderValueTooLargeError, parseAuthHeaders, setAuthHeaders } from "../../src/headers.ts";
 import type { AuthContext } from "../../src/types.ts";
 import { AUTH_HEADERS } from "../../src/types.ts";
 
@@ -108,65 +110,62 @@ describe("headers", () => {
             assert.strictEqual(result.type, "unknown");
         });
 
-        // Guide (context.md, "Propagated Headers", Limits and sizes): x-auth-subject is cut to 512
-        // characters, truncated and not rejected. A side effect the guide names: two subjects that
-        // share their first 512 characters become indistinguishable downstream.
-        it("should truncate subject exceeding 512 characters", () => {
+        // A value over its limit is refused on read, never cut: two subjects that share their
+        // first 512 characters would otherwise become one identity downstream.
+        it("should refuse a subject exceeding 512 characters as Unauthenticated", () => {
             const headers = new Headers();
-            const longSubject = "a".repeat(600);
-            headers.set(AUTH_HEADERS.SUBJECT, longSubject);
+            headers.set(AUTH_HEADERS.SUBJECT, "a".repeat(513));
 
-            const result = parseAuthHeaders(headers);
-
-            assert.ok(result);
-            assert.strictEqual(result.subject.length, 512);
-            assert.strictEqual(result.subject, "a".repeat(512));
+            assert.throws(
+                () => parseAuthHeaders(headers),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                    return true;
+                },
+            );
         });
 
-        // Lower half of the pair: a value exactly at the documented limit passes unchanged, so the
-        // cut starts at the 513th character.
-        it("should not truncate subject within 512 character limit", () => {
+        it("should not refuse a subject of exactly 512 characters", () => {
             const headers = new Headers();
-            const subject = "a".repeat(512);
-            headers.set(AUTH_HEADERS.SUBJECT, subject);
+            headers.set(AUTH_HEADERS.SUBJECT, "a".repeat(512));
 
-            const result = parseAuthHeaders(headers);
-
-            assert.ok(result);
-            assert.strictEqual(result.subject.length, 512);
+            assert.strictEqual(parseAuthHeaders(headers)?.subject, "a".repeat(512));
         });
 
-        // Guide (context.md, Limits and sizes): x-auth-type is cut to 128 characters, not rejected.
-        it("should truncate type exceeding 128 characters", () => {
+        it("should refuse a type exceeding 128 characters as Unauthenticated", () => {
             const headers = new Headers();
             headers.set(AUTH_HEADERS.SUBJECT, "user-1");
-            const longType = "t".repeat(200);
-            headers.set(AUTH_HEADERS.TYPE, longType);
+            headers.set(AUTH_HEADERS.TYPE, "t".repeat(129));
 
-            const result = parseAuthHeaders(headers);
-
-            assert.ok(result);
-            assert.strictEqual(result.type.length, 128);
-            assert.strictEqual(result.type, "t".repeat(128));
+            assert.throws(
+                () => parseAuthHeaders(headers),
+                (err: unknown) => {
+                    assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                    return true;
+                },
+            );
         });
 
         // Guide (context.md, "Propagated Headers"): x-auth-roles, x-auth-scopes and
         // x-auth-claims have a limit of 8192 characters for the serialized value; a value
-        // over the limit is not truncated, the receiver ignores it and uses an empty value.
-        // Each value below is built to be exactly 8192 characters (accepted) and exactly
-        // 8193 characters (ignored), so a limit moved by even one character is caught.
+        // over the limit is refused, not ignored: a receiver that read it as empty would stop
+        // matching a deny rule on a role or claim. Each value below is built to be exactly 8192
+        // characters (accepted) and exactly 8193 characters (refused), so a limit moved by even
+        // one character is caught.
         // The limit is in characters, not bytes: the multi-byte filler is 2 bytes per
         // character in UTF-8, so a byte-based limit would reject the accepted value.
         for (const { filler, label } of [
             { filler: "x", label: "ASCII" },
             { filler: "é", label: "multi-byte" },
         ]) {
+            /** A claims JSON of exactly `length` characters. */
             const claimsOfLength = (length: number): string => {
                 // {"d":"<filler*n>"} adds 8 characters around the filler
                 const json = JSON.stringify({ d: filler.repeat(length - 8) });
                 assert.strictEqual(json.length, length);
                 return json;
             };
+            /** A roles JSON of exactly `length` characters. */
             const rolesOfLength = (length: number): string => {
                 // ["<filler*n>"] adds 4 characters around the filler
                 const json = JSON.stringify([filler.repeat(length - 4)]);
@@ -174,41 +173,55 @@ describe("headers", () => {
                 return json;
             };
 
-            it(`should accept claims of exactly 8192 characters and ignore 8193 (${label})`, () => {
+            it(`should accept claims of exactly 8192 characters and refuse 8193 (${label})`, () => {
                 const atLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 atLimit.set(AUTH_HEADERS.CLAIMS, claimsOfLength(8192));
                 assert.deepStrictEqual(parseAuthHeaders(atLimit)?.claims, { d: filler.repeat(8184) });
 
                 const overLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 overLimit.set(AUTH_HEADERS.CLAIMS, claimsOfLength(8193));
-                const result = parseAuthHeaders(overLimit);
-                assert.ok(result, "an oversized claims header must not reject the request");
-                assert.deepStrictEqual(result.claims, {});
-                assert.strictEqual(result.subject, "user-1");
+                assert.throws(
+                    () => parseAuthHeaders(overLimit),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                        return true;
+                    },
+                    "an oversized claims header must be refused, not read as empty",
+                );
             });
 
-            it(`should accept roles of exactly 8192 characters and ignore 8193 (${label})`, () => {
+            it(`should accept roles of exactly 8192 characters and refuse 8193 (${label})`, () => {
                 const atLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 atLimit.set(AUTH_HEADERS.ROLES, rolesOfLength(8192));
                 assert.deepStrictEqual(parseAuthHeaders(atLimit)?.roles, [filler.repeat(8188)]);
 
                 const overLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 overLimit.set(AUTH_HEADERS.ROLES, rolesOfLength(8193));
-                const result = parseAuthHeaders(overLimit);
-                assert.ok(result, "an oversized roles header must not reject the request");
-                assert.deepStrictEqual(result.roles, []);
+                assert.throws(
+                    () => parseAuthHeaders(overLimit),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                        return true;
+                    },
+                    "an oversized roles header must be refused, not read as empty",
+                );
             });
 
-            it(`should accept scopes of exactly 8192 characters and ignore 8193 (${label})`, () => {
+            it(`should accept scopes of exactly 8192 characters and refuse 8193 (${label})`, () => {
                 const atLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 atLimit.set(AUTH_HEADERS.SCOPES, filler.repeat(8192));
                 assert.deepStrictEqual(parseAuthHeaders(atLimit)?.scopes, [filler.repeat(8192)]);
 
                 const overLimit = new Headers([[AUTH_HEADERS.SUBJECT, "user-1"]]);
                 overLimit.set(AUTH_HEADERS.SCOPES, filler.repeat(8193));
-                const result = parseAuthHeaders(overLimit);
-                assert.ok(result, "an oversized scopes header must not reject the request");
-                assert.deepStrictEqual(result.scopes, []);
+                assert.throws(
+                    () => parseAuthHeaders(overLimit),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                        return true;
+                    },
+                    "an oversized scopes header must be refused, not read as empty",
+                );
             });
         }
 
@@ -258,56 +271,84 @@ describe("headers", () => {
             assert.strictEqual(headers.get(AUTH_HEADERS.NAME), null);
         });
 
-        // Guide (context.md, Limits and sizes): x-auth-name is cut to 256 characters, not rejected.
-        it("should truncate name exceeding 256 characters", () => {
+        it("should refuse a name exceeding 256 characters and set no header", () => {
             const headers = new Headers();
-            const context: AuthContext = {
-                subject: "user-1",
-                name: "n".repeat(300),
-                roles: [],
-                scopes: [],
-                claims: {},
-                type: "jwt",
-            };
+            const context: AuthContext = { subject: "user-1", name: "n".repeat(257), roles: [], scopes: [], claims: {}, type: "jwt" };
 
-            setAuthHeaders(headers, context);
-            assert.strictEqual(headers.get(AUTH_HEADERS.NAME)!.length, 256);
+            assert.throws(
+                () => setAuthHeaders(headers, context),
+                (err: unknown) => err instanceof HeaderValueTooLargeError && err.field === "name" && err.limit === 256,
+            );
+            assert.deepStrictEqual([...headers.keys()], []);
         });
     });
 
-    // Guide (context.md, Limits and sizes): x-auth-subject is cut to 512 characters,
-    // x-auth-type to 128 and x-auth-name to 256, when written and when read. A cut value keeps
-    // its first characters. One character under, at and one over each limit separates a limit
-    // that is moved by one in either direction, and the letters cycle so a cut from the wrong end
-    // gives a different string.
+    // x-auth-subject holds at most 512 characters, x-auth-type 128 and x-auth-name 256. A longer
+    // value is refused when written and when read, never cut: a cut value would make two subjects
+    // that share their first characters one identity. One character under, at and one over each
+    // limit separates a limit that is moved by one in either direction.
     describe("length limits of subject, type and name", () => {
         const fields = [
             { field: "subject", header: "x-auth-subject", limit: 512 },
             { field: "type", header: "x-auth-type", limit: 128 },
             { field: "name", header: "x-auth-name", limit: 256 },
         ] as const;
+        /** A text of `length` characters whose letters cycle, so a cut from the wrong end gives a different string. */
         const textOfLength = (length: number): string => Array.from({ length }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
 
         for (const { field, header, limit } of fields) {
-            for (const length of [limit - 1, limit, limit + 1]) {
+            for (const length of [limit - 1, limit]) {
                 const value = textOfLength(length);
-                const expected = value.slice(0, limit);
 
-                it(`should write a ${field} of ${length} characters as ${expected.length} characters`, () => {
+                it(`should write a ${field} of ${length} characters unchanged`, () => {
                     const headers = new Headers();
                     setAuthHeaders(headers, { subject: "s", type: "t", name: "n", roles: [], scopes: [], claims: {}, [field]: value });
 
-                    assert.strictEqual(headers.get(header), expected);
+                    assert.strictEqual(headers.get(header), value);
                 });
 
-                it(`should read a ${field} of ${length} characters as ${expected.length} characters`, () => {
+                it(`should read a ${field} of ${length} characters unchanged`, () => {
                     const headers = new Headers({ "x-auth-subject": "s", "x-auth-type": "t", "x-auth-name": "n" });
                     headers.set(header, value);
 
-                    assert.strictEqual(parseAuthHeaders(headers)?.[field], expected);
+                    assert.strictEqual(parseAuthHeaders(headers)?.[field], value);
                 });
             }
+
+            const tooLong = textOfLength(limit + 1);
+
+            it(`should refuse to write a ${field} of ${limit + 1} characters and set no header`, () => {
+                const headers = new Headers();
+                assert.throws(
+                    () => setAuthHeaders(headers, { subject: "s", type: "t", name: "n", roles: [], scopes: [], claims: {}, [field]: tooLong }),
+                    (err: unknown) => err instanceof HeaderValueTooLargeError && err.field === field && err.limit === limit,
+                );
+                assert.deepStrictEqual([...headers.keys()], []);
+            });
+
+            it(`should refuse to read a ${field} of ${limit + 1} characters`, () => {
+                const headers = new Headers({ "x-auth-subject": "s", "x-auth-type": "t", "x-auth-name": "n" });
+                headers.set(header, tooLong);
+
+                assert.throws(
+                    () => parseAuthHeaders(headers),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Unauthenticated, "Authentication failed");
+                        return true;
+                    },
+                );
+            });
         }
+
+        it("should keep two subjects that differ only after the 512th character apart", () => {
+            const prefix = "u".repeat(512);
+            for (const suffix of ["-A", "-B"]) {
+                assert.throws(
+                    () => setAuthHeaders(new Headers(), { subject: prefix + suffix, type: "t", roles: [], scopes: [], claims: {} }),
+                    HeaderValueTooLargeError,
+                );
+            }
+        });
     });
 
     // Guide (context.md, "Propagated Headers"): control characters are removed from the
@@ -384,12 +425,14 @@ describe("headers", () => {
             ["a scope with LF", "scopes", { scopes: ["ok", "re\nad"] }],
             ["a scope with CR", "scopes", { scopes: ["re\rad"] }],
             ["a scope with NUL", "scopes", { scopes: ["re\0ad"] }],
-            // A header value is a byte string: the platform refuses a character above U+00FF.
-            ["a Cyrillic subject", "subject", { subject: "Иван" }],
-            ["a subject with an emoji", "subject", { subject: "user-\u{1F600}" }],
-            ["a type above U+00FF", "type", { type: "тип" }],
-            ["a name with a line separator", "name", { name: "a b" }],
-            ["a scope above U+00FF", "scopes", { scopes: ["ok", "чтение"] }],
+            // Scopes are joined and split on a space: one granted scope with a space would be read back as several.
+            ["a scope with a space", "scopes", { scopes: ["reports read admin"] }],
+            ["a scope with a leading space", "scopes", { scopes: ["ok", " admin"] }],
+            // A lone surrogate has no UTF-8 form, so it cannot be encoded.
+            ["a subject with a lone surrogate", "subject", { subject: "a\uD800b" }],
+            ["a name with a lone surrogate", "name", { name: "a\uDC00" }],
+            ["a type with a lone surrogate", "type", { type: "\uD83D" }],
+            ["a scope with a lone surrogate", "scopes", { scopes: ["ok", "re\uD800ad"] }],
         ];
 
         for (const [label, field, override] of cases) {
@@ -448,48 +491,42 @@ describe("headers", () => {
         });
     });
 
-    // Same limit as on the read side: a serialized value over 8192 characters is left
-    // out entirely (never truncated), while the other headers are still written.
+    // Same limit as on the read side: a serialized value over 8192 characters is refused (never
+    // cut, never left out), and nothing is written.
     describe("size limit on write", () => {
         const base = { subject: "user-1", type: "jwt" } as const;
 
-        it("should write roles of exactly 8192 characters and omit 8193", () => {
-            const atLimit = new Headers();
-            setAuthHeaders(atLimit, { ...base, roles: ["r".repeat(8188)], scopes: [], claims: {} });
-            assert.strictEqual(atLimit.get("x-auth-roles")?.length, 8192);
+        const cases = [
+            { field: "roles", at: { roles: ["r".repeat(8188)], scopes: [], claims: {} }, over: { roles: ["r".repeat(8189)], scopes: [], claims: {} }, header: "x-auth-roles" },
+            { field: "scopes", at: { roles: [], scopes: ["s".repeat(8192)], claims: {} }, over: { roles: [], scopes: ["s".repeat(8193)], claims: {} }, header: "x-auth-scopes" },
+            { field: "claims", at: { roles: [], scopes: [], claims: { d: "c".repeat(8184) } }, over: { roles: [], scopes: [], claims: { d: "c".repeat(8185) } }, header: "x-auth-claims" },
+        ] as const;
 
-            const overLimit = new Headers();
-            setAuthHeaders(overLimit, { ...base, roles: ["r".repeat(8189)], scopes: [], claims: {} });
-            assert.strictEqual(overLimit.get("x-auth-roles"), null);
-            assert.strictEqual(overLimit.get("x-auth-subject"), "user-1");
-        });
+        for (const { field, at, over, header } of cases) {
+            it(`should write ${field} of exactly 8192 characters and refuse 8193`, () => {
+                const atLimit = new Headers();
+                setAuthHeaders(atLimit, { ...base, ...at });
+                assert.strictEqual(atLimit.get(header)?.length, 8192);
 
-        it("should write scopes of exactly 8192 characters and omit 8193", () => {
-            const atLimit = new Headers();
-            setAuthHeaders(atLimit, { ...base, roles: [], scopes: ["s".repeat(8192)], claims: {} });
-            assert.strictEqual(atLimit.get("x-auth-scopes")?.length, 8192);
-
-            const overLimit = new Headers();
-            setAuthHeaders(overLimit, { ...base, roles: [], scopes: ["s".repeat(8193)], claims: {} });
-            assert.strictEqual(overLimit.get("x-auth-scopes"), null);
-            assert.strictEqual(overLimit.get("x-auth-subject"), "user-1");
-        });
-
-        it("should write claims of exactly 8192 characters and omit 8193", () => {
-            const atLimit = new Headers();
-            setAuthHeaders(atLimit, { ...base, roles: [], scopes: [], claims: { d: "c".repeat(8184) } });
-            assert.strictEqual(atLimit.get("x-auth-claims")?.length, 8192);
-
-            const overLimit = new Headers();
-            setAuthHeaders(overLimit, { ...base, roles: [], scopes: [], claims: { d: "c".repeat(8185) } });
-            assert.strictEqual(overLimit.get("x-auth-claims"), null);
-            assert.strictEqual(overLimit.get("x-auth-subject"), "user-1");
-        });
+                const overLimit = new Headers();
+                assert.throws(
+                    () => setAuthHeaders(overLimit, { ...base, ...over }),
+                    (err: unknown) => err instanceof HeaderValueTooLargeError && err.field === field && err.limit === 8192,
+                );
+                assert.deepStrictEqual([...overLimit.keys()], [], "a refused identity leaves no partial header");
+            });
+        }
 
         it("should measure the limit in characters, not bytes", () => {
             const headers = new Headers();
             setAuthHeaders(headers, { ...base, roles: [], scopes: [], claims: { d: "é".repeat(8184) } });
             assert.strictEqual(headers.get("x-auth-claims")?.length, 8192);
+        });
+
+        it("should apply the claims limit after the propagatedClaims filter", () => {
+            const headers = new Headers();
+            setAuthHeaders(headers, { ...base, roles: [], scopes: [], claims: { keep: "k", blob: "x".repeat(20_000) } }, ["keep"]);
+            assert.strictEqual(headers.get("x-auth-claims"), '{"keep":"k"}');
         });
     });
 

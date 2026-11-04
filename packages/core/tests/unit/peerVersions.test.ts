@@ -188,9 +188,30 @@ describe("PeerDependencyVersionError", () => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /@bufbuild\/protobuf: loaded 2\.12\.1 \(from \/app\/node_modules\/@bufbuild\/protobuf\), @connectum\/core requires \^2\.16\.0/);
         assert.match(error.message, /npm install @bufbuild\/protobuf@"\^2\.16\.0"/);
-        assert.match(error.message, /overrides/);
         assert.strictEqual(error.problems.length, 1);
         assert.doesNotMatch(error.message, /connect-node works only/);
+    });
+
+    // pnpm 11 and 12 ignore `pnpm.overrides` in package.json (they print a warning and
+    // install the unpinned version), so the message has to name the place each manager
+    // really reads; a bare "overrides" sends a pnpm user to the dead field.
+    it("names the file and field that each package manager reads for a forced version", () => {
+        const error = new PeerDependencyVersionError([
+            { kind: "range", packageName: "@bufbuild/protobuf", loadedVersion: "2.12.1", requiredRange: "^2.16.0", requiredBy: "@connectum/core", loadedFrom: "/app/node_modules/@bufbuild/protobuf" },
+        ]);
+        const fix = error.message.split("\n").find((line) => line.startsWith("Fix:")) ?? "";
+        assert.match(fix, /"overrides" in package\.json \(npm, Bun\)/);
+        assert.match(fix, /"resolutions" in package\.json \(Yarn\)/);
+        assert.match(fix, /"overrides" in pnpm-workspace\.yaml \(pnpm 11 and later; the "pnpm" field of package\.json is no longer read\)/);
+        assert.doesNotMatch(fix, /pnpm\.overrides/);
+    });
+
+    it("keeps its own class name and prototype chain", () => {
+        const error = new PeerDependencyVersionError([]);
+        assert.strictEqual(error.constructor, PeerDependencyVersionError);
+        assert.strictEqual(PeerDependencyVersionError.name, "PeerDependencyVersionError");
+        assert.strictEqual(Object.getPrototypeOf(error), PeerDependencyVersionError.prototype);
+        assert.ok(error instanceof Error);
     });
 
     it("explains lockstep when connect-node's connect is the problem", () => {

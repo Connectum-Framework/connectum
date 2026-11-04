@@ -1,0 +1,9 @@
+---
+"@connectum/otel": minor
+---
+
+BREAKING (minor in 1.3): a signal whose `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` is unset, empty or not recognised now uses `otlp`, the OpenTelemetry default, instead of `console`. A service started without any `OTEL_*` variable used to print every span, metric and log record to standard output and export nothing; it now sends them over OTLP/HTTP with a protobuf body to `http://localhost:4318` (`/v1/traces`, `/v1/metrics`, `/v1/logs`), and prints nothing. `getOTLPSettings()` reports `otlp/http-protobuf` for such a signal, or `otlp/grpc` / `otlp/http` when `OTEL_EXPORTER_OTLP_PROTOCOL` (or the per-signal variable) says `grpc` / `http/json`. `OTEL_EXPORTER_OTLP_ENDPOINT` points the exporters at your collector.
+
+To keep the old behaviour set `OTEL_TRACES_EXPORTER=console`, `OTEL_METRICS_EXPORTER=console` and `OTEL_LOGS_EXPORTER=console`; `none` switches a signal off. Both keep working as before.
+
+With nothing listening at the endpoint, calls are not affected. The OpenTelemetry SDK reports every failed export through its diagnostics channel, once per span batch, per exported log record and per metric interval; the provider now prints an identical failure message at most once a minute (with the number of copies held back when it prints again). This applies to every OTLP configuration. `shutdownProvider()` still rejects when an exporter cannot deliver its last batch, now also for a service that never configured an exporter: measured at about 8 seconds with the default settings and a dead endpoint. Registered with `server.onShutdown()`, the rejection does not end the process (measured on the getting-started example: exit code 0, the stop completes after the exporters give up); pass `shutdownProvider({ timeout })` to bound the wait.

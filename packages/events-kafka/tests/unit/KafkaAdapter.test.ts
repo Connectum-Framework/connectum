@@ -75,6 +75,7 @@ describe("KafkaAdapter", () => {
             const proto = Kafka.prototype as unknown as Record<string, unknown>;
             const originalProducer = proto.producer;
             const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
             let topics: (string | RegExp)[] = [];
             proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
             proto.consumer = () => ({
@@ -84,8 +85,12 @@ describe("KafkaAdapter", () => {
                     topics = request.topics;
                 },
                 run: async () => undefined,
+                // A wildcard subscription listens for the crash that a deleted topic causes.
+                events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                on: () => () => undefined,
             });
-            // Discovery is on by default for wildcard patterns and would open a real admin client otherwise.
+            // A wildcard subscription lists the broker's topics once when it starts, whether or not discovery runs.
+            proto.admin = () => ({ connect: async () => undefined, disconnect: async () => undefined, listTopics: async () => [] });
             const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
             try {
                 await adapter.connect();
@@ -94,6 +99,7 @@ describe("KafkaAdapter", () => {
             } finally {
                 proto.producer = originalProducer;
                 proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
                 await adapter.disconnect();
             }
             return topics;
@@ -134,17 +140,28 @@ describe("KafkaAdapter", () => {
 
     describe("topicDiscoveryInterval default", () => {
         /**
-         * Subscribe through the real adapter against a stubbed KafkaJS client and report whether the
-         * adapter listed the broker's topics, which it does only to seed a running discovery.
+         * Subscribe through the real adapter against a stubbed KafkaJS client and report how often the
+         * adapter listed the broker's topics (once at the start of a wildcard subscription, to know
+         * which topics it matched) and with which delays it scheduled a topic check (only discovery does).
          */
-        async function topicListings(patterns: string[], topicDiscoveryInterval?: number | false): Promise<number> {
+        async function topicChecks(patterns: string[], topicDiscoveryInterval?: number | false): Promise<{ listings: number; checkDelays: unknown[] }> {
             const proto = Kafka.prototype as unknown as Record<string, unknown>;
             const originalProducer = proto.producer;
             const originalConsumer = proto.consumer;
             const originalAdmin = proto.admin;
+            const originalSetTimeout = globalThis.setTimeout;
+            const checkDelays: unknown[] = [];
             let listings = 0;
             proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
-            proto.consumer = () => ({ connect: async () => undefined, disconnect: async () => undefined, subscribe: async () => undefined, run: async () => undefined, stop: async () => undefined });
+            proto.consumer = () => ({
+                connect: async () => undefined,
+                disconnect: async () => undefined,
+                subscribe: async () => undefined,
+                run: async () => undefined,
+                stop: async () => undefined,
+                events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                on: () => () => undefined,
+            });
             proto.admin = () => ({
                 connect: async () => undefined,
                 disconnect: async () => undefined,
@@ -159,7 +176,138 @@ describe("KafkaAdapter", () => {
             });
             try {
                 await adapter.connect();
+                globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+                    checkDelays.push(args[1]);
+                    return originalSetTimeout(...args);
+                }) as typeof setTimeout;
                 const subscription = await adapter.subscribe(patterns, async () => undefined);
+                globalThis.setTimeout = originalSetTimeout;
+                await subscription.unsubscribe();
+            } finally {
+                globalThis.setTimeout = originalSetTimeout;
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
+                await adapter.disconnect();
+            }
+            return { listings, checkDelays };
+        }
+
+        it("is five minutes, the metadata refresh period of the Kafka clients", () => {
+            assert.equal(defaultTopicDiscoveryIntervalMs, 300_000);
+        });
+
+        it("runs discovery for a wildcard subscription when the option is not set: a check is scheduled every five minutes", async () => {
+            assert.deepEqual(await topicChecks(["orders.*"]), { listings: 1, checkDelays: [300_000] });
+        });
+
+        it("does not run discovery when the option is false: the two start-up listings (before and after subscribing) are the only ones and no check is scheduled", async () => {
+            assert.deepEqual(await topicChecks(["orders.*"], false), { listings: 2, checkDelays: [] });
+        });
+
+        it("takes the interval of the option for the scheduled check", async () => {
+            assert.deepEqual(await topicChecks(["orders.*"], 45_000), { listings: 1, checkDelays: [45_000] });
+        });
+
+        it("never lists topics and never schedules a check for a subscription without wildcards", async () => {
+            assert.deepEqual(await topicChecks(["orders.created"]), { listings: 0, checkDelays: [] });
+        });
+    });
+
+    describe("recovery of a wildcard subscription that runs without topic discovery", () => {
+        it("keeps a topic that was created between the first listing and the subscription when it replaces the consumer", async () => {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
+            const originalWarn = console.warn;
+            type Created = { config: { retry?: { restartOnFailure?: (error: Error) => Promise<boolean> } }; handlers: Record<string, (event: unknown) => void>; subscribed: unknown[] };
+            const created: Created[] = [];
+            let listings = 0;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = (config: Created["config"]) => {
+                const record: Created = { config, handlers: {}, subscribed: [] };
+                created.push(record);
+                return {
+                    connect: async () => undefined,
+                    disconnect: async () => undefined,
+                    subscribe: async (request: { topics: unknown[] }) => {
+                        record.subscribed.push(request.topics);
+                    },
+                    run: async () => undefined,
+                    stop: async () => undefined,
+                    events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                    on: (event: string, listener: (event: unknown) => void) => {
+                        record.handlers[event] = listener;
+                        return () => undefined;
+                    },
+                };
+            };
+            proto.admin = () => ({
+                connect: async () => undefined,
+                disconnect: async () => undefined,
+                listTopics: async () => {
+                    listings++;
+                    // 1: before subscribe(); 2: after it, when orders.window already exists; later: orders.b has been deleted.
+                    return listings === 1 ? ["orders.a", "orders.b"] : listings === 2 ? ["orders.a", "orders.b", "orders.window"] : ["orders.a", "orders.window"];
+                },
+            });
+            console.warn = () => undefined;
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false } });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(["orders.*"], async () => undefined);
+                const unknownTopic = Object.assign(new Error("This server does not host this topic-partition"), { type: "UNKNOWN_TOPIC_OR_PARTITION" });
+                const restart = await created[0]?.config.retry?.restartOnFailure?.(unknownTopic);
+                assert.equal(restart, false, "the deletion is confirmed, so the library is told not to restart the consumer");
+                created[0]?.handlers["consumer.crash"]?.({ payload: { error: unknownTopic, groupId: "g", restart: false } });
+                const start = Date.now();
+                while (created[1]?.subscribed.length === undefined || created[1].subscribed.length === 0) {
+                    if (Date.now() - start > 3_000) {
+                        throw new Error("the replacement consumer was not started");
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                assert.deepEqual(created[1]?.subscribed[0], ["orders.a", "orders.window"], "the topic created in the window is still subscribed; only the deleted one is dropped");
+                await subscription.unsubscribe();
+            } finally {
+                console.warn = originalWarn;
+                proto.producer = originalProducer;
+                proto.consumer = originalConsumer;
+                proto.admin = originalAdmin;
+                await adapter.disconnect();
+            }
+        });
+    });
+
+    describe("restartOnFailure of the application on a wildcard subscription", () => {
+        /** What the `retry.restartOnFailure` a wildcard subscription gives its consumer answers for a plain network error, while the subscription is open. */
+        async function answerFor(extra: Partial<Parameters<typeof KafkaAdapter>[0]>): Promise<boolean | undefined> {
+            const proto = Kafka.prototype as unknown as Record<string, unknown>;
+            const originalProducer = proto.producer;
+            const originalConsumer = proto.consumer;
+            const originalAdmin = proto.admin;
+            let given: ((error: Error) => Promise<boolean>) | undefined;
+            let answer: boolean | undefined;
+            proto.producer = () => ({ connect: async () => undefined, disconnect: async () => undefined });
+            proto.consumer = (config: { retry?: { restartOnFailure?: (error: Error) => Promise<boolean> } }) => {
+                given = config.retry?.restartOnFailure;
+                return {
+                    connect: async () => undefined,
+                    disconnect: async () => undefined,
+                    subscribe: async () => undefined,
+                    run: async () => undefined,
+                    stop: async () => undefined,
+                    events: { CRASH: "consumer.crash", GROUP_JOIN: "consumer.group_join" },
+                    on: () => () => undefined,
+                };
+            };
+            proto.admin = () => ({ connect: async () => undefined, disconnect: async () => undefined, listTopics: async () => ["orders.a"] });
+            const adapter = KafkaAdapter({ brokers: ["localhost:9092"], consumerOptions: { topicDiscoveryInterval: false }, ...extra });
+            try {
+                await adapter.connect();
+                const subscription = await adapter.subscribe(["orders.*"], async () => undefined);
+                answer = await given?.(new Error("network"));
                 await subscription.unsubscribe();
             } finally {
                 proto.producer = originalProducer;
@@ -167,23 +315,21 @@ describe("KafkaAdapter", () => {
                 proto.admin = originalAdmin;
                 await adapter.disconnect();
             }
-            return listings;
+            return answer;
         }
 
-        it("is five minutes, the metadata refresh period of the Kafka clients", () => {
-            assert.equal(defaultTopicDiscoveryIntervalMs, 300_000);
+        it("is asked for every crash the subscription does not take over", async () => {
+            const asked: string[] = [];
+            const policy = async (error: Error): Promise<boolean> => {
+                asked.push(error.message);
+                return false;
+            };
+            assert.equal(await answerFor({ clientOptions: { retry: { restartOnFailure: policy } } }), false, "the application's answer stands for a crash the subscription leaves to the library");
+            assert.deepEqual(asked, ["network"]);
         });
 
-        it("runs discovery for a wildcard subscription when the option is not set", async () => {
-            assert.equal(await topicListings(["orders.*"]), 1);
-        });
-
-        it("does not run discovery when the option is false", async () => {
-            assert.equal(await topicListings(["orders.*"], false), 0);
-        });
-
-        it("never lists topics for a subscription without wildcards", async () => {
-            assert.equal(await topicListings(["orders.created"]), 0);
+        it("restarts a crash it does not take over when the application gave no policy", async () => {
+            assert.equal(await answerFor({}), true);
         });
     });
 

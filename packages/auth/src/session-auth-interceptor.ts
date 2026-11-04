@@ -10,9 +10,12 @@
 
 import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
+import { copyOrRefuse } from "./cached-identity.ts";
 import { propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
+import { assertPropagatedClaims, assertSessionInterceptorOptions } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type { AuthContext, SessionAuthInterceptorOptions } from "./types.ts";
 import { AUTH_HEADERS } from "./types.ts";
@@ -42,6 +45,7 @@ function defaultExtractToken(req: { header: Headers }): string | null {
  *
  * @param options - Session auth configuration
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `verifySession` or `mapSession` is not a function, or `extractToken` is set and is not a function
  * @throws {Error} When `skipMethods` contains `"*"`
  * @throws {RangeError} When `cache` has a `ttl` that is not finite and positive, or a `maxSize` that is not an integer of at least 1
  *
@@ -64,9 +68,11 @@ function defaultExtractToken(req: { header: Headers }): string | null {
  * ```
  */
 export function createSessionAuthInterceptor(options: SessionAuthInterceptorOptions): Interceptor {
+    assertSessionInterceptorOptions(options);
     const { verifySession, mapSession, extractToken = defaultExtractToken, cache: cacheOptions, skipMethods = [], propagateHeaders = false, propagatedClaims } = options;
 
     assertNoCatchAllSkip(skipMethods);
+    assertPropagatedClaims("createSessionAuthInterceptor", propagatedClaims);
 
     const cache = cacheOptions ? new LruCache<AuthContext>(cacheOptions) : undefined;
 
@@ -95,7 +101,7 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             if (propagateHeaders) {
                 propagateAuthHeaders(req.header, cached, propagatedClaims);
             }
-            return await runWithAuthContext(cached, () => next(req));
+            return await runWithAuthContext(copyOrRefuse(cached, "Session mapping failed"), () => next(req));
         }
 
         // Verify session — pass full headers for cookie-based auth
@@ -116,14 +122,25 @@ export function createSessionAuthInterceptor(options: SessionAuthInterceptorOpti
             throw new ConnectError("Session mapping failed", Code.Unauthenticated);
         }
 
+        // A mapper that breaks its contract (null from a failed lookup, `{}`) must not
+        // authenticate the call; check before the result is propagated or cached.
+        if (!isAuthContext(authContext)) {
+            throw new ConnectError("Session mapping failed", Code.Unauthenticated);
+        }
+
         // Propagate before caching: an identity that cannot be written into headers
         // (NUL/CR/LF) is rejected here and must never reach the cache.
         if (propagateHeaders) {
             propagateAuthHeaders(req.header, authContext, propagatedClaims);
         }
 
-        // Cache result
-        cache?.set(token, authContext);
+        // Cache a private copy: this request keeps the mapper's own object, later requests get
+        // their own copies of the stored one, so no handler can change what another request sees.
+        // The copy reads properties the shape check did not look at, so a failure here is an
+        // identity that cannot be used, not a server error; nothing is stored in that case.
+        if (cache) {
+            cache.set(token, copyOrRefuse(authContext, "Session mapping failed"));
+        }
 
         return await runWithAuthContext(authContext, () => next(req));
     };

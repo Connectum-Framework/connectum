@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
+import { inspect } from "node:util";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { assertConnectError, createMockNext, createMockNextError, createMockRequest } from "@connectum/test-fixtures";
 import { createErrorHandlerInterceptor } from "../../src/errorHandler.ts";
@@ -137,6 +138,57 @@ describe("errorHandler interceptor", () => {
         });
     }
 
+    // A SanitizableError is a deliberate client message, but its `code` is subject to the same
+    // rule as the code of any other failure: only the integers 1..16 are failure codes. Any other
+    // number is Internal for the client and for onError, and the clientMessage is kept.
+    describe("SanitizableError with a code outside 1..16", () => {
+        const sanitizableWith = (code: number) => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { table: "users" }, code });
+
+        for (const code of [0, 17, 99, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 404]) {
+            it(`sends Internal with the clientMessage for code ${String(code)}, and gives onError the same code`, async () => {
+                const original = sanitizableWith(code);
+                let reported: { code: number; serverDetails?: Readonly<Record<string, unknown>> } | undefined;
+                const interceptor = createErrorHandlerInterceptor({
+                    logErrors: false,
+                    onError: (info) => {
+                        reported = info;
+                    },
+                });
+
+                await assert.rejects(
+                    () => interceptor((async () => {
+                        throw original;
+                    }) as any)(mockReq),
+                    (err: unknown) => {
+                        assertConnectError(err, Code.Internal);
+                        assert.strictEqual(err.rawMessage, "safe text");
+                        return true;
+                    },
+                );
+
+                assert.ok(reported, "onError must have been called");
+                assert.strictEqual(reported.code, Code.Internal);
+                assert.deepStrictEqual(reported.serverDetails, { table: "users" });
+                assert.ok(Object.is(original.code, code), "the original error keeps its own code");
+            });
+        }
+
+        for (let code = Code.Canceled; code <= Code.Unauthenticated; code++) {
+            it(`keeps the valid code ${code} with the clientMessage`, async () => {
+                await assert.rejects(
+                    () => createErrorHandlerInterceptor({ logErrors: false })((async () => {
+                        throw sanitizableWith(code);
+                    }) as any)(mockReq),
+                    (err: unknown) => {
+                        assertConnectError(err, code);
+                        assert.strictEqual((err as ConnectError).rawMessage, "safe text");
+                        return true;
+                    },
+                );
+            });
+        }
+    });
+
     // Connect turns an AbortError into Canceled whatever code the interceptor passes in; the code
     // given to onError must be the one the client receives, not the one picked before that.
     it("should give onError the same code the client receives for a DOMException AbortError (numeric code 20)", async () => {
@@ -189,14 +241,17 @@ describe("errorHandler interceptor", () => {
         );
 
         // The documented guarantee: the original failure stays in the console log, and the
-        // log also shows the ConnectError the client receives. Both are checked by what they
-        // carry, not by the label text in front of them.
+        // log also says what the client receives. The failure is logged as the object, so its
+        // stack is in the log; what the client receives is logged as its text, not as the
+        // ConnectError, which would print the original again through its `cause`.
         const logged = originalError.mock.calls.flatMap((call) => call.arguments);
         assert.ok(logged.includes(original), "the original failure itself must be logged");
-        const clientFacing = logged.find((arg): arg is ConnectError => arg instanceof ConnectError);
-        assert.ok(clientFacing, "the ConnectError sent to the client must be logged");
-        assert.strictEqual(clientFacing, rejected, "the logged ConnectError must be the one the client receives");
-        assert.strictEqual(clientFacing.code, Code.Internal);
+        assert.ok(!logged.some((arg) => arg instanceof ConnectError), "the ConnectError must not be logged as an object: it would print the failure a second time");
+        assert.ok(
+            logged.includes((rejected as ConnectError).message),
+            "what the client receives must be logged as text",
+        );
+        assert.strictEqual((rejected as ConnectError).code, Code.Internal);
 
         originalError.mock.restore();
     });
@@ -233,13 +288,12 @@ describe("errorHandler interceptor", () => {
 
         await assert.rejects(() => handler(mockReq));
 
-        // includeStackTrace puts a real stack into the log: a string with the failure text
-        // followed by "at ..." frames, not just a label saying "stack".
+        // The log carries the failure as the object, which holds its real stack ("at ..." frames).
+        // The stack is not written a second time as a separate line.
         const logged = originalError.mock.calls.flatMap((call) => call.arguments);
-        assert.ok(
-            logged.some((arg) => typeof arg === "string" && arg.includes("test error with stack") && /\n\s+at /.test(arg)),
-            "a stack string of the failure must be logged",
-        );
+        assert.ok(logged.includes(original), "the failure with its stack must be logged");
+        assert.ok(/\n\s+at /.test(original.stack ?? ""), "the logged failure carries real stack frames");
+        assert.ok(!logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)), "the stack must not be logged again as a separate string");
 
         originalError.mock.restore();
     });
@@ -314,8 +368,8 @@ describe("errorHandler interceptor", () => {
                 "the failure must be logged",
             );
             assert.ok(
-                logged.some((arg) => typeof arg === "string" && /\n\s+at /.test(arg)),
-                "a stack string must be logged",
+                logged.some((arg) => arg instanceof Error && /\n\s+at /.test(arg.stack ?? "")),
+                "the failure must be logged with its stack",
             );
             assert.ok(infoStack && /\n\s+at /.test(infoStack), "onError must receive the stack");
         });
@@ -636,8 +690,8 @@ describe("errorHandler interceptor", () => {
                 assert.strictEqual(calls[0]!.arguments[0], "Interceptor caught error:");
                 assert.strictEqual(calls[0]!.arguments[1], original, "log must carry the original failure");
                 assert.strictEqual(calls[1]!.arguments[0], "Transformed ConnectError:");
-                const logged = calls[1]!.arguments[1] as ConnectError;
-                assert.strictEqual(logged.rawMessage, "internal error", "the transformed line shows what the client gets");
+                assert.strictEqual(calls.length, 2, "one entry for the failure and one line for what the client gets");
+                assert.strictEqual(calls[1]!.arguments[1], "[internal] internal error", "the transformed line shows what the client gets, as text");
             } finally {
                 consoleErrorMock.mock.restore();
             }
@@ -664,6 +718,229 @@ describe("errorHandler interceptor", () => {
             assertConnectError(err, Code.Internal);
             assert.strictEqual(err.rawMessage, "Something went wrong");
             assert.ok(!wireOf(err).includes(SECRET), "secret must not be on the wire");
+        });
+    });
+
+    // An expected client error used to print the error, the "transformed" error and the stack,
+    // each with the stack again through `cause`: dozens of lines for one validation failure.
+    // One handled error is one console entry; a second line appears only when the client
+    // receives something other than what was thrown, and it is a short text.
+    describe("console log of a handled error", () => {
+        /** Every console.error call the error handler makes for a handler that throws `thrown`. */
+        async function logOf(thrown: unknown, options: NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]> = {}): Promise<unknown[][]> {
+            const original = console.error;
+            const calls: unknown[][] = [];
+            console.error = (...args: unknown[]) => {
+                calls.push(args);
+            };
+            try {
+                const next = mock.fn(async () => {
+                    throw thrown;
+                });
+                await assert.rejects(() => createErrorHandlerInterceptor({ logErrors: true, includeStackTrace: true, ...options })(next as any)(mockReq));
+            } finally {
+                console.error = original;
+            }
+            return calls;
+        }
+
+        it("writes one entry for a ConnectError that leaves unchanged", async () => {
+            const original = new ConnectError("name must not be empty", Code.InvalidArgument);
+
+            const calls = await logOf(original);
+
+            assert.strictEqual(calls.length, 1);
+            assert.deepStrictEqual(calls[0], ["Interceptor caught error:", original]);
+        });
+
+        it("writes the failure and one short text line for an error the client receives differently", async () => {
+            const original = new Error("db connect failed");
+
+            const calls = await logOf(original);
+
+            assert.deepStrictEqual(calls, [
+                ["Interceptor caught error:", original],
+                ["Transformed ConnectError:", "[internal] internal error"],
+            ]);
+        });
+
+        it("writes the failure and the client text for a SanitizableError", async () => {
+            const original = Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: {}, code: Code.Unavailable });
+
+            const calls = await logOf(original);
+
+            assert.deepStrictEqual(calls, [
+                ["Interceptor caught error:", original],
+                ["Transformed ConnectError:", "safe text"],
+            ]);
+        });
+
+        it("does not print the original stack more than once in the text of the log", async () => {
+            const original = new Error("db connect failed");
+
+            const calls = await logOf(original);
+
+            const printed = calls.map((args) => args.map((arg) => (typeof arg === "string" ? arg : inspect(arg))).join(" ")).join("\n");
+            const frames = printed.split("\n").filter((line) => /^\s+at /.test(line)).length;
+            const framesOfOne = (original.stack ?? "").split("\n").filter((line) => /^\s+at /.test(line)).length;
+            assert.strictEqual(frames, framesOfOne, "the frames of the failure appear exactly once");
+        });
+    });
+
+    // `onError` is a reporting hook that usually talks to an external sink. A sink that is
+    // down must not take the process down or change what the caller receives.
+    describe("an onError callback that fails", () => {
+        type Options = NonNullable<Parameters<typeof createErrorHandlerInterceptor>[0]>;
+        const sanitizable = () => Object.assign(new Error("internal db error"), { clientMessage: "safe text", serverDetails: { query: "SELECT 1" }, code: Code.Unavailable });
+
+        /** Everything the run wrote with `console.error` and every promise rejection nobody handled. */
+        async function observe(run: () => Promise<void>): Promise<{ consoleErrors: unknown[][]; unhandled: unknown[] }> {
+            const consoleErrors: unknown[][] = [];
+            const unhandled: unknown[] = [];
+            const originalConsoleError = console.error;
+            const onUnhandled = (reason: unknown): void => {
+                unhandled.push(reason);
+            };
+            // Listeners that node:test installed itself would fail the whole file on an unhandled rejection.
+            const previous = process.listeners("unhandledRejection");
+            process.removeAllListeners("unhandledRejection");
+            process.on("unhandledRejection", onUnhandled);
+            console.error = (...args: unknown[]) => {
+                consoleErrors.push(args);
+            };
+            try {
+                await run();
+                // An unhandled rejection is reported after the microtask queue has drained.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            } finally {
+                console.error = originalConsoleError;
+                process.removeListener("unhandledRejection", onUnhandled);
+                for (const listener of previous) process.on("unhandledRejection", listener);
+            }
+            return { consoleErrors, unhandled };
+        }
+
+        /** The error the interceptor throws for a handler that throws `thrown`. */
+        async function failureWith(thrown: unknown, options: Options): Promise<unknown> {
+            const next = mock.fn(async () => {
+                throw thrown;
+            });
+            try {
+                await createErrorHandlerInterceptor({ logErrors: false, ...options })(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} }));
+            } catch (err) {
+                return err;
+            }
+            assert.fail("interceptor should have rejected");
+        }
+
+        it("sends the handler's own ConnectError when onError throws synchronously", async () => {
+            const original = new ConnectError("user 42 not found", Code.NotFound, { "x-trace": "abc" });
+            let received: unknown;
+            const { consoleErrors } = await observe(async () => {
+                received = await failureWith(original, {
+                    onError: () => {
+                        throw new Error("metrics sink down");
+                    },
+                });
+            });
+
+            assert.strictEqual(received, original, "the callback's failure must not replace the handler's error");
+            assert.strictEqual(consoleErrors.length, 1, "the failure of the callback is reported once");
+        });
+
+        it("keeps the cause and the generic text of a plain Error when onError throws", async () => {
+            const original = new Error("db connect failed: password=hunter2");
+            const received = (await failureWith(original, {
+                onError: () => {
+                    throw new Error("metrics sink down");
+                },
+            })) as ConnectError;
+
+            assertConnectError(received, Code.Internal);
+            assert.strictEqual(received.rawMessage, "internal error", "the original text must still stay on the server");
+            assert.strictEqual(received.cause, original);
+        });
+
+        it("sends a SanitizableError's clientMessage and code when onError throws", async () => {
+            const received = (await failureWith(sanitizable(), {
+                onError: () => {
+                    throw new Error("metrics sink down");
+                },
+            })) as ConnectError;
+
+            assertConnectError(received, Code.Unavailable);
+            assert.strictEqual(received.rawMessage, "safe text");
+        });
+
+        it("keeps handing later errors to a callback that failed once", async () => {
+            let calls = 0;
+            const options: Options = {
+                onError: () => {
+                    calls++;
+                    throw new Error("metrics sink down");
+                },
+            };
+            const interceptor = createErrorHandlerInterceptor({ logErrors: false, ...options });
+            await observe(async () => {
+                for (let call = 0; call < 3; call++) {
+                    const next = mock.fn(async () => {
+                        throw new Error("boom");
+                    });
+                    await assert.rejects(() => interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} })));
+                }
+            });
+
+            assert.strictEqual(calls, 3, "a failed report must not switch the callback off");
+        });
+
+        it("does not leave an unhandled rejection when onError is async and rejects", async () => {
+            const original = new ConnectError("user 42 not found", Code.NotFound);
+            let received: unknown;
+            const { unhandled } = await observe(async () => {
+                received = await failureWith(original, {
+                    onError: async () => {
+                        throw new Error("async sink down");
+                    },
+                });
+            });
+
+            assert.deepStrictEqual(unhandled, [], "a rejection of onError must be handled");
+            assert.strictEqual(received, original, "the caller still receives the handler's own error");
+        });
+
+        it("does not leave an unhandled rejection for a SanitizableError either", async () => {
+            let received: unknown;
+            const { unhandled } = await observe(async () => {
+                received = await failureWith(sanitizable(), {
+                    onError: () => Promise.reject(new Error("async sink down")),
+                });
+            });
+
+            assert.deepStrictEqual(unhandled, []);
+            assertConnectError(received, Code.Unavailable);
+            assert.strictEqual((received as ConnectError).rawMessage, "safe text");
+        });
+
+        it("reports a rejection of onError once on the console, not once per call", async () => {
+            const sink = new Error("async sink down");
+            const interceptor = createErrorHandlerInterceptor({
+                logErrors: false,
+                onError: async () => {
+                    throw sink;
+                },
+            });
+            const { consoleErrors, unhandled } = await observe(async () => {
+                for (let call = 0; call < 3; call++) {
+                    const next = mock.fn(async () => {
+                        throw new Error("boom");
+                    });
+                    await assert.rejects(() => interceptor(next as any)(createMockRequest({ service: "test.Service", method: "Method", message: {} })));
+                }
+            });
+
+            assert.deepStrictEqual(unhandled, []);
+            assert.strictEqual(consoleErrors.length, 1, "later failures of the same callback are not reported again");
+            assert.ok(consoleErrors[0]!.includes(sink), "the report carries the failure of the callback");
         });
     });
 });

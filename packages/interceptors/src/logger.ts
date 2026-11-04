@@ -13,6 +13,10 @@ import { toJson } from "@bufbuild/protobuf";
 import type { Interceptor, StreamRequest, StreamResponse, UnaryRequest } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { LoggerOptions } from "./types.ts";
+import { requireBoolean, requireFunction, requireOneOf, requireOptionsObject } from "./validate.ts";
+
+/** The levels `LoggerOptions.level` accepts: the `console` methods the default sink writes to. */
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const satisfies ReadonlyArray<NonNullable<LoggerOptions["level"]>>;
 
 /**
  * Request header and value that `@connectum/core` sets on every call made
@@ -157,11 +161,24 @@ async function* logResStream<T>(
 }
 
 /**
+ * Whether a service type name is the gRPC health package: `grpc.health` as whole
+ * dot-separated segments, at the start of the name or after other segments. Padding
+ * the name with dots lets one search cover both places and keeps `grpc.healthcare`
+ * and `mygrpc.health` out.
+ */
+function isHealthService(typeName: string): boolean {
+    return `.${typeName}.`.includes(".grpc.health.");
+}
+
+/**
  * Create logger interceptor
  *
  * Logs RPC requests and responses with timing information. By default,
- * skips calls whose service type name contains `grpc.health`; set
- * `skipHealthCheck: false` to include them.
+ * skips calls to the gRPC health service: a service type name that has
+ * `grpc.health` as whole package segments (`grpc.health.v1.Health`, or the same
+ * package under a prefix such as `acme.grpc.health.v1.Probe`). A name that only
+ * contains the text inside a longer segment, such as `acme.grpc.healthcare.v1.Svc`,
+ * is logged. Set `skipHealthCheck: false` to include health calls.
  * Supports both unary and streaming RPCs.
  *
  * @param options - Logger options
@@ -214,7 +231,19 @@ async function* logResStream<T>(
  * ```
  */
 export function createLoggerInterceptor(options: LoggerOptions = {}): Interceptor {
+    requireOptionsObject({ caller: "createLoggerInterceptor", value: options });
     const { level = "debug", skipHealthCheck = true, includeTransport = false, includeBodies = false } = options;
+
+    // Validate options. An unknown level would reach `console[level]` as undefined, and a
+    // non-function sink would fail on the first call that is logged.
+    requireOneOf({ caller: "createLoggerInterceptor", option: "level", value: level, allowed: LOG_LEVELS });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "skipHealthCheck", value: skipHealthCheck });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "includeTransport", value: includeTransport });
+    requireBoolean({ caller: "createLoggerInterceptor", option: "includeBodies", value: includeBodies });
+    if (options.logger !== undefined) {
+        requireFunction({ caller: "createLoggerInterceptor", option: "logger", value: options.logger });
+    }
+
     // biome-ignore lint/suspicious/noConsole: console is the intentional default fallback logger
     const logger = guardSink(options.logger ?? console[level]);
 
@@ -226,7 +255,7 @@ export function createLoggerInterceptor(options: LoggerOptions = {}): Intercepto
         const label = includeTransport ? `[${detectTransport(req)}] ${path}` : path;
 
         // Skip health check services
-        if (skipHealthCheck && req.service.typeName.includes("grpc.health")) {
+        if (skipHealthCheck && isHealthService(req.service.typeName)) {
             return await next(req);
         }
 

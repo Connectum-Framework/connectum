@@ -14,7 +14,9 @@ import { satisfiesRequirements } from "../authz-utils.ts";
 import { getAuthContext } from "../context.ts";
 import type { AuthzDeniedDetails } from "../errors.ts";
 import { AuthzDeniedError } from "../errors.ts";
+import { isInternalContext } from "../internal-context.ts";
 import { matchesMethodPattern } from "../method-match.ts";
+import { assertAuthzPolicy, assertRuleMethods } from "../option-validation.ts";
 import type { AuthzRule, ProtoAuthzInterceptorOptions } from "../types.ts";
 import { AuthzEffect } from "../types.ts";
 import { resolveMethodAuth } from "./reader.ts";
@@ -87,7 +89,9 @@ function evaluateRules(
  * 3.  Get auth context               -- lazy: don't throw yet
  * 3b. internal = true:               -- service-to-service (ADR-029)
  *       no context                   --> throw Unauthenticated
- *       no requires                  --> allow (any trusted internal caller)
+ *       no requires                  --> allow when the context was established by
+ *                                        createInternalAuthInterceptor, else
+ *                                        throw Unauthenticated (untrusted)
  *       has requires                 --> fall through to step 4 (inclusive roles)
  * 4.  requires defined, no context   --> throw Unauthenticated
  * 4b. requires defined, has context  --> satisfiesRequirements? allow : deny
@@ -107,6 +111,8 @@ function evaluateRules(
  *
  * @param options - Proto authorization interceptor options
  * @returns ConnectRPC interceptor
+ * @throws {TypeError} When `defaultPolicy` or the `effect` of a rule is not exactly `"allow"` or `"deny"`,
+ *   or when the `methods` of a rule hold a pattern other than `"*"`, `"Service/*"` or `"Service/Method"`
  *
  * @example Basic usage with proto options only
  * ```typescript
@@ -131,6 +137,9 @@ function evaluateRules(
  */
 export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOptions = {}): Interceptor {
     const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize } = options;
+
+    assertAuthzPolicy("createProtoAuthzInterceptor", defaultPolicy, rules);
+    assertRuleMethods("createProtoAuthzInterceptor", rules);
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
@@ -158,6 +167,13 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
             if (resolved.requires === undefined) {
+                // "Any trusted internal caller" means an identity the internal interceptor
+                // established. Any other identity (an end-user JWT, gateway headers) proves
+                // nothing about an internal caller, and it is what reaches this point when
+                // the internal interceptor is missing from the chain or covers no method.
+                if (!isInternalContext(authContext)) {
+                    throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
+                }
                 return await next(req);
             }
             // else: fall through to step 4 requires check (inclusive role composition)
@@ -195,7 +211,9 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         if (rules.length > 0) {
             const ruleResult = evaluateRules(rules, authContext, serviceName, methodName);
             if (ruleResult) {
-                if (ruleResult.effect === AuthzEffect.DENY) {
+                // Only the exact "allow" lets the call through. The factory refuses every other
+                // effect, but the rules array is held by reference: a value put there later must deny.
+                if (ruleResult.effect !== AuthzEffect.ALLOW) {
                     const details: AuthzDeniedDetails = {
                         ruleName: ruleResult.ruleName,
                         ...(ruleResult.requiredRoles && { requiredRoles: [...ruleResult.requiredRoles] }),
@@ -203,7 +221,6 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                     };
                     throw new AuthzDeniedError(details);
                 }
-                // ALLOW -- continue
                 return await next(req);
             }
         }
@@ -214,14 +231,16 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
             const allowed = await authorize(authContext, { service: serviceName, method: methodName });
-            if (!allowed) {
+            // Exactly `true` allows. A truthy non-boolean ("false" read from a claim, 1, {}) is a
+            // bug in the callback, and authorization fails closed on it.
+            if (allowed !== true) {
                 throw new ConnectError("Access denied", Code.PermissionDenied);
             }
             return await next(req);
         }
 
         // Step 9: No proto config, no rules matched, no callback -- apply default policy
-        if (defaultPolicy === AuthzEffect.DENY) {
+        if (defaultPolicy !== AuthzEffect.ALLOW) {
             if (!authContext) {
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
