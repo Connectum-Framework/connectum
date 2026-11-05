@@ -17,6 +17,7 @@
   <a href="https://www.npmjs.com/package/@connectum/core"><img src="https://img.shields.io/node/v/@connectum/core" alt="Node.js version range declared by the latest published @connectum/core"></a>
   <a href="https://nodejs.org/api/typescript.html"><img src="https://img.shields.io/badge/TypeScript-Native-blue" alt="TypeScript"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Connectum-Framework/connectum"><img src="https://api.scorecard.dev/projects/github.com/Connectum-Framework/connectum/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 <p align="center">
