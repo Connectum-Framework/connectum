@@ -6,6 +6,24 @@ from npm. The framework does not run on its own: an application builds a server 
 `createServer()`, and the findings that matter are the ones an attacker can trigger against
 such an application through the framework.
 
+## Deployment model
+
+The intended deployment puts a server behind a gateway or a service mesh (Envoy, Istio) that
+terminates mTLS and forwards the caller's identity in headers. The framework authenticates and
+authorizes calls from that identity or from a JWT, and it does not assume that a server faces the
+internet directly. Consequences for a report:
+
+- A flaw that lets a caller reach a gated method without the credentials the configured trust
+  source requires is a vulnerability, in any deployment.
+- A flaw that needs the gateway or the mesh to be misconfigured or bypassed (for example, an
+  attacker who can already reach the pod network and forge mesh headers) is a configuration
+  problem unless the framework's documentation promises protection against it.
+- Network-level controls (rate limiting, connection limits, WAF rules) belong to the gateway. The
+  framework is still expected to survive a single small malicious request.
+- Every transport-level or message-level input is untrusted. That includes messages from brokers:
+  the broker is trusted as a transport, but a payload or header can be malformed or hostile, and a
+  parse failure must not crash the consumer.
+
 ## What this project does and where untrusted input enters
 
 - **Network requests to a server** (`@connectum/core`): HTTP/2 and HTTP/1.1 requests carrying
@@ -40,7 +58,7 @@ Most important, in this order:
 5. `packages/healthcheck` and `packages/reflection`: protocols that are exposed on the server
    port, sometimes without authentication.
 
-Less important:
+Lower priority (still in scope, but spend effort on the list above first):
 
 - `packages/otel`: telemetry export. It matters when it leaks secrets or request content into
   traces, logs or metrics.
