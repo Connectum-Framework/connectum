@@ -15,8 +15,7 @@
  * range at the slice floor (before install), and after generation no local
  * `connectum/<p>/v1/options_pb.ts` in gen/, generated imports from the package subpath,
  * and that subpath loading from the project. The floor is the release that first ships
- * those subpaths, so until it is published these combinations run against the packed
- * workspace (`pack: true` in COMBOS).
+ * those subpaths; these combinations install the published packages at that release.
  *
  * This file owns the combination list; `.github/workflows/cli-scaffold-matrix.yml` does
  * not restate it. That workflow calls `--list` to build its matrix and then runs one
@@ -58,7 +57,7 @@
  *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
  *   pnpm scaffold:check --pack              # install locally packed tarballs of this workspace
  *   pnpm scaffold:check --pack --combo kitchen-sink --pm pnpm   # a combo with another package manager
- *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
+ *   pnpm scaffold:check --list              # every combination as JSON {name, needsBun, pack} (CI builds its matrix from this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
  *
@@ -107,23 +106,23 @@ const FIXTURES = {
  *
  * `pack: true` makes a combination install the packed workspace instead of the published
  * packages, with or without `--pack`. It belongs to a combination exactly when `init`
- * gives it a dependency range no published release satisfies yet: today, every one with
- * auth or events, whose `@connectum/*` set is floored at the release that first exports
- * the option-descriptor subpaths (versionFloors.ts). Kept here rather than in the
- * workflow so the workflow keeps reading nothing but `--list`, and a local bare run
- * behaves like its CI cell. Once that release is published, drop the property so these
- * cells go back to proving the published surface.
+ * gives it a dependency range no published release satisfies yet, as happens when the
+ * floors in versionFloors.ts move to a release that is not on npm. No combination sets
+ * it today: every cell proves the published surface. `--list` prints the property, so a
+ * cell that is packed shows up in the matrix instead of hiding behind a green run. Kept
+ * here rather than in the workflow so the workflow keeps reading nothing but `--list`,
+ * and a local bare run behaves like its CI cell.
  */
 const COMBOS = [
     { name: "base-node-pnpm", pm: "pnpm", args: [] },
     { name: "base-node-npm", pm: "npm", args: [] },
     { name: "otel", pm: "npm", args: ["--otel"] },
-    { name: "events-nats", pm: "npm", args: ["--events", "nats"], pack: true },
-    { name: "auth", pm: "npm", args: ["--auth"], pack: true },
+    { name: "events-nats", pm: "npm", args: ["--events", "nats"] },
+    { name: "auth", pm: "npm", args: ["--auth"] },
     { name: "catalog", pm: "npm", args: ["--catalog"] },
     // The only default cell with the catalog generator and the auth option module, so it
     // also carries the enum fixture: erasable generation must coexist with both.
-    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums", pack: true },
+    { name: "kitchen-sink", pm: "npm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], fixture: "enums" },
     { name: "enums", pm: "npm", args: [], fixture: "enums" },
     // `--no-sample` projects hold no proto, and `buf generate` (inside `typecheck`, `test`, `start`)
     // fails on a module without proto files. `generateService` runs `connectum generate service`
@@ -134,9 +133,9 @@ const COMBOS = [
     // `generate service --with-events` adds a second event-handler service (its own proto, an
     // `EventRoute`, the vendored option proto that `init --events` already wrote) to a project that
     // has the EventBus module. The cell proves the pair end to end: generated protos of both event
-    // services together, type-check of the new module against the packed `@connectum/events`, and
+    // services together, type-check of the new module against the installed `@connectum/events`, and
     // the project's own tests.
-    { name: "events-generate-service", pm: "npm", args: ["--events", "nats"], generateService: "billing", generateServiceWithEvents: true, pack: true },
+    { name: "events-generate-service", pm: "npm", args: ["--events", "nats"], generateService: "billing", generateServiceWithEvents: true },
     // An older base whose manifest still declares protobuf-es ^2.11.0: `--ref` must keep
     // producing a project that generates erasable enums. Pinned to a tag, so deterministic.
     // It proves compatibility, not the floor — an install resolves the highest version in
@@ -149,18 +148,18 @@ const COMBOS = [
     // installs none of those modules. One kitchen-sink cell rather than a pnpm twin of
     // every module cell: it pulls in the union of the module dependencies at the cost of
     // a single extra parallel job.
-    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"], pack: true },
+    { name: "kitchen-sink-pnpm", pm: "pnpm", args: ["--otel", "--events", "nats", "--auth", "--catalog", "--resilience", "retry,timeout"] },
     // The protocols are optional, and the generated code changes with them: no health import in
     // the entry point, and an `--auth` chain that lists no protocol endpoints and imports no
     // `AuthzEffect`. Each cell type-checks and runs the tests of such a project.
     { name: "no-healthcheck", pm: "npm", args: ["--no-healthcheck"] },
-    { name: "auth-no-protocols", pm: "npm", args: ["--auth", "--no-healthcheck", "--no-reflection"], pack: true },
+    { name: "auth-no-protocols", pm: "npm", args: ["--auth", "--no-healthcheck", "--no-reflection"] },
     { name: "bun", pm: "npm", args: ["--runtime", "bun"], optional: true, needsBun: true },
     // The two axes are independent, so both crossings are worth a cell: the one above
     // runs a Bun-runtime project installed with npm, this one installs with bun and
     // runs on Node. `bun install` lays out an ordinary node_modules either way.
     { name: "bun-pm", pm: "bun", args: [], optional: true, needsBun: true },
-    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true, pack: true },
+    { name: "base-drift", pm: "npm", args: ["--ref", "main", "--otel", "--events", "nats", "--auth", "--catalog"], optional: true },
 ];
 
 /** Combinations that need `bun` on PATH — the only selector for them, locally and in CI. */
@@ -374,7 +373,7 @@ function main() {
                 "  --keep           keep the generated projects instead of deleting them",
                 "  --pack           install locally packed tarballs of this workspace instead of the published packages",
                 "  --pm <npm|pnpm|bun>  run the selected combinations with this package manager (local runs; CI keeps each combination's own)",
-                "  --list           print every combination as JSON {name, needsBun} (CI builds its matrix from this)",
+                "  --list           print every combination as JSON {name, needsBun, pack} (CI builds its matrix from this)",
                 "",
                 `Default: ${DEFAULT_COMBOS.map((c) => c.name).join(", ")}`,
                 `Opt-in:  ${COMBOS.filter((c) => c.optional)
@@ -390,7 +389,7 @@ function main() {
     // require bun on the runner), and emitting them from the same table that declares
     // them is what stops a new bun combination from silently missing its setup step.
     if (opts.list) {
-        console.log(JSON.stringify(COMBOS.map(({ name, needsBun }) => ({ name, needsBun: needsBun === true }))));
+        console.log(JSON.stringify(COMBOS.map(({ name, needsBun, pack }) => ({ name, needsBun: needsBun === true, pack: pack === true }))));
         return;
     }
 
