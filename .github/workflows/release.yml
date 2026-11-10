@@ -177,7 +177,7 @@ jobs:
 
       - name: Setup Buf CLI
         if: steps.changesets.outputs.published == 'true'
-        uses: bufbuild/buf-action@v1
+        uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0
         with:
           token: ${{ secrets.BUF_TOKEN }}
           setup_only: true
