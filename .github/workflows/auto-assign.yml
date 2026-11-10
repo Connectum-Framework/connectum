@@ -4,6 +4,8 @@ on:
     types: [opened, edited, labeled, unlabeled]
   pull_request:
     types: [opened, edited, labeled, unlabeled]
+permissions:
+  contents: read
 jobs:
   run:
     runs-on: ubuntu-latest
