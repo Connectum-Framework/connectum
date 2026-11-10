@@ -22,6 +22,7 @@ import {
     MAX_TYPE_LENGTH,
     propagateAuthHeaders,
     readHeaderText,
+    readSubjectText,
 } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { assertHeaderName, assertWritable } from "./option-checks.ts";
@@ -114,6 +115,16 @@ function readIdentityText(headerName: string, raw: string, decode: boolean, stri
     return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, limit, decode, strip) : raw;
 }
 
+/**
+ * Read the subject the gateway sent. A standard `x-auth-*` name is read exactly as
+ * {@link parseAuthHeaders} reads it (see {@link readSubjectText}): a value that is empty after the
+ * control characters are removed is no subject, never an identity without one. A custom header
+ * comes from the gateway and is taken as sent.
+ */
+function readGatewaySubject(headerName: string, raw: string, decode: boolean): string | undefined {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readSubjectText(raw, MAX_SUBJECT_LENGTH, decode) : raw;
+}
+
 /** SHA-256 of `text`; both sides of a secret comparison become 32 bytes whatever their length. */
 function digest(text: string): Buffer {
     // utf16le keeps every code unit distinct; utf8 would map any lone surrogate to U+FFFD and make unequal texts equal.
@@ -175,6 +186,10 @@ function parseRoles(raw: string): string[] {
  * together with the mapped headers, the trust header and `stripHeaders` (also on `skipMethods`).
  * With `propagateHeaders` the verified identity is then written back, so an `x-auth-*` header seen
  * downstream comes from the verified identity, not from the client.
+ *
+ * A standard `x-auth-*` subject is read exactly as {@link parseAuthHeaders} reads it: a subject
+ * that is empty after removing control characters is treated as missing, and the call ends with
+ * `Unauthenticated`.
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
@@ -290,9 +305,11 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         // otherwise a literal `utf-8''admin` subject from an older service stays that literal text.
         const decode = declaresTextEncoding(req.header);
 
-        // Extract subject (required)
+        // Extract subject (required). A standard `x-auth-*` name is read as the reader reads it, so a
+        // value that is empty after removing control characters is no subject here either; a header
+        // under a custom name is taken as sent.
         const subjectRaw = req.header.get(headerMapping.subject);
-        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true, MAX_SUBJECT_LENGTH) : subjectRaw;
+        const subject = subjectRaw ? readGatewaySubject(headerMapping.subject, subjectRaw, decode) : subjectRaw;
         if (!subject) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }

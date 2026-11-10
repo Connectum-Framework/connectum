@@ -58,10 +58,12 @@ export function sanitizeHeaderValue(value: string, maxLength: number): string {
 /**
  * Thrown by {@link setAuthHeaders} when an identity field cannot be written into a header
  * without changing it: NUL, CR or LF in `subject`, `type`, `name` or a scope, a lone surrogate
- * (it has no UTF-8 form), or a scope that is empty or has a space (the next hop splits the scopes
- * header on spaces and drops empty pieces, so it would read one scope as several or lose the empty
- * one), or a `roles` or `scopes` value that is not a list of at most
- * 8192 strings without holes. `field` names the offending `AuthContext` field.
+ * (it has no UTF-8 form), an empty `subject` or `type` (also when the value is empty only after
+ * the control characters are removed, since the reader would then see no value at all), or a
+ * scope that is empty or has a space (the next hop splits the scopes header on spaces and drops
+ * empty pieces, so it would read one scope as several or lose the empty one), or a `roles` or
+ * `scopes` value that is not a list of at most 8192 strings without holes. `field` names the
+ * offending `AuthContext` field.
  */
 export class UnsafeHeaderValueError extends TypeError {
     readonly field: "subject" | "type" | "name" | "roles" | "scopes";
@@ -160,6 +162,20 @@ export function readHeaderText(raw: string, limit: number, decode: boolean, stri
 }
 
 /**
+ * Read the subject of an identity from a header value.
+ *
+ * {@link readHeaderText} with the cleaning the writer applies, except that a text which is empty
+ * after the control characters are removed is no subject at all (`undefined`): an identity without
+ * a subject was never valid, and a caller that treats "a context was returned" as "the caller is
+ * authenticated" must not be handed one. This is the single place the reader and the gateway
+ * interceptor decide whether a subject header holds a subject.
+ */
+export function readSubjectText(raw: string, limit: number, decode: boolean): string | undefined {
+    const subject = readHeaderText(raw, limit, decode, true);
+    return subject === "" ? undefined : subject;
+}
+
+/**
  * Find the first identity field that cannot be written into a header.
  *
  * NUL, CR and LF are rejected rather than stripped: removing a line break would turn two
@@ -214,7 +230,8 @@ export function jsonForHeader(value: unknown): string {
  * @param headers - Headers object to set auth headers on
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
- * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF, an empty scope or a scope with a space,
+ * @throws {ConnectError} `Code.Unauthenticated` when the identity holds NUL, CR or LF, a `subject` or `type`
+ *   that is empty after removing control characters, an empty scope or a scope with a space,
  *   a value that does not fit its header, or a claim that cannot be serialized
  */
 export function propagateAuthHeaders(headers: Headers, context: AuthContext, propagatedClaims?: string[]): void {
@@ -231,7 +248,8 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * Sets standard auth headers on the provided Headers object, all or none.
  * Used by auth interceptors when propagateHeaders is enabled.
  *
- * `subject`, `type` and `name` have control characters removed (tab is kept); text above U+00FF is
+ * `subject`, `type` and `name` have control characters removed (tab is kept); a `subject` or `type`
+ * that is empty after that removal is refused, as an empty value is. Text above U+00FF is
  * written as `utf-8''` plus percent-encoded UTF-8, everything else is unchanged. Roles and claims
  * are JSON (characters above U+00FF are written as `\uXXXX` escapes, which the reader restores);
  * scopes are written as granted. Nothing is cut or left out: an identity that does not fit is
@@ -241,7 +259,8 @@ export function propagateAuthHeaders(headers: Headers, context: AuthContext, pro
  * @param context - Auth context to serialize
  * @param propagatedClaims - Optional list of claim keys to propagate (all if undefined)
  * @throws {TypeError} (`UnsafeHeaderValueError`) When `subject`, `type`, `name` or a scope contains NUL, CR or LF or a lone surrogate,
- *   or a scope is empty or contains a space, or `roles` or `scopes` is not an array of at most 8192 strings without holes;
+ *   or a `subject` or `type` is empty after removing control characters, or a scope is empty or contains a space,
+ *   or `roles` or `scopes` is not an array of at most 8192 strings without holes;
  *   the message names the field and no header has been set
  * @throws {RangeError} (`HeaderValueTooLargeError`) When `subject` is longer than 512 characters, `type` than 128, `name` than 256,
  *   or the serialized roles, scopes or claims than 8192; no header has been set
@@ -263,6 +282,15 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
     if (context.type.length > MAX_TYPE_LENGTH) throw new HeaderValueTooLargeError("type", MAX_TYPE_LENGTH);
     if (context.name && context.name.length > MAX_NAME_LENGTH) throw new HeaderValueTooLargeError("name", MAX_NAME_LENGTH);
 
+    // Removing the control characters can turn a value that passed the checks above into the empty
+    // string. It is refused exactly like an empty value: an empty header is read as no subject (and
+    // the type "unknown"), so the identity would not read back as written. Checked after the limit,
+    // which applies to the text as it arrives, before the cleaning.
+    const subject = sanitizeHeaderValue(context.subject, MAX_SUBJECT_LENGTH);
+    const type = sanitizeHeaderValue(context.type, MAX_TYPE_LENGTH);
+    if (subject === "") throw new UnsafeHeaderValueError("subject", "empty");
+    if (type === "") throw new UnsafeHeaderValueError("type", "empty");
+
     // Build every value first so that a refusal leaves the headers untouched. The encoding marker is
     // set when at least one text was encoded: only then does a reader treat `utf-8''` as a prefix.
     let encodedAny = false;
@@ -273,8 +301,8 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
         return encoded;
     };
     const toSet: Array<[string, string]> = [
-        [AUTH_HEADERS.SUBJECT, encode("subject", sanitizeHeaderValue(context.subject, MAX_SUBJECT_LENGTH))],
-        [AUTH_HEADERS.TYPE, encode("type", sanitizeHeaderValue(context.type, MAX_TYPE_LENGTH))],
+        [AUTH_HEADERS.SUBJECT, encode("subject", subject)],
+        [AUTH_HEADERS.TYPE, encode("type", type)],
     ];
 
     if (context.name) {
@@ -314,18 +342,21 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
  * Parse AuthContext from request headers.
  *
  * Deserializes auth context from standard headers set by an upstream
- * service or gateway. Returns undefined if required headers are missing.
+ * service or gateway. Returns undefined if required headers are missing, or if the subject is
+ * empty after the control characters are removed.
  *
  * Nothing is cut or ignored: a header that cannot be read back without loss (a value longer than
  * its limit, a malformed `utf-8''` text, a decoded text with NUL, CR or LF) is refused. Other C0 controls and
  * DEL are removed from the subject, type and name, raw or decoded, as the writer removes them.
+ * A subject that is empty after that removal is no subject, exactly like a missing header; a type
+ * that is empty after it is read as `"unknown"`, exactly like a missing or empty type header.
  *
  * WARNING: Only use this in trusted environments (behind mTLS, mesh, etc.).
  * For gateway requests, use createGatewayAuthInterceptor() with a verified trust header.
  *
  * @param headers - Request headers to parse
- * @returns Parsed AuthContext or undefined if headers are missing
- * @throws {ConnectError} `Code.Unauthenticated` when a header holds a value longer than its limit or a malformed encoded text
+ * @returns Parsed AuthContext, or undefined if the subject is missing or empty after removing control characters
+ * @throws {ConnectError} `Code.Unauthenticated` when a header holds a value longer than its limit, a malformed encoded text, or a decoded text with NUL, CR or LF
  *
  * @example Trust upstream auth headers
  * ```typescript
@@ -338,15 +369,18 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
  * ```
  */
 export function parseAuthHeaders(headers: Headers): AuthContext | undefined {
+    const decode = declaresTextEncoding(headers);
     const subjectHeader = headers.get(AUTH_HEADERS.SUBJECT);
-    if (!subjectHeader) {
+    const subject = subjectHeader ? readSubjectText(subjectHeader, MAX_SUBJECT_LENGTH, decode) : undefined;
+    if (subject === undefined) {
         return undefined;
     }
 
-    const decode = declaresTextEncoding(headers);
-    const subject = readHeaderText(subjectHeader, MAX_SUBJECT_LENGTH, decode, true);
+    // A type header that holds no text is no type, as a missing header is; a control-character-only
+    // type is the same kind of empty after the cleaning, so it keeps the "unknown" default.
     const typeHeader = headers.get(AUTH_HEADERS.TYPE);
-    const type = typeHeader ? readHeaderText(typeHeader, MAX_TYPE_LENGTH, decode, true) : "unknown";
+    const typeText = typeHeader ? readHeaderText(typeHeader, MAX_TYPE_LENGTH, decode, true) : "";
+    const type = typeText === "" ? "unknown" : typeText;
     const rolesRaw = headers.get(AUTH_HEADERS.ROLES);
     const scopesRaw = headers.get(AUTH_HEADERS.SCOPES);
     const claimsRaw = headers.get(AUTH_HEADERS.CLAIMS);
