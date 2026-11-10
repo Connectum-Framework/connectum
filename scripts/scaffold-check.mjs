@@ -57,7 +57,7 @@
  *   pnpm scaffold:check --runtime bun       # also run the Bun cell (requires bun on PATH)
  *   pnpm scaffold:check --pack              # install locally packed tarballs of this workspace
  *   pnpm scaffold:check --pack --combo kitchen-sink --pm pnpm   # a combo with another package manager
- *   pnpm scaffold:check --list              # combination names as JSON (CI builds its matrix from this)
+ *   pnpm scaffold:check --list              # every combination as JSON {name, needsBun, pack} (CI builds its matrix from this)
  *
  * Exit code is non-zero if any combination fails; a summary table is always printed.
  *
