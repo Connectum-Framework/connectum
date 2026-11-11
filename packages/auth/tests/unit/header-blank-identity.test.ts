@@ -128,9 +128,9 @@ describe("the gateway interceptor with the same headers", () => {
             );
         });
 
-        it(`a raw type of ${code} only, with a valid subject: the empty type it reads today`, async () => {
+        it(`a raw type of ${code} only, with a valid subject: the interceptor's default type`, async () => {
             const headers = new Headers({ "x-auth-subject": "s", "x-auth-type": control });
-            assert.strictEqual((await viaGateway(headers))?.type, "");
+            assert.strictEqual((await viaGateway(headers))?.type, "gateway");
         });
     }
 });
