@@ -23,9 +23,10 @@ import type { Interceptor, StreamRequest, UnaryRequest } from "@connectrpc/conne
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, decodeJwt, type JWTPayload, type JWTVerifyOptions, jwtVerify } from "jose";
 import { isAuthContext } from "./auth-context-check.ts";
+import { isUsableSubject } from "./headers.ts";
 import { markInternalContext } from "./internal-context.ts";
 import { matchesMethodPattern } from "./method-match.ts";
-import { assertHeaderName } from "./option-checks.ts";
+import { assertHeaderName, assertUsableIdentityText } from "./option-checks.ts";
 import { assertExpectedClaim, assertMaxTokenAge, assertMethodPatterns } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
 import type {
@@ -123,8 +124,10 @@ export function createInternalAuthInterceptor(options: InternalAuthInterceptorOp
             authContext = null;
         }
 
-        // A custom trust source may return any truthy value; only an AuthContext is an identity.
-        if (!authContext || !isAuthContext(authContext)) {
+        // A custom trust source may return any truthy value; only an AuthContext with a usable
+        // subject is an identity. A subject that is empty after the control characters are removed
+        // is no subject, whichever trust source produced it.
+        if (!authContext || !isAuthContext(authContext) || !isUsableSubject(authContext.subject)) {
             throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
         }
 
@@ -161,6 +164,13 @@ export function meshIdentityTrust(options: MeshIdentityTrustOptions): InternalTr
 
     if (allowlist.length === 0) {
         throw new Error("@connectum/auth: meshIdentityTrust requires a non-empty allowlist");
+    }
+    // Every allowlisted principal becomes the subject of the identities admitted with it, and the
+    // type is fixed the same way: a value that cannot be an identity's is refused here, not on
+    // every call it would admit.
+    assertUsableIdentityText("meshIdentityTrust type", type, "type");
+    for (let index = 0; index < allowlist.length; index++) {
+        assertUsableIdentityText(`meshIdentityTrust allowlist[${index}].principal`, allowlist[index]?.principal, "subject");
     }
 
     // Index by principal for O(1) lookup.
@@ -290,6 +300,7 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
     if (issuerKeys.length === 0) {
         throw new Error("@connectum/auth: signedTokenTrust requires at least one issuer");
     }
+    assertUsableIdentityText("signedTokenTrust type", type, "type");
 
     // One JWKSet per issuer (issuer-bound). NEVER a shared keyset across issuers.
     const keysets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -299,6 +310,12 @@ export function signedTokenTrust(options: SignedTokenTrustOptions): InternalTrus
         // The same rules as the JWT interceptor: an expectation that is present must be usable.
         assertExpectedClaim(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, "audience", cfg.audience);
         assertMaxTokenAge(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, cfg.maxTokenAge);
+        // Without a subject mapping the verified issuer is the subject of every identity this
+        // entry produces, so the key itself must be usable. A mapping takes the subject from the
+        // token instead, where the interceptor holds it to the rule at request time.
+        if (!cfg.claimsMapping?.subject) {
+            assertUsableIdentityText(`signedTokenTrust issuers[${JSON.stringify(iss)}]`, iss, "subject");
+        }
         keysets.set(iss, createRemoteJWKSet(new URL(cfg.jwksUri)));
     }
 
@@ -422,6 +439,10 @@ export function sharedSecretTrust(options: SharedSecretTrustOptions): InternalTr
     if (!secret) {
         throw new Error("@connectum/auth: sharedSecretTrust requires a non-empty secret");
     }
+    // The subject and type are fixed for every identity this trust source admits: refuse a value
+    // that is no subject (or no type) when the trust source is created, naming the option.
+    assertUsableIdentityText("sharedSecretTrust subject", subject, "subject");
+    assertUsableIdentityText("sharedSecretTrust type", type, "type");
 
     return (req) => {
         const value = req.header.get(header);

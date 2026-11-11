@@ -13,7 +13,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { isAuthContext } from "./auth-context-check.ts";
 import { LruCache } from "./cache.ts";
 import { copyOrRefuse } from "./cached-identity.ts";
-import { propagateAuthHeaders } from "./headers.ts";
+import { isUsableSubject, propagateAuthHeaders } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { assertAuthInterceptorOptions, assertPropagatedClaims } from "./option-validation.ts";
 import { runWithAuthContext } from "./run-with-auth-context.ts";
@@ -138,8 +138,10 @@ export function createAuthInterceptor(options: AuthInterceptorOptions): Intercep
         }
 
         // A callback that breaks its contract (null from a failed lookup, `{}`) must not
-        // authenticate the call; check before the result is propagated or cached.
-        if (!isAuthContext(authContext)) {
+        // authenticate the call; check before the result is propagated or cached. A subject that
+        // is empty after the control characters are removed is the same kind of unusable identity,
+        // whether or not the headers are propagated.
+        if (!isAuthContext(authContext) || !isUsableSubject(authContext.subject)) {
             throw new ConnectError("Authentication failed", Code.Unauthenticated);
         }
 

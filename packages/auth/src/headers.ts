@@ -162,17 +162,28 @@ export function readHeaderText(raw: string, limit: number, decode: boolean, stri
 }
 
 /**
+ * Whether `text` holds a value after the control characters that {@link sanitizeHeaderValue}
+ * removes are removed. This is the subject rule: an identity whose subject is not usable is no
+ * identity, and every interceptor refuses it with or without header propagation, because a
+ * caller that treats "a context was returned" as "the caller is authenticated" must never be
+ * handed one. The gateway holds a type header to the same rule: a type with no text after the
+ * cleaning is no type.
+ */
+export function isUsableSubject(text: string): boolean {
+    return sanitizeHeaderValue(text, Number.POSITIVE_INFINITY) !== "";
+}
+
+/**
  * Read the subject of an identity from a header value.
  *
- * {@link readHeaderText} with the cleaning the writer applies, except that a text which is empty
- * after the control characters are removed is no subject at all (`undefined`): an identity without
- * a subject was never valid, and a caller that treats "a context was returned" as "the caller is
- * authenticated" must not be handed one. This is the single place the reader and the gateway
- * interceptor decide whether a subject header holds a subject.
+ * {@link readHeaderText} with the cleaning the writer applies, except that a text which is not a
+ * usable subject ({@link isUsableSubject}: empty after the control characters are removed) is no
+ * subject at all (`undefined`). An identity without a subject was never valid. This is the single
+ * place the reader and the gateway interceptor decide whether a subject header holds a subject.
  */
 export function readSubjectText(raw: string, limit: number, decode: boolean): string | undefined {
     const subject = readHeaderText(raw, limit, decode, true);
-    return subject === "" ? undefined : subject;
+    return isUsableSubject(subject) ? subject : undefined;
 }
 
 /**
@@ -348,8 +359,9 @@ export function setAuthHeaders(headers: Headers, context: AuthContext, propagate
  * Nothing is cut or ignored: a header that cannot be read back without loss (a value longer than
  * its limit, a malformed `utf-8''` text, a decoded text with NUL, CR or LF) is refused. Other C0 controls and
  * DEL are removed from the subject, type and name, raw or decoded, as the writer removes them.
- * A subject that is empty after that removal is no subject, exactly like a missing header; a type
- * that is empty after it is read as `"unknown"`, exactly like a missing or empty type header.
+ * A subject that is empty after that removal is no subject, exactly like a missing header, and no
+ * other header is examined; a type that is empty after it is read as `"unknown"`, exactly like a
+ * missing or empty type header.
  *
  * WARNING: Only use this in trusted environments (behind mTLS, mesh, etc.).
  * For gateway requests, use createGatewayAuthInterceptor() with a verified trust header.
