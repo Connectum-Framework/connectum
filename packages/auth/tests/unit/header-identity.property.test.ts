@@ -10,14 +10,20 @@
  * The value that found the defect, U+000E, is kept as an explicit example.
  *
  * The invariant of property 2: `parseAuthHeaders` reads arbitrary headers into `undefined`, into an
- * identity with a non-empty subject, or refuses with the only error its JSDoc documents, a
- * `ConnectError` with `Code.Unauthenticated`.
+ * identity with a non-empty subject and type, or refuses with the only error its JSDoc documents,
+ * a `ConnectError` with `Code.Unauthenticated`.
+ *
+ * The invariant of property 3: for the same standard identity headers, the gateway interceptor
+ * and `parseAuthHeaders` agree — either neither reports a subject, or both report the same one.
  */
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { createMockRequest } from "@connectum/testing";
 import fc from "fast-check";
+import { getAuthContext } from "../../src/context.ts";
+import { createGatewayAuthInterceptor } from "../../src/gateway-auth-interceptor.ts";
 import {
     HeaderValueTooLargeError,
     MAX_NAME_LENGTH,
@@ -32,17 +38,25 @@ import type { AuthContext } from "../../src/types.ts";
 
 // The run parameters are literals until the shared property-test helper lands; it will supply
 // them, so this file should not gain a copy of them.
-const RUN = { numRuns: 200, seed: 20261111, endOnFailure: true } as const;
+const RUN = { numRuns: 200, seed: 20261111 } as const;
 
-/** One unit of generated identity text: letters, a control character, text above U+00FF. */
-const TEXT_UNITS = ["a", "b", "z", "0", " ", "\t", "\x01", "\x08", "\x0E", "\x1F", "\x7F", "é", "ÿ", "И", "\u{1F600}", "\u2028"];
+/**
+ * One unit of generated identity text: letters, every kind of control character the code treats
+ * differently (NUL, CR and LF are refused, the others removed, tab kept), a lone surrogate and
+ * text above U+00FF.
+ */
+const TEXT_UNITS = ["a", "b", "z", "0", " ", "\t", "\0", "\r", "\n", "\x01", "\x08", "\x0E", "\x1F", "\x7F", "\uD800", "\uDC00", "é", "ÿ", "И", "\u{1F600}", "\u2028"];
 
 /** A short text, possibly empty, possibly made only of control characters. */
 const text = fc.array(fc.constantFrom(...TEXT_UNITS), { maxLength: 6 }).map((units) => units.join(""));
 
-/** A text of a length around `limit`, so the limit itself is exercised. */
-function around(limit: number): fc.Arbitrary<string> {
-    return fc.integer({ min: limit - 2, max: limit + 2 }).map((length) => "a".repeat(length));
+/** A text of a length around `limit`, with one generated unit inside it, so a control character sits near the limit. */
+function around(limit: number, units: readonly string[] = TEXT_UNITS): fc.Arbitrary<string> {
+    return fc.tuple(fc.integer({ min: limit - 2, max: limit + 2 }), fc.constantFrom(...units)).map(([length, unit]) => {
+        const padding = "a".repeat(Math.max(0, length - unit.length));
+        const at = Math.floor(padding.length / 2);
+        return padding.slice(0, at) + unit + padding.slice(at);
+    });
 }
 
 /** A text in a claim: any JSON scalar the identity accepts. */
@@ -64,16 +78,28 @@ const identity: fc.Arbitrary<AuthContext> = fc.record({
 });
 
 /** One unit of a header value sent by somebody else: bytes a header can carry, and encoding syntax. */
-const HEADER_UNITS = ["a", "s", " ", "\t", "\x01", "\x0E", "\x7F", "%", "%00", "%0D", "%0A", "%D0", "%98", "utf-8''", "'", "é", "ÿ", "8"];
+const HEADER_UNITS = ["a", "s", " ", "\t", "\x01", "\x0E", "\x7F", "%", "%00", "%0D", "%0A", "%D0", "%98", "%ED%A0%80", "utf-8''", "'", "é", "ÿ", "8"];
 
 /** A header value, including malformed percent-encodings and values near the subject limit. */
 const headerValue = fc.oneof(
     { arbitrary: fc.array(fc.constantFrom(...HEADER_UNITS), { maxLength: 10 }).map((units) => units.join("")), weight: 3 },
-    { arbitrary: around(MAX_SUBJECT_LENGTH), weight: 1 },
+    // A lone surrogate cannot travel in a raw header (the platform refuses it), so the long values
+    // use bytes a header can carry; `%ED%A0%80` in HEADER_UNITS is the encoded form of one.
+    { arbitrary: around(MAX_SUBJECT_LENGTH, ["a", "s", " ", "\x01", "%00", "%D0", "utf-8''", "é"]), weight: 1 },
 );
 
 /** The headers a reader can be handed: any value in the identity names, with or without the marker. */
-const identityHeaders = fc.record({
+interface GeneratedHeaders {
+    subject: string;
+    type: string;
+    name: string;
+    roles: string;
+    scopes: string;
+    claims: string;
+    marker: boolean;
+}
+
+const identityHeaders: fc.Arbitrary<GeneratedHeaders> = fc.record({
     subject: headerValue,
     type: headerValue,
     name: headerValue,
@@ -82,6 +108,19 @@ const identityHeaders = fc.record({
     claims: headerValue,
     marker: fc.boolean(),
 });
+
+/** The standard identity headers a value generator describes. */
+function toHeaders(generated: GeneratedHeaders): Headers {
+    const headers = new Headers();
+    headers.set("x-auth-subject", generated.subject);
+    headers.set("x-auth-type", generated.type);
+    headers.set("x-auth-name", generated.name);
+    headers.set("x-auth-roles", generated.roles);
+    headers.set("x-auth-scopes", generated.scopes);
+    headers.set("x-auth-claims", generated.claims);
+    if (generated.marker) headers.set("x-auth-encoding", "percent-utf8");
+    return headers;
+}
 
 /**
  * The writer throws one of the two documented errors or writes an identity that reads back as
@@ -141,14 +180,7 @@ describe("reading arbitrary headers gives no identity, a subject, or Unauthentic
     it("holds for generated header values", () => {
         fc.assert(
             fc.property(identityHeaders, (generated) => {
-                const headers = new Headers();
-                headers.set("x-auth-subject", generated.subject);
-                headers.set("x-auth-type", generated.type);
-                headers.set("x-auth-name", generated.name);
-                headers.set("x-auth-roles", generated.roles);
-                headers.set("x-auth-scopes", generated.scopes);
-                headers.set("x-auth-claims", generated.claims);
-                if (generated.marker) headers.set("x-auth-encoding", "percent-utf8");
+                const headers = toHeaders(generated);
 
                 let parsed: AuthContext | undefined;
                 try {
@@ -158,7 +190,56 @@ describe("reading arbitrary headers gives no identity, a subject, or Unauthentic
                     assert.strictEqual(err.code, Code.Unauthenticated, "the only refusal the reader documents is Unauthenticated");
                     return;
                 }
-                if (parsed !== undefined) assert.notStrictEqual(parsed.subject, "", "a returned identity always has a subject");
+                if (parsed === undefined) return;
+                assert.notStrictEqual(parsed.subject, "", "a returned identity always has a subject");
+                assert.notStrictEqual(sanitizeHeaderValue(parsed.type, Number.POSITIVE_INFINITY), "", "a returned identity always has a type with a character in it");
+            }),
+            RUN,
+        );
+    });
+});
+
+/** The subject the gateway interceptor reports for the headers, or `undefined` when it refuses. */
+async function gatewaySubject(headers: Headers): Promise<string | undefined> {
+    const interceptor = createGatewayAuthInterceptor({
+        headerMapping: { subject: "x-auth-subject", type: "x-auth-type", name: "x-auth-name", roles: "x-auth-roles", scopes: "x-auth-scopes", claims: "x-auth-claims" },
+        trustSource: { header: "x-gateway-secret", expectedValues: ["s"] },
+    });
+    const req = createMockRequest({ service: "t.v1.S", method: "M" });
+    for (const [name, value] of headers) req.header.set(name, value);
+    req.header.set("x-gateway-secret", "s");
+    let seen: AuthContext | undefined;
+    await interceptor((async () => {
+        seen = getAuthContext();
+        return { message: {} };
+    }) as never)(req);
+    return seen?.subject;
+}
+
+describe("the gateway interceptor and the reader agree on standard headers", () => {
+    it("holds for generated header values: neither reports a subject, or both report the same one", async () => {
+        await fc.assert(
+            fc.asyncProperty(identityHeaders, async (generated) => {
+                const headers = toHeaders(generated);
+
+                let readerSubject: string | undefined;
+                try {
+                    readerSubject = parseAuthHeaders(headers)?.subject;
+                } catch (err) {
+                    assert.ok(err instanceof ConnectError, `the reader may only refuse with a ConnectError, got ${String(err)}`);
+                    readerSubject = undefined;
+                }
+
+                let seenSubject: string | undefined;
+                try {
+                    seenSubject = await gatewaySubject(headers);
+                } catch (err) {
+                    assert.ok(err instanceof ConnectError, `the gateway may only refuse with a ConnectError, got ${String(err)}`);
+                    assert.strictEqual(err.code, Code.Unauthenticated, "the gateway refuses with Unauthenticated");
+                    seenSubject = undefined;
+                }
+
+                assert.strictEqual(seenSubject, readerSubject, "the gateway and the reader report the same subject, or neither does");
             }),
             RUN,
         );
