@@ -89,7 +89,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "catalog:",
-    "@clack/prompts": "^1.8.1",
+    "@clack/prompts": "^1.9.0",
     "@connectrpc/connect": "catalog:",
     "@connectrpc/connect-node": "catalog:",
     "citty": "^0.2.2",
