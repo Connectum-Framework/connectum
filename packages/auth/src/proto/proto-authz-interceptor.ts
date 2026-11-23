@@ -16,10 +16,13 @@ import type { AuthzDeniedDetails } from "../errors.ts";
 import { AuthzDeniedError } from "../errors.ts";
 import { isInternalContext } from "../internal-context.ts";
 import { matchesMethodPattern } from "../method-match.ts";
-import { assertAuthzPolicy, assertRuleMethods } from "../option-validation.ts";
-import type { AuthzRule, ProtoAuthzInterceptorOptions } from "../types.ts";
+import { assertAuthzPolicy, assertRuleMethods, describeValue } from "../option-validation.ts";
+import type { AuthContext, AuthzRule, ProtoAuthzInterceptorOptions, ResourceAuthzLogger } from "../types.ts";
 import { AuthzEffect } from "../types.ts";
+import type { ResolvedMethodAuth } from "./reader.ts";
 import { resolveMethodAuth } from "./reader.ts";
+import { createResourceGate } from "./resource-gate.ts";
+import { ResourceRuleError } from "./resource-rules.ts";
 
 /**
  * Evaluate programmatic authorization rules against auth context for a specific method.
@@ -100,7 +103,13 @@ function evaluateRules(
  * 7.  Evaluate programmatic rules   -- unconditional rules work without context
  * 8.  Fallback: authorize callback  --> requires auth context
  * 9.  Apply defaultPolicy           --> deny without context = Unauthenticated
+ *                                    (a method with resource rules is gated instead of denied)
  * ```
+ *
+ * Every allowing outcome above (3b, 4b, 5, 7, 8 and 9) of a method that declares
+ * `resources` rules passes the resource gate before the handler: an authenticated caller
+ * is required, and every rule must be allowed by `resourceAuthorizer`. A denial at steps
+ * 4b, 6, 7 or 8 stays a denial and does not reach the gate.
  *
  * IMPORTANT: This interceptor MUST run AFTER an authentication interceptor
  * in the chain (except for methods marked as `public` in proto options
@@ -136,17 +145,36 @@ function evaluateRules(
  * ```
  */
 export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOptions = {}): Interceptor {
-    const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize } = options;
+    const { defaultPolicy = AuthzEffect.DENY, rules = [], authorize, resourceAuthorizer, hideExistence, services, logger = console } = options;
 
     assertAuthzPolicy("createProtoAuthzInterceptor", defaultPolicy, rules);
     assertRuleMethods("createProtoAuthzInterceptor", rules);
+    assertResourceOptions("createProtoAuthzInterceptor", { resourceAuthorizer, hideExistence });
+
+    // A contract error (a mistyped field path in a resource rule) is a startup failure when the services are known.
+    for (const service of services ?? []) {
+        for (const method of service.methods) {
+            resolveMethodAuth(method);
+        }
+    }
+
+    const gate = createResourceGate({ resourceAuthorizer, hideExistence, logger });
 
     return (next) => async (req: UnaryRequest | StreamRequest) => {
         const serviceName: string = req.service.typeName;
         const methodName: string = req.method.name;
 
         // Step 1: Resolve proto authorization config for this method
-        const resolved = resolveMethodAuth(req.method);
+        const resolved = resolveForCall(req, logger);
+
+        // Hand the call on once the method-level decision allowed it. A method with resource
+        // rules passes the gate first; every allowing outcome below goes through here.
+        const proceed = async (authContext: AuthContext | undefined) => {
+            if (resolved.resources === undefined || resolved.resources.length === 0) {
+                return await next(req);
+            }
+            return await gate(next, req, resolved.resources, authContext);
+        };
 
         // Step 2: Public methods skip all authn + authz
         if (resolved.public) {
@@ -174,7 +202,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                 if (!isInternalContext(authContext)) {
                     throw new ConnectError("Untrusted internal request", Code.Unauthenticated);
                 }
-                return await next(req);
+                return await proceed(authContext);
             }
             // else: fall through to step 4 requires check (inclusive role composition)
         }
@@ -186,7 +214,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
             }
             if (satisfiesRequirements(authContext, resolved.requires)) {
                 // Requirements satisfied -- allow
-                return await next(req);
+                return await proceed(authContext);
             }
             // Requirements not satisfied -- deny with details
             const details: AuthzDeniedDetails = {
@@ -199,7 +227,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
 
         // Step 5-6: Check proto policy
         if (resolved.policy === AuthzEffect.ALLOW) {
-            return await next(req);
+            return await proceed(authContext);
         }
         if (resolved.policy === AuthzEffect.DENY) {
             throw new AuthzDeniedError({ ruleName: "proto:policy" });
@@ -221,7 +249,7 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
                     };
                     throw new AuthzDeniedError(details);
                 }
-                return await next(req);
+                return await proceed(authContext);
             }
         }
 
@@ -236,17 +264,56 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
             if (allowed !== true) {
                 throw new ConnectError("Access denied", Code.PermissionDenied);
             }
-            return await next(req);
+            return await proceed(authContext);
         }
 
-        // Step 9: No proto config, no rules matched, no callback -- apply default policy
-        if (defaultPolicy !== AuthzEffect.ALLOW) {
+        // Step 9: No proto config, no rules matched, no callback -- apply default policy.
+        // A declared resource rule is itself the requirement, so it replaces the default denial:
+        // the gate decides (and demands an authenticated caller) instead.
+        const declaresResources = resolved.resources !== undefined && resolved.resources.length > 0;
+        if (defaultPolicy !== AuthzEffect.ALLOW && !declaresResources) {
             if (!authContext) {
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
             }
             throw new ConnectError("Access denied by default policy", Code.PermissionDenied);
         }
 
-        return await next(req);
+        return await proceed(authContext);
     };
+}
+
+/**
+ * Resolve the proto authorization of the called method. A resource rule that cannot be used is a
+ * mistake in the contract, not in the request: the call ends with `Internal`, and the reason,
+ * which names contract fields, stays in the log.
+ */
+function resolveForCall(req: UnaryRequest | StreamRequest, logger: ResourceAuthzLogger): ResolvedMethodAuth {
+    try {
+        return resolveMethodAuth(req.method);
+    } catch (error) {
+        if (error instanceof ResourceRuleError) {
+            logger.error(`@connectum/auth: ${req.service.typeName}/${req.method.name} has an unusable resource rule; the client receives Internal`, error);
+            throw new ConnectError("Internal error", Code.Internal, undefined, undefined, error);
+        }
+        throw error;
+    }
+}
+
+/** Refuse resource options that can never work, at creation. */
+function assertResourceOptions(factory: string, options: Pick<ProtoAuthzInterceptorOptions, "resourceAuthorizer" | "hideExistence">): void {
+    const { resourceAuthorizer, hideExistence } = options;
+    if (resourceAuthorizer !== undefined && typeof resourceAuthorizer?.check !== "function") {
+        throw new TypeError(`@connectum/auth: ${factory} resourceAuthorizer must be an object with a check() function; got ${describeValue(resourceAuthorizer)}`);
+    }
+    if (hideExistence === undefined) {
+        return;
+    }
+    if (typeof hideExistence?.action !== "string" || hideExistence.action === "") {
+        throw new TypeError(`@connectum/auth: ${factory} hideExistence.action must be a non-empty string; got ${describeValue(hideExistence?.action)}`);
+    }
+    for (const [type, action] of Object.entries(hideExistence.byType ?? {})) {
+        if (typeof action !== "string" || action === "") {
+            throw new TypeError(`@connectum/auth: ${factory} hideExistence.byType["${type}"] must be a non-empty string; got ${describeValue(action)}`);
+        }
+    }
 }
