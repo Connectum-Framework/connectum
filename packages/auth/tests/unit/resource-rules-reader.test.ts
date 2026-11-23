@@ -151,6 +151,10 @@ describe("resolveMethodAuth: where resource rules are allowed", () => {
         refuses({ input: "DocRequest", auth: { public: true, resources: [rule()] } }, ["public"]);
     });
 
+    it("names both conflicting settings, the resource rules and public, when refusing a public method", () => {
+        refuses({ input: "DocRequest", auth: { public: true, resources: [rule()] } }, ["resource rules", "public"]);
+    });
+
     it("refuses a rule on a method that inherits public from its service", () => {
         refuses(unary(rule()), ["public", "inherited"], { public: true });
     });
