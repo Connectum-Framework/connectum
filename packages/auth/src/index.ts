@@ -44,6 +44,8 @@ export { matchesMethodPattern } from "./method-match.ts";
 export { createProtoAuthzInterceptor } from "./proto/proto-authz-interceptor.ts";
 export type { ResolvedMethodAuth } from "./proto/reader.ts";
 export { getInternalMethods, getPublicMethods, resolveMethodAuth } from "./proto/reader.ts";
+export type { ResolvedResourceRule } from "./proto/resource-rules.ts";
+export { ResourceRuleError } from "./proto/resource-rules.ts";
 export { createSessionAuthInterceptor } from "./session-auth-interceptor.ts";
 
 // Types and constants
@@ -57,6 +59,7 @@ export type {
     ClientGatewayInterceptorOptions,
     GatewayAuthInterceptorOptions,
     GatewayHeaderMapping,
+    HideExistence,
     InterceptorFactory,
     InternalAuthInterceptorOptions,
     InternalTrustSource,
@@ -65,6 +68,10 @@ export type {
     MeshIdentityEntry,
     MeshIdentityTrustOptions,
     ProtoAuthzInterceptorOptions,
+    ResourceAuthorizer,
+    ResourceAuthzLogger,
+    ResourceCheck,
+    ResourceDecision,
     SessionAuthInterceptorOptions,
     SharedSecretTrustOptions,
     SignedTokenIssuer,

@@ -11,6 +11,8 @@
 import type { DescMethod, DescService } from "@bufbuild/protobuf";
 import { getOption, hasOption, isFieldSet } from "@bufbuild/protobuf";
 import { MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
+import type { ResolvedResourceRule } from "./resource-rules.ts";
+import { resolveResourceRules } from "./resource-rules.ts";
 
 /**
  * Resolved authorization configuration for a single RPC method.
@@ -29,6 +31,13 @@ export interface ResolvedMethodAuth {
     /** Authorization policy: "allow", "deny", or undefined (use interceptor default). */
     readonly policy: "allow" | "deny" | undefined;
     /**
+     * True when `policy` was not set on the method but taken from the service `default_policy`.
+     * A denial inherited that way is a default, which a declared resource rule replaces; a
+     * `policy: "deny"` of the method itself is not. Absent otherwise, so that test doubles of this
+     * type written before the field existed keep compiling.
+     */
+    readonly policyInherited?: boolean | undefined;
+    /**
      * Required roles and scopes, or undefined if none specified.
      *
      * An empty `roles` or `scopes` list places no restriction on that dimension;
@@ -40,6 +49,12 @@ export interface ResolvedMethodAuth {
               readonly scopes: readonly string[];
           }
         | undefined;
+    /**
+     * Per-object requirements declared on the method, in declaration order. Absent when the method
+     * declares none. Optional so that test doubles of this type written before the field existed
+     * keep compiling.
+     */
+    readonly resources?: readonly ResolvedResourceRule[] | undefined;
 }
 
 /** Cache for resolved method auth to avoid repeated proto reads. */
@@ -76,6 +91,9 @@ const DEFAULT_RESOLVED: ResolvedMethodAuth = {
  * @returns Resolved authorization configuration
  * @throws {Error} When the effective `policy` / `default_policy` is neither empty, `"allow"` nor `"deny"`,
  *   or when the method resolves to both `public` and `internal`. A failed resolution is not cached.
+ * @throws {ResourceRuleError} When a `resources` rule cannot be used: empty action, a field path that is
+ *   not a singular string field of the request, a missing or conflicting type declaration, a rule on a
+ *   public method, or a rule on a client- or bidirectional-streaming method
  */
 export function resolveMethodAuth(method: DescMethod): ResolvedMethodAuth {
     const cached = resolvedCache.get(method);
@@ -156,9 +174,14 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     // Both values are validated even when the method policy wins: a typo in the service
     // default must not stay hidden just because every method happens to set its own policy.
     const servicePolicy = svcAuth !== undefined && svcAuth.defaultPolicy !== "" ? normalizePolicy(svcAuth.defaultPolicy, method, "service_auth.default_policy") : undefined;
-    const policy: ResolvedMethodAuth["policy"] = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : servicePolicy;
+    const methodPolicy = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : undefined;
+    const policy: ResolvedMethodAuth["policy"] = methodPolicy ?? servicePolicy;
+    const policyInherited = methodPolicy === undefined && servicePolicy !== undefined;
 
-    return { public: isPublic, internal: isInternal, policy, requires };
+    // Resource rules exist on the method only: a resource is always specific to one method's request.
+    const resources = mtdAuth !== undefined ? resolveResourceRules(method, mtdAuth.resources, isPublic) : undefined;
+
+    return { public: isPublic, internal: isInternal, policy, requires, ...(policyInherited && { policyInherited }), ...(resources !== undefined && { resources }) };
 }
 
 /**

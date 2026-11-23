@@ -4,6 +4,7 @@
  * @module types
  */
 
+import type { DescService, Message } from "@bufbuild/protobuf";
 import type { Interceptor } from "@connectrpc/connect";
 
 /**
@@ -748,4 +749,84 @@ export interface ProtoAuthzInterceptorOptions {
      * @returns `true` if authorized. Any other result, including a truthy non-boolean such as the string `"false"`, denies the call.
      */
     authorize?: (context: AuthContext, req: { service: string; method: string }) => boolean | Promise<boolean>;
+    /**
+     * Engine behind the `resources` rules of the contract. A method that declares resource rules is
+     * denied with `PermissionDenied` when this is missing (and a warning is logged once per method).
+     */
+    resourceAuthorizer?: ResourceAuthorizer | undefined;
+    /**
+     * After a resource denial, check this visibility action; a caller who may not see the resource
+     * gets `NotFound` instead of `PermissionDenied`. Without it a denial is always `PermissionDenied`.
+     */
+    hideExistence?: HideExistence | undefined;
+    /**
+     * Services whose methods are resolved when the interceptor is created, so a contract error
+     * (a mistyped field path in a resource rule, an invalid policy) fails at startup. Without it, a
+     * resource rule that cannot be resolved ends the call with `Internal`.
+     */
+    services?: readonly DescService[] | undefined;
+    /**
+     * Where the resource gate logs. Defaults to `console`.
+     * @default console
+     */
+    logger?: ResourceAuthzLogger | undefined;
+}
+
+/**
+ * Decision of a {@link ResourceAuthorizer}. Only the literal `"allow"` lets a call through.
+ */
+export type ResourceDecision = "allow" | "deny";
+
+/**
+ * What a {@link ResourceAuthorizer} is asked: may this caller do this action on this resource.
+ *
+ * The shape is the common core of OpenFGA (`user` / `relation` / `object`), SpiceDB
+ * (subject / permission / resource), Cedar (principal / action / resource), Cerbos
+ * (principal / actions / resource) and OPA (`input`).
+ */
+export interface ResourceCheck {
+    /** The authenticated caller. */
+    readonly subject: AuthContext;
+    /** The action of the contract rule, in the vocabulary of the engine (`"read"`, `"update"`, ...). */
+    readonly action: string;
+    /** The resource the request names. `id` is never empty and `type` is never outside the contract's allow-list. */
+    readonly resource: { readonly type: string; readonly id: string };
+    /**
+     * The call. `message` is the decoded request message the handler will receive, typed read-only so
+     * that an authorizer cannot move the object the contract was checked against.
+     */
+    readonly context: { readonly service: string; readonly method: string; readonly message: Readonly<Message> };
+}
+
+/**
+ * Per-object authorization engine behind `resources` rules of a method.
+ *
+ * Connectum ships no engine adapters: implement `check` over OpenFGA, SpiceDB, OPA, Cedar,
+ * Cerbos or an own store. A thrown `ConnectError` reaches the client with its own code (an
+ * unreachable engine should throw `Code.Unavailable`); any other thrown value ends the call with
+ * `Internal` and its text stays on the server.
+ */
+export interface ResourceAuthorizer {
+    /** Answer `"allow"` to allow. Every other result denies. */
+    check(input: ResourceCheck): ResourceDecision | Promise<ResourceDecision>;
+}
+
+/**
+ * Existence hiding: which action to check, after a denial, to learn whether the caller may know the
+ * resource exists.
+ */
+export interface HideExistence {
+    /** Visibility action for resource types not named in `byType`. */
+    readonly action: string;
+    /** Visibility action per resource type, for engines that name visibility differently per type. */
+    readonly byType?: Readonly<Record<string, string>> | undefined;
+}
+
+/**
+ * Sink for the messages {@link createProtoAuthzInterceptor} logs about the resource gate.
+ * `console` satisfies it.
+ */
+export interface ResourceAuthzLogger {
+    warn(message: string, ...details: unknown[]): void;
+    error(message: string, ...details: unknown[]): void;
 }

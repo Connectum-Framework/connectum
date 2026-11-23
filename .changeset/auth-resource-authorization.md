@@ -1,0 +1,17 @@
+---
+"@connectum/auth": minor
+---
+
+feat(auth): a method can now require an action on the specific object its request names, declared in the proto contract instead of inside the handler. `MethodAuth` gains a repeated `resources` field of `ResourceRequirement` rules. Each rule has an `action`, an `id_field` (a dot path over proto field names to the string field that holds the resource id; it may enter a `oneof` member and may not cross a `repeated` or `map` field), and either a fixed `type` or a `type_field` with the allowed values in `types`. Several rules on one method must all allow, and they are checked in declaration order.
+
+`createProtoAuthzInterceptor` gains four options. `resourceAuthorizer` is an object with `check({ subject, action, resource, context })` that returns `"allow"` or `"deny"`; `context.message` is the decoded request message, typed read-only. `hideExistence: { action, byType? }` makes a caller who is refused and also fails that visibility check get `NotFound` instead of `PermissionDenied`. `services` resolves every method when the interceptor is created, so a mistyped field path fails at startup; without it, a rule that cannot be resolved ends the call with `Internal`. `logger` receives the gate's warnings and errors and defaults to `console`.
+
+The resource check runs after every allowing outcome of the method-level decision: an `internal` method, satisfied `requires`, `policy: "allow"`, an allowing rule, `authorize` returning `true`, and `defaultPolicy: "allow"`. It never overrides a denial by roles, scopes, the method's own `policy: "deny"`, a rule or `authorize`. A method that declares only `resources` is checked, not refused, when `defaultPolicy` is `"deny"` or when the method inherits `default_policy: "deny"` from its service; a `policy: "deny"` set on the method itself still refuses the call before the check. Without an authenticated caller the call fails with `Unauthenticated`.
+
+Only the literal `"allow"` allows. A `ConnectError` thrown by `check` keeps its code (an adapter signals an unreachable engine with `Code.Unavailable`); any other thrown value ends the call with `Internal` and its text stays on the server. A missing or empty id, an unset parent message and a type outside `types` answer `InvalidArgument`. A method with resource rules served without `resourceAuthorizer` answers `PermissionDenied`, and a warning is logged once per method.
+
+Reading `resources` throws a `ResourceRuleError` for an empty action, a path that does not name a singular string field of the request, both or neither of `type` and `type_field`, a rule on a `public` method (declared or inherited), and a rule on a client-streaming or bidirectional-streaming method. Unary and server-streaming methods are supported; for server-streaming the first request message is read and given to the handler again. `ResolvedMethodAuth` gains an optional `resources`.
+
+Servers without `resources` rules behave as before. The package ships no engine adapters; the documentation shows how to map `check` onto OpenFGA, SpiceDB, OPA, Cedar (Verified Permissions) and Cerbos.
+
+Compatibility: a server on `@connectum/auth` 1.3 ignores the `resources` field of a contract, so the object check never runs there; the other rules of the method (`roles`, `scopes`, `policy`, `rules`, `authorize`, `defaultPolicy`) still decide and can still deny the call. Resource rules need `@connectum/auth` 1.4 on every server that serves the contract.
