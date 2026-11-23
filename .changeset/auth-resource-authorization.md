@@ -14,4 +14,4 @@ Reading `resources` throws a `ResourceRuleError` for an empty action, a path tha
 
 Servers without `resources` rules behave as before. The package ships no engine adapters; the documentation shows how to map `check` onto OpenFGA, SpiceDB, OPA, Cedar (Verified Permissions) and Cerbos.
 
-Compatibility: a server on `@connectum/auth` 1.3 ignores the `resources` field of a contract and lets the call through without a resource check. Resource rules need `@connectum/auth` 1.4 on every server that serves the contract.
+Compatibility: a server on `@connectum/auth` 1.3 ignores the `resources` field of a contract, so the object check never runs there; the other rules of the method (`roles`, `scopes`, `policy`, `rules`, `authorize`, `defaultPolicy`) still decide and can still deny the call. Resource rules need `@connectum/auth` 1.4 on every server that serves the contract.

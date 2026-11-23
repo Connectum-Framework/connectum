@@ -87,8 +87,9 @@ export function createResourceGate(
         // hand the handler a stream that yields it again, so the handler sees the message that was checked.
         let forwarded: UnaryRequest | StreamRequest = req;
         let message: object;
+        let iterator: AsyncIterator<unknown> | undefined;
         if (req.stream) {
-            const iterator = req.message[Symbol.asyncIterator]();
+            iterator = req.message[Symbol.asyncIterator]();
             const first = await iterator.next();
             if (first.done) {
                 throw new ConnectError("Invalid request: the request carries no message to read the resource from", Code.InvalidArgument);
@@ -99,26 +100,42 @@ export function createResourceGate(
             message = req.message as object;
         }
 
-        // Every reference is read before the first check: an unreadable one must not be preceded by an
-        // authorizer call about another object, and each field is read exactly once.
-        const references = rules.map((rule) => readReference(rule, message));
+        // Until the handler gets the replayed stream, nobody else will release the source: on any exit
+        // other than the hand-over the stream read ahead is closed here.
+        try {
+            // Every reference is read before the first check: an unreadable one must not be preceded by an
+            // authorizer call about another object, and each field is read exactly once.
+            const references = rules.map((rule) => readReference(rule, message));
 
-        for (const reference of references) {
-            if (await ask(authorizer, req, authContext, reference.rule.action, reference, message)) {
-                continue;
-            }
-            if (hideExistence !== undefined) {
-                const byType = hideExistence.byType;
-                const visibilityAction = byType !== undefined && Object.hasOwn(byType, reference.type) ? (byType[reference.type] as string) : hideExistence.action;
-                if (!(await ask(authorizer, req, authContext, visibilityAction, reference, message))) {
-                    throw new ConnectError("Not found", Code.NotFound);
+            for (const reference of references) {
+                if (await ask(authorizer, req, authContext, reference.rule.action, reference, message)) {
+                    continue;
                 }
+                if (hideExistence !== undefined) {
+                    const byType = hideExistence.byType;
+                    const visibilityAction = byType !== undefined && Object.hasOwn(byType, reference.type) ? (byType[reference.type] as string) : hideExistence.action;
+                    if (!(await ask(authorizer, req, authContext, visibilityAction, reference, message))) {
+                        throw new ConnectError("Not found", Code.NotFound);
+                    }
+                }
+                throw new ConnectError("Access denied", Code.PermissionDenied);
             }
-            throw new ConnectError("Access denied", Code.PermissionDenied);
+        } catch (error) {
+            await release(iterator);
+            throw error;
         }
 
         return await next(forwarded);
     };
+}
+
+/** Close the source stream of a refused request. A failure to close must not replace the decision that is being thrown. */
+async function release(iterator: AsyncIterator<unknown> | undefined): Promise<void> {
+    try {
+        await iterator?.return?.();
+    } catch {
+        // The refusal the caller is about to throw is the answer; the close failure carries nothing the client needs.
+    }
 }
 
 /** Yield the message that was read ahead, then the rest of the stream, and release the source when done. */

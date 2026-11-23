@@ -129,4 +129,57 @@ describe("resource gate on a server-streaming method", () => {
         await authContextStorage.run(caller, () => handler({ ...createProtoMockRequest(service, method), stream: true, message: iterable } as never));
         assert.strictEqual(state.released, true);
     });
+
+    it("releases the request stream when the authorizer denies after the first message was read", async () => {
+        const result = await call({ answer: "deny" });
+        assert.strictEqual(result.code, Code.PermissionDenied);
+        assert.strictEqual(result.state.pulled, 1);
+        assert.strictEqual(result.state.released, true, "the stream read ahead must be released when the handler never gets it");
+    });
+
+    it("releases the request stream when the authorizer throws", async () => {
+        const { service, methods } = buildResourceService({ Watch: { input: "DocRequest", kind: "server", auth: { resources: READ_DOC } } });
+        const method = methods.Watch as NonNullable<typeof methods.Watch>;
+        const { iterable, state } = requestStream([messageOf(method, { id: "d1" })]);
+        const interceptor = createProtoAuthzInterceptor({
+            logger: { warn: () => undefined, error: () => undefined },
+            resourceAuthorizer: {
+                check: () => {
+                    throw new Error("engine down");
+                },
+            },
+        });
+        const handler = interceptor((async () => ({ message: {} })) as never);
+        await assert.rejects(authContextStorage.run(caller, () => handler({ ...createProtoMockRequest(service, method), stream: true, message: iterable } as never)));
+        assert.strictEqual(state.released, true);
+    });
+
+    it("releases the request stream when the reference in the first message is unreadable", async () => {
+        const result = await call({ items: [{ id: "" }] });
+        assert.strictEqual(result.code, Code.InvalidArgument);
+        assert.strictEqual(result.state.released, true);
+    });
+
+    it("keeps the original refusal when releasing the request stream itself fails", async () => {
+        const { service, methods } = buildResourceService({ Watch: { input: "DocRequest", kind: "server", auth: { resources: READ_DOC } } });
+        const method = methods.Watch as NonNullable<typeof methods.Watch>;
+        const first = messageOf(method, { id: "d1" });
+        const iterable: AsyncIterable<unknown> = {
+            [Symbol.asyncIterator]: () => ({
+                next: async () => ({ done: false, value: first }),
+                return: async () => {
+                    throw new Error("close failed");
+                },
+            }),
+        };
+        const interceptor = createProtoAuthzInterceptor({ resourceAuthorizer: { check: () => "deny" } });
+        const handler = interceptor((async () => ({ message: {} })) as never);
+        const error = await authContextStorage
+            .run(caller, () => handler({ ...createProtoMockRequest(service, method), stream: true, message: iterable } as never))
+            .then(
+                () => undefined,
+                (caught: unknown) => caught,
+            );
+        assert.strictEqual(ConnectError.from(error).code, Code.PermissionDenied);
+    });
 });
