@@ -58,6 +58,39 @@ message MethodAuth {
   // only by a trusted internal caller. A method is at most one of
   // `public` / `internal` / gated. See ADR-029.
   optional bool internal = 4;
+
+  // Per-object requirements: the caller must be allowed an action on a
+  // specific resource named by the request. Every rule must allow, and the
+  // rules are checked in declaration order. A rule is an additional gate on
+  // top of `requires` and `policy`; it never replaces them. Allowed only on
+  // methods whose request is a single message (unary and server-streaming)
+  // and not on `public` methods.
+  repeated ResourceRequirement resources = 5;
+}
+
+// One per-object requirement of a method: which action the caller needs, and
+// where in the request message the resource is named.
+message ResourceRequirement {
+  // The action (verb or relation) in the vocabulary of the authorization
+  // engine, for example "read", "update" or "share". Required, non-empty.
+  optional string action = 1;
+
+  // Dot-separated path to the string field of the request that holds the
+  // resource id, using proto field names (for example "task_id" or
+  // "parent.id"). The path may enter a oneof member and may not cross a
+  // repeated or map field. Required.
+  optional string id_field = 2;
+
+  // Fixed resource type. Set exactly one of `type` and `type_field`.
+  optional string type = 3;
+
+  // Dot-separated path to the string field of the request that holds the
+  // resource type. Requires a non-empty `types`.
+  optional string type_field = 4;
+
+  // The values `type_field` may hold. A request that names another type is
+  // rejected as invalid input before any authorization check runs.
+  repeated string types = 5;
 }
 
 // Default authorization configuration for all methods in a service.

@@ -6,10 +6,10 @@
  * with auth extensions set.
  */
 
-import type { DescMethod, DescService } from "@bufbuild/protobuf";
+import type { DescMethod, DescService, MessageInitShape } from "@bufbuild/protobuf";
 import { create, setExtension } from "@bufbuild/protobuf";
 import { MethodOptionsSchema, ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
-import { AuthRequirementsSchema, MethodAuthSchema, method_auth, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
+import { AuthRequirementsSchema, MethodAuthSchema, method_auth, type ResourceRequirementSchema, ServiceAuthSchema, service_auth } from "#gen/connectum/auth/v1/options_pb.js";
 
 /**
  * Create a fake DescService with optional proto service options.
@@ -68,7 +68,13 @@ export function createFakeMethod(service: DescService, name: string, methodOptio
  * @param authConfig - Auth configuration for the method.
  * @returns Protobuf MethodOptions with the method_auth extension.
  */
-export function createMethodOptions(authConfig: { public?: boolean; internal?: boolean; policy?: string; requires?: { roles?: string[]; scopes?: string[] } }) {
+export function createMethodOptions(authConfig: {
+    public?: boolean;
+    internal?: boolean;
+    policy?: string;
+    requires?: { roles?: string[]; scopes?: string[] };
+    resources?: ReadonlyArray<MessageInitShape<typeof ResourceRequirementSchema>>;
+}) {
     const opts = create(MethodOptionsSchema);
     const init: Record<string, unknown> = {
         policy: authConfig.policy ?? "",
@@ -86,6 +92,9 @@ export function createMethodOptions(authConfig: { public?: boolean; internal?: b
             roles: authConfig.requires.roles ?? [],
             scopes: authConfig.requires.scopes ?? [],
         });
+    }
+    if (authConfig.resources) {
+        init.resources = authConfig.resources;
     }
     // biome-ignore lint/suspicious/noExplicitAny: proto create() requires loose init type
     const authMsg = create(MethodAuthSchema, init as any);
