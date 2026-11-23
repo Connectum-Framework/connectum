@@ -40,7 +40,7 @@ describe("what the authorizer is asked", () => {
         const authorizer: ResourceAuthorizer = {
             check: ({ context }) => {
                 // @ts-expect-error context.message is read-only
-                context.message.$typeName = "other";
+                context.message.$unknown = [];
                 return "deny";
             },
         };

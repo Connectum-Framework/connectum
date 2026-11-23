@@ -193,7 +193,7 @@ describe("engine outage", () => {
     it("an error status becomes ConnectError Unavailable without the engine text", async () => {
         const { fetch } = stub({ error: "secret" }, 503);
         await assert.rejects(
-            () => createOpenFgaAuthorizer({ apiUrl: "http://fga", storeId: "s", fetch }).check(input),
+            async () => await createOpenFgaAuthorizer({ apiUrl: "http://fga", storeId: "s", fetch }).check(input),
             (error: unknown) => error instanceof ConnectError && error.code === Code.Unavailable && !error.message.includes("secret"),
         );
     });
@@ -203,8 +203,34 @@ describe("engine outage", () => {
             throw new Error("ECONNREFUSED");
         };
         await assert.rejects(
-            () => createOpaAuthorizer({ baseUrl: "http://opa", policyPath: "p", fetch }).check(input),
+            async () => await createOpaAuthorizer({ baseUrl: "http://opa", policyPath: "p", fetch }).check(input),
             (error: unknown) => error instanceof ConnectError && error.code === Code.Unavailable,
+        );
+    });
+});
+
+describe("Cerbos recipe: callers without roles", () => {
+    it("denies without calling the engine, because Cerbos requires a role", async () => {
+        const { fetch, sent } = stub({ results: [{ actions: { update: "EFFECT_ALLOW" } }] });
+        const decision = await createCerbosAuthorizer({ baseUrl: "http://c", fetch }).check({ ...input, subject: { ...subject, roles: [] } });
+        assert.strictEqual(decision, "deny");
+        assert.strictEqual(sent.length, 0);
+    });
+
+    it("sends the configured role for a caller without roles", async () => {
+        const { fetch, sent } = stub({ results: [{ actions: { update: "EFFECT_ALLOW" } }] });
+        const decision = await createCerbosAuthorizer({ baseUrl: "http://c", roleForCallerWithoutRoles: "user", fetch }).check({ ...input, subject: { ...subject, roles: [] } });
+        assert.strictEqual(decision, "allow");
+        assert.deepStrictEqual((sent[0]?.body as { principal: { roles: string[] } }).principal.roles, ["user"]);
+    });
+});
+
+describe("engine refusing the request", () => {
+    it("a 400 is a defect of the service: a plain error, which the gate reports as Internal", async () => {
+        const { fetch } = stub({}, 400);
+        await assert.rejects(
+            async () => await createCerbosAuthorizer({ baseUrl: "http://c", fetch }).check(input),
+            (error: unknown) => error instanceof Error && !(error instanceof ConnectError),
         );
     });
 });

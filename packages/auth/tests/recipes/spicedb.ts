@@ -8,6 +8,7 @@
  * protobuf JSON mapping. A caller is allowed only when `permissionship` is
  * `PERMISSIONSHIP_HAS_PERMISSION`; a conditional permission (`PERMISSIONSHIP_CONDITIONAL_PERMISSION`)
  * is not an allow.
+ * Field names were read from `buf.build/authzed/api` exported with `buf export` on 2026-11-23 (no commit pinned by that export).
  */
 
 import type { ResourceAuthorizer } from "../../src/types.ts";

@@ -14,7 +14,7 @@ export type FetchLike = (
 /**
  * POST a JSON body and return the parsed JSON reply.
  *
- * An engine that cannot be reached, or answers with an error status, throws `ConnectError` with
+ * An engine that cannot be reached, or answers 5xx or 429, throws `ConnectError` with
  * `Code.Unavailable`, which the resource gate passes to the client unchanged. The engine's own
  * error text is kept out of the message.
  */
@@ -26,7 +26,13 @@ export async function postJson(fetchLike: FetchLike, url: string, body: unknown,
         throw new ConnectError("Authorization engine is unreachable", Code.Unavailable, undefined, undefined, cause);
     }
     if (!reply.ok) {
-        throw new ConnectError(`Authorization engine answered ${reply.status}`, Code.Unavailable);
+        // A server-side failure or throttling is an outage the caller may retry. Any other refusal
+        // (400, 401, 404) means the request or the connection settings are wrong: that is a defect
+        // of the service, so it is thrown as a plain error, which the gate reports as Internal.
+        if (reply.status >= 500 || reply.status === 429) {
+            throw new ConnectError(`Authorization engine answered ${reply.status}`, Code.Unavailable);
+        }
+        throw new Error(`Authorization engine rejected the request with ${reply.status}`);
     }
     return await reply.json();
 }
