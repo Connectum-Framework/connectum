@@ -7,4 +7,4 @@
   duplicate it here. Update (or clear) this file when cutting a new release.
 -->
 
-- Per-object authorization in the proto contract: declare `resources { action, id_field, type }` on a method and `createProtoAuthzInterceptor` asks your `resourceAuthorizer` (OpenFGA, SpiceDB, OPA, Cedar, Cerbos or your own) before the handler runs, with optional `NotFound` for objects the caller may not see.
+- Per-object authorization in the contract: declare `resources { action, id_field, type }` on a method and `createProtoAuthzInterceptor` asks your `resourceAuthorizer` (OpenFGA, SpiceDB, OPA, Cedar, Cerbos or your own) before the handler runs, instead of every handler repeating the check.
