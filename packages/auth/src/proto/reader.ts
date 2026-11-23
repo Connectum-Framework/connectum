@@ -31,6 +31,13 @@ export interface ResolvedMethodAuth {
     /** Authorization policy: "allow", "deny", or undefined (use interceptor default). */
     readonly policy: "allow" | "deny" | undefined;
     /**
+     * True when `policy` was not set on the method but taken from the service `default_policy`.
+     * A denial inherited that way is a default, which a declared resource rule replaces; a
+     * `policy: "deny"` of the method itself is not. Absent otherwise, so that test doubles of this
+     * type written before the field existed keep compiling.
+     */
+    readonly policyInherited?: boolean | undefined;
+    /**
      * Required roles and scopes, or undefined if none specified.
      *
      * An empty `roles` or `scopes` list places no restriction on that dimension;
@@ -167,12 +174,14 @@ function computeMethodAuth(method: DescMethod): ResolvedMethodAuth {
     // Both values are validated even when the method policy wins: a typo in the service
     // default must not stay hidden just because every method happens to set its own policy.
     const servicePolicy = svcAuth !== undefined && svcAuth.defaultPolicy !== "" ? normalizePolicy(svcAuth.defaultPolicy, method, "service_auth.default_policy") : undefined;
-    const policy: ResolvedMethodAuth["policy"] = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : servicePolicy;
+    const methodPolicy = mtdAuth !== undefined && mtdAuth.policy !== "" ? normalizePolicy(mtdAuth.policy, method, "method_auth.policy") : undefined;
+    const policy: ResolvedMethodAuth["policy"] = methodPolicy ?? servicePolicy;
+    const policyInherited = methodPolicy === undefined && servicePolicy !== undefined;
 
     // Resource rules exist on the method only: a resource is always specific to one method's request.
     const resources = mtdAuth !== undefined ? resolveResourceRules(method, mtdAuth.resources, isPublic) : undefined;
 
-    return { public: isPublic, internal: isInternal, policy, requires, ...(resources !== undefined && { resources }) };
+    return { public: isPublic, internal: isInternal, policy, requires, ...(policyInherited && { policyInherited }), ...(resources !== undefined && { resources }) };
 }
 
 /**

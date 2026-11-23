@@ -19,6 +19,7 @@ const SERVICE = "test.resource.v1.ResourceService";
 interface Row {
     readonly name: string;
     readonly auth: NonNullable<RunOptions["method"]["auth"]>;
+    readonly serviceAuth?: RunOptions["serviceAuth"];
     readonly interceptor?: ProtoAuthzInterceptorOptions;
     readonly subject?: RunOptions["subject"];
     /** "gate": the method-level decision allows and the authorizer decides. "deny": refused before the gate. */
@@ -31,6 +32,16 @@ const rows: readonly Row[] = [
     { name: "requires not satisfied", auth: { requires: { roles: ["editor"] }, resources: READ_DOC }, outcome: "deny" },
     { name: "policy allow", auth: { policy: "allow", resources: READ_DOC }, outcome: "gate" },
     { name: "policy deny", auth: { policy: "deny", resources: READ_DOC }, outcome: "deny" },
+    { name: "inherited service default deny", auth: { resources: READ_DOC }, serviceAuth: { defaultPolicy: "deny" }, outcome: "gate" },
+    { name: "own policy deny under a service default allow", auth: { policy: "deny", resources: READ_DOC }, serviceAuth: { defaultPolicy: "allow" }, outcome: "deny" },
+    { name: "own policy deny under a service default deny", auth: { policy: "deny", resources: READ_DOC }, serviceAuth: { defaultPolicy: "deny" }, outcome: "deny" },
+    {
+        name: "inherited service default deny with a denying programmatic rule",
+        auth: { resources: READ_DOC },
+        serviceAuth: { defaultPolicy: "deny" },
+        interceptor: { rules: [{ name: "closed", methods: [`${SERVICE}/*`], effect: "deny" }] },
+        outcome: "deny",
+    },
     {
         name: "programmatic rule allows",
         auth: { resources: READ_DOC },
@@ -54,20 +65,20 @@ for (const defaultPolicy of ["deny", "allow"] as const) {
         for (const row of rows) {
             if (row.outcome === "gate") {
                 it(`${row.name}: the authorizer decides, an allow runs the handler`, async () => {
-                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "allow" });
+                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, ...(row.serviceAuth !== undefined && { serviceAuth: row.serviceAuth }), interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "allow" });
                     assert.strictEqual(result.code, undefined);
                     assert.strictEqual(result.handled, 1);
                     assert.strictEqual(result.asked.length, 1);
                 });
                 it(`${row.name}: an authorizer deny stops the call with PermissionDenied`, async () => {
-                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "deny" });
+                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, ...(row.serviceAuth !== undefined && { serviceAuth: row.serviceAuth }), interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "deny" });
                     assert.strictEqual(result.code, Code.PermissionDenied);
                     assert.strictEqual(result.handled, 0);
                     assert.strictEqual(result.asked.length, 1);
                 });
             } else {
                 it(`${row.name}: refused before the gate, the authorizer is not asked`, async () => {
-                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "allow" });
+                    const result = await run({ method: { input: "DocRequest", auth: row.auth }, ...(row.serviceAuth !== undefined && { serviceAuth: row.serviceAuth }), interceptor: { defaultPolicy, ...row.interceptor }, subject: row.subject ?? caller, authorizer: "allow" });
                     assert.strictEqual(result.code, Code.PermissionDenied);
                     assert.strictEqual(result.handled, 0);
                     assert.strictEqual(result.asked.length, 0);

@@ -229,7 +229,10 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         if (resolved.policy === AuthzEffect.ALLOW) {
             return await proceed(authContext);
         }
-        if (resolved.policy === AuthzEffect.DENY) {
+        // A deny inherited from the service default is only a default: a declared resource rule
+        // replaces it, so the remaining steps and the gate decide. The method's own deny stays final.
+        const declaresResources = resolved.resources !== undefined && resolved.resources.length > 0;
+        if (resolved.policy === AuthzEffect.DENY && !(resolved.policyInherited === true && declaresResources)) {
             throw new AuthzDeniedError({ ruleName: "proto:policy" });
         }
 
@@ -270,7 +273,6 @@ export function createProtoAuthzInterceptor(options: ProtoAuthzInterceptorOption
         // Step 9: No proto config, no rules matched, no callback -- apply default policy.
         // A declared resource rule is itself the requirement, so it replaces the default denial:
         // the gate decides (and demands an authenticated caller) instead.
-        const declaresResources = resolved.resources !== undefined && resolved.resources.length > 0;
         if (defaultPolicy !== AuthzEffect.ALLOW && !declaresResources) {
             if (!authContext) {
                 throw new ConnectError("Authentication required for authorization", Code.Unauthenticated);
