@@ -72,9 +72,9 @@
     "@bufbuild/protobuf": "catalog:",
     "@connectum/events": "workspace:^",
     "@exodus/test": "catalog:",
-    "@testcontainers/toxiproxy": "^12.2.1",
+    "@testcontainers/toxiproxy": "^12.2.2",
     "c8": "catalog:",
-    "testcontainers": "^12.2.1",
+    "testcontainers": "^12.2.2",
     "tsup": "catalog:",
     "typescript": "catalog:"
   }
