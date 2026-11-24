@@ -1,5 +1,9 @@
 # @connectum/events
 
+## 1.3.1
+
+No changes in this release.
+
 ## 1.3.0
 
 ### Minor Changes
