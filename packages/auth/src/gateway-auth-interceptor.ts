@@ -16,12 +16,14 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import {
     declaresTextEncoding,
     HEADER_BREAKING_CHARS,
+    isUsableSubject,
     MAX_HEADER_BYTES,
     MAX_NAME_LENGTH,
     MAX_SUBJECT_LENGTH,
     MAX_TYPE_LENGTH,
     propagateAuthHeaders,
     readHeaderText,
+    readSubjectText,
 } from "./headers.ts";
 import { assertNoCatchAllSkip, matchesMethodPattern } from "./method-match.ts";
 import { assertHeaderName, assertWritable } from "./option-checks.ts";
@@ -114,6 +116,17 @@ function readIdentityText(headerName: string, raw: string, decode: boolean, stri
     return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readHeaderText(raw, limit, decode, strip) : raw;
 }
 
+/**
+ * Read the subject the gateway sent. A standard `x-auth-*` name is read exactly as
+ * {@link parseAuthHeaders} reads it (see {@link readSubjectText}): a value that is empty after the
+ * control characters are removed is no subject, never an identity without one. A custom header
+ * comes from the gateway and its text is taken as sent; the caller decides with
+ * {@link isUsableSubject} whether it holds a subject, without rewriting it.
+ */
+function readGatewaySubject(headerName: string, raw: string, decode: boolean): string | undefined {
+    return STANDARD_AUTH_HEADERS.has(headerName.toLowerCase()) ? readSubjectText(raw, MAX_SUBJECT_LENGTH, decode) : raw;
+}
+
 /** SHA-256 of `text`; both sides of a secret comparison become 32 bytes whatever their length. */
 function digest(text: string): Buffer {
     // utf16le keeps every code unit distinct; utf8 would map any lone surrogate to U+FFFD and make unequal texts equal.
@@ -175,6 +188,13 @@ function parseRoles(raw: string): string[] {
  * together with the mapped headers, the trust header and `stripHeaders` (also on `skipMethods`).
  * With `propagateHeaders` the verified identity is then written back, so an `x-auth-*` header seen
  * downstream comes from the verified identity, not from the client.
+ *
+ * A subject is read exactly as {@link parseAuthHeaders} reads it when it comes from a standard
+ * `x-auth-*` name: a subject that is empty after removing control characters is treated as
+ * missing, and the call ends with `Unauthenticated`. A custom subject name is taken as sent, but
+ * the same rule decides whether it holds a subject. A type header that is empty, or empty after
+ * the control characters are removed, is treated as absent, so `defaultType` applies; standard
+ * and custom type names alike.
  *
  * @param options - Gateway auth configuration
  * @returns ConnectRPC interceptor
@@ -290,10 +310,12 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         // otherwise a literal `utf-8''admin` subject from an older service stays that literal text.
         const decode = declaresTextEncoding(req.header);
 
-        // Extract subject (required)
+        // Extract subject (required). A standard `x-auth-*` name is read as the reader reads it, so a
+        // value that is empty after removing control characters is no subject here either; a header
+        // under a custom name is taken as sent, and the same rule decides whether it holds a subject.
         const subjectRaw = req.header.get(headerMapping.subject);
-        const subject = subjectRaw ? readIdentityText(headerMapping.subject, subjectRaw, decode, true, MAX_SUBJECT_LENGTH) : subjectRaw;
-        if (!subject) {
+        const subject = subjectRaw ? readGatewaySubject(headerMapping.subject, subjectRaw, decode) : subjectRaw;
+        if (!subject || !isUsableSubject(subject)) {
             throw new ConnectError("Missing subject header from gateway", Code.Unauthenticated);
         }
 
@@ -301,7 +323,11 @@ export function createGatewayAuthInterceptor(options: GatewayAuthInterceptorOpti
         const nameRaw = headerMapping.name ? req.header.get(headerMapping.name) : null;
         const name = nameRaw !== null && headerMapping.name ? readIdentityText(headerMapping.name, nameRaw, decode, true, MAX_NAME_LENGTH) : undefined;
         const typeRaw = headerMapping.type ? req.header.get(headerMapping.type) : null;
-        const type = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true, MAX_TYPE_LENGTH) : defaultType;
+        const typeText = typeRaw !== null && headerMapping.type ? readIdentityText(headerMapping.type, typeRaw, decode, true, MAX_TYPE_LENGTH) : "";
+        // A type header that holds no text after the cleaning is no type, as an absent header is, so
+        // the configured default applies. The subject rule is the one place this emptiness is
+        // written, and a type is held to it too.
+        const type = isUsableSubject(typeText) ? typeText : defaultType;
 
         // Parse roles: JSON array or comma-separated
         let roles: string[] = [];

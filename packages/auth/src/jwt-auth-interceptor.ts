@@ -11,6 +11,7 @@ import type { Interceptor } from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { createRemoteJWKSet, type JWTPayload, type JWTVerifyOptions, type JWTVerifyResult, jwtVerify } from "jose";
 import { createAuthInterceptor } from "./auth-interceptor.ts";
+import { isUsableSubject } from "./headers.ts";
 import { assertExpectedClaim, assertJwksOptions, assertMaxTokenAge, assertPropagatedClaims } from "./option-validation.ts";
 import type { AuthContext, JwtAuthInterceptorOptions } from "./types.ts";
 
@@ -147,8 +148,8 @@ function throwMissingSubject(): never {
  * and standard claim mapping to AuthContext.
  *
  * A token is accepted only with a `sub` (or the claim named by `claimsMapping.subject`)
- * that is a non-empty string; otherwise the call ends with `Unauthenticated: JWT missing
- * subject claim`.
+ * that is a string holding a character after the control characters are removed (tab is kept);
+ * otherwise the call ends with `Unauthenticated: JWT missing subject claim`.
  *
  * With `jwksUri`, a failure to get the key set (the identity provider is down, answers with an
  * error or garbage, or does not answer within `jwks.timeoutDuration`) ends the call with
@@ -233,10 +234,11 @@ export function createJwtAuthInterceptor(options: JwtAuthInterceptorOptions): In
             const mapped = mapClaimsToContext(payload, claimsMapping);
             const claims = payload as Record<string, unknown>;
 
-            // The identity needs a subject that is a non-empty string. `sub` is whatever the token
-            // carries (an empty string, a number, an object), and AuthContext.subject is a string.
+            // The identity needs a subject that is usable: a string with a character left after the
+            // control characters are removed. `sub` is whatever the token carries (an empty string,
+            // control characters only, a number, an object), and AuthContext.subject is a string.
             const subject = mapped.subject ?? payload.sub;
-            if (typeof subject !== "string" || subject.length === 0) {
+            if (typeof subject !== "string" || !isUsableSubject(subject)) {
                 throwMissingSubject();
             }
 

@@ -15,7 +15,7 @@
  * @module option-checks
  */
 
-import { HeaderValueTooLargeError, setAuthHeaders, UnsafeHeaderValueError } from "./headers.ts";
+import { HeaderValueTooLargeError, isUsableSubject, setAuthHeaders, UnsafeHeaderValueError } from "./headers.ts";
 import type { AuthContext } from "./types.ts";
 
 /** An identity with plain values everywhere, so that only the field under test can make the writer refuse it. */
@@ -65,6 +65,26 @@ export function assertHeaderValue(option: string, value: unknown): asserts value
         throw new TypeError(
             `@connectum/auth: ${option} must be a non-empty string that a header value carries unchanged: no NUL, CR or LF, no character above U+00FF, and no space or tab at either end (the platform removes it)`,
         );
+    }
+}
+
+/**
+ * Check that a text fixed for every identity — the subject or the type a trust source gives all
+ * its identities — is one an identity can carry: a string that holds a value after the control
+ * characters are removed ({@link isUsableSubject}). A trust source configured with such a value
+ * would refuse every call it admits, or hand the handlers an identity with no subject. Throws a
+ * `TypeError` naming `option` otherwise.
+ *
+ * @param option - The option path as the user wrote it, for the message
+ * @param value - The configured subject or type
+ * @param kind - Which of the two the value is, for the message
+ */
+export function assertUsableIdentityText(option: string, value: unknown, kind: "subject" | "type"): asserts value is string {
+    if (typeof value !== "string") {
+        throw new TypeError(`@connectum/auth: ${option} must be a string, got ${JSON.stringify(value)}`);
+    }
+    if (!isUsableSubject(value)) {
+        throw new TypeError(`@connectum/auth: ${option} must hold a character after the control characters are removed; it is the ${kind} of every identity`);
     }
 }
 

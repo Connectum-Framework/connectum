@@ -26,6 +26,7 @@ updates:
       - dependency-name: "@opentelemetry/*"
       - dependency-name: "c8"
       - dependency-name: "env-var"
+      - dependency-name: "fast-check"
       - dependency-name: "husky"
       - dependency-name: "typescript"
       - dependency-name: "@types/node"

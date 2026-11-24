@@ -97,6 +97,7 @@
     "@connectum/interceptors": "workspace:^",
     "@connectum/testing": "workspace:^",
     "c8": "catalog:",
+    "fast-check": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"
   }
